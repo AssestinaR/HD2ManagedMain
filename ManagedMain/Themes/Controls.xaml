@@ -112,4 +112,26 @@
     </Setter>
   </Style>
 
+  <!-- Shared breathing hint resources -->
+  <Storyboard x:Key="BreathingStoryboard" RepeatBehavior="Forever" AutoReverse="True">
+    <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0.8" To="1" Duration="0:0:1.2"/>
+    <ColorAnimation Storyboard.TargetProperty="(Border.BorderBrush).(SolidColorBrush.Color)"
+                    From="#FF66A3FF" To="#FF2D7DFF" Duration="0:0:1.2"/>
+    <ColorAnimation Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                    From="#22A9D2FF" To="#33A9D2FF" Duration="0:0:1.2"/>
+  </Storyboard>
+  <Style x:Key="BreathingHintBorder" TargetType="Border">
+    <Setter Property="CornerRadius" Value="6"/>
+    <Setter Property="Padding" Value="10"/>
+    <Setter Property="Margin" Value="0,6,0,6"/>
+    <Setter Property="Background" Value="#22A9D2FF"/>
+    <Setter Property="BorderBrush" Value="#FF66A3FF"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Style.Triggers>
+      <EventTrigger RoutedEvent="Loaded">
+        <BeginStoryboard Storyboard="{StaticResource BreathingStoryboard}"/>
+      </EventTrigger>
+    </Style.Triggers>
+  </Style>
+
 </ResourceDictionary>

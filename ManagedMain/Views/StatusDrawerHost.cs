@@ -344,9 +344,22 @@ namespace ManagedMain.Views
 
             string profileRoot = GetProfileRoot(host);
             string gameFolder = GetGameFolder(host);
-            if (string.IsNullOrWhiteSpace(gameFolder))
-            { try { var opt = new ManagedMain.Services.OptionStore().LoadOrCreate(); gameFolder = opt.GameFolder; } catch { } }
-            var modsEnum = GetModsSource(host) ?? TryGetModsFromDataContext(host);
+            try
+            {
+                // Always prefer the latest saved value from OptionStore
+                var opt = new ManagedMain.Services.OptionStore().LoadOrCreate();
+                var latest = opt.GameFolder;
+                if (!string.IsNullOrWhiteSpace(latest) && !string.Equals(latest, gameFolder, StringComparison.OrdinalIgnoreCase))
+                {
+                    gameFolder = latest;
+                    // keep attached property in sync so UI reflects latest
+                    try { SetGameFolder(host, latest); } catch { }
+                }
+                // If attached property empty, still use latest
+                if (string.IsNullOrWhiteSpace(gameFolder)) gameFolder = latest;
+            }
+            catch { }
+             var modsEnum = GetModsSource(host) ?? TryGetModsFromDataContext(host);
             if (modsEnum == null)
             {
                 // Clear view and hide loading
@@ -765,12 +778,12 @@ namespace ManagedMain.Views
                     var prop = o.GetType().GetProperty("Enabled");
                     if (prop == null) return false;
                     var v = prop.GetValue(o);
-                    if (v is int i) return i == 1;
+                    if (v is int i) return i != 0; // treat partial as enabled
                     if (v is bool b) return b;
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"[StatusScanner] ∂¡»° Enabled  Ù–‘ ß∞‹: {ex.Message}");
+                    Debug.WriteLine($"[StatusScanner] ??? Enabled ???????: {ex.Message}");
                 }
                 return false;
             }

@@ -18,7 +18,7 @@
   <!-- Button standardized widths and height -->
   <sys:Double x:Key="BtnWidthS">84</sys:Double>
   <sys:Double x:Key="BtnWidthM">112</sys:Double>
-  <sys:Double x:Key="BtnWidthL">148</sys:Double>
+  <sys:Double x:Key="BtnWidthL">150</sys:Double>
   <sys:Double x:Key="BtnHeight">32</sys:Double>
 
   <!-- Compact input heights -->

@@ -37,6 +37,8 @@ namespace ManagedMain.Views
         private const double EdgeZone = 48; // px from top/bottom that triggers auto-scroll
         private const double AutoScrollMaxStep = 48; // max px per tick
 
+        private System.Collections.Specialized.INotifyCollectionChanged? _modsIncc;
+
         public ProfileModsView()
         {
             InitializeComponent();
@@ -44,6 +46,25 @@ namespace ManagedMain.Views
             Unloaded += OnUnloaded;
             _autoScrollTimer.Tick += AutoScrollTimer_Tick;
             ModsTree.PreviewMouseRightButtonDown += ModsTree_PreviewMouseRightButtonDown;
+            this.Loaded += (_, __) => UpdateImportButtonsWave();
+            this.DataContextChanged += (_, __) =>
+            {
+                TryResubscribeMods();
+                UpdateImportButtonsWave();
+            };
+        }
+
+        private void UpdateImportButtonsWave()
+        {
+            try
+            {
+                var vm = DataContext as ManagedMain.ViewModels.ProfileModsViewModel;
+                if (vm == null) return;
+                bool empty = vm.Mods == null || vm.Mods.Count == 0;
+                BreathingEffect.SetIsBreathing(this.BtnImportArchive, empty);
+                BreathingEffect.SetIsBreathing(this.BtnImportFolder, empty);
+            }
+            catch { }
         }
 
         private void ModsTree_PreviewMouseRightButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -261,6 +282,47 @@ namespace ManagedMain.Views
         {
             AttachMessageHook();
             StartGameMonitor();
+            // Subscribe to Mods change to toggle import button wave
+            try
+            {
+                TryResubscribeMods();
+                UpdateImportButtonsWave();
+                // Sync GameFolder from OptionStore on entering view (in case settings changed)
+                if (DataContext is ManagedMain.ViewModels.ProfileModsViewModel vm)
+                {
+                    try
+                    {
+                        var latest = new ManagedMain.Services.OptionStore().LoadOrCreate().GameFolder;
+                        if (!string.IsNullOrWhiteSpace(latest) && !string.Equals(latest, vm.GameFolder, StringComparison.OrdinalIgnoreCase))
+                        {
+                            vm.GameFolder = latest; // this also updates StatusDrawerHost attached prop via binding
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+
+        private void TryResubscribeMods()
+        {
+            try
+            {
+                if (_modsIncc != null) _modsIncc.CollectionChanged -= Mods_CollectionChanged;
+                _modsIncc = null;
+                if (DataContext is ManagedMain.ViewModels.ProfileModsViewModel vm && vm.Mods is System.Collections.Specialized.INotifyCollectionChanged incc)
+                {
+                    _modsIncc = incc;
+                    _modsIncc.CollectionChanged += Mods_CollectionChanged;
+                }
+            }
+            catch { }
+        }
+
+        private void Mods_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+        {
+            if (!Dispatcher.CheckAccess()) { Dispatcher.Invoke(() => Mods_CollectionChanged(sender, e)); return; }
+            UpdateImportButtonsWave();
         }
 
         private void StartGameMonitor()
@@ -285,6 +347,12 @@ namespace ManagedMain.Views
             DetachMessageHook();
             _autoScrollTimer.Stop();
             _dragActive = false;
+            try
+            {
+                if (_modsIncc != null) _modsIncc.CollectionChanged -= Mods_CollectionChanged;
+                _modsIncc = null;
+            }
+            catch { }
         }
 
         private void AttachMessageHook()

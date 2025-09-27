@@ -17,13 +17,6 @@
     <UserControl.Resources>
         <conv:BoolNegationConverter x:Key="BoolNeg"/>
         <conv:ProfileEntryStatusBrushConverter x:Key="ProfileBrushConv"/>
-        <!-- Optional local width overrides -->
-        <Style x:Key="PillButton.M" TargetType="Button" BasedOn="{StaticResource IconTextButton}">
-            <Setter Property="Width" Value="84"/>
-        </Style>
-        <Style x:Key="PillButton.L" TargetType="Button" BasedOn="{StaticResource IconTextButton}">
-            <Setter Property="Width" Value="150"/>
-        </Style>
 
         <!-- TreeView styles to match ProfileModsView -->
         <Style x:Key="ExpandArrowPathStyle" TargetType="Path">
@@ -111,33 +104,33 @@
     <DockPanel>
         <!-- Top toolbar -->
         <ToolBar DockPanel.Dock="Top" IsEnabled="{Binding IsBusy, Converter={StaticResource BoolNeg}}">
-            <Button x:Name="BtnNewProfile" Style="{StaticResource PillButton.M}" Command="{Binding NewProfileCommand}">
+            <Button x:Name="BtnNewProfile" Style="{StaticResource PillButton.S}" Command="{Binding NewProfileCommand}">
                 <TextBlock>
                     <Run Text="🆕 "/><Run Text="{x:Static resx:Strings.SR_Btn_New}"/>
                 </TextBlock>
             </Button>
-            <Button x:Name="BtnImportProfile" Style="{StaticResource PillButton.M}" Command="{Binding ImportProfileCommand}">
+            <Button x:Name="BtnImportProfile" Style="{StaticResource PillButton.S}" Command="{Binding ImportProfileCommand}">
                 <TextBlock>
                     <Run Text="📥 "/><Run Text="{x:Static resx:Strings.SR_Btn_Import}"/>
                 </TextBlock>
             </Button>
-            <Button Style="{StaticResource PillButton.M}" CommandParameter="{Binding SelectedProfile}" Command="{Binding CopyProfileCommand}" ld:WaveEffect.IsSurging="{Binding IsCopyRunning}">
+            <Button Style="{StaticResource PillButton.S}" CommandParameter="{Binding SelectedProfile}" Command="{Binding CopyProfileCommand}" ld:WaveEffect.IsSurging="{Binding IsCopyRunning}">
                 <TextBlock>
                     <Run Text="📄 "/><Run Text="{x:Static resx:Strings.SR_Btn_Copy}"/>
                 </TextBlock>
             </Button>
-            <Button Style="{StaticResource PillButton.M}" CommandParameter="{Binding SelectedProfile}" Command="{Binding DeleteProfileCommand}" ld:WaveEffect.IsSurging="{Binding IsDeleteRunning}">
+            <Button Style="{StaticResource PillButton.S}" CommandParameter="{Binding SelectedProfile}" Command="{Binding DeleteProfileCommand}" ld:WaveEffect.IsSurging="{Binding IsDeleteRunning}">
                 <TextBlock>
                     <Run Text="🗑 "/><Run Text="{x:Static resx:Strings.SR_Btn_Delete}"/>
                 </TextBlock>
             </Button>
             <Separator/>
-            <Button Style="{StaticResource PillButton.M}" CommandParameter="{Binding SelectedProfile}" Command="{Binding EnableProfileCommand}">
+            <Button Style="{StaticResource PillButton.S}" CommandParameter="{Binding SelectedProfile}" Command="{Binding EnableProfileCommand}">
                 <TextBlock>
                     <Run Text="✅ "/><Run Text="{x:Static resx:Strings.SR_Btn_Enable}"/>
                 </TextBlock>
             </Button>
-            <Button Style="{StaticResource PillButton.M}" CommandParameter="{Binding SelectedProfile}" Command="{Binding DisableProfileCommand}">
+            <Button Style="{StaticResource PillButton.S}" CommandParameter="{Binding SelectedProfile}" Command="{Binding DisableProfileCommand}">
                 <TextBlock>
                     <Run Text="🚫 "/><Run Text="{x:Static resx:Strings.SR_Btn_Disable}"/>
                 </TextBlock>
@@ -306,10 +299,14 @@
                                         </Style.Triggers>
                                     </Style>
                                 </Border.Style>
-                                <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="💡" FontSize="18" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                                    <TextBlock TextWrapping="Wrap" VerticalAlignment="Center" Text="{x:Static resx:Strings.SR_Log_DifferentDriveHint}"/>
-                                </StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="💡" FontSize="18" Margin="0,0,8,0" VerticalAlignment="Top"/>
+                                    <TextBlock Grid.Column="1" TextWrapping="Wrap" VerticalAlignment="Center" Text="{x:Static resx:Strings.SR_Log_DifferentDriveHint}"/>
+                                </Grid>
                             </Border>
 
                             <Grid Margin="0,8,0,6">
@@ -347,11 +344,27 @@
                                     </StackPanel>
                                 </Border>
                             </Grid>
-                            <TextBlock Text="{x:Static resx:Strings.SR_Tip_ProfileTreeUsage}" Foreground="Gray"/>
+                            <Border Margin="0,6,0,0">
+                                <Border.Style>
+                                    <Style TargetType="Border" BasedOn="{StaticResource BreathingHintBorder}">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </Style>
+                                </Border.Style>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="💡" FontSize="18" Margin="0,0,8,0" VerticalAlignment="Top"/>
+                                    <TextBlock Grid.Column="1" TextWrapping="Wrap" VerticalAlignment="Center" Text="{x:Static resx:Strings.SR_Tip_ProfileTreeUsage}"/>
+                                </Grid>
+                            </Border>
                         </StackPanel>
                     </ScrollViewer>
                 </DockPanel>
             </Border>
         </Grid>
+
+        
     </DockPanel>
 </UserControl>

@@ -143,7 +143,7 @@
   <data name="SR_Label_Mods" xml:space="preserve"><value>Mods</value></data>
   <data name="SR_Label_PatchGroups" xml:space="preserve"><value>Patch Groups</value></data>
   <data name="SR_Label_EnabledPatchGroups" xml:space="preserve"><value>Enabled Patch Groups</value></data>
-  <data name="SR_Tip_ProfileTreeUsage" xml:space="preserve"><value>Double-click to open a profile tab. Left-click to select, right-click to deselect. Hold Shift or Ctrl for multi-select.</value></data>
+  <data name="SR_Tip_ProfileTreeUsage" xml:space="preserve"><value>Double-click to open a profile tab. Left-click to select, right-click to deselect.</value></data>
   <!-- GameLauncher logs -->
   <data name="SR_Log_LaunchGame" xml:space="preserve"><value>Launch game</value></data>
   <data name="SR_Log_LaunchGame_Protocol" xml:space="preserve"><value>Launching via Steam protocol</value></data>
@@ -230,4 +230,6 @@
   <data name="SR_Dlg_Filter_Images" xml:space="preserve"><value>Images|*.png;*.jpg;*.jpeg|All|*.*</value></data>
   <data name="SR_Dlg_Ok" xml:space="preserve"><value>OK</value></data>
   <data name="SR_Dlg_Cancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="SR_Tip_ModTreeUsage" xml:space="preserve"><value>Double-click to expand nodes. Left-click to select, right-click to deselect. Hold Shift or Ctrl for multi-select.</value></data>
+  <data name="SR_Tip_ModListEmpty" xml:space="preserve"><value>Tip: No Mods yet. Click Import Archive/Import Folder on the top-left, or drag archives/folders into the window to load Mods.</value></data>
 </root>

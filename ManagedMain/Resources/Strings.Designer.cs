@@ -121,7 +121,8 @@ namespace ManagedMain.Resources
         public static string SR_Label_Mods => ResourceManager.GetString("SR_Label_Mods", _culture) ?? "Mods";
         public static string SR_Label_PatchGroups => ResourceManager.GetString("SR_Label_PatchGroups", _culture) ?? "Patch Groups";
         public static string SR_Label_EnabledPatchGroups => ResourceManager.GetString("SR_Label_EnabledPatchGroups", _culture) ?? "Enabled Patch Groups";
-        public static string SR_Tip_ProfileTreeUsage => ResourceManager.GetString("SR_Tip_ProfileTreeUsage", _culture) ?? "Double-click to open a profile tab. Left-click to select, right-click to deselect. Hold Shift or Ctrl for multi-select.";
+        public static string SR_Tip_ProfileTreeUsage => ResourceManager.GetString("SR_Tip_ProfileTreeUsage", _culture) ?? "Double-click to open a profile tab. Left-click to select, right-click to deselect.";
+        public static string SR_Tip_ModTreeUsage => ResourceManager.GetString("SR_Tip_ModTreeUsage", _culture) ?? "Double-click to expand nodes. Left-click to select, right-click to deselect. Hold Shift or Ctrl for multi-select.";
 
         // GameLauncher logs
         public static string SR_Log_LaunchGame => ResourceManager.GetString("SR_Log_LaunchGame", _culture) ?? "Launch game";
@@ -161,6 +162,9 @@ namespace ManagedMain.Resources
         public static string SR_Log_AutoGameFolderSet2 => ResourceManager.GetString("SR_Log_AutoGameFolderSet2", _culture) ?? "Auto-detected game folder: {0}. Click again to choose manually.";
         public static string SR_Log_AutoGameFolderNotFound2 => ResourceManager.GetString("SR_Log_AutoGameFolderNotFound2", _culture) ?? "Could not auto-detect game folder. Please choose manually.";
         public static string SR_Log_AutoGameFolderFailed2 => ResourceManager.GetString("SR_Log_AutoGameFolderFailed2", _culture) ?? "Auto-detect game folder failed. Please choose manually.";
+        public static string SR_Log_AutoGameFolderSet => ResourceManager.GetString("SR_Log_AutoGameFolderSet", _culture) ?? "Auto-detected game folder: {0}";
+        public static string SR_Log_AutoGameFolderNotFound => ResourceManager.GetString("SR_Log_AutoGameFolderNotFound", _culture) ?? "Could not auto-detect game folder. Please choose manually.";
+        public static string SR_Log_AutoGameFolderFailed => ResourceManager.GetString("SR_Log_AutoGameFolderFailed", _culture) ?? "Auto-detect game folder failed. Please choose manually.";
         public static string SR_Dlg_SelectGameData_Desc => ResourceManager.GetString("SR_Dlg_SelectGameData_Desc", _culture) ?? "Select the Helldivers 2 data folder";
         public static string SR_Log_GameFolderSet2 => ResourceManager.GetString("SR_Log_GameFolderSet2", _culture) ?? "Game folder set: {0}";
         public static string SR_Log_InvalidName => ResourceManager.GetString("SR_Log_InvalidName", _culture) ?? "Invalid name";
@@ -203,6 +207,7 @@ namespace ManagedMain.Resources
         public static string SR_Log_DeletedCount => ResourceManager.GetString("SR_Log_DeletedCount", _culture) ?? "Deleted {0} item(s)";
         public static string SR_Log_SelectAMod => ResourceManager.GetString("SR_Log_SelectAMod", _culture) ?? "Select a Mod";
         public static string SR_Log_RemarkUpdated => ResourceManager.GetString("SR_Log_RemarkUpdated", _culture) ?? "Remark updated";
+        public static string SR_Tip_ModListEmpty => ResourceManager.GetString("SR_Tip_ModListEmpty", _culture) ?? "Tip: No Mods yet. Click Import Archive/Import Folder on the top-left, or drag archives/folders into the window to load Mods.";
 
         public static string SR_Dlg_SelectExtractedModFolder_Desc => ResourceManager.GetString("SR_Dlg_SelectExtractedModFolder_Desc", _culture) ?? "Select the extracted Mod folder";
         public static string SR_Dlg_SelectArchive_Title => ResourceManager.GetString("SR_Dlg_SelectArchive_Title", _culture) ?? "Select Mod archive (zip/7z/rar)";

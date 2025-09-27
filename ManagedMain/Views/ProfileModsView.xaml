@@ -34,7 +34,6 @@
             <Conv:ModFileGroupEnabledBrushConverter x:Key="GroupEnabledBrushConverter"/>
             <Conv:EnabledStateBrushConverter x:Key="EnabledBrushConv"/>
             <Conv:BoolNegationConverter x:Key="BoolNeg"/>
-            <Conv:LastItemConverter x:Key="LastItemConv"/>
 
             <!-- TreeView styles needed by left pane -->
             <Style x:Key="ExpandArrowPathStyle" TargetType="Path">
@@ -96,11 +95,6 @@
                     </Setter.Value>
                 </Setter>
             </Style>
-
-            <!-- Local override to match ManagedMainView Launch button width -->
-            <Style x:Key="PillButton.L" TargetType="Button" BasedOn="{StaticResource IconTextButton}">
-                <Setter Property="Width" Value="150"/>
-            </Style>
         </ResourceDictionary>
     </UserControl.Resources>
     <DockPanel>
@@ -140,7 +134,7 @@
             </Button>
         </ToolBar>
         <!-- Bottom status bar (raised height to fit PillButton.S) -->
-        <Border DockPanel.Dock="Bottom" Height="36" Background="#F7F7F7" BorderBrush="#DDDDDD" BorderThickness="1,1,1,0">
+        <Border DockPanel.Dock="Bottom" Height="42" Background="#F7F7F7" BorderBrush="#DDDDDD" BorderThickness="1,1,1,0">
             <DockPanel LastChildFill="True" Margin="6,0,6,0">
                 <Button x:Name="BtnLogToggle" Style="{StaticResource PillButton.S}" Margin="0,4,8,4">
                     <TextBlock><Run Text="📜 "/><Run Text="{x:Static resx:Strings.SR_Title_Log}"/></TextBlock>
@@ -192,9 +186,10 @@
                             </Style>
                         </TextBlock.Style>
                     </TextBlock>
-                    <Separator Background="{StaticResource DividerBrush}" Height="1" Visibility="Collapsed">
-                        <Separator.Style>
-                            <Style TargetType="Separator">
+                    <!-- Empty list breathing hint -->
+                    <Border DockPanel.Dock="Top" Margin="0,6,0,6">
+                        <Border.Style>
+                            <Style TargetType="Border" BasedOn="{StaticResource BreathingHintBorder}">
                                 <Setter Property="Visibility" Value="Collapsed"/>
                                 <Style.Triggers>
                                     <DataTrigger Binding="{Binding ElementName=ModsTree, Path=HasItems}" Value="False">
@@ -202,8 +197,28 @@
                                     </DataTrigger>
                                 </Style.Triggers>
                             </Style>
-                        </Separator.Style>
-                    </Separator>
+                        </Border.Style>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="💡" FontSize="18" Margin="0,0,8,0" VerticalAlignment="Top"/>
+                            <TextBlock Grid.Column="1" TextWrapping="Wrap" VerticalAlignment="Center" Text="{x:Static resx:Strings.SR_Tip_ModListEmpty}"/>
+                        </Grid>
+                    </Border>
+                     <Separator Background="{StaticResource DividerBrush}" Height="1" Visibility="Collapsed">
+                         <Separator.Style>
+                             <Style TargetType="Separator">
+                                 <Setter Property="Visibility" Value="Collapsed"/>
+                                 <Style.Triggers>
+                                     <DataTrigger Binding="{Binding ElementName=ModsTree, Path=HasItems}" Value="False">
+                                         <Setter Property="Visibility" Value="Visible"/>
+                                     </DataTrigger>
+                                 </Style.Triggers>
+                             </Style>
+                         </Separator.Style>
+                     </Separator>
                     <TreeView x:Name="ModsTree" Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
                               ItemsSource="{Binding Mods}" SelectedItemChanged="ModsTree_SelectedItemChanged"
                               ItemContainerStyle="{StaticResource PrettyTreeItemStyle}"
@@ -293,7 +308,29 @@
                         </Separator.Style>
                     </Separator>
                     <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,8,0,0">
-                        <ContentControl Content="{Binding SelectedItem}"/>
+                        <StackPanel>
+                            <Border Margin="0,0,0,8">
+                                <Border.Style>
+                                    <Style TargetType="Border" BasedOn="{StaticResource BreathingHintBorder}">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding SelectedItem}" Value="{x:Null}">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="💡" FontSize="18" Margin="0,0,8,0" VerticalAlignment="Top"/>
+                                    <TextBlock Grid.Column="1" TextWrapping="Wrap" VerticalAlignment="Center" Text="{x:Static resx:Strings.SR_Tip_ModTreeUsage}"/>
+                                </Grid>
+                            </Border>
+                            <ContentControl Content="{Binding SelectedItem}"/>
+                        </StackPanel>
                     </ScrollViewer>
                 </DockPanel>
             </Border>

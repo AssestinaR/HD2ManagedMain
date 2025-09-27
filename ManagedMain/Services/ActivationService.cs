@@ -229,7 +229,7 @@ namespace ManagedMain.Services
                 var prop = o.GetType().GetProperty("Enabled");
                 if (prop == null) return false;
                 var v = prop.GetValue(o);
-                if (v is int i) return i == 1;
+                if (v is int i) return i != 0; // treat partial (2) as enabled
                 if (v is bool b) return b;
             }
             catch { }
