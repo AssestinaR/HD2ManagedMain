@@ -1,0 +1,108 @@
+﻿<Window
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:av="http://schemas.microsoft.com/expression/blend/2008" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="av" x:Class="LiberTeaManager.SettingsWindow"
+        Title="设置" WindowStartupLocation="CenterOwner" Icon="/helldivers2.png" Background="White" Cursor="Arrow" Width="800" Height="210">
+    <Window.Resources>
+        <!-- 扁平按钮样式 -->
+        <Style x:Key="FlatButton" TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="#FFEEF5FD"/>
+            <Setter Property="Foreground" Value="#1F2937"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Margin" Value="0,0,8,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border Background="{TemplateBinding Background}" CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#FFE6F3FF"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" Value="#FFDCEFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.6"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- 扁平文本框样式 -->
+        <Style x:Key="FlatTextBox" TargetType="{x:Type TextBox}">
+            <Setter Property="Background" Value="#FFEEF5FD"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="Foreground" Value="#1F2937"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="5,5,5,5" VerticalAlignment="Top">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="23"/>
+            <RowDefinition Height="23"/>
+            <RowDefinition Height="23"/>
+            <RowDefinition Height="23"/>
+            <RowDefinition Height="23"/>
+            <RowDefinition Height="23"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="80"/>
+            <ColumnDefinition/>
+            <ColumnDefinition Width="100"/>
+            <ColumnDefinition Width="100"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- 游戏文件夹 -->
+        <TextBlock Text="游戏文件夹：" VerticalAlignment="Center" Height="15" Margin="5,0,5,0"/>
+        <TextBox x:Name="GameFolderTextBox" Grid.Column="1" Style="{StaticResource FlatTextBox}"
+                 KeyDown="GameFolderTextBox_KeyDown" LostFocus="GameFolderTextBox_LostFocus" Height="21" Margin="0,1,0,1"/>
+        <Button Content="📂 打开当前" Grid.Column="2" Click="BtnOpenGameFolder_Click" Style="{StaticResource FlatButton}" Padding="10,6,12,6" ScrollViewer.VerticalScrollBarVisibility="Disabled" Height="15" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Margin="5,4,5,4" Width="90" Background="#FFFDF5EB"/>
+        <Button Content="🔍 重新选择" Grid.Column="3" Click="BtnBrowseGameFolder_Click" Style="{StaticResource FlatButton}" Width="90" Height="15" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Margin="5,4,5,4" Background="#FFFDF5EB"/>
+
+        <!-- 主窗口尺寸 -->
+        <TextBlock Text="主窗口宽/高：" Grid.Row="1" VerticalAlignment="Center" Height="16" Margin="5,0,5,0"/>
+        <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Height="21" Margin="0,1,0,1">
+            <TextBox x:Name="MainWidthTextBox" Width="80" Margin="0,0,8,0" Style="{StaticResource FlatTextBox}"/>
+            <TextBox x:Name="MainHeightTextBox" Width="80" Style="{StaticResource FlatTextBox}"/>
+            <TextBlock Text="(回车保存并关闭，启动时的默认窗口大小)" Foreground="Gray" Margin="10,0,0,0" VerticalAlignment="Center"/>
+        </StackPanel>
+        <Button Content="📐 应用当前" Grid.Column="2" Style="{StaticResource FlatButton}" Click="BtnUseCurrentSize_Click" Width="90" Height="15" Grid.Row="1" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Margin="5,4,5,4" Background="#FFFDF5EB"/>
+        <Button Content="♻️ 重置默认" Grid.Row="1" Grid.Column="3" Style="{StaticResource FlatButton}" Click="BtnResetSize_Click" Width="90" Height="15" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Margin="5,4,5,4" Background="#FFFDF5EB"/>
+
+        <TextBlock Text="配置文件管理" FontWeight="Bold" Grid.Row="2" RenderTransformOrigin="0.5,0.5" Margin="0,4,0,4" Height="15" HorizontalAlignment="Center">
+            <TextBlock.RenderTransform>
+                <TransformGroup>
+                    <ScaleTransform/>
+                    <SkewTransform AngleX="0"/>
+                    <RotateTransform/>
+                    <TranslateTransform X="0"/>
+                </TransformGroup>
+            </TextBlock.RenderTransform>
+        </TextBlock>
+        <TextBlock Text="配置：" Grid.Row="3" Height="15" VerticalAlignment="Center" Margin="5,0,5,0"/>
+        <ComboBox x:Name="ProfilesCombo" Grid.Row="3" Grid.Column="1" Height="21" Margin="0,1,205,1"/>
+        <Button Content="✅ 设为当前" Style="{StaticResource FlatButton}" Click="BtnSetCurrentProfile_Click" Background="#FFFDF5EB" Grid.Column="1" Margin="0,0,105,0" Grid.Row="3" Height="15" Width="90" VerticalAlignment="Stretch" HorizontalAlignment="Right" />
+        <Button Content="🆕 新建配置" Style="{StaticResource FlatButton}" Click="BtnNewProfile_Click" Background="#FFFDF5EB" Grid.Column="2" Grid.Row="3" Width="90" Height="15" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Margin="5,4,5,4"/>
+        <Button Content="🗑️ 删除配置" Style="{StaticResource FlatButton}" Click="BtnDeleteProfile_Click" Background="#FFFDF5EB" Grid.Column="3" Grid.Row="3" Width="90" Height="15" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Margin="5,4,5,4"/>
+        <Button Content="📄 从当前复制" Style="{StaticResource FlatButton}" Click="BtnCopyProfile_Click" Background="#FFFDF5EB" Grid.Column="1" Grid.Row="3" Height="15" Width="90" VerticalAlignment="Stretch" Margin="0,0,5,0" HorizontalAlignment="Right"/>
+        <TextBlock Text="路径：" VerticalAlignment="Top" Grid.Row="4" Height="15" Margin="5,0,5,0"/>
+        <TextBox x:Name="ProfilePathTextBox" Style="{StaticResource FlatTextBox}" IsReadOnly="True" Grid.Row="4" Grid.Column="1" Height="21"/>
+        <Button Content="📁 浏览路径" Style="{StaticResource FlatButton}" Click="BtnBrowseProfilePath_Click" Background="#FFFDF5EB" Grid.Column="3" Grid.Row="4" Height="15" Width="90" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Margin="5,0,5,0"/>
+        <Button Content="📂 打开目录" Style="{StaticResource FlatButton}" Click="BtnOpenProfilePath_Click" Background="#FFFDF5EB" Grid.Column="2" Grid.Row="4" Height="15" Width="90" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Margin="5,0,5,0"/>
+        <Button Content="🆕 新建配置" Style="{StaticResource FlatButton}" Click="BtnNewProfile_Click" Background="#FFFDF5EB" Grid.Column="2" Grid.Row="3" Width="90" Height="15" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Margin="5,4,5,4"/>
+
+        <!-- 重新扫描按钮 -->
+        <Button Grid.Row="5" Grid.ColumnSpan="4" Content="🔄 重新扫描当前 Mod 目录并刷新" Style="{StaticResource FlatButton}"
+                Height="21" HorizontalAlignment="Stretch" VerticalAlignment="Center" Margin="0,6,0,0" Click="BtnRescanMods_Click"/>
+    </Grid>
+</Window>

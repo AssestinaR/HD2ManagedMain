@@ -1,0 +1,52 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>LiberTeaManager</AssemblyName>
+    <RootNamespace>LiberTeaManager</RootNamespace>
+	<ApplicationIcon>helldivers2_64px.ico</ApplicationIcon>
+    <!-- 默认改为框架依赖（不自带 .NET 运行时） -->
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishReadyToRun>false</PublishReadyToRun>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <IsPublishable>False</IsPublishable>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <IsPublishable>False</IsPublishable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Localization\**" />
+    <EmbeddedResource Remove="Localization\**" />
+    <None Remove="Localization\**" />
+    <Page Remove="Localization\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="helldivers2.png" />
+    <None Remove="helldivers2_64px.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="helldivers2_64px.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft-WindowsAPICodePack-Shell" Version="1.1.5" />
+    <PackageReference Include="SharpCompress" Version="0.40.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="helldivers2.png" />
+  </ItemGroup>
+</Project>

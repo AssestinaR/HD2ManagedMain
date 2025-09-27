@@ -1,0 +1,115 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:conv="clr-namespace:ManagedMain.Converters">
+  <!-- Card border with small radius -->
+  <Style x:Key="CardBorder" TargetType="Border">
+    <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+    <Setter Property="BorderBrush" Value="{StaticResource CardBorderBrush}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="CornerRadius" Value="3"/>
+    <Setter Property="Padding" Value="3"/>
+    <Setter Property="SnapsToDevicePixels" Value="True"/>
+  </Style>
+
+  <conv:CornerRadiusClampConverter x:Key="CornerClamp"/>
+  <conv:ContentToTextConverter x:Key="ContentToText"/>
+
+  <!-- Section title -->
+  <Style x:Key="SectionTitle" TargetType="TextBlock">
+    <Setter Property="FontSize" Value="16"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+    <Setter Property="Margin" Value="0,0,0,8"/>
+  </Style>
+
+  <!-- Base pill button using light-blue accents -->
+  <Style x:Key="PillButtonBase" TargetType="Button" BasedOn="{StaticResource {x:Static ToolBar.ButtonStyleKey}}">
+    <Setter Property="Margin" Value="0,0,8,0"/>
+    <Setter Property="Padding" Value="3.5,2"/>
+    <Setter Property="Background" Value="{StaticResource ButtonAccentWeakBrush}"/>
+    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+    <Setter Property="BorderBrush" Value="{StaticResource ButtonAccentMutedBrush}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <!-- Default tooltip shows only string text extracted from Content to avoid visual tree side effects -->
+    <Setter Property="ToolTip">
+      <Setter.Value>
+        <ToolTip Content="{Binding RelativeSource={RelativeSource Self}, Path=PlacementTarget.Content, Converter={StaticResource ContentToText}}"/>
+      </Setter.Value>
+    </Setter>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}">
+            <Border.CornerRadius>
+              <MultiBinding Converter="{StaticResource CornerClamp}" ConverterParameter="3">
+                <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="ActualWidth"/>
+                <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="ActualHeight"/>
+              </MultiBinding>
+            </Border.CornerRadius>
+            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+    <Style.Triggers>
+      <Trigger Property="IsMouseOver" Value="True">
+        <Setter Property="Background" Value="{StaticResource ButtonAccentMutedBrush}"/>
+      </Trigger>
+    </Style.Triggers>
+  </Style>
+
+  <!-- IconTextButton: forces size, centered icon+text string (uses emoji or icon char at start) -->
+  <Style x:Key="IconTextButton" TargetType="Button" BasedOn="{StaticResource PillButtonBase}">
+    <Setter Property="Height" Value="{StaticResource BtnHeight}"/>
+    <Setter Property="MinWidth" Value="{StaticResource BtnWidthS}"/>
+    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+    <Setter Property="Padding" Value="4,1.5"/>
+    <Setter Property="FontSize" Value="15"/>
+  </Style>
+
+  <!-- Convenience aliases -->
+  <Style x:Key="PillButton" TargetType="Button" BasedOn="{StaticResource IconTextButton}"/>
+  <Style x:Key="PillButton.S" TargetType="Button" BasedOn="{StaticResource IconTextButton}">
+    <Setter Property="Width" Value="{StaticResource BtnWidthS}"/>
+  </Style>
+  <Style x:Key="PillButton.M" TargetType="Button" BasedOn="{StaticResource IconTextButton}">
+    <Setter Property="Width" Value="{StaticResource BtnWidthM}"/>
+  </Style>
+  <Style x:Key="PillButton.L" TargetType="Button" BasedOn="{StaticResource IconTextButton}">
+    <Setter Property="Width" Value="{StaticResource BtnWidthL}"/>
+  </Style>
+
+  <!-- TreeView minimal -->
+  <Style TargetType="TreeViewItem">
+    <Setter Property="Margin" Value="0,2,0,2"/>
+    <Setter Property="Padding" Value="4"/>
+    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+  </Style>
+
+  <!-- Big radio template -->
+  <Style x:Key="BigRadio" TargetType="RadioButton">
+    <Setter Property="FontSize" Value="14"/>
+    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="RadioButton">
+          <StackPanel Orientation="Horizontal" Margin="0,6">
+            <Grid Width="20" Height="20" Margin="0,0,10,0">
+              <Ellipse Stroke="{StaticResource ButtonAccentMutedBrush}" StrokeThickness="2" Fill="Transparent"/>
+              <Ellipse Width="10" Height="10" Fill="{StaticResource ButtonAccentBrush}" Visibility="Collapsed" x:Name="Dot"/>
+            </Grid>
+            <ContentPresenter VerticalAlignment="Center"/>
+          </StackPanel>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsChecked" Value="True">
+              <Setter TargetName="Dot" Property="UIElement.Visibility" Value="Visible"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+</ResourceDictionary>
