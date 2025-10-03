@@ -172,6 +172,7 @@
   <data name="SR_Status_OnlyIssues" xml:space="preserve"><value>仅显示问题</value></data>
   <data name="SR_Btn_Refresh" xml:space="preserve"><value>刷新</value></data>
   <data name="SR_Tip_DoubleClickCopyPath" xml:space="preserve"><value>双击行复制路径</value></data>
+  <data name="SR_Tip_StatusDoubleClick" xml:space="preserve"><value>左键双击追踪 Mod 文件夹；右键双击追踪游戏内文件</value></data>
   <data name="SR_Col_Owner" xml:space="preserve"><value>归属</value></data>
   <data name="SR_Col_Hex" xml:space="preserve"><value>Hex</value></data>
   <data name="SR_Col_ModList" xml:space="preserve"><value>Mod列表</value></data>
@@ -189,6 +190,8 @@
   <data name="SR_Status_PatchMismatch" xml:space="preserve"><value>Patch N 不匹配：游戏文件 N 与 Mod 列表不一致</value></data>
   <data name="SR_Status_Normal" xml:space="preserve"><value>正常</value></data>
   <data name="SR_Status_ExtraTip" xml:space="preserve"><value>额外：游戏存在没有对应 Mod 条目的文件</value></data>
+  <data name="SR_Status_Summary_Default" xml:space="preserve"><value>状态 ...</value></data>
+  <data name="SR_Status_Summary_Format" xml:space="preserve"><value>已启用 Mod: {0} 个，文件组: {1} 个，正常: {2} 个，异常: {3} 个</value></data>
 
   <!-- Logs/messages -->
   <data name="SR_Log_ClickLaunchGame_ProfileModsView" xml:space="preserve"><value>点击启动游戏（Mod 页面）</value></data>
@@ -348,6 +351,7 @@
   <data name="SR_Status_OnlyIssues" xml:space="preserve"><value>仅显示问题</value></data>
   <data name="SR_Btn_Refresh" xml:space="preserve"><value>刷新</value></data>
   <data name="SR_Tip_DoubleClickCopyPath" xml:space="preserve"><value>双击行复制路径</value></data>
+  <data name="SR_Tip_StatusDoubleClick" xml:space="preserve"><value>左键双击追踪 Mod 文件夹；右键双击追踪游戏内文件</value></data>
   <data name="SR_Col_Owner" xml:space="preserve"><value>归属</value></data>
   <data name="SR_Col_Hex" xml:space="preserve"><value>Hex</value></data>
   <data name="SR_Col_ModList" xml:space="preserve"><value>Mod列表</value></data>
@@ -437,4 +441,8 @@
   <data name="SR_Log_PathUpdated" xml:space="preserve"><value>路径已更新。已移动 {0} 个项到新目录。</value></data>
   <data name="SR_Log_MoveFailed" xml:space="preserve"><value>移动失败：{0}</value></data>
   <data name="SR_Tip_ModListEmpty" xml:space="preserve"><value>提示：当前没有 Mod。点击左上角“导入压缩包/导入文件夹”，或将 Mod 压缩包/文件夹直接拖入窗口来加载。</value></data>
+  <data name="SR_Label_Options" xml:space="preserve"><value>选项</value></data>
+  <data name="SR_Label_SubOptions" xml:space="preserve"><value>子选项</value></data>
+  <data name="SR_Choice_Single" xml:space="preserve"><value>单选</value></data>
+  <data name="SR_Choice_Multiple" xml:space="preserve"><value>多选</value></data>
 </root>

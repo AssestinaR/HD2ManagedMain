@@ -78,6 +78,7 @@ namespace ManagedMain.Views
             public System.Windows.Controls.CheckBox? OnlyIssuesBox;
             public CancellationTokenSource? ScanCts;
             public System.Windows.Controls.ProgressBar? LoadingBar;
+            public System.Windows.Controls.TextBlock? SummaryText;
         }
 
         private static void OnContextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -155,6 +156,18 @@ namespace ManagedMain.Views
             st.Transform = (System.Windows.Media.TranslateTransform)drawer.RenderTransform;
 
             var dock = new System.Windows.Controls.DockPanel();
+            // Summary line at top
+            var summary = new System.Windows.Controls.TextBlock
+             {
+                 Margin = new System.Windows.Thickness(4, 2, 4, 2),
+                 Foreground = System.Windows.Application.Current?.Resources["TextSecondaryBrush"] as System.Windows.Media.Brush
+                              ?? System.Windows.Media.Brushes.Gray,
+                 TextTrimming = System.Windows.TextTrimming.CharacterEllipsis,
+                Text = ManagedMain.Resources.Strings.SR_Status_Summary_Default
+             };
+            st.SummaryText = summary;
+            System.Windows.Controls.DockPanel.SetDock(summary, System.Windows.Controls.Dock.Top);
+            dock.Children.Add(summary);
             // Header toolbar: Filter + Only Issues + Refresh + hint
             var header = new System.Windows.Controls.DockPanel { LastChildFill = false, Margin = new System.Windows.Thickness(4,2,4,2) };
             System.Windows.Controls.DockPanel.SetDock(header, System.Windows.Controls.Dock.Top);
@@ -171,7 +184,7 @@ namespace ManagedMain.Views
             // Loading indicator (indeterminate ProgressBar)
             var loading = new System.Windows.Controls.ProgressBar { IsIndeterminate = true, Width = 120, Height = 14, Visibility = System.Windows.Visibility.Collapsed, Margin = new System.Windows.Thickness(12,0,0,0), VerticalAlignment = System.Windows.VerticalAlignment.Center };
             st.LoadingBar = loading; header.Children.Add(loading);
-            header.Children.Add(new System.Windows.Controls.TextBlock { Text = ManagedMain.Resources.Strings.SR_Tip_DoubleClickCopyPath, Foreground = System.Windows.Media.Brushes.Gray, Margin = new System.Windows.Thickness(20,0,0,0), VerticalAlignment = System.Windows.VerticalAlignment.Center });
+            header.Children.Add(new System.Windows.Controls.TextBlock { Text = ManagedMain.Resources.Strings.SR_Tip_StatusDoubleClick, Foreground = System.Windows.Media.Brushes.Gray, Margin = new System.Windows.Thickness(20,0,0,0), VerticalAlignment = System.Windows.VerticalAlignment.Center });
             dock.Children.Add(header);
             dock.Children.Add(new System.Windows.Controls.Separator { Height = 1, Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(51, 46, 42, 50)) });
 
@@ -186,25 +199,27 @@ namespace ManagedMain.Views
             // Row coloring and tooltip
             var rowStyle = new System.Windows.Style(typeof(System.Windows.Controls.DataGridRow));
             rowStyle.Setters.Add(new System.Windows.Setter(System.Windows.FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding("Tooltip")));
-            // Order triggers from low to high priority so later ones override earlier ones
-            var trigDup = new System.Windows.DataTrigger { Binding = new System.Windows.Data.Binding("IsDuplicate"), Value = true }; // brown
-            trigDup.Setters.Add(new System.Windows.Setter(System.Windows.Controls.DataGridRow.BackgroundProperty, new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xEA, 0xD1, 0xA3))));
-            rowStyle.Triggers.Add(trigDup);
-            var trigMisMatch = new System.Windows.DataTrigger { Binding = new System.Windows.Data.Binding("IsPatchNMismatch"), Value = true }; // magenta
-            trigMisMatch.Setters.Add(new System.Windows.Setter(System.Windows.Controls.DataGridRow.BackgroundProperty, new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xD5, 0xF3))));
-            rowStyle.Triggers.Add(trigMisMatch);
-            var trigSeq = new System.Windows.DataTrigger { Binding = new System.Windows.Data.Binding("IsSequenceGap"), Value = true }; // purple
-            trigSeq.Setters.Add(new System.Windows.Setter(System.Windows.Controls.DataGridRow.BackgroundProperty, new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE5, 0xD5, 0xFF))));
-            rowStyle.Triggers.Add(trigSeq);
-            var trigIncomplete = new System.Windows.DataTrigger { Binding = new System.Windows.Data.Binding("IsIncomplete"), Value = true }; // yellow
-            trigIncomplete.Setters.Add(new System.Windows.Setter(System.Windows.Controls.DataGridRow.BackgroundProperty, new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xF6, 0xD5))));
-            rowStyle.Triggers.Add(trigIncomplete);
-            var trigMissing = new System.Windows.DataTrigger { Binding = new System.Windows.Data.Binding("IsMissing"), Value = true }; // red
-            trigMissing.Setters.Add(new System.Windows.Setter(System.Windows.Controls.DataGridRow.BackgroundProperty, new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xE5, 0xE5))));
-            rowStyle.Triggers.Add(trigMissing);
-            var trigExtra = new System.Windows.DataTrigger { Binding = new System.Windows.Data.Binding("IsExtra"), Value = true }; // blue
-            trigExtra.Setters.Add(new System.Windows.Setter(System.Windows.Controls.DataGridRow.BackgroundProperty, new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xD5, 0xE7, 0xFF))));
+            // Order triggers from low to high severity so later ones override earlier ones
+            // Info: Extra
+            var trigExtra = new System.Windows.DataTrigger { Binding = new System.Windows.Data.Binding("IsExtra"), Value = true }; // light blue (#E3F2FD)
+            trigExtra.Setters.Add(new System.Windows.Setter(System.Windows.Controls.DataGridRow.BackgroundProperty, new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE3, 0xF2, 0xFD))));
             rowStyle.Triggers.Add(trigExtra);
+            // Caution: Sequence gap
+            var trigSeq = new System.Windows.DataTrigger { Binding = new System.Windows.Data.Binding("IsSequenceGap"), Value = true }; // light yellow (#FFF9C4)
+            trigSeq.Setters.Add(new System.Windows.Setter(System.Windows.Controls.DataGridRow.BackgroundProperty, new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xF9, 0xC4))));
+            rowStyle.Triggers.Add(trigSeq);
+            // Warning: Duplicate
+            var trigDup = new System.Windows.DataTrigger { Binding = new System.Windows.Data.Binding("IsDuplicate"), Value = true }; // amber (#FFECB3)
+            trigDup.Setters.Add(new System.Windows.Setter(System.Windows.Controls.DataGridRow.BackgroundProperty, new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xEC, 0xB3))));
+            rowStyle.Triggers.Add(trigDup);
+            // Error: Patch N mismatch
+            var trigMisMatch = new System.Windows.DataTrigger { Binding = new System.Windows.Data.Binding("IsPatchNMismatch"), Value = true }; // orange (#FFE0B2)
+            trigMisMatch.Setters.Add(new System.Windows.Setter(System.Windows.Controls.DataGridRow.BackgroundProperty, new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xE0, 0xB2))));
+            rowStyle.Triggers.Add(trigMisMatch);
+            // Critical: Missing
+            var trigMissing = new System.Windows.DataTrigger { Binding = new System.Windows.Data.Binding("IsMissing"), Value = true }; // red (#FFCDD2)
+            trigMissing.Setters.Add(new System.Windows.Setter(System.Windows.Controls.DataGridRow.BackgroundProperty, new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xCD, 0xD2))));
+            rowStyle.Triggers.Add(trigMissing);
             grid.RowStyle = rowStyle;
 
             grid.Columns.Add(new System.Windows.Controls.DataGridTextColumn { Header = ManagedMain.Resources.Strings.SR_Col_Owner, Binding = new System.Windows.Data.Binding("OwnerDisplay"), Width = new System.Windows.Controls.DataGridLength(1, System.Windows.Controls.DataGridLengthUnitType.Auto) });
@@ -212,11 +227,11 @@ namespace ManagedMain.Views
             grid.Columns.Add(new System.Windows.Controls.DataGridTextColumn { Header = ManagedMain.Resources.Strings.SR_Col_ModList, Binding = new System.Windows.Data.Binding("PatchN_ModList"), Width = new System.Windows.Controls.DataGridLength(70) });
             grid.Columns.Add(new System.Windows.Controls.DataGridTextColumn { Header = ManagedMain.Resources.Strings.SR_Col_Game, Binding = new System.Windows.Data.Binding("PatchN_Game"), Width = new System.Windows.Controls.DataGridLength(70) });
             grid.Columns.Add(new System.Windows.Controls.DataGridTextColumn { Header = ManagedMain.Resources.Strings.SR_Col_Exists, Binding = new System.Windows.Data.Binding("ExistsInGame"), Width = new System.Windows.Controls.DataGridLength(60) });
-            grid.Columns.Add(new System.Windows.Controls.DataGridTextColumn { Header = ManagedMain.Resources.Strings.SR_Col_AllLinked, Binding = new System.Windows.Data.Binding("FilesAllLinked"), Width = new System.Windows.Controls.DataGridLength(50) });
             grid.Columns.Add(new System.Windows.Controls.DataGridTextColumn { Header = ManagedMain.Resources.Strings.SR_Col_Count, Binding = new System.Windows.Data.Binding("FileCount"), Width = new System.Windows.Controls.DataGridLength(60) });
             grid.Columns.Add(new System.Windows.Controls.DataGridTextColumn { Header = ManagedMain.Resources.Strings.SR_Col_Link, Binding = new System.Windows.Data.Binding("LinkType"), Width = new System.Windows.Controls.DataGridLength(60) });
             grid.Columns.Add(new System.Windows.Controls.DataGridTextColumn { Header = ManagedMain.Resources.Strings.SR_Col_GameFile, Binding = new System.Windows.Data.Binding("GameFileName"), Width = new System.Windows.Controls.DataGridLength(1, System.Windows.Controls.DataGridLengthUnitType.Star) });
-            grid.MouseDoubleClick += (s, e) => OnGridDoubleClick(host);
+            grid.MouseDoubleClick += (s, e) => { if (e.ChangedButton == System.Windows.Input.MouseButton.Left) { OnGridDoubleClick(host); e.Handled = true; } };
+            grid.MouseRightButtonDown += (s, e) => { if (e.ClickCount == 2 && e.ChangedButton == System.Windows.Input.MouseButton.Right) { OnGridRightDoubleClick(host); e.Handled = true; } };
 
             grid.ItemsSource = st.ViewItems;
             st.Grid = grid;
@@ -255,7 +270,7 @@ namespace ManagedMain.Views
             st.DrawerHeight = desired;
             if (st.Grid != null)
             {
-                st.Grid.Height = Math.Max(60, desired - 48);
+                 st.Grid.Height = Math.Max(60, desired - 48);
             }
             if (!st.Open && st.Transform != null)
             {
@@ -289,10 +304,33 @@ namespace ManagedMain.Views
             UpdateHeights(host);
             var st = GetState(host); if (st == null || st.Drawer == null || st.Transform == null) return;
             if (st.Open) return;
+            BringToFront(st);
             st.Open = true; st.Drawer.Visibility = System.Windows.Visibility.Visible; st.Drawer.Focus();
             var anim = new System.Windows.Media.Animation.DoubleAnimation { From = st.DrawerHeight, To = 0, Duration = System.TimeSpan.FromMilliseconds(220), EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } };
             st.Transform.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, anim);
             StartBreathing(st);
+        }
+
+        private static void BringToFront(State st)
+        {
+            try
+            {
+                if (st.Drawer == null) return;
+                if (st.HostElement is System.Windows.Controls.Panel panel)
+                {
+                    int max = 0;
+                    foreach (System.Windows.UIElement child in panel.Children)
+                    {
+                        max = Math.Max(max, System.Windows.Controls.Panel.GetZIndex(child));
+                    }
+                    System.Windows.Controls.Panel.SetZIndex(st.Drawer, max + 1);
+                }
+                else
+                {
+                    System.Windows.Controls.Panel.SetZIndex(st.Drawer, 3000);
+                }
+            }
+            catch { }
         }
 
         private static void Close(DependencyObject host)
@@ -403,15 +441,50 @@ namespace ManagedMain.Views
                         st.Items = new ObservableCollection<FileGroupStatus>(list);
                         ApplyFilter(host); // will rebuild st.ViewItems and set ItemsSource
                         if (st.LoadingBar != null) st.LoadingBar.Visibility = System.Windows.Visibility.Collapsed;
+                        UpdateSummary(host, mods, st.Items);
                     });
                 }
                 catch (Exception ex)
                 {
                     var dispatcher = st.Grid?.Dispatcher ?? System.Windows.Application.Current?.Dispatcher;
                     dispatcher?.Invoke(() => { if (st.LoadingBar != null) st.LoadingBar.Visibility = System.Windows.Visibility.Collapsed; });
-                    Debug.WriteLine($"[StatusDrawerHost] …®√ËÀ¢–¬ ß∞‹: {ex.Message}");
+                    Debug.WriteLine($"[StatusDrawerHost] ?????????: {ex.Message}");
                 }
             }, token);
+        }
+
+        private static void UpdateSummary(DependencyObject host, IList<object> mods, ObservableCollection<FileGroupStatus> items)
+        {
+            var st = GetState(host); if (st?.SummaryText == null) return;
+            try
+            {
+                // enabled mods (main)
+                int enabledMods = mods.OfType<ManagedMain.Models.MainModItem>().Count(mm => IsNodeEnabled(mm));
+                 // groups excluding extras
+                var groups = items.Where(i => !i.IsExtra).ToList();
+                int totalGroups = groups.Count;
+                int normal = groups.Count(it => it.ExistsInGame && it.FilesAllLinked && !it.IsMissing && !it.IsSequenceGap && !it.IsDuplicate && !it.IsPatchNMismatch);
+                int abnormal = totalGroups - normal;
+                st.SummaryText.Text = string.Format(ManagedMain.Resources.Strings.SR_Status_Summary_Format, enabledMods, totalGroups, normal, abnormal);
+            }
+            catch (Exception ex)
+            {
+                st.SummaryText.Text = ManagedMain.Resources.Strings.SR_Status_Summary_Default;
+            }
+        }
+
+        private static bool IsNodeEnabled(object o)
+        {
+            try
+            {
+                var prop = o.GetType().GetProperty("Enabled");
+                if (prop == null) return false;
+                var v = prop.GetValue(o);
+                if (v is int i) return i != 0;
+                if (v is bool b) return b;
+            }
+            catch { }
+            return false;
         }
 
         private static void ApplyFilter(DependencyObject host)
@@ -432,7 +505,7 @@ namespace ManagedMain.Views
                     }
                     if (onlyIssues)
                     {
-                        bool normal = it.ExistsInGame && !it.IsPatchNMismatch && it.FilesAllLinked && !it.IsMissing && !it.IsIncomplete && !it.IsDuplicate && !it.IsExtra && !it.IsSequenceGap;
+                        bool normal = it.ExistsInGame && !it.IsPatchNMismatch && it.FilesAllLinked && !it.IsMissing && !it.IsDuplicate && !it.IsExtra && !it.IsSequenceGap;
                         if (normal) return false;
                     }
                     return true;
@@ -448,20 +521,63 @@ namespace ManagedMain.Views
 
         private static void OnGridDoubleClick(DependencyObject host)
         {
-            var st = GetState(host); if (st?.Grid?.SelectedItem is FileGroupStatus it && !string.IsNullOrEmpty(it.GameFileName))
+            var st = GetState(host); if (st?.Grid?.SelectedItem is not FileGroupStatus it) return;
+            try
             {
-                try
+                // Left double-click: open mod folder for the group
+                if (!string.IsNullOrWhiteSpace(it.OwnerDisplay))
                 {
-                    string gameFolder = GetGameFolder(host);
-                    if (string.IsNullOrWhiteSpace(gameFolder))
-                    {
-                        try { var opt = new ManagedMain.Services.OptionStore().LoadOrCreate(); gameFolder = opt.GameFolder; } catch { }
-                    }
-                    var full = System.IO.Path.Combine(gameFolder ?? string.Empty, it.GameFileName);
-                    if (File.Exists(full)) { System.Windows.Clipboard.SetText(full); System.Windows.MessageBox.Show(string.Format(ManagedMain.Resources.Strings.SR_Msg_CopiedPath, full)); }
+                    string profileRoot = GetProfileRoot(host);
+                    var parts = it.OwnerDisplay.Split('/');
+                    string modName = parts.Length > 0 ? parts[0] : it.OwnerDisplay;
+                    string path = System.IO.Path.Combine(profileRoot ?? string.Empty, modName);
+                    if (Directory.Exists(path)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", path) { UseShellExecute = true });
                 }
-                catch { }
             }
+            catch { }
+        }
+
+        private static void OnGridRightDoubleClick(DependencyObject host)
+        {
+            if (System.Windows.Input.Mouse.RightButton != System.Windows.Input.MouseButtonState.Pressed) return;
+            var st = GetState(host); if (st?.Grid?.SelectedItem is not FileGroupStatus it) return;
+            try
+            {
+                string gameFolder = GetGameFolder(host);
+                if (string.IsNullOrWhiteSpace(gameFolder))
+                {
+                    try { var opt = new ManagedMain.Services.OptionStore().LoadOrCreate(); gameFolder = opt.GameFolder; } catch { }
+                }
+                if (!string.IsNullOrWhiteSpace(gameFolder) && it.GameFiles != null && it.GameFiles.Length > 0)
+                {
+                    var targets = it.GameFiles.Select(f => System.IO.Path.Combine(gameFolder!, f)).Where(File.Exists).ToArray();
+                    if (targets.Length > 0)
+                    {
+                        System.Windows.Clipboard.SetText(string.Join("\r\n", targets));
+                        string args = "/select,\"" + targets[0] + "\"";
+                        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", args) { UseShellExecute = true });
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static void OpenFolderAndSelect(string[] fullPaths)
+        {
+            if (fullPaths.Length == 0) return;
+            string firstPath = fullPaths[0];
+            // Clone file path and remove file name
+            string folderPath = System.IO.Path.GetDirectoryName(firstPath);
+            if (string.IsNullOrWhiteSpace(folderPath)) return;
+            // Open Explorer and select the first file
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{firstPath}\"") { UseShellExecute = true });
+
+            // Copy all file paths to clipboard
+            try
+            {
+                System.Windows.Clipboard.SetText(string.Join(System.Environment.NewLine, fullPaths));
+            }
+            catch { }
         }
 
         private static IEnumerable? TryGetModsFromDataContext(DependencyObject host)
@@ -478,350 +594,6 @@ namespace ManagedMain.Views
             return null;
         }
 
-        public class FileGroupStatus
-        {
-            public string OwnerDisplay { get; set; } = string.Empty;
-            public string HexPrefix { get; set; } = string.Empty;
-            public int PatchN_ModList { get; set; }
-            public int PatchN_Game { get; set; } = -1;
-            public string GameFileName { get; set; } = string.Empty;
-            public bool ExistsInGame { get; set; }
-            public bool FilesAllLinked { get; set; }
-            public int FileCount { get; set; }
-            public string LinkType { get; set; } = string.Empty;
-            public string Tooltip { get; set; } = string.Empty;
-            // New flags for extended statuses
-            public bool IsMissing { get; set; }
-            public bool IsIncomplete { get; set; }
-            public bool IsSequenceGap { get; set; }
-            public bool IsDuplicate { get; set; }
-            public bool IsExtra { get; set; }
-            public bool IsPatchNMismatch { get; set; }
-        }
-
-        private static class StatusScanner
-        {
-            private static readonly System.Text.RegularExpressions.Regex PatchRegex = new("^([a-fA-F0-9]{16})\\.patch_(\\d+)(?:\\.stream|\\.gpu_resources)?$", System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-            private sealed class GameEntry
-            {
-                public string Hex = string.Empty;
-                public int N;
-                public string FullPath = string.Empty;
-                public string FileName = string.Empty;
-                public long Length;
-                public long WriteTicks;
-                public string Tail = string.Empty;
-                public string LinkType = string.Empty;
-                public bool Used;
-                public string Sha256 = string.Empty; // renamed from Md5
-            }
-
-            private sealed class ExpectedEntry
-            {
-                public string Tail = string.Empty;
-                public long Length;
-                public string AbsPath = string.Empty;
-                public string Sha256 = string.Empty; // renamed from Md5
-            }
-
-            public static IEnumerable<FileGroupStatus> Scan(string profileRoot, string gameFolder, IEnumerable mods)
-            {
-                if (string.IsNullOrWhiteSpace(profileRoot) || string.IsNullOrWhiteSpace(gameFolder)) yield break;
-
-                var gameMap = new Dictionary<string, Dictionary<string, List<GameEntry>>>(StringComparer.OrdinalIgnoreCase);
-                foreach (var file in Directory.EnumerateFiles(gameFolder, "*.patch_*", SearchOption.TopDirectoryOnly))
-                {
-                    var name = Path.GetFileName(file)!;
-                    var m = PatchRegex.Match(name);
-                    if (!m.Success) continue;
-                    string hex = m.Groups[1].Value;
-                    int n = int.TryParse(m.Groups[2].Value, out var pn) ? pn : -1;
-                    string tail = ExtractTail(name);
-                    long len = 0; long wt = 0; string linkType = "Unknown";
-                    try
-                    {
-                        using var fs = File.OpenRead(file); len = fs.Length; wt = File.GetLastWriteTimeUtc(file).Ticks;
-                        var attr = File.GetAttributes(file);
-                        linkType = (attr & FileAttributes.ReparsePoint) != 0 ? "Sym" : "Hard/Copy";
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine($"[StatusScanner] ∂¡»°”Œœ∑Œƒº˛ Ù–‘ ß∞‹ {file}: {ex.Message}");
-                    }
-                    if (!gameMap.TryGetValue(hex, out var tailMap)) { tailMap = new Dictionary<string, List<GameEntry>>(StringComparer.OrdinalIgnoreCase); gameMap[hex] = tailMap; }
-                    if (!tailMap.TryGetValue(tail, out var list)) { list = new List<GameEntry>(); tailMap[tail] = list; }
-                    list.Add(new GameEntry { Hex = hex, N = n, FullPath = file, FileName = name, Length = len, WriteTicks = wt, Tail = tail, LinkType = linkType, Used = false });
-                }
-
-                var gapStart = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                foreach (var kv in gameMap)
-                {
-                    var ns = kv.Value.Values.SelectMany(v => v.Select(e => e.N)).Where(n => n >= 0).Distinct().OrderBy(n => n).ToList();
-                    int expected = 0; int missingAt = -1;
-                    foreach (var n in ns)
-                    {
-                        if (n != expected) { missingAt = expected; break; }
-                        expected++;
-                    }
-                    if (missingAt < 0 && ns.Count > 0 && ns.Last() == ns.Count - 1) missingAt = -1; // contiguous
-                    gapStart[kv.Key] = missingAt;
-                }
-
-                // sha256 cache (replaces MD5)
-                var sha256Cache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                string HashOf(string path)
-                {
-                    try
-                    {
-                        try
-                        {
-                            var attr = File.GetAttributes(path);
-                            if ((attr & FileAttributes.ReparsePoint) != 0)
-                            {
-                                // reparse point: fall through, still hash target content
-                            }
-                        }
-                        catch (Exception exAttr)
-                        {
-                            Debug.WriteLine($"[StatusScanner] ∂¡»°Œƒº˛ Ù–‘ ß∞‹(π˛œ£«∞) {path}: {exAttr.Message}");
-                        }
-
-                        var finfo = new FileInfo(path);
-                        string key = path + "|" + finfo.Length + "|" + finfo.LastWriteTimeUtc.Ticks;
-                        if (sha256Cache.TryGetValue(key, out var v)) return v;
-                        using var fs = File.OpenRead(path);
-                        var hash = SHA256.HashData(fs);
-                        var hex = BitConverter.ToString(hash).Replace("-", string.Empty);
-                        sha256Cache[key] = hex; return hex;
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine($"[StatusScanner] º∆À„π˛œ£ ß∞‹ {path}: {ex.Message}");
-                        return string.Empty;
-                    }
-                }
-
-                var matchedGameFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var m in mods)
-                {
-                    if (m is not ManagedMain.Models.MainModItem main) continue;
-                    if (!IsEnabled(main)) continue; // skip disabled
-
-                    IEnumerable<FileGroupStatus> EmitForGroups(IEnumerable<ManagedMain.Models.ModFileGroup> groups, string ownerPrefix)
-                    {
-                        foreach (var g in groups)
-                        {
-                            var owner = ownerPrefix;
-                            int expectedCount = g.Files?.Count ?? 0;
-                            int matchedCount = 0;
-                            var matchedNs = new List<int>();
-                            string firstMatchName = string.Empty;
-                            string linkType = string.Empty;
-                            bool isDuplicate = false;
-
-                            var expected = new List<ExpectedEntry>();
-                            if (g.Files != null)
-                            {
-                                foreach (var rel in g.Files)
-                                {
-                                    var abs = Path.Combine(profileRoot, main.Name, rel.Replace('/', Path.DirectorySeparatorChar));
-                                    var ee = new ExpectedEntry { Tail = ExtractTail(Path.GetFileName(rel) ?? string.Empty), AbsPath = abs };
-                                    try { using var fs = File.OpenRead(abs); ee.Length = fs.Length; } catch (Exception exLen) { Debug.WriteLine($"[StatusScanner] ∂¡»°Œƒº˛≥§∂» ß∞‹ {abs}: {exLen.Message}"); ee.Length = 0; }
-                                    expected.Add(ee);
-                                }
-                            }
-
-                            if (gameMap.TryGetValue(g.HexPrefix, out var tailMap))
-                            {
-                                foreach (var exp in expected)
-                                {
-                                    if (!tailMap.TryGetValue(exp.Tail, out var candidates) || candidates.Count == 0) continue;
-                                    var sizeMatches = candidates.Where(c => !c.Used && c.Length == exp.Length).ToList();
-                                    if (sizeMatches.Count == 0) continue;
-                                    GameEntry? chosen = null;
-                                    if (sizeMatches.Count == 1)
-                                    {
-                                        chosen = sizeMatches[0];
-                                    }
-                                    else
-                                    {
-                                        if (string.IsNullOrEmpty(exp.Sha256)) exp.Sha256 = HashOf(exp.AbsPath);
-                                        var hashMatches = sizeMatches.Where(c =>
-                                        {
-                                            if (string.IsNullOrEmpty(c.Sha256)) c.Sha256 = HashOf(c.FullPath);
-                                            return !string.IsNullOrEmpty(exp.Sha256) && !string.IsNullOrEmpty(c.Sha256) &&
-                                                   string.Equals(c.Sha256, exp.Sha256, StringComparison.OrdinalIgnoreCase);
-                                        }).ToList();
-                                        if (hashMatches.Count >= 1)
-                                        {
-                                            var exact = hashMatches.FirstOrDefault(c => c.N == g.PatchN);
-                                            chosen = exact ?? hashMatches.OrderBy(c => Math.Abs(c.N - g.PatchN)).First();
-                                            isDuplicate = hashMatches.Count(c => c.N == (exact?.N ?? chosen.N)) > 1;
-                                        }
-                                        else
-                                        {
-                                            chosen = sizeMatches.OrderBy(c => Math.Abs(c.N - g.PatchN)).First();
-                                        }
-                                    }
-                                    if (chosen != null)
-                                    {
-                                        chosen.Used = true;
-                                        matchedGameFiles.Add(chosen.FullPath);
-                                        matchedCount++;
-                                        if (string.IsNullOrEmpty(firstMatchName)) { firstMatchName = chosen.FileName; linkType = chosen.LinkType; }
-                                        if (chosen.N >= 0) matchedNs.Add(chosen.N);
-                                    }
-                                }
-                            }
-
-                            int matchedNForGroup = matchedNs.GroupBy(n => n).OrderByDescending(gp => gp.Count()).ThenBy(gp => gp.Key).Select(gp => gp.Key).FirstOrDefault(-1);
-
-                            bool isMissing = matchedCount == 0;
-                            bool isIncomplete = !isMissing && matchedCount < expectedCount;
-                            bool isMismatch = matchedNForGroup >= 0 && matchedNForGroup != g.PatchN;
-                            bool isSeqGap = false;
-                            if (matchedNForGroup >= 0 && gapStart.TryGetValue(g.HexPrefix, out var gs) && gs >= 0)
-                            {
-                                if (matchedNForGroup > gs) isSeqGap = true;
-                            }
-
-                            var tips = new List<string>();
-                            if (isMissing) tips.Add(ManagedMain.Resources.Strings.SR_Status_Missing);
-                            if (isIncomplete) tips.Add(ManagedMain.Resources.Strings.SR_Status_Incomplete);
-                            if (isSeqGap) tips.Add(ManagedMain.Resources.Strings.SR_Status_SeqGap);
-                            if (isDuplicate) tips.Add(ManagedMain.Resources.Strings.SR_Status_Duplicate);
-                            if (isMismatch) tips.Add(ManagedMain.Resources.Strings.SR_Status_PatchMismatch);
-                            if (tips.Count == 0) tips.Add(ManagedMain.Resources.Strings.SR_Status_Normal);
-                            var tooltipText = string.Join("\n", tips);
-
-                            yield return new FileGroupStatus
-                            {
-                                OwnerDisplay = owner,
-                                HexPrefix = g.HexPrefix,
-                                PatchN_ModList = g.PatchN,
-                                PatchN_Game = matchedNForGroup,
-                                GameFileName = firstMatchName,
-                                ExistsInGame = matchedCount == expectedCount,
-                                FilesAllLinked = matchedCount == expectedCount,
-                                FileCount = expectedCount,
-                                LinkType = linkType,
-                                Tooltip = tooltipText,
-                                IsMissing = isMissing,
-                                IsIncomplete = isIncomplete,
-                                IsDuplicate = isDuplicate,
-                                IsSequenceGap = isSeqGap,
-                                IsPatchNMismatch = isMismatch,
-                                IsExtra = false
-                            };
-                        }
-                    }
-
-                    foreach (var stItem in EmitForGroups(main.FileGroups, main.Name)) yield return stItem;
-                    foreach (var o in main.Options)
-                    {
-                        if (!IsEnabled(o)) continue;
-                        foreach (var stItem in EmitForGroups(o.FileGroups, main.Name + "/" + o.Name)) yield return stItem;
-                        foreach (var s in o.SubOptions)
-                        {
-                            if (!IsEnabled(s)) continue;
-                            foreach (var stItem in EmitForGroups(s.FileGroups, main.Name + "/" + o.Name + "/" + s.Name)) yield return stItem;
-                        }
-                    }
-                }
-
-                foreach (var kv in gameMap)
-                {
-                    foreach (var tailKv in kv.Value)
-                    {
-                        foreach (var e in tailKv.Value)
-                        {
-                            if (!e.Used)
-                            {
-                                yield return new FileGroupStatus
-                                {
-                                    OwnerDisplay = string.Empty,
-                                    HexPrefix = e.Hex,
-                                    PatchN_ModList = -1,
-                                    PatchN_Game = e.N,
-                                    GameFileName = e.FileName,
-                                    ExistsInGame = true,
-                                    FilesAllLinked = true,
-                                    FileCount = 1,
-                                    LinkType = e.LinkType,
-                                    Tooltip = ManagedMain.Resources.Strings.SR_Status_ExtraTip,
-                                    IsMissing = false,
-                                    IsIncomplete = false,
-                                    IsDuplicate = false,
-                                    IsSequenceGap = false,
-                                    IsPatchNMismatch = false,
-                                    IsExtra = true
-                                };
-                            }
-                        }
-                    }
-                }
-            }
-
-            private static string ExtractTail(string fileName)
-            {
-                if (fileName.EndsWith(".gpu_resources", StringComparison.OrdinalIgnoreCase)) return ".gpu_resources";
-                if (fileName.EndsWith(".stream", StringComparison.OrdinalIgnoreCase)) return ".stream";
-                return string.Empty;
-            }
-
-            private static bool IsEnabled(object o)
-            {
-                try
-                {
-                    var prop = o.GetType().GetProperty("Enabled");
-                    if (prop == null) return false;
-                    var v = prop.GetValue(o);
-                    if (v is int i) return i != 0; // treat partial as enabled
-                    if (v is bool b) return b;
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"[StatusScanner] ??? Enabled ???????: {ex.Message}");
-                }
-                return false;
-            }
-        }
-
-        private static void StartBreathing(State st)
-        {
-            try
-            {
-                if (st.Toggle is null) return; if (!GetEnableBreathing(st.Toggle)) return;
-                var weak = (System.Windows.Application.Current?.Resources["ButtonAccentWeakBrush"] as System.Windows.Media.SolidColorBrush)?.Color ?? System.Windows.Media.Colors.SkyBlue;
-                var accent = (System.Windows.Application.Current?.Resources["ButtonAccentBrush"] as System.Windows.Media.SolidColorBrush)?.Color ?? System.Windows.Media.Colors.DodgerBlue;
-                var borderMuted = (System.Windows.Application.Current?.Resources["ButtonAccentMutedBrush"] as System.Windows.Media.SolidColorBrush)?.Color ?? System.Windows.Media.Colors.SteelBlue;
-                var bg = new System.Windows.Media.SolidColorBrush(weak); var bb = new System.Windows.Media.SolidColorBrush(borderMuted); st.Toggle.Background = bg; st.Toggle.BorderBrush = bb;
-                var ease = new System.Windows.Media.Animation.SineEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseInOut };
-                var bgAnim = new System.Windows.Media.Animation.ColorAnimation { From = weak, To = accent, Duration = System.TimeSpan.FromMilliseconds(1200), AutoReverse = true, RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever, EasingFunction = ease };
-                var bdAnim = new System.Windows.Media.Animation.ColorAnimation { From = borderMuted, To = accent, Duration = System.TimeSpan.FromMilliseconds(1200), AutoReverse = true, RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever, EasingFunction = ease };
-                bg.BeginAnimation(System.Windows.Media.SolidColorBrush.ColorProperty, bgAnim); bb.BeginAnimation(System.Windows.Media.SolidColorBrush.ColorProperty, bdAnim);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[StatusDrawerHost] StartBreathing  ß∞‹: {ex.Message}");
-            }
-        }
-        private static void StopBreathing(State st)
-        {
-            try
-            {
-                if (st.Toggle is null) return;
-                if (st.Toggle.Background is System.Windows.Media.SolidColorBrush bg) bg.BeginAnimation(System.Windows.Media.SolidColorBrush.ColorProperty, null);
-                if (st.Toggle.BorderBrush is System.Windows.Media.SolidColorBrush bb) bb.BeginAnimation(System.Windows.Media.SolidColorBrush.ColorProperty, null);
-                st.Toggle.ClearValue(System.Windows.Controls.Button.BackgroundProperty);
-                st.Toggle.ClearValue(System.Windows.Controls.Button.BorderBrushProperty);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[StatusDrawerHost] StopBreathing  ß∞‹: {ex.Message}");
-            }
-        }
+        // Scanner moved to StatusDrawerHost.Scanner.cs (partial class)
     }
 }

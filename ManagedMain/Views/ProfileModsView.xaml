@@ -29,9 +29,7 @@
                 <!-- Use component URI to load dictionary from same assembly -->
                 <ResourceDictionary Source="/ManagedMain;component/Views/ModDetailTemplates.xaml"/>
             </ResourceDictionary.MergedDictionaries>
-            <Conv:ModImageConverter x:Key="ModImageConv"/>
-            <Conv:EnabledStateTextConverter x:Key="EnabledStateTextConverter"/>
-            <Conv:ModFileGroupEnabledBrushConverter x:Key="GroupEnabledBrushConverter"/>
+            <!-- Converters are provided by ModDetailTemplates.xaml; avoid duplicate keys here -->
             <Conv:EnabledStateBrushConverter x:Key="EnabledBrushConv"/>
             <Conv:BoolNegationConverter x:Key="BoolNeg"/>
 
@@ -99,7 +97,7 @@
     </UserControl.Resources>
     <DockPanel>
         <!-- Toolbar use default appearance and default button style -->
-        <ToolBar DockPanel.Dock="Top" IsEnabled="{Binding IsBusy, Converter={StaticResource BoolNeg}}">
+        <ToolBar DockPanel.Dock="Top" IsEnabled="{Binding IsBusy, Converter={StaticResource BoolNeg}}" ld:AdaptiveToolbarLayout.IsEnabled="True">
             <Button x:Name="BtnImportFolder" Style="{StaticResource PillButton.L}" Command="{Binding ImportFolderCommand}" ld:WaveEffect.IsSurging="{Binding IsImportFolderRunning}">
                 <TextBlock><Run Text="📁 "/><Run Text="{x:Static resx:Strings.SR_Btn_ImportFolder}"/></TextBlock>
             </Button>

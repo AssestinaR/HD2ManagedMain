@@ -189,13 +189,13 @@
                 <!-- Inline caption buttons -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Stretch">
                     <Button Style="{StaticResource CaptionButton}" shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="MinButton_Click">
-                        <Path Width="10" Height="10" StrokeThickness="1.5" Stroke="{StaticResource TextPrimaryBrush}" Data="M 1,5 L 11,5"/>
+                        <Path Width="12" Height="10" StrokeThickness="1.5" Stroke="{StaticResource TextPrimaryBrush}" Data="M 1,5 L 11,5"/>
                     </Button>
                     <Button Style="{StaticResource CaptionButton}" shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="MaxButton_Click">
-                        <Path Width="10" Height="10" StrokeThickness="1.3" Stroke="{StaticResource TextPrimaryBrush}" Data="M 1,1 L 11,1 11,11 1,11 Z"/>
+                        <Path Width="12" Height="12" StrokeThickness="1.3" Stroke="{StaticResource TextPrimaryBrush}" Data="M 1,1 L 11,1 11,11 1,11 Z"/>
                     </Button>
                     <Button Style="{StaticResource CaptionButton}" shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="CloseButton_Click">
-                        <Path Width="10" Height="10" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stroke="{StaticResource TextPrimaryBrush}" Data="M 2,2 L 10,10 M 10,2 L 2,10"/>
+                        <Path Width="12" Height="12" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stroke="{StaticResource TextPrimaryBrush}" Data="M 2,2 L 10,10 M 10,2 L 2,10"/>
                     </Button>
                 </StackPanel>
             </Grid>

@@ -1,0 +1,59 @@
+﻿<UserControl x:Class="HD2ModManager.Views.SettingsPageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:HD2ModManager.ViewModels"
+             xmlns:views="clr-namespace:HD2ModManager.Views"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="400" d:DesignWidth="800">
+    <UserControl.Resources>
+        <DataTemplate DataType="{x:Type vm:NavCardViewModel}">
+            <views:NavCard/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:SettingToggleCardViewModel}">
+            <views:SettingToggleCard/>
+        </DataTemplate>
+    </UserControl.Resources>
+    <DockPanel xmlns:res="clr-namespace:HD2ModManager.Resources;assembly=HD2ModManager">
+        <TextBlock DockPanel.Dock="Top" Text="{x:Static Member=res:Strings.Home_Settings}" FontSize="18" FontWeight="Bold" Margin="8"/>
+		<StackPanel Margin="12">
+			<StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                <TextBlock Text="Language:" VerticalAlignment="Center"/>
+                <ComboBox Width="160" Margin="8,0,0,0">
+                    <ComboBoxItem Content="English"/>
+                    <ComboBoxItem Content="中文"/>
+                </ComboBox>
+            </StackPanel>
+            <Button Content="Reload Tags from CSV" Margin="0,12,0,0" Click="ReloadTags_Click" HorizontalAlignment="Left"/>
+            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                <TextBlock Text="启用自动清理(启动时清理无效项)" VerticalAlignment="Center"/>
+                <CheckBox x:Name="AutoCleanupToggle" Margin="8,0,0,0" Click="AutoCleanupToggle_Click"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                <TextBlock Text="导入后自动打开标签编辑" VerticalAlignment="Center"/>
+                <CheckBox x:Name="AutoOpenTagEditToggle" Margin="8,0,0,0" Click="AutoOpenTagEditToggle_Click"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                <TextBlock Text="启用库页图片" VerticalAlignment="Center"/>
+                <CheckBox x:Name="EnableLibraryImagesToggle" Margin="8,0,0,0" Click="EnableLibraryImagesToggle_Click"/>
+            </StackPanel>
+            <Separator Margin="0,12,0,12"/>
+            <TextBlock Text="Mod Library Folder" FontSize="14" FontWeight="SemiBold"/>
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                <TextBox x:Name="ModFolderBox" Width="420" Text="{Binding ModLibraryFolder, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
+                <Button Content="Browse" Margin="8,0,0,0" Click="BrowseModFolder_Click"/>
+                <Button Content="Open" Margin="8,0,0,0" Click="OpenModFolder_Click"/>
+                <Button Content="Reset" Margin="8,0,0,0" Click="ResetModFolder_Click"/>
+            </StackPanel>
+            <Separator Margin="0,12,0,12"/>
+            <TextBlock Text="Game Data Folder" FontSize="14" FontWeight="SemiBold"/>
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                <TextBox x:Name="GameDataFolderBox" Width="420" Text="{Binding GameDataFolder, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
+                <Button Content="Browse" Margin="8,0,0,0" Click="BrowseGameDataFolder_Click"/>
+                <Button Content="Open" Margin="8,0,0,0" Click="OpenGameDataFolder_Click"/>
+                <Button Content="Reset" Margin="8,0,0,0" Click="ResetGameDataFolder_Click"/>
+            </StackPanel>
+        </StackPanel>
+    </DockPanel>
+</UserControl>

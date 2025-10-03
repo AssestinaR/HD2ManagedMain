@@ -3,29 +3,31 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:Models="clr-namespace:ManagedMain.Models"
                     xmlns:Conv="clr-namespace:ManagedMain.Converters"
-                    xmlns:resx="clr-namespace:ManagedMain.Resources">
+                    xmlns:resx="clr-namespace:ManagedMain.Resources"
+                    xmlns:ld="clr-namespace:ManagedMain.Views">
     <!-- Local resources required by templates -->
     <Conv:ModImageConverter x:Key="ModImageConv"/>
     <Conv:EnabledStateTextConverter x:Key="EnabledStateTextConverter"/>
     <Conv:ModFileGroupEnabledBrushConverter x:Key="GroupEnabledBrushConverter"/>
+    <Conv:BoolToChoiceTextConverter x:Key="BoolToChoiceText"/>
 
     <!-- Detail templates for right properties pane -->
     <DataTemplate DataType="{x:Type Models:MainModItem}">
         <StackPanel>
-            <ToolBar>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.RenameSelectedCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+            <ToolBar ld:AdaptiveToolbarLayout.IsEnabled="True">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.RenameSelectedCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="📝 "/><Run Text="{x:Static resx:Strings.SR_Btn_Name}"/></TextBlock>
                 </Button>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.EditRemarkCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.EditRemarkCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="📝 "/><Run Text="{x:Static resx:Strings.SR_Btn_Remark}"/></TextBlock>
                 </Button>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.ChangeImageCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.ChangeImageCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="🖼 "/><Run Text="{x:Static resx:Strings.SR_Btn_Image}"/></TextBlock>
                 </Button>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.EditUrlCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.EditUrlCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="🔗 "/><Run Text="{x:Static resx:Strings.SR_Btn_Link}"/></TextBlock>
                 </Button>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.OpenFolderSelectedCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.OpenFolderSelectedCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="📂 "/><Run Text="{x:Static resx:Strings.SR_Btn_Open}"/></TextBlock>
                 </Button>
             </ToolBar>
@@ -46,10 +48,20 @@
                         <TextBlock Text="{Binding Enabled, Converter={StaticResource EnabledStateTextConverter}}"/>
                     </StackPanel>
                 </Border>
-                <Border Grid.Column="1" BorderBrush="#DDD" BorderThickness="1" CornerRadius="3" Padding="6" Margin="0,0,6,0">
+                <Border Grid.Column="1" BorderBrush="#DDD" BorderThickness="1" CornerRadius="3" Padding="6" Margin="0,0,6,0"
+                        Cursor="Hand">
+                    <Border.InputBindings>
+                        <MouseBinding Gesture="LeftClick" Command="{Binding DataContext.ToggleOptionsSelectModeCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
+                    </Border.InputBindings>
                     <StackPanel>
-                        <TextBlock Text="{x:Static resx:Strings.SR_Label_OptionCount}" FontWeight="Bold"/>
-                        <TextBlock Text="{Binding Options.Count}"/>
+                        <TextBlock>
+                            <Run Text="{x:Static resx:Strings.SR_Label_OptionCount}"/>
+                        </TextBlock>
+                        <TextBlock>
+                            <Run Text="{Binding Options.Count, Mode=OneWay}"/>
+                            <Run Text=" "/>
+                            <Run Text="{Binding OptionsSingleSelect, Converter={StaticResource BoolToChoiceText}}"/>
+                        </TextBlock>
                     </StackPanel>
                 </Border>
                 <Border Grid.Column="2" BorderBrush="#DDD" BorderThickness="1" CornerRadius="3" Padding="6">
@@ -127,20 +139,20 @@
 
     <DataTemplate DataType="{x:Type Models:OptionItem}">
         <StackPanel>
-            <ToolBar>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.RenameSelectedCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+            <ToolBar ld:AdaptiveToolbarLayout.IsEnabled="True">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.RenameSelectedCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="📝 "/><Run Text="{x:Static resx:Strings.SR_Btn_Name}"/></TextBlock>
                 </Button>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.EditRemarkCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.EditRemarkCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="📝 "/><Run Text="{x:Static resx:Strings.SR_Btn_Remark}"/></TextBlock>
                 </Button>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.ChangeImageCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.ChangeImageCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="🖼 "/><Run Text="{x:Static resx:Strings.SR_Btn_Image}"/></TextBlock>
                 </Button>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.EditUrlCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.EditUrlCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="🔗 "/><Run Text="{x:Static resx:Strings.SR_Btn_Link}"/></TextBlock>
                 </Button>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.OpenFolderSelectedCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.OpenFolderSelectedCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="📂 "/><Run Text="{x:Static resx:Strings.SR_Btn_Open}"/></TextBlock>
                 </Button>
             </ToolBar>
@@ -162,10 +174,20 @@
                         <TextBlock Text="{Binding Enabled, Converter={StaticResource EnabledStateTextConverter}}"/>
                     </StackPanel>
                 </Border>
-                <Border Grid.Column="1" BorderBrush="#DDD" BorderThickness="1" CornerRadius="3" Padding="6" Margin="0,0,6,0">
+                <Border Grid.Column="1" BorderBrush="#DDD" BorderThickness="1" CornerRadius="3" Padding="6" Margin="0,0,6,0"
+                        Cursor="Hand">
+                    <Border.InputBindings>
+                        <MouseBinding Gesture="LeftClick" Command="{Binding DataContext.ToggleSubOptionsSelectModeCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
+                    </Border.InputBindings>
                     <StackPanel>
-                        <TextBlock Text="{x:Static resx:Strings.SR_Label_SubOptionCount}" FontWeight="Bold"/>
-                        <TextBlock Text="{Binding SubOptions.Count}"/>
+                        <TextBlock>
+                            <Run Text="{x:Static resx:Strings.SR_Label_SubOptionCount}"/>
+                        </TextBlock>
+                        <TextBlock>
+                            <Run Text="{Binding SubOptions.Count, Mode=OneWay}"/>
+                            <Run Text=" "/>
+                            <Run Text="{Binding SubOptionsSingleSelect, Converter={StaticResource BoolToChoiceText}}"/>
+                        </TextBlock>
                     </StackPanel>
                 </Border>
                 <Border Grid.Column="2" BorderBrush="#DDD" BorderThickness="1" CornerRadius="3" Padding="6" Margin="0,0,6,0">
@@ -226,7 +248,7 @@
                         <Border Background="#CC000000" Padding="6" CornerRadius="6">
                             <Image Stretch="None">
                                 <Image.Source>
-                                    <MultiBinding Converter="{StaticResource ModImageConv}"                                                 >
+                                    <MultiBinding Converter="{StaticResource ModImageConv}">
                                         <Binding Path="PlacementTarget.DataContext.Image" RelativeSource="{RelativeSource AncestorType=ToolTip}"/>
                                         <Binding Path="PlacementTarget.DataContext.IconPath" RelativeSource="{RelativeSource AncestorType=ToolTip}"/>
                                         <Binding Path="PlacementTarget.Tag" RelativeSource="{RelativeSource AncestorType=ToolTip}"/>
@@ -243,20 +265,20 @@
 
     <DataTemplate DataType="{x:Type Models:SubOptionItem}">
         <StackPanel>
-            <ToolBar>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.RenameSelectedCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+            <ToolBar ld:AdaptiveToolbarLayout.IsEnabled="True">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.RenameSelectedCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="📝 "/><Run Text="{x:Static resx:Strings.SR_Btn_Name}"/></TextBlock>
                 </Button>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.EditRemarkCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.EditRemarkCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="📝 "/><Run Text="{x:Static resx:Strings.SR_Btn_Remark}"/></TextBlock>
                 </Button>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.ChangeImageCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.ChangeImageCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="🖼 "/><Run Text="{x:Static resx:Strings.SR_Btn_Image}"/></TextBlock>
                 </Button>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.EditUrlCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.EditUrlCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="🔗 "/><Run Text="{x:Static resx:Strings.SR_Btn_Link}"/></TextBlock>
                 </Button>
-                <Button Style="{StaticResource PillButton.S}" Width="76" MinWidth="76" Command="{Binding DataContext.OpenFolderSelectedCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
+                <Button Style="{StaticResource PillButton.S}" Command="{Binding DataContext.OpenFolderSelectedCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}">
                     <TextBlock><Run Text="📂 "/><Run Text="{x:Static resx:Strings.SR_Btn_Open}"/></TextBlock>
                 </Button>
             </ToolBar>
@@ -278,10 +300,20 @@
                         <TextBlock Text="{Binding Enabled, Converter={StaticResource EnabledStateTextConverter}}"/>
                     </StackPanel>
                 </Border>
-                <Border Grid.Column="1" BorderBrush="#DDD" BorderThickness="1" CornerRadius="3" Padding="6" Margin ="0,0,6,0">
+                <Border Grid.Column="1" BorderBrush="#DDD" BorderThickness="1" CornerRadius="3" Padding="6" Margin="0,0,6,0"
+                        Cursor="Hand">
+                    <Border.InputBindings>
+                        <MouseBinding Gesture="LeftClick" Command="{Binding DataContext.ToggleSubOptionsSelectModeCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
+                    </Border.InputBindings>
                     <StackPanel>
-                        <TextBlock Text="{x:Static resx:Strings.SR_Label_SubOptionCount}" FontWeight="Bold"/>
-                        <TextBlock Text="0"/>
+                        <TextBlock>
+                            <Run Text="{x:Static resx:Strings.SR_Label_SubOptionCount}"/>
+                        </TextBlock>
+                        <TextBlock>
+                            <Run Text="{Binding SubOptions.Count, Mode=OneWay}"/>
+                            <Run Text=" "/>
+                            <Run Text="{Binding SubOptionsSingleSelect, Converter={StaticResource BoolToChoiceText}}"/>
+                        </TextBlock>
                     </StackPanel>
                 </Border>
                 <Border Grid.Column="2" BorderBrush="#DDD" BorderThickness="1" CornerRadius="3" Padding="6" Margin="0,0,6,0">

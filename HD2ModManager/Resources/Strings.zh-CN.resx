@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <xsd:schema id="root" xmlns="http://www.w3.org/2001/XMLSchema" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:msdata="urn:schemas-microsoft-com:xml-msdata">
+    <xsd:element name="root" msdata:IsDataSet="true">
+      <xsd:complexType>
+        <xsd:choice maxOccurs="unbounded">
+          <xsd:element name="metadata">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" />
+              </xsd:sequence>
+              <xsd:attribute name="name" use="required" type="xsd:string" />
+              <xsd:attribute name="type" type="xsd:string" />
+              <xsd:attribute name="mimetype" type="xsd:string" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="data">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+                <xsd:element name="comment" type="xsd:string" minOccurs="0" msdata:Ordinal="2" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" />
+              <xsd:attribute name="type" type="xsd:string" />
+              <xsd:attribute name="mimetype" type="xsd:string" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="resheader">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" />
+            </xsd:complexType>
+          </xsd:element>
+        </xsd:choice>
+      </xsd:complexType>
+    </xsd:element>
+  </xsd:schema>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="App_Title" xml:space="preserve">
+    <value>HD2 模组管理器</value>
+  </data>
+  <data name="Breadcrumb_Home" xml:space="preserve">
+    <value>HD2ModManager</value>
+  </data>
+  <data name="Home_NewProfile" xml:space="preserve">
+    <value>新建配置</value>
+  </data>
+  <data name="Home_Settings" xml:space="preserve">
+    <value>设置</value>
+  </data>
+  <data name="Home_ModLibrary" xml:space="preserve">
+    <value>模组库</value>
+  </data>
+  <data name="Common_Open" xml:space="preserve">
+    <value>打开</value>
+  </data>
+  <data name="Common_Back" xml:space="preserve">
+    <value>返回</value>
+  </data>
+  <data name="Profile_Enable" xml:space="preserve">
+    <value>启用</value>
+  </data>
+  <data name="Profile_Disable" xml:space="preserve">
+    <value>禁用</value>
+  </data>
+  <data name="Profile_Rename" xml:space="preserve">
+    <value>重命名</value>
+  </data>
+  <data name="Profile_Delete" xml:space="preserve">
+    <value>删除</value>
+  </data>
+  <data name="Profile_Active" xml:space="preserve">
+    <value>（启用）</value>
+  </data>
+  <data name="Home_AddDummyMod_Title" xml:space="preserve">
+    <value>添加示例模组</value>
+  </data>
+  <data name="Home_AddDummyMod_Desc" xml:space="preserve">
+    <value>追加一个示例项到库</value>
+  </data>
+  <data name="Home_SaveLibrary_Title" xml:space="preserve">
+    <value>保存库</value>
+  </data>
+  <data name="Home_SaveLibrary_Desc" xml:space="preserve">
+    <value>持久化 library.json</value>
+  </data>
+  <data name="Home_LibraryStatus_Title" xml:space="preserve">
+    <value>库状态</value>
+  </data>
+  <data name="Home_LibraryStatus_Desc" xml:space="preserve">
+    <value>条目摘要</value>
+  </data>
+  <data name="Home_ImportQueue_Title" xml:space="preserve">
+    <value>导入队列</value>
+  </data>
+  <data name="Home_ImportQueue_Desc" xml:space="preserve">
+    <value>任务摘要</value>
+  </data>
+  <data name="Notification_ImportQueueSummary" xml:space="preserve">
+    <value>导入队列 - 总数：{0}，已导入：{1}，待处理：{2}</value>
+  </data>
+  <data name="Notification_ImportComplete" xml:space="preserve">
+    <value>导入完成：{0}</value>
+  </data>
+  <data name="Notification_ImportFailed" xml:space="preserve">
+    <value>导入失败：{0}</value>
+  </data>
+  <data name="Notification_ImportQueueSummary" xml:space="preserve">
+    <value>导入队列 - 总数：{0}，已导入：{1}，待处理：{2}</value>
+  </data>
+  <data name="Notification_ImportComplete" xml:space="preserve">
+    <value>导入完成：{0}</value>
+  </data>
+  <data name="Notification_ImportFailed" xml:space="preserve">
+    <value>导入失败：{0}</value>
+  </data>
+  <data name="Integrity_LogGenerated" xml:space="preserve">
+    <value>库完整性：移除 {0} 个缺失文件，日志已生成。</value>
+  </data>
+  <data name="TagEdit_Title" xml:space="preserve">
+    <value>编辑标签</value>
+  </data>
+  <data name="TagEdit_Mod" xml:space="preserve">
+    <value>模组：</value>
+  </data>
+  <data name="TagEdit_Add" xml:space="preserve">
+    <value>新增</value>
+  </data>
+  <data name="TagEdit_RemoveSelected" xml:space="preserve">
+    <value>移除选中</value>
+  </data>
+  <data name="TagEdit_Save" xml:space="preserve">
+    <value>保存</value>
+  </data>
+  <data name="TagEdit_Skip" xml:space="preserve">
+    <value>跳过</value>
+  </data>
+  <data name="TagEdit_Selected" xml:space="preserve">
+    <value>已选</value>
+  </data>
+  <data name="TagEdit_Available" xml:space="preserve">
+    <value>可选</value>
+  </data>
+</root>
+

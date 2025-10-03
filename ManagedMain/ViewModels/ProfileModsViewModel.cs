@@ -42,12 +42,85 @@ namespace ManagedMain.ViewModels
         public ICommand OpenUrlCommand { get; }
         public ICommand EditUrlCommand { get; }
         public ICommand ToggleEnableCommand { get; }
+        public ICommand ToggleOptionsSelectModeCommand { get; }
+        public ICommand ToggleSubOptionsSelectModeCommand { get; }
 
         private object? _selectedItem;
+        private System.ComponentModel.INotifyPropertyChanged? _watchedSelected;
         public object? SelectedItem
         {
             get => _selectedItem;
-            set { _selectedItem = value; OnPropertyChanged(); }
+            set
+            {
+                if (!ReferenceEquals(_selectedItem, value))
+                {
+                    // detach old
+                    if (_watchedSelected != null)
+                    {
+                        _watchedSelected.PropertyChanged -= WatchedSelected_PropertyChanged;
+                        _watchedSelected = null;
+                    }
+                    _selectedItem = value;
+                    // attach new
+                    if (value is System.ComponentModel.INotifyPropertyChanged inpc)
+                    {
+                        _watchedSelected = inpc;
+                        _watchedSelected.PropertyChanged += WatchedSelected_PropertyChanged;
+                    }
+                    OnPropertyChanged();
+                }
+            }
+        }
+
+        private void WatchedSelected_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            try
+            {
+                switch (sender)
+                {
+                    case MainModItem main when e.PropertyName == nameof(MainModItem.OptionsSingleSelect):
+                        NormalizeMainSelection(main);
+                        Save();
+                        break;
+                    case OptionItem opt when e.PropertyName == nameof(OptionItem.SubOptionsSingleSelect):
+                        NormalizeOptionSelection(opt);
+                        var pm = FindParentMain(opt); if (pm != null) UpdateEnabled(pm);
+                        Save();
+                        break;
+                }
+            }
+            catch { }
+        }
+
+        private void NormalizeMainSelection(MainModItem main)
+        {
+            if (!main.OptionsSingleSelect) return;
+            var chosen = main.Options.FirstOrDefault(o => o.Enabled == 1) ?? main.Options.FirstOrDefault();
+            foreach (var o in main.Options)
+            {
+                if (o == chosen)
+                {
+                    o.Enabled = 1;
+                    if (o.SubOptionsSingleSelect)
+                    {
+                        var subChosen = o.SubOptions.FirstOrDefault(s => s.Enabled == 1) ?? o.SubOptions.FirstOrDefault();
+                        foreach (var s in o.SubOptions) s.Enabled = ReferenceEquals(s, subChosen) ? 1 : 0;
+                    }
+                }
+                else
+                {
+                    o.Enabled = 0;
+                    foreach (var s in o.SubOptions) s.Enabled = 0;
+                }
+            }
+            UpdateEnabled(main);
+        }
+
+        private void NormalizeOptionSelection(OptionItem opt)
+        {
+            if (!opt.SubOptionsSingleSelect) return;
+            var chosen = opt.SubOptions.FirstOrDefault(s => s.Enabled == 1) ?? opt.SubOptions.FirstOrDefault();
+            foreach (var s in opt.SubOptions) s.Enabled = ReferenceEquals(s, chosen) ? 1 : 0;
         }
 
         private bool _isBusy;
@@ -87,6 +160,8 @@ namespace ManagedMain.ViewModels
                 try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
             });
             EditUrlCommand = new RelayCommand(_ => EditUrl());
+            ToggleOptionsSelectModeCommand = new RelayCommand(_ => ToggleOptionsSelectMode());
+            ToggleSubOptionsSelectModeCommand = new RelayCommand(_ => ToggleSubOptionsSelectMode());
             ToggleEnableCommand = new RelayCommand(_ =>
             {
                 var item = SelectedItem;
@@ -529,13 +604,108 @@ namespace ManagedMain.ViewModels
             {
                 case MainModItem main:
                     main.Enabled = value;
-                    foreach (var o in main.Options)
-                    { o.Enabled = value; foreach (var s in o.SubOptions) s.Enabled = value; }
+                    if (value == 0)
+                    {
+                        foreach (var o in main.Options)
+                        {
+                            o.Enabled = 0;
+                            foreach (var s in o.SubOptions) s.Enabled = 0;
+                        }
+                    }
+                    else // value == 1
+                    {
+                        if (main.OptionsSingleSelect)
+                        {
+                            // Choose one option to keep enabled; prefer already enabled one, else first
+                            var chosen = main.Options.FirstOrDefault(o => o.Enabled == 1) ?? main.Options.FirstOrDefault();
+                            foreach (var o in main.Options)
+                            {
+                                if (o == chosen)
+                                {
+                                    o.Enabled = 1;
+                                    // If option requires sub single-select, ensure only one sub is enabled
+                                    if (o.SubOptionsSingleSelect)
+                                    {
+                                        var subChosen = o.SubOptions.FirstOrDefault(s => s.Enabled == 1) ?? o.SubOptions.FirstOrDefault();
+                                        foreach (var s in o.SubOptions) s.Enabled = s == subChosen ? 1 : 0;
+                                    }
+                                    else
+                                    {
+                                        foreach (var s in o.SubOptions) s.Enabled = 1;
+                                    }
+                                }
+                                else
+                                {
+                                    o.Enabled = 0;
+                                    foreach (var s in o.SubOptions) s.Enabled = 0;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // Multi-select: keep previous behavior - enable all options and their subs
+                            foreach (var o in main.Options)
+                            {
+                                o.Enabled = 1;
+                                if (o.SubOptionsSingleSelect)
+                                {
+                                    var subChosen = o.SubOptions.FirstOrDefault(s => s.Enabled == 1) ?? o.SubOptions.FirstOrDefault();
+                                    foreach (var s in o.SubOptions) s.Enabled = s == subChosen ? 1 : 0;
+                                }
+                                else
+                                {
+                                    foreach (var s in o.SubOptions) s.Enabled = 1;
+                                }
+                            }
+                        }
+                    }
                     break;
                 case OptionItem opt:
-                    opt.Enabled = value; foreach (var s in opt.SubOptions) s.Enabled = value; break;
+                    opt.Enabled = value;
+                    if (value == 0)
+                    {
+                        foreach (var s in opt.SubOptions) s.Enabled = 0;
+                    }
+                    else // value == 1
+                    {
+                        if (opt.SubOptionsSingleSelect)
+                        {
+                            var chosen = opt.SubOptions.FirstOrDefault(s => s.Enabled == 1) ?? opt.SubOptions.FirstOrDefault();
+                            foreach (var s in opt.SubOptions) s.Enabled = s == chosen ? 1 : 0;
+                        }
+                        else
+                        {
+                            foreach (var s in opt.SubOptions) s.Enabled = 1;
+                        }
+
+                        // If parent main requires options single-select, disable siblings
+                        var parentMain = FindParentMain(opt);
+                        if (parentMain != null && parentMain.OptionsSingleSelect)
+                        {
+                            foreach (var peer in parentMain.Options)
+                            {
+                                if (!ReferenceEquals(peer, opt))
+                                {
+                                    peer.Enabled = 0; foreach (var s in peer.SubOptions) s.Enabled = 0;
+                                }
+                            }
+                        }
+                    }
+                    break;
                 case SubOptionItem sub:
-                    sub.Enabled = value; break;
+                    sub.Enabled = value;
+                    if (value == 1)
+                    {
+                        var (pm, po) = FindParentMainAndOption(sub);
+                        if (po != null && po.SubOptionsSingleSelect)
+                        {
+                            foreach (var peer in po.SubOptions)
+                            {
+                                if (!ReferenceEquals(peer, sub)) peer.Enabled = 0;
+                            }
+                        }
+                    }
+                    break;
             }
         }
         private void UpdateEnabled(MainModItem main)
@@ -604,6 +774,23 @@ namespace ManagedMain.ViewModels
                 }
             }
             catch (System.Exception ex) { Log.Log($"{string.Format(ManagedMain.Resources.Strings.SR_Log_DisableFailed2, ex.Message)}"); }
+        }
+
+        private void ToggleOptionsSelectMode()
+        {
+            if (SelectedItem is not MainModItem main) return;
+            main.OptionsSingleSelect = !main.OptionsSingleSelect;
+            NormalizeMainSelection(main);
+            Save();
+        }
+
+        private void ToggleSubOptionsSelectMode()
+        {
+            if (SelectedItem is not OptionItem opt) return;
+            opt.SubOptionsSingleSelect = !opt.SubOptionsSingleSelect;
+            NormalizeOptionSelection(opt);
+            var pm = FindParentMain(opt); if (pm != null) UpdateEnabled(pm);
+            Save();
         }
     }
 }

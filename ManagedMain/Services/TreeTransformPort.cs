@@ -30,11 +30,18 @@ namespace ManagedMain.Services
                 foreach (var d in list) if (IsAncestorOf(d, target!, roots)) return StructureOpResult.None;
             }
 
-            // 1) 同层重排
-            if (placement is TreePlacement.Before or TreePlacement.After && kind == tkind && target != null)
+            // 1) 同层重排 (only when same parent)
+            if (placement is TreePlacement.Before or TreePlacement.After && kind == tkind && target != null && HasSameParent(list, target, roots))
             {
                 ReorderSameLevel(list, target, placement, roots);
                 log("已重排"); return StructureOpResult.Reordered;
+            }
+
+            // 1.1) Cross-parent sibling placement for Options: move to target's parent then insert
+            if (placement is TreePlacement.Before or TreePlacement.After && target is OptionItem anchorOpt && kind == NodeKind.Option)
+            {
+                MoveOptionsToSiblingPlacement(profileRoot, list.Cast<OptionItem>(), anchorOpt, placement, roots, log);
+                return StructureOpResult.Moved;
             }
 
             // 2) Inside 各类移动/晋升/降级
@@ -80,6 +87,13 @@ namespace ManagedMain.Services
                 return StructureOpResult.Promoted;
             }
 
+            // SubOption Before/After SubOption: move into the target's option and reorder at the anchor position
+            if (placement is TreePlacement.Before or TreePlacement.After && target is SubOptionItem anchorSub && kind == NodeKind.Sub)
+            {
+                MoveSubsToSiblingPlacement(profileRoot, list.Cast<SubOptionItem>(), anchorSub, placement, roots, log);
+                return StructureOpResult.Moved;
+            }
+
             return StructureOpResult.None;
         }
 
@@ -91,6 +105,15 @@ namespace ManagedMain.Services
             if (item is OptionItem opt) return roots.FirstOrDefault(m => m.Options.Contains(opt));
             if (item is SubOptionItem sub) return roots.SelectMany(m => m.Options).FirstOrDefault(o => o.SubOptions.Contains(sub));
             return null;
+        }
+        private static bool HasSameParent(IEnumerable<object> moving, object target, ObservableCollection<MainModItem> roots)
+        {
+            var tparent = GetParent(target, roots);
+            foreach (var m in moving)
+            {
+                if (!Equals(GetParent(m, roots), tparent)) return false;
+            }
+            return true;
         }
         private static bool IsAncestorOf(object a, object b, ObservableCollection<MainModItem> roots)
         {
@@ -217,6 +240,43 @@ namespace ManagedMain.Services
             log($"移动 选项 -> {newParent.Name}");
         }
 
+        private static void MoveOptionsToSiblingPlacement(string profileRoot, IEnumerable<OptionItem> opts, OptionItem anchorOpt, TreePlacement placement, ObservableCollection<MainModItem> roots, Action<string> log)
+        {
+            var newParent = roots.First(m => m.Options.Contains(anchorOpt));
+            int anchorIndex = newParent.Options.IndexOf(anchorOpt);
+            if (anchorIndex < 0) anchorIndex = newParent.Options.Count - 1;
+            int insertAt = placement == TreePlacement.After ? anchorIndex + 1 : anchorIndex;
+            if (insertAt < 0) insertAt = 0; if (insertAt > newParent.Options.Count) insertAt = newParent.Options.Count;
+
+            var moving = opts.ToList();
+            // preserve original relative order
+            var ordered = moving.OrderBy(o =>
+            {
+                var p = roots.FirstOrDefault(m => m.Options.Contains(o));
+                return p != null ? p.Options.IndexOf(o) : int.MaxValue;
+            }).ToList();
+
+            foreach (var opt in ordered)
+            {
+                var oldParent = roots.FirstOrDefault(m => m.Options.Contains(opt)); if (oldParent == null) continue;
+                if (oldParent != newParent)
+                {
+                    SafeMoveDir(OptionDir(profileRoot, oldParent.Name, opt.Name), OptionDir(profileRoot, newParent.Name, opt.Name), log);
+                    opt.Image = StripPrefix(opt.Image, opt.Name); opt.IconPath = StripPrefix(opt.IconPath, opt.Name);
+                    oldParent.Options.Remove(opt);
+                }
+                else
+                {
+                    // same parent but triggered via cross-parent path shouldn't happen, still remove before inserting
+                    oldParent.Options.Remove(opt);
+                }
+                if (insertAt > newParent.Options.Count) insertAt = newParent.Options.Count;
+                newParent.Options.Insert(insertAt++, opt);
+                RebuildOption(profileRoot, newParent, opt, log);
+            }
+            log("移动 选项 -> ? Main ?????λ??");
+        }
+
         private static void MoveSubsToOption(string profileRoot, IEnumerable<SubOptionItem> subs, OptionItem newParentOpt, ObservableCollection<MainModItem> roots, Action<string> log)
         {
             var list = subs.ToList(); if (list.Count == 0) return;
@@ -254,7 +314,7 @@ namespace ManagedMain.Services
                     Image = StripPrefix(sub.Image, oldOpt.Name + "/" + sub.Name),
                     IconPath = StripPrefix(sub.IconPath, oldOpt.Name + "/" + sub.Name),
                     FileGroups = sub.FileGroups?.ToList() ?? new List<ModFileGroup>(),
-                    SubOptions = new ObservableCollection<SubOptionItem>()
+                    SubOptions = new System.Collections.ObjectModel.ObservableCollection<SubOptionItem>()
                 };
                 newParent.Options.Add(opt);
                 RebuildOption(profileRoot, newParent, opt, log);
@@ -300,7 +360,7 @@ namespace ManagedMain.Services
                     IconPath = string.IsNullOrWhiteSpace(main.IconPath) ? string.Empty : AddPrefix(main.IconPath, main.Name),
                     Image = string.IsNullOrWhiteSpace(main.Image) ? string.Empty : AddPrefix(main.Image, main.Name),
                     FileGroups = main.FileGroups?.ToList() ?? new List<ModFileGroup>(),
-                    SubOptions = new ObservableCollection<SubOptionItem>()
+                    SubOptions = new System.Collections.ObjectModel.ObservableCollection<SubOptionItem>()
                 };
                 foreach (var oldOpt in main.Options)
                 {
@@ -331,6 +391,7 @@ namespace ManagedMain.Services
                 var oldOpt = roots.SelectMany(m => m.Options).FirstOrDefault(o => o.SubOptions.Contains(sub)); if (oldOpt == null) continue;
                 var oldMain = roots.First(m => m.Options.Contains(oldOpt));
                 oldOpt.SubOptions.Remove(sub);
+                // 移动物理目录到新 Main 下的 Option 目录
                 SafeMoveDir(SubDir(profileRoot, oldMain.Name, oldOpt.Name, sub.Name), OptionDir(profileRoot, parentMain.Name, sub.Name), log);
                 var newOpt = new OptionItem
                 {
@@ -339,7 +400,7 @@ namespace ManagedMain.Services
                     IconPath = StripPrefix(sub.IconPath, oldOpt.Name + "/" + sub.Name),
                     Image = StripPrefix(sub.Image, oldOpt.Name + "/" + sub.Name),
                     FileGroups = sub.FileGroups?.ToList() ?? new List<ModFileGroup>(),
-                    SubOptions = new ObservableCollection<SubOptionItem>()
+                    SubOptions = new System.Collections.ObjectModel.ObservableCollection<SubOptionItem>()
                 };
                 if (insertIndex < 0 || insertIndex > parentMain.Options.Count) insertIndex = parentMain.Options.Count;
                 parentMain.Options.Insert(insertIndex++, newOpt);
@@ -348,7 +409,41 @@ namespace ManagedMain.Services
             log($"子选项提升为 选项 (同 Main) -> {parentMain.Name}");
         }
 
-        // 新增：Main 拖入 Option 内部 -> 作为该 Option 的 SubOption
+        // 新增：Sub 在 Sub 的 Before/After -> 作为目标 Sub 所在 Option 的子选项并按位置插入（可跨 Main/Option）
+        private static void MoveSubsToSiblingPlacement(string profileRoot, IEnumerable<SubOptionItem> subs, SubOptionItem anchorSub, TreePlacement placement, ObservableCollection<MainModItem> roots, Action<string> log)
+        {
+            var newParentOpt = roots.SelectMany(m => m.Options).First(o => o.SubOptions.Contains(anchorSub));
+            var parentMain = roots.First(m => m.Options.Contains(newParentOpt));
+            int anchorIndex = newParentOpt.SubOptions.IndexOf(anchorSub);
+            int insertAt = placement == TreePlacement.After ? anchorIndex + 1 : anchorIndex;
+            if (insertAt < 0) insertAt = 0; if (insertAt > newParentOpt.SubOptions.Count) insertAt = newParentOpt.SubOptions.Count;
+
+            // 保持原始顺序
+            var ordered = subs.OrderBy(s =>
+            {
+                var p = roots.SelectMany(m => m.Options).FirstOrDefault(o => o.SubOptions.Contains(s));
+                return p != null ? p.SubOptions.IndexOf(s) : int.MaxValue;
+            }).ToList();
+
+            foreach (var sub in ordered)
+            {
+                var oldOpt = roots.SelectMany(m => m.Options).FirstOrDefault(o => o.SubOptions.Contains(sub)); if (oldOpt == null) continue;
+                var oldMain = roots.First(m => m.Options.Contains(oldOpt));
+                oldOpt.SubOptions.Remove(sub);
+                if (!ReferenceEquals(oldOpt, newParentOpt))
+                {
+                    SafeMoveDir(SubDir(profileRoot, oldMain.Name, oldOpt.Name, sub.Name), SubDir(profileRoot, parentMain.Name, newParentOpt.Name, sub.Name), log);
+                    sub.Image = AddPrefix(StripPrefix(sub.Image, oldOpt.Name + "/" + sub.Name), newParentOpt.Name + "/" + sub.Name);
+                    sub.IconPath = AddPrefix(StripPrefix(sub.IconPath, oldOpt.Name + "/" + sub.Name), newParentOpt.Name + "/" + sub.Name);
+                }
+                if (insertAt > newParentOpt.SubOptions.Count) insertAt = newParentOpt.SubOptions.Count;
+                newParentOpt.SubOptions.Insert(insertAt++, sub);
+                RebuildSub(profileRoot, parentMain, newParentOpt, sub, log);
+            }
+            log($"子选项移动到目标子选项位置 -> {parentMain.Name}/{newParentOpt.Name}");
+        }
+
+        // Main 拖入 Option 内部 -> 作为该 Option 的 SubOption
         private static void DemoteMainsIntoOptionSub(string profileRoot, IEnumerable<MainModItem> mains, OptionItem targetOpt, ObservableCollection<MainModItem> roots, Action<string> log)
         {
             var parentMain = roots.First(m => m.Options.Contains(targetOpt));
@@ -370,7 +465,7 @@ namespace ManagedMain.Services
             log($"Mod 降为 子选项 -> {parentMain.Name}/{targetOpt.Name}");
         }
 
-        // 还原（补回）原有的跨层晋升实现：Option/Sub 提升为 Main
+        // Option/Sub 晋升为 Main
         private static void PromoteOptionsToMains(string profileRoot, IEnumerable<OptionItem> opts, ObservableCollection<MainModItem> roots, MainModItem anchorMain, TreePlacement placement, Action<string> log)
         {
             int insertIndex = roots.IndexOf(anchorMain); if (placement == TreePlacement.After) insertIndex++;
@@ -386,7 +481,7 @@ namespace ManagedMain.Services
                     IconPath = StripPrefix(opt.IconPath, opt.Name),
                     Image = StripPrefix(opt.Image, opt.Name),
                     FileGroups = opt.FileGroups?.ToList() ?? new List<ModFileGroup>(),
-                    Options = new ObservableCollection<OptionItem>()
+                    Options = new System.Collections.ObjectModel.ObservableCollection<OptionItem>()
                 };
                 foreach (var sub in opt.SubOptions)
                 {
@@ -398,7 +493,7 @@ namespace ManagedMain.Services
                         IconPath = StripPrefix(sub.IconPath, opt.Name + "/" + sub.Name),
                         Image = StripPrefix(sub.Image, opt.Name + "/" + sub.Name),
                         FileGroups = sub.FileGroups?.ToList() ?? new List<ModFileGroup>(),
-                        SubOptions = new ObservableCollection<SubOptionItem>()
+                        SubOptions = new System.Collections.ObjectModel.ObservableCollection<SubOptionItem>()
                     };
                     newMain.Options.Add(newOpt);
                 }
@@ -425,7 +520,7 @@ namespace ManagedMain.Services
                     IconPath = StripPrefix(sub.IconPath, opt.Name + "/" + sub.Name),
                     Image = StripPrefix(sub.Image, opt.Name + "/" + sub.Name),
                     FileGroups = sub.FileGroups?.ToList() ?? new List<ModFileGroup>(),
-                    Options = new ObservableCollection<OptionItem>()
+                    Options = new System.Collections.ObjectModel.ObservableCollection<OptionItem>()
                 };
                 if (insertIndex < 0 || insertIndex > roots.Count) insertIndex = roots.Count;
                 roots.Insert(insertIndex++, newMain);

@@ -81,6 +81,7 @@ namespace ManagedMain.Resources
         public static string SR_Status_OnlyIssues => ResourceManager.GetString("SR_Status_OnlyIssues", _culture) ?? "Only Issues";
         public static string SR_Btn_Refresh => ResourceManager.GetString("SR_Btn_Refresh", _culture) ?? "Refresh";
         public static string SR_Tip_DoubleClickCopyPath => ResourceManager.GetString("SR_Tip_DoubleClickCopyPath", _culture) ?? "Double click row to copy path";
+        public static string SR_Tip_StatusDoubleClick => ResourceManager.GetString("SR_Tip_StatusDoubleClick", _culture) ?? "Left double-click to open the Mod folder; right double-click to locate game files";
         public static string SR_Col_Owner => ResourceManager.GetString("SR_Col_Owner", _culture) ?? "Owner";
         public static string SR_Col_Hex => ResourceManager.GetString("SR_Col_Hex", _culture) ?? "Hex";
         public static string SR_Col_ModList => ResourceManager.GetString("SR_Col_ModList", _culture) ?? "ModList";
@@ -215,5 +216,15 @@ namespace ManagedMain.Resources
         public static string SR_Dlg_Filter_Images => ResourceManager.GetString("SR_Dlg_Filter_Images", _culture) ?? "Images|*.png;*.jpg;*.jpeg|All|*.*";
         public static string SR_Dlg_Ok => ResourceManager.GetString("SR_Dlg_Ok", _culture) ?? "OK";
         public static string SR_Dlg_Cancel => ResourceManager.GetString("SR_Dlg_Cancel", _culture) ?? "Cancel";
+
+        // New string resources
+        public static string SR_Label_Options => ResourceManager.GetString("SR_Label_Options", _culture) ?? "Options";
+        public static string SR_Label_SubOptions => ResourceManager.GetString("SR_Label_SubOptions", _culture) ?? "Sub Options";
+        public static string SR_Choice_Single => ResourceManager.GetString("SR_Choice_Single", _culture) ?? "Single select";
+        public static string SR_Choice_Multiple => ResourceManager.GetString("SR_Choice_Multiple", _culture) ?? "Multiple";
+
+        // Summary status strings
+        public static string SR_Status_Summary_Default => ResourceManager.GetString("SR_Status_Summary_Default", _culture) ?? "Status ...";
+        public static string SR_Status_Summary_Format => ResourceManager.GetString("SR_Status_Summary_Format", _culture) ?? "Enabled Mods: {0}, Groups: {1}, Normal: {2}, Abnormal: {3}";
     }
 }

@@ -1,0 +1,396 @@
+武器模型包含：
+主要武器 突击步枪
+AR-23 Liberator 解放者
+AR-23P Liberator Penetrator  穿甲解放者
+AR-23C Liberator Concussive 震荡解放者
+StA-52  Killzone 2 Assault Rifle 杀戮地带2突击步枪
+AR-32 Pacifier  Medium 安抚者
+AR-2 Coyote  Medium 郊狼
+MA5C HELO Assault Rifle 光环突击步枪
+AR-23A Liberator Carbine  解放者卡宾枪
+AR-61 Tenderizer  肉锤
+BR-14 Adjudicator 审判者
+AR/GL-21 One-Two  幺二
+主要武器 精确射手步枪
+R-2 Amendment  修正
+R-2124 Constitution 宪法
+R-6 Deadeye  鹰眼
+R-63 Diligence 勤勉
+R-63CS Diligence Counter Sniper  反击狙勤勉
+主要武器 冲锋枪
+MP-98 Knight 骑士
+StA-11 Killzone 2 SMG 杀戮地带2冲锋枪
+M7S HELO SMG  光环冲锋枪
+SMG-32 Reprimand  训斥
+SMG-37 Defender  防卫者
+SMG-72 Pummeler  暴击斗士
+主要武器 霰弹枪
+SG-8 Punisher 制裁者
+SG-8S Slugger  重炮手
+SG-20 Halt  止息
+SG-451 Cookout  野炊
+DBS-2 Double Freedom 双重自由
+M90A HELO Shotgun  光环霰弹枪
+SG-225 Breaker  破裂者
+SG-225SP Breaker Spray&Pray 弥漫与祷告的破裂者
+SG-225IE Breaker Incendiary 高燃破裂者
+主要武器 爆炸武器
+CB-9 Exploding Crossbow  爆燃弩
+R-36 Eruptor 爆裂铳
+主要武器 能量武器
+SG-8P Punisher Plasma  等离子制裁者
+PLAS-39 Killzone 2 Accelerator Rifle  杀戮地带2加速步枪
+ARC-12 Blitzer 雷霆
+LAS-5 Scythe 长柄镰
+LAS-16 Sickle 镰刀
+LAS-17 Double-Edge Sickle  双刃镰刀
+PLAS-1 Scorcher 焦土
+PLAS-101 Purifier  净化者
+主要武器 特殊武器
+VG-70 Variable 变数
+FLAM-66 Torcher 火炬手
+JAR-5 Dominator 主宰
+次要武器 手枪
+P-92 Warrant 法令
+P-2 Peacemaker 和平制造者
+P-19 Redeemer 救世主
+P-113 Verdict  裁决
+M6C/SOCOM HELO Pistol  光环手枪
+P-4 Senator  参议员
+次要武器 近战武器
+CQC-19 Stun Lance 眩晕长矛
+CQC-2 Saber 军刀
+CQC-30 Stun Baton 眩晕短棍
+CQC-5 Combat Hatchet 战斗短柄斧
+CQC-42 Machete 砍刀
+次要武器 特殊
+P-11 Stim Pistol 治疗剂手枪
+SG-22 Bushwhacker  游击兵
+LAS-58 Talon  猛爪
+P-72 Crisper 迅击
+GP-31 Grenade Pistol 榴弹手枪
+LAS-7 Dagger 匕首
+GP-20 Ultimatum  最后通牒
+PLAS-15 Loyalist  忠诚者
+投掷武器 标准
+TED-63 Dynamite 炸药
+G-6 Frag  破片弹
+G-12 High Explosive 高爆弹
+G-10 Incendiary 燃烧弹
+G-7 Pineapple 菠萝
+投掷武器 特殊
+G-16 Impact  冲击弹
+G-13 Incendiary Impact  燃烧冲击弹
+G-23 Stun 眩晕弹
+G-4 Gas 毒气榴弹
+G-50 Seeker 寻踪者
+G-3 Smoke 烟雾弹
+G-123 Thermite 铝热剂
+K-2 Throwing Knife 飞刀
+G-142 Pyrotech  烟花术
+G-109 Urchin 海胆
+G-31 Arc  电弧
+支援武器
+MG-43 Machine Gun 机枪
+APW-1 Anti-Materiel Rifle 反器材步枪
+M-105 Stalwart 盟友
+EAT-17 Expendable Anti-Tank 消耗性反坦克武器
+GR-8 Recoilless Rifle  无后坐力炮
+FLAM-40 Flamethrower 火焰喷射器
+AC-8 Autocannon 机炮
+MG-206 Heavy Machine Gun 重机枪
+RL-77 Airburst Rocket Launcher 空爆火箭弹发射器
+MLS-4X Commando 突击兵
+RS-422 Railgun 磁轨炮
+FAF-14 Spear 飞矛
+StA-X3 W.A.S.P. Launcher W.A.S.P. 发射器
+GL-21 Grenade Launcher 榴弹发射器
+LAS-98 Laser Cannon 激光大炮
+ARC-3 Arc Thrower 电弧发射器
+LAS-99 Quasar Cannon 类星体
+SG-88 Break-Action Shotgun 中折式霰弹枪
+CQC-72 Entrenchment Tool 工兵铲
+TX-41 Sterilizer 灭菌器
+CQC-1 One True Flag 唯一真旗
+GL-52 De-Escalator 缓和使者
+PLAS-45 Epoch 纪元
+S-11 Speargun 矛枪
+EAT-700 Expendable Napalm 消耗性凝固汽油弹
+MS-11 Solo Silo 单兵导弹发射井
+M-1000 Maxigun 重装机枪
+CQC-9 Defoliation Tool 除叶工具
+支援背包
+AX/AR-23 "Guard Dog" 护卫犬
+AX/TX-13 “Guard Dog” Dog Breath 护卫犬腐息
+AX/FLAM-75 "Guard Dog" Hot Dog 护卫犬热狗
+AX/LAS-5 "Guard Dog" Rover 护卫犬漫游车
+AX/ARC-3 “Guard Dog” K-9 护卫犬K-9
+SH-51 Directional Shield 定向护盾
+SH-32 Shield Generator Pack 防护罩生成包
+SH-20 Ballistic Shield Backpack 防弹护盾背包
+B-1 Supply Pack 补给背包
+B-100 Portable Hellbomb 便携式地狱火炸弹
+LIFT-850 Jump Pack 喷射背包
+LIFT-860 Hover Pack 悬浮背包
+LIFT-182 Warp Pack 传送背包
+支援载具
+EXO-49 Emancipator Exosuit 解放者外骨骼装甲
+EXO-45 Patriot Exosuit 爱国者外骨骼装甲
+M-102 Fast Reconnaissance Vehicle 快速侦察载具
+支援哨兵
+A/FLAM-40 Flame Sentry 火焰喷射哨戒炮
+A/MG-43 Machine Gun Sentry 哨戒机枪
+A/G-16 Gatling Sentry 加特林哨戒炮
+A/MLS-4X Rocket Sentry 火箭哨戒炮
+A/AC-8 Autocannon Sentry 自动哨戒炮
+A/M-12 Mortar Sentry 迫击哨戒炮
+A/M-23 EMS Mortar Sentry 电磁冲击波迫击哨戒炮
+A/LAS-98 Laser Sentry 激光哨戒炮
+A/ARC-3 Tesla Tower 特斯拉塔
+支援阵地
+E/MG-101 HMG Emplacement 重机枪部署支架
+E/GL-21 Grenadier Battlement 掷弹兵防卫墙
+E/AT-12 Anti-Tank Emplacement 反坦克炮台
+FX-12_Shield_Generator_Relay 防护罩生成发生器
+支援布雷器
+MD-6 Anti-Personnel Minefield 反步兵雷区
+MD-I4 Incendiary Mines 燃烧地雷
+MD-17 Anti-Tank Mines 反坦克地雷
+MD-8 Gas Mines 毒气地雷
+
+
+
+盔甲
+
+Light armor 轻甲
+
+Icon	Name	Armor	Speed	Stamina	Passive	Cost	Source
+SC-37 Legionnaire	050	550	125	Servo-Assisted	Super Credit.svg 150	Superstore 军团士兵
+SC-34 Infiltrator	070	530	115	Scout	Medal.svg 3	Helldivers Mobilize! P1 深入敌阵
+SC-30 Trailblazer Scout	050	550	125	Scout	Medal.svg 50	Helldivers Mobilize! P7 开路侦察兵
+CE-74 Breaker	050	550	125	Engineering Kit	Super Credit.svg 250	Superstore 破裂者
+FS-38 Eradicator	050	550	125	Fortified	Super Credit.svg 250	Superstore 根除者
+B-08 Light Gunner	100	550	125	Extra Padding	Super Credit.svg 150	Superstore qing 轻装枪手
+CM-21 Trench Paramedic	064	536	118	Med-Kit	Super Credit.svg 250	Superstore 战壕护理员
+DS-10 Big Game Hunter	050	550	125	Desert Stormer	Super Credit.svg 300	Superstore 巨兽猎手
+CE-67 Titan	079	521	111	Engineering Kit	Super Credit.svg 150	Superstore 泰坦
+EX-00 Prototype X	050	550	125	Electrical Conduit	Medal.svg 64	Cutting Edge P3 原型X
+CE-07 Demolition Specialist Body Icon.png	CE-07 Demolition Specialist	064	536	118	Engineering Kit	Medal.svg 45	Democratic Detonation P2 爆破专家
+FS-37 Ravager Body Icon.png	FS-37 Ravager	050	550	125	Engineering Kit	Super Credit.svg 250	Superstore 破坏者
+CW-4 Arctic Ranger Body Icon.png	CW-4 Arctic Ranger	050	550	125	Scout	Medal.svg 64	Polar Patriots P3 极地游骑兵
+PH-9 Predator Body Icon.png	PH-9 Predator	050	550	125	Peak Physique	Medal.svg 40	Viper Commandos P1 掠食者
+I-09 Heatseeker Body Icon.png	I-09 Heatseeker	050	550	125	Inflammable	Medal.svg 18	Freedom's Flame P1 热力追踪
+AF-50 Noxious Ranger Body Icon.png	AF-50 Noxious Ranger	050	550	125	Advanced Filtration	Medal.svg 40	Chemical Agents P1 毒瘴游骑兵
+UF-16 Inspector Body Icon.png	UF-16 Inspector	075	550	125	Unflinching	Medal.svg 65	Truth Enforcers P3 督察员
+SR-24 Street Scout Body Icon.png	SR-24 Street Scout	050	550	125	Siege-Ready	Medal.svg 40	Urban Legends P1 街头侦察兵
+AC-2 Obedient Body Icon.png	AC-2 Obedient	050	550	125	Acclimated	❌	Helldivers x Killzone 服从指挥
+IE-57 Hell-Bent Body Icon.png	IE-57 Hell-Bent	050	550	125	Integrated Explosives	Super Credit.svg 250	Superstore 奋不顾身
+GS-11 Democracy's Deputy Body Icon.png	GS-11 Democracy's Deputy	050	550	125	Gunslinger	Super Credit.svg 300	Superstore 民主代理人
+RE-1861 Parade Commander Body Icon.png	RE-1861 Parade Commander	050	550	125	Reinforced Epaulettes	Medal.svg 55	Masters of Ceremony P2 阅兵指挥官
+BP-32 Jackboot Body Icon.png	BP-32 Jackboot	050	550	125	Ballistic Padding	Medal.svg 55	Force of Law P2 杰克军靴
+AD-11 Livewire Body Icon.png	AD-11 Livewire	050	550	125	Adreno-Defibrillator	Super Credit.svg 300	Superstore 生龙活虎
+RS-20 Constrictor Body Icon.png	RS-20 Constrictor	050	550	125	Rock Solid	Medal.svg	Python Commandos 绞杀者
+
+
+Medium armor 中甲
+
+Icon	Name	Armor	Speed	Stamina	Passive	Cost	Source
+B-01 Tactical Body Icon.png	B-01 Tactical	150	500	100	Extra Padding		Starter Equipment 战术
+TR-7 Ambassador of the Brand Body Icon.png	TR-7 Ambassador of the Brand	150	500	100	Extra Padding	❌	Pre-Order Bonus 形象大使
+TR-9 Cavalier of Democracy Body Icon.png	TR-9 Cavalier of Democracy	100	500	100	Democracy Protects	❌	Pre-Order Bonus 民主骑兵
+DP-53 Savior of the Free Body Icon.png	DP-53 Savior of the Free	100	500	100	Democracy Protects	💲20	Super Citizen Edition 自由救星
+TR-117 Alpha Commander Body Icon.png	TR-117 Alpha Commander	100	500	100	Med-Kit		Downloadable Content 阿尔法指挥官
+SC-15 Drone Master Body Icon.png	SC-15 Drone Master	100	500	100	Engineering Kit	Super Credit.svg 250	Superstore 无人机大师
+CE-35 Trench Engineer Body Icon.png	CE-35 Trench Engineer	100	500	100	Engineering Kit	Medal.svg 10	Helldivers Mobilize! P3 战壕工程师
+CM-09 Bonesnapper Body Icon.png	CM-09 Bonesnapper	100	500	100	Med-Kit	Medal.svg 15	Helldivers Mobilize! P4 碎骨杀手
+DP-40 Hero of the Federation Body Icon.png	DP-40 Hero of the Federation	100	500	100	Democracy Protects	Medal.svg 25	Helldivers Mobilize! P5 联邦英雄
+SA-04 Combat Technician Body Icon.png	SA-04 Combat Technician	100	500	100	Scout	Medal.svg 60	Helldivers Mobilize! P8 技术兵
+CM-14 Physician Body Icon.png	CM-14 Physician	100	500	100	Med-Kit	Medal.svg 70	Helldivers Mobilize! P9 医师
+DP-11 Champion of the People Body Icon.png	DP-11 Champion of the People	100	500	100	Democracy Protects	Medal.svg 100	Helldivers Mobilize! P10 人民捍卫者
+SA-25 Steel Trooper Body Icon.png	SA-25 Steel Trooper	100	500	100	Servo-Assisted	Medal.svg 18	Steeled Veterans P1 钢铁士兵
+SA-12 Servo Assisted Body Icon.png	SA-12 Servo Assisted	100	500	100	Servo-Assisted	Medal.svg 45	Steeled Veterans P2 伺服辅助
+B-24 Enforcer Body Icon.png	B-24 Enforcer	129	471	071	Fortified	Super Credit.svg 150	Superstore 执行者
+CE-81 Juggernaut Body Icon.png	CE-81 Juggernaut	100	500	100	Engineering Kit	Super Credit.svg 250	Superstore 巨人
+FS-34 Exterminator Body Icon.png	FS-34 Exterminator	100	500	100	Fortified	Super Credit.svg 400	Superstore 灭绝这
+EX-03 Prototype 3 Body Icon.png	EX-03 Prototype 3	100	500	100	Electrical Conduit	Medal.svg 18	Cutting Edge P1 原型3
+EX-16 Prototype 16 Body Icon.png	EX-16 Prototype 16	100	500	100	Electrical Conduit	Medal.svg 45	Cutting Edge P2 原型16
+CE-27 Ground Breaker Body Icon.png	CE-27 Ground Breaker	100	500	100	Engineering Kit	Medal.svg 18	Democratic Detonation P1 裂地者
+CM-10 Clinician Body Icon.png	CM-10 Clinician	100	500	100	Med-Kit	Super Credit.svg 250	Superstore 临床医师
+CW-9 White Wolf Body Icon.png	CW-9 White Wolf	150	500	100	Extra Padding	Super Credit.svg 300	Superstore 白狼
+PH-56 Jaguar Body Icon.png	PH-56 Jaguar	100	500	100	Peak Physique	Super Credit.svg 150	Superstore 捷豹
+TR-40 Gold Eagle Body Icon.png	TR-40 Gold Eagle	150	500	100	Extra Padding	❌	Escalation of Freedom 金鹰
+I-92 Fire Fighter Body Icon.png	I-92 Fire Fighter	100	500	100	Inflammable	Super Credit.svg 250	Superstore 消防员
+I-102 Draconaught Body Icon.png	I-102 Draconaught	100	500	100	Inflammable	Medal.svg 45	Freedom's Flame P2 龙行者
+AF-91 Field Chemist Body Icon.png	AF-91 Field Chemist	100	500	100	Advanced Filtration	Super Credit.svg 250	Superstore  实地化学家
+AF-02 Haz-Master Body Icon.png	AF-02 Haz-Master	100	500	100	Advanced Filtration	Medal.svg 45	Chemical Agents P2 危害大师
+DP-00 Tactical Body Icon.png	DP-00 Tactical	100	500	100	Democracy Protects		Liberty Day 战术
+UF-84 Doubt Killer Body Icon.png	UF-84 Doubt Killer	125	500	100	Unflinching	Super Credit.svg 400	Superstore 疑虑克星
+UF-50 Bloodhound Body Icon.png	UF-50 Bloodhound	125	500	100	Unflinching	Medal.svg 45	Truth Enforcers P2 猎犬
+AC-1 Dutiful Body Icon.png	AC-1 Dutiful	100	500	100	Acclimated	❌	Premium Superstore 恪尽职守
+IE-3 Martyr Body Icon.png	IE-3 Martyr	100	500	100	Integrated Explosives	Medal.svg 45	Servants of Freedom P1 烈士
+IE-12 Righteous Body Icon.png	IE-12 Righteous	100	500	100	Integrated Explosives	Medal.svg 55	Servants of Freedom P2 义士
+B-22 Model Citizen Body Icon.png	B-22 Model Citizen	100	500	100	Democracy Protects	❌	Anniversary Gift 模范公民
+GS-17 Frontier Marshal Body Icon.png	GS-17 Frontier Marshal	100	500	100	Gunslinger	Medal.svg 45	Borderline Justice P1 边境元帅
+RE-2310 Honorary Guard Body Icon.png	RE-2310 Honorary Guard	100	500	100	Reinforced Epaulettes	Medal.svg 45	Masters of Ceremony P1 荣誉卫队
+BP-20 Correct Officer Body Icon.png	BP-20 Correct Officer	100	500	100	Ballistic Padding	Medal.svg 45	Force of Law P1 思想矫正官
+DS-191 Scorpion Body Icon.png	DS-191 Scorpion	100	500	100	Desert Stormer	Medal.svg 55	Dust Devils P2 天蝎
+AD-26 Bleeding Edge Body Icon.png	AD-26 Bleeding Edge	100	500	100	Adreno-Defibrillator	Medal.svg 45	Control Group P1 血刃科技
+A-9 Helljumper Body Icon.png	A-9 Helljumper	100	500	100	Feet First	Medal.svg 45	Halo: ODST P1 地狱伞兵
+A-35 Recon Body Icon.png	A-35 Recon	100	500	100	Feet First	Medal.svg 55	Halo: ODST P2 侦察者
+
+
+
+Heavy armor 重甲
+Icon	Name	Armor	Speed	Stamina	Passive	Cost	Source
+TR-62 Knight Body Icon.png	TR-62 Knight	150	450	050	Servo-Assisted	❌	Pre-Order Bonus 骑士
+FS-05 Marksman Body Icon.png	FS-05 Marksman	150	450	050	Fortified	Medal.svg 6	Helldivers Mobilize! P2 战神射手
+FS-23 Battle Master Body Icon.png	FS-23 Battle Master	150	450	050	Fortified	Medal.svg 35	Helldivers Mobilize! P6 战斗大师
+SA-32 Dynamo Body Icon.png	SA-32 Dynamo	150	450	050	Servo-Assisted	Medal.svg 64	Steeled Veterans P3 精力充沛
+B-27 Fortified Commando Body Icon.png	B-27 Fortified Commando	200	450	050	Extra Padding	Super Credit.svg 400	Superstore 强化突击兵
+FS-61 Dreadnought Body Icon.png	FS-61 Dreadnought	150	450	050	Servo-Assisted	Super Credit.svg 250	Superstore 无畏
+FS-11 Executioner Body Icon.png	FS-11 Executioner	150	450	050	Fortified	Super Credit.svg 150	Superstore 行刑者
+CM-17 Butcher Body Icon.png	CM-17 Butcher	150	450	050	Med-Kit	Super Credit.svg 250	Superstore 屠夫
+FS-55 Devastator Body Icon.png	FS-55 Devastator	150	450	050	Fortified	Medal.svg 64	Democratic Detonation P3 蹂躏着
+CE-64 Grenadier Body Icon.png	CE-64 Grenadier	150	450	050	Engineering Kit	Super Credit.svg 300	Superstore 掷弹兵
+CW-36 Winter Warrior Body Icon.png	CW-36 Winter Warrior	150	450	050	Servo-Assisted	Medal.svg 18	Polar Patriots P1 冬日战兵
+CW-22 Kodiak Body Icon.png	CW-22 Kodiak	150	450	050	Fortified	Medal.svg 45	Polar Patriots P2 科迪亚克
+CE-101 Guerilla Gorilla Body Icon.png	CE-101 Guerilla Gorilla	150	450	050	Engineering Kit	Super Credit.svg 250	Superstore 游击猩猩
+PH-202 Twigsnapper Body Icon.png	PH-202 Twigsnapper	150	450	050	Peak Physique	Medal.svg 45	Viper Commandos P2 折枝
+I-44 Salamander Body Icon.png	I-44 Salamander	150	450	050	Inflammable	Super Credit.svg 250	Superstore 火蜥
+AF-52 Lockdown Body Icon.png	AF-52 Lockdown	150	450	050	Advanced Filtration	Super Credit.svg 400	Superstore 禁锢
+SR-64 Cinderblock Body Icon.png	SR-64 Cinderblock	150	450	050	Siege-Ready	Super Credit.svg 250	Superstore 煤渣砖
+SR-18 Roadblock Body Icon.png	SR-18 Roadblock	150	450	050	Siege-Ready	Medal.svg 45	Urban Legends P2 路障
+GS-66 Lawmaker Body Icon.png	GS-66 Lawmaker	150	450	050	Gunslinger	Medal.svg 55	Borderline Justice P2 立法者
+RE-824 Bearer of the Standard Body Icon.png	RE-824 Bearer of the Standard	150	450	050	Reinforced Epaulettes	Super Credit.svg 400	Superstore 执旗手
+BP-77 Grand Juror Body Icon.png	BP-77 Grand Juror	150	450	050	Ballistic Padding	Super Credit.svg 250	Superstore 大陪审员
+DS-42 Federation's Blade Body Icon.png	DS-42 Federation's Blade	150	450	050	Desert Stormer	Medal.svg 45	Dust Devils P1 联邦之刃
+RS-40 Beast of Prey Body Icon.png	RS-40 Beast of Prey	150	450	050	Rock Solid	Medal.svg 55	Python Commandos 掠食凶兽
+AD-49 Apollonian Body Icon.png	AD-49 Apollonian	150	450	050	Adreno-Defibrillator	Medal.svg 55	Control Group P2 阿波罗神
+
+盔甲被动效果
+
+坚如磐石
+Rock Solid
+
+Increases melee damage by 100%.
+Bearer is more resistant to being knocked prone.
+沙漠突击者
+Desert Stormer
+
+Provides 40% resistance to fire, gas, acid, and electrical damage.
+Increases throwing range by 20%.
+护腿为上
+Feet First
+
+Wearer makes 50% less noise when moving.
+Increases point-of-interest identification range by 30%.
+Provides immunity to leg injuries.
+肾上腺素除颤器
+Adreno-Defibrillator
+
+Provides one-time, short-lived resuscitation upon death, given that the Helldiver's body is still intact.
+Increases stim effect duration by 2.0s.
+Provides 50% resistance to arc damage.
+防弹内衬
+Ballistic Padding
+
+Provides 25% resistance to chest damage.
+Provides 25% resistance to explosive damage.
+Prevents all damage from bleeding if chest hemorrhages.
+强化肩章
+Reinforced Epaulettes
+
+Increases reload speed of primary weapons by 30%.
+Gives wearer a 50% chance to avoid grievous limb injury.
+Increases melee damage by 50%.
+神枪手
+Gunslinger
+
+Increases sidearms reload speed by 40%.
+Sidearm draw/holster speed increased by 50%.
+Sidearm recoil reduced by 70%.
+集成炸药
+Integrated Explosives
+
+Armor explodes 1.5s after the wearer dies.
+Increases initial inventory and holding capacity of throwables by +2.
+应变自如
+ Acclimated
+
+Provides 50% resistance to fire, gas, acid, and electrical damage.
+蓄势出击
+Siege-Ready
+
+Increases reload speed of primary weapons by 30%.
+Increases ammo capacity of all weapons by 20%. Does not affect weapon backpacks.
+毫不畏缩
+Unflinching
+
+Helps prevent Helldivers from flinching when hit.
+Provides a higher armor rating.
+Markers placed on the map will generate radar scans every 2.0s.
+高级过滤
+Advanced Filtration
+
+Provides 80% resistance to gas damage and effects.
+易燃易爆
+Inflammable Armor Passive Icon.png Inflammable
+
+Provides 75% damage resistance to fire, allowing bearer to rest assured in their inflammability.
+健壮体格
+Peak Physique
+
+Increases melee damage by 100%.
+Improves weapons handling with less drag on weapon movement.
+电路导管
+Electrical Conduit
+
+Provides 95% resistance to arc damage.
+强化
+Fortified
+
+Further reduces recoil when crouching or prone by 30%.
+Provides 50% resistance to explosive damage.
+侦察
+Scout
+
+Markers placed on the map will generate radar scans every 2.0s.
+Reduces range at which enemies can detect the wearer by 30%.
+工程包
+Engineering Kit
+
+Further reduces recoil when crouching or prone by 30%.
+Increases initial inventory and holding capacity of throwables by +2.
+急救包
+Med-Kit
+
+Increases initial inventory and holding capacity of stims by +2.
+Increases stim effect duration by 2.0s.
+伺服辅助
+Servo-Assisted
+
+Increases throwing range by 30%.
+Provides +50% limb health.
+民主护佑
+Democracy Protects
+
+50% chance to not die when taking lethal damage.
+Prevents all damage from bleeding if chest hemorrhages.
+
+额外垫料
+Extra Padding
+
+Provides a higher armor rating.
+
+
+
+
+
+
+
+
+
+
+
+
+

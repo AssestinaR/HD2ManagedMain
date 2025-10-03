@@ -33,9 +33,13 @@
     </Compile>
     <Compile Include="Converters\BoolNegationConverter.cs" />
     <Compile Include="Converters\BoolOrMultiConverter.cs" />
+    <Compile Include="Converters\BoolToChoiceTextConverter.cs" />
     <Compile Include="Converters\ContentToTextConverter.cs" />
+    <Compile Include="Converters\DoubleToVisibilityGreaterThanConverter.cs" />
+    <Compile Include="Converters\ButtonLabelVisibilityConverter.cs" />
+    <Compile Include="Converters\LabelTextConverter.cs" />
     <Compile Include="Converters\LastItemConverter.cs" />
-
+    <Compile Include="Converters\LeadingTokenConverter.cs" />
     <Compile Include="Converters\ModFileGroupEnabledConverter.cs" />
 
     <Compile Include="Converters\ProfileEntryStatusBrushConverter.cs" />
@@ -46,9 +50,12 @@
     <Compile Include="Services\TreeTransformPort.cs" />
     <Compile Include="UI\Drag\TreeDragManager.cs" />
     <Compile Include="UI\Drag\TreeInsertAdorner.cs" />
+    <Compile Include="Views\AdaptiveToolbarLayout.cs" />
     <Compile Include="Views\BreathingEffect.cs" />
     <Compile Include="Views\LogDrawerHost.cs" />
+    <Compile Include="Views\StatusDrawerHost.Breathing.cs" />
     <Compile Include="Views\StatusDrawerHost.cs" />
+    <Compile Include="Views\StatusDrawerHost.Scanner.cs" />
     <Compile Include="Views\WaveEffect.cs" />
 
     <Page Include="MainWindow.xaml">

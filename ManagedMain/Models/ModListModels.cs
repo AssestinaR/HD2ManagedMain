@@ -85,6 +85,10 @@ namespace ManagedMain.Models
         private string? _url;
         public string? Url { get => _url; set => SetField(ref _url, value); }
 
+        // New: whether sub options are single-select
+        private bool _subOptionsSingleSelect;
+        public bool SubOptionsSingleSelect { get => _subOptionsSingleSelect; set => SetField(ref _subOptionsSingleSelect, value); }
+
         public List<string> Include { get; set; } = new();
         public List<ModFileGroup> FileGroups { get; set; } = new();
         public ObservableCollection<SubOptionItem> SubOptions { get; set; } = new();
@@ -124,6 +128,10 @@ namespace ManagedMain.Models
 
         private string? _url;
         public string? Url { get => _url; set => SetField(ref _url, value); }
+
+        // New: whether options are single-select
+        private bool _optionsSingleSelect;
+        public bool OptionsSingleSelect { get => _optionsSingleSelect; set => SetField(ref _optionsSingleSelect, value); }
 
         public List<ModFileGroup> FileGroups { get; set; } = new();
         public ObservableCollection<OptionItem> Options { get; set; } = new();

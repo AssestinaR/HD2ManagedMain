@@ -1,0 +1,62 @@
+﻿Category,Code,EnglishName,ChineseName
+Support Weapon,MG-43,Machine Gun,机枪
+Support Weapon,APW-1,Anti-Materiel Rifle,反器材步枪
+Support Weapon,M-105,Stalwart,盟友
+Support Weapon,EAT-17,Expendable Anti-Tank,消耗性反坦克武器
+Support Weapon,GR-8,Recoilless Rifle,无后坐力炮
+Support Weapon,FLAM-40,Flamethrower,火焰喷射器
+Support Weapon,AC-8,Autocannon,机炮
+Support Weapon,MG-206,Heavy Machine Gun,重机枪
+Support Weapon,RL-77,Airburst Rocket Launcher,空爆火箭弹发射器
+Support Weapon,MLS-4X,Commando,突击兵
+Support Weapon,RS-422,Railgun,磁轨炮
+Support Weapon,FAF-14,Spear,飞矛
+Support Weapon,StA-X3,W.A.S.P. Launcher,W.A.S.P. 发射器
+Support Weapon,GL-21,Grenade Launcher,榴弹发射器
+Support Weapon,LAS-98,Laser Cannon,激光大炮
+Support Weapon,ARC-3,Arc Thrower,电弧发射器
+Support Weapon,LAS-99,Quasar Cannon,类星体
+Support Weapon,SG-88,Break-Action Shotgun,中折式霰弹枪
+Support Weapon,CQC-72,Entrenchment Tool,工兵铲
+Support Weapon,TX-41,Sterilizer,灭菌器
+Support Weapon,CQC-1,One True Flag,唯一真旗
+Support Weapon,GL-52,De-Escalator,缓和使者
+Support Weapon,PLAS-45,Epoch,纪元
+Support Weapon,S-11,Speargun,矛枪
+Support Weapon,EAT-700,Expendable Napalm,消耗性凝固汽油弹
+Support Weapon,MS-11,Solo Silo,单兵导弹发射井
+Support Weapon,M-1000,Maxigun,重装机枪
+Support Weapon,CQC-9,Defoliation Tool,除叶工具
+Support Backpack,AX/AR-23,Guard Dog,护卫犬
+Support Backpack,AX/TX-13,Guard Dog Dog Breath,护卫犬腐息
+Support Backpack,AX/FLAM-75,Guard Dog Hot Dog,护卫犬热狗
+Support Backpack,AX/LAS-5,Guard Dog Rover,护卫犬漫游车
+Support Backpack,AX/ARC-3,Guard Dog K-9,护卫犬K-9
+Support Backpack,SH-51,Directional Shield,定向护盾
+Support Backpack,SH-32,Shield Generator Pack,防护罩生成包
+Support Backpack,SH-20,Ballistic Shield Backpack,防弹护盾背包
+Support Backpack,B-1,Supply Pack,补给背包
+Support Backpack,B-100,Portable Hellbomb,便携式地狱火炸弹
+Support Backpack,LIFT-850,Jump Pack,喷射背包
+Support Backpack,LIFT-860,Hover Pack,悬浮背包
+Support Backpack,LIFT-182,Warp Pack,传送背包
+Support Vehicle,EXO-49,Emancipator Exosuit,解放者外骨骼装甲
+Support Vehicle,EXO-45,Patriot Exosuit,爱国者外骨骼装甲
+Support Vehicle,M-102,Fast Reconnaissance Vehicle,快速侦察载具
+Support Sentry,A/FLAM-40,Flame Sentry,火焰喷射哨戒炮
+Support Sentry,A/MG-43,Machine Gun Sentry,哨戒机枪
+Support Sentry,A/G-16,Gatling Sentry,加特林哨戒炮
+Support Sentry,A/MLS-4X,Rocket Sentry,火箭哨戒炮
+Support Sentry,A/AC-8,Autocannon Sentry,自动哨戒炮
+Support Sentry,A/M-12,Mortar Sentry,迫击哨戒炮
+Support Sentry,A/M-23,EMS Mortar Sentry,电磁冲击波迫击哨戒炮
+Support Sentry,A/LAS-98,Laser Sentry,激光哨戒炮
+Support Sentry,A/ARC-3,Tesla Tower,特斯拉塔
+Support Emplacement,E/MG-101,HMG Emplacement,重机枪部署支架
+Support Emplacement,E/GL-21,Grenadier Battlement,掷弹兵防卫墙
+Support Emplacement,E/AT-12,Anti-Tank Emplacement,反坦克炮台
+Support Emplacement,FX-12,Shield Generator Relay,防护罩生成发生器
+Support MineLayer,MD-6,Anti-Personnel Minefield,反步兵雷区
+Support MineLayer,MD-I4,Incendiary Mines,燃烧地雷
+Support MineLayer,MD-17,Anti-Tank Mines,反坦克地雷
+Support MineLayer,MD-8,Gas Mines,毒气地雷

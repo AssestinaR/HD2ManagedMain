@@ -1,0 +1,6 @@
+__pycache__
+.vscode
+
+deps/*
+!deps/texconv.exe
+.python_version

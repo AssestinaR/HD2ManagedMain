@@ -148,9 +148,22 @@ namespace ManagedMain.ViewModels
             if (string.IsNullOrWhiteSpace(Options.GameFolder)) { _log.Log(ManagedMain.Resources.Strings.SR_Log_GameFolderNotConfigured); return; }
             EnsureModsLoaded(p);
 
-            // Disable others first (persist immediately)
+            // Exclusivity: only one profile can be enabled. Disable others first and persist.
             foreach (var other in Profiles.Where(x => !ReferenceEquals(x, p))) other.IsEnabled = false;
             Save();
+
+            // Safety: prevent operating on a game folder that points to the profile root (would delete mod files)
+            try
+            {
+                var pr = System.IO.Path.GetFullPath(p.RootPath);
+                var gf = System.IO.Path.GetFullPath(Options.GameFolder);
+                if (string.Equals(pr, gf, StringComparison.OrdinalIgnoreCase) || gf.StartsWith(pr + System.IO.Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                {
+                    _log.Log("Danger: Game folder equals or is inside the profile root. Aborting to protect mod files.");
+                    return;
+                }
+            }
+            catch { }
 
             IsBusy = true; _log.Log(string.Format(ManagedMain.Resources.Strings.SR_Log_EnableProfile_Starting, p.Name));
             try
@@ -170,6 +183,11 @@ namespace ManagedMain.ViewModels
                 Save();
                 _log.Log(string.Format(ManagedMain.Resources.Strings.SR_Log_EnableProfile_Done, p.Name));
             }
+            catch (System.IO.IOException ioex)
+            {
+                _log.Log(string.Format(ManagedMain.Resources.Strings.SR_Log_EnableProfile_Failed, ioex.Message));
+                _log.Log("Hint: If antivirus or Controlled Folder Access is enabled, allow the game folder for write/rename.");
+            }
             catch (System.Exception ex)
             {
                 _log.Log(string.Format(ManagedMain.Resources.Strings.SR_Log_EnableProfile_Failed, ex.Message));
@@ -185,6 +203,19 @@ namespace ManagedMain.ViewModels
             if (p == null) return;
             if (string.IsNullOrWhiteSpace(Options.GameFolder)) { _log.Log(ManagedMain.Resources.Strings.SR_Log_GameFolderNotConfigured); return; }
             EnsureModsLoaded(p);
+
+            // Safety: prevent deleting patch files inside profile root due to misconfigured game folder
+            try
+            {
+                var pr = System.IO.Path.GetFullPath(p.RootPath);
+                var gf = System.IO.Path.GetFullPath(Options.GameFolder);
+                if (string.Equals(pr, gf, StringComparison.OrdinalIgnoreCase) || gf.StartsWith(pr + System.IO.Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                {
+                    _log.Log("Danger: Game folder equals or is inside the profile root. Aborting to protect mod files.");
+                    return;
+                }
+            }
+            catch { }
 
             IsBusy = true; _log.Log(string.Format(ManagedMain.Resources.Strings.SR_Log_DisableProfile_Starting, p.Name));
             try

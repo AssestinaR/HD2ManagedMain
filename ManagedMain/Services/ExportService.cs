@@ -18,6 +18,7 @@ namespace ManagedMain.Services
             public string Name { get; set; } = string.Empty;
             public string Description { get; set; } = string.Empty;
             public string IconPath { get; set; } = string.Empty;
+            public bool OptionsSingleSelect { get; set; }
             public List<ExportOption> Options { get; set; } = new();
         }
         private class ExportOption
@@ -26,6 +27,7 @@ namespace ManagedMain.Services
             public string Description { get; set; } = string.Empty;
             public List<string> Include { get; set; } = new();
             public string Image { get; set; } = string.Empty;
+            public bool SubOptionsSingleSelect { get; set; }
             public List<ExportSub> SubOptions { get; set; } = new();
         }
         private class ExportSub
@@ -98,6 +100,7 @@ namespace ManagedMain.Services
                 Name = mod.Name,
                 Description = mod.Description ?? string.Empty,
                 IconPath = resolvedIcon,
+                OptionsSingleSelect = mod.OptionsSingleSelect,
                 Options = new List<ExportOption>()
             };
             foreach (var o in mod.Options)
@@ -107,6 +110,7 @@ namespace ManagedMain.Services
                     Name = o.Name,
                     Description = o.Description ?? string.Empty,
                     Image = o.Image ?? string.Empty,
+                    SubOptionsSingleSelect = o.SubOptionsSingleSelect,
                     Include = new List<string> { o.Name },
                     SubOptions = new List<ExportSub>()
                 };

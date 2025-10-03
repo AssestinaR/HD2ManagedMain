@@ -103,7 +103,7 @@
 
     <DockPanel>
         <!-- Top toolbar -->
-        <ToolBar DockPanel.Dock="Top" IsEnabled="{Binding IsBusy, Converter={StaticResource BoolNeg}}">
+        <ToolBar DockPanel.Dock="Top" IsEnabled="{Binding IsBusy, Converter={StaticResource BoolNeg}}" ld:AdaptiveToolbarLayout.IsEnabled="True">
             <Button x:Name="BtnNewProfile" Style="{StaticResource PillButton.S}" Command="{Binding NewProfileCommand}">
                 <TextBlock>
                     <Run Text="🆕 "/><Run Text="{x:Static resx:Strings.SR_Btn_New}"/>
@@ -275,8 +275,8 @@
                     <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,8,0,0">
                         <StackPanel Margin="8,0,8,8">
                             <!-- Property toolbar for selected profile -->
-                            <ToolBar>
-                                <Button Style="{StaticResource PillButton.S}" Width="90" MinWidth="90" Command="{Binding RenameProfileCommand}" CommandParameter="{Binding SelectedProfile}">
+                            <ToolBar ld:AdaptiveToolbarLayout.IsEnabled="True">
+                                <Button Style="{StaticResource PillButton.S}" Command="{Binding RenameProfileCommand}" CommandParameter="{Binding SelectedProfile}">
                                     <TextBlock><Run Text="✏️ "/><Run Text="{x:Static resx:Strings.SR_Btn_Rename}"/></TextBlock>
                                 </Button>
                                 <Button Style="{StaticResource PillButton.L}" Command="{Binding OpenFolderCommand}" CommandParameter="{Binding SelectedProfile}">

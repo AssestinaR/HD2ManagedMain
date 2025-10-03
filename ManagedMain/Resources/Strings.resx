@@ -104,6 +104,7 @@
   <data name="SR_Status_OnlyIssues" xml:space="preserve"><value>Only Issues</value></data>
   <data name="SR_Btn_Refresh" xml:space="preserve"><value>Refresh</value></data>
   <data name="SR_Tip_DoubleClickCopyPath" xml:space="preserve"><value>Double click row to copy path</value></data>
+  <data name="SR_Tip_StatusDoubleClick" xml:space="preserve"><value>Left double-click to open the Mod folder; right double-click to locate game files</value></data>
   <data name="SR_Col_Owner" xml:space="preserve"><value>Owner</value></data>
   <data name="SR_Col_Hex" xml:space="preserve"><value>Hex</value></data>
   <data name="SR_Col_ModList" xml:space="preserve"><value>ModList</value></data>
@@ -232,4 +233,10 @@
   <data name="SR_Dlg_Cancel" xml:space="preserve"><value>Cancel</value></data>
   <data name="SR_Tip_ModTreeUsage" xml:space="preserve"><value>Double-click to expand nodes. Left-click to select, right-click to deselect. Hold Shift or Ctrl for multi-select.</value></data>
   <data name="SR_Tip_ModListEmpty" xml:space="preserve"><value>Tip: No Mods yet. Click Import Archive/Import Folder on the top-left, or drag archives/folders into the window to load Mods.</value></data>
+  <data name="SR_Label_Options" xml:space="preserve"><value>Options</value></data>
+  <data name="SR_Label_SubOptions" xml:space="preserve"><value>Sub Options</value></data>
+  <data name="SR_Choice_Single" xml:space="preserve"><value>Single select</value></data>
+  <data name="SR_Choice_Multiple" xml:space="preserve"><value>Multiple</value></data>
+  <data name="SR_Status_Summary_Default" xml:space="preserve"><value>Status ...</value></data>
+  <data name="SR_Status_Summary_Format" xml:space="preserve"><value>Enabled Mods: {0}, Groups: {1}, Normal: {2}, Abnormal: {3}</value></data>
 </root>

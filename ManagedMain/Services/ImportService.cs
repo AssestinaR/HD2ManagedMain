@@ -246,6 +246,7 @@ namespace ManagedMain.Services
                 Name = root.TryGetProperty("Name", out var rname) ? rname.GetString() ?? new DirectoryInfo(targetRoot).Name : new DirectoryInfo(targetRoot).Name,
                 Description = root.TryGetProperty("Description", out var rdesc) ? rdesc.GetString() : null,
                 IconPath = root.TryGetProperty("IconPath", out var rico) ? rico.GetString() : null,
+                OptionsSingleSelect = root.TryGetProperty("OptionsSingleSelect", out var oss) && oss.ValueKind == JsonValueKind.True,
             };
             if (string.IsNullOrWhiteSpace(main.Image) && !string.IsNullOrWhiteSpace(main.IconPath)) main.Image = main.IconPath;
             main.FileGroups = FileGroupScanner.GetModFileGroups(targetRoot, targetRoot);
@@ -258,6 +259,7 @@ namespace ManagedMain.Services
                         Name = optEl.TryGetProperty("Name", out var on) ? on.GetString() ?? "Option" : "Option",
                         Description = optEl.TryGetProperty("Description", out var od) ? od.GetString() : null,
                         Image = optEl.TryGetProperty("Image", out var oi) ? oi.GetString() : null,
+                        SubOptionsSingleSelect = optEl.TryGetProperty("SubOptionsSingleSelect", out var sss) && sss.ValueKind == JsonValueKind.True,
                     };
                     if (optEl.TryGetProperty("Include", out var oinc) && oinc.ValueKind == JsonValueKind.Array)
                     {

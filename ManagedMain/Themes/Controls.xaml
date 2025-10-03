@@ -13,6 +13,9 @@
 
   <conv:CornerRadiusClampConverter x:Key="CornerClamp"/>
   <conv:ContentToTextConverter x:Key="ContentToText"/>
+  <conv:LeadingTokenConverter x:Key="LeadingToken"/>
+  <conv:LabelTextConverter x:Key="LabelText"/>
+  <conv:ButtonLabelVisibilityConverter x:Key="BtnLabelVis"/>
 
   <!-- Section title -->
   <Style x:Key="SectionTitle" TargetType="TextBlock">
@@ -30,7 +33,7 @@
     <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
     <Setter Property="BorderBrush" Value="{StaticResource ButtonAccentMutedBrush}"/>
     <Setter Property="BorderThickness" Value="1"/>
-    <!-- Default tooltip shows only string text extracted from Content to avoid visual tree side effects -->
+    <!-- Default tooltip shows only string text extracted from Content -->
     <Setter Property="ToolTip">
       <Setter.Value>
         <ToolTip Content="{Binding RelativeSource={RelativeSource Self}, Path=PlacementTarget.Content, Converter={StaticResource ContentToText}}"/>
@@ -62,23 +65,51 @@
   <!-- IconTextButton: forces size, centered icon+text string (uses emoji or icon char at start) -->
   <Style x:Key="IconTextButton" TargetType="Button" BasedOn="{StaticResource PillButtonBase}">
     <Setter Property="Height" Value="{StaticResource BtnHeight}"/>
-    <Setter Property="MinWidth" Value="{StaticResource BtnWidthS}"/>
     <Setter Property="HorizontalContentAlignment" Value="Center"/>
     <Setter Property="VerticalContentAlignment" Value="Center"/>
     <Setter Property="Padding" Value="4,1.5"/>
     <Setter Property="FontSize" Value="15"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}">
+            <Border.CornerRadius>
+              <MultiBinding Converter="{StaticResource CornerClamp}" ConverterParameter="3">
+                <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="ActualWidth"/>
+                <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="ActualHeight"/>
+              </MultiBinding>
+            </Border.CornerRadius>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+              <TextBlock Text="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=Content, Converter={StaticResource LeadingToken}}"/>
+              <TextBlock Margin="4,0,0,0">
+                <TextBlock.Text>
+                  <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Content" Converter="{StaticResource LabelText}"/>
+                </TextBlock.Text>
+                <TextBlock.Visibility>
+                  <MultiBinding Converter="{StaticResource BtnLabelVis}">
+                    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="ActualWidth"/>
+                    <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="Tag"/>
+                  </MultiBinding>
+                </TextBlock.Visibility>
+              </TextBlock>
+            </StackPanel>
+          </Border>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
   </Style>
 
   <!-- Convenience aliases -->
   <Style x:Key="PillButton" TargetType="Button" BasedOn="{StaticResource IconTextButton}"/>
   <Style x:Key="PillButton.S" TargetType="Button" BasedOn="{StaticResource IconTextButton}">
-    <Setter Property="Width" Value="{StaticResource BtnWidthS}"/>
+    <Setter Property="Tag" Value="S"/>
   </Style>
   <Style x:Key="PillButton.M" TargetType="Button" BasedOn="{StaticResource IconTextButton}">
-    <Setter Property="Width" Value="{StaticResource BtnWidthM}"/>
+    <Setter Property="Tag" Value="M"/>
   </Style>
   <Style x:Key="PillButton.L" TargetType="Button" BasedOn="{StaticResource IconTextButton}">
-    <Setter Property="Width" Value="{StaticResource BtnWidthL}"/>
+    <Setter Property="Tag" Value="L"/>
   </Style>
 
   <!-- TreeView minimal -->
@@ -132,6 +163,49 @@
         <BeginStoryboard Storyboard="{StaticResource BreathingStoryboard}"/>
       </EventTrigger>
     </Style.Triggers>
+  </Style>
+
+  <!-- Toggle pill styles matching button look -->
+  <Style x:Key="PillToggleBase" TargetType="ToggleButton">
+    <Setter Property="Margin" Value="0,0,8,0"/>
+    <Setter Property="Padding" Value="3.5,2"/>
+    <Setter Property="Background" Value="{StaticResource ButtonAccentWeakBrush}"/>
+    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+    <Setter Property="BorderBrush" Value="{StaticResource ButtonAccentMutedBrush}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ToggleButton">
+          <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}">
+            <Border.CornerRadius>
+              <MultiBinding Converter="{StaticResource CornerClamp}" ConverterParameter="3">
+                <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="ActualWidth"/>
+                <Binding RelativeSource="{RelativeSource TemplatedParent}" Path="ActualHeight"/>
+              </MultiBinding>
+            </Border.CornerRadius>
+            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+    <Style.Triggers>
+      <Trigger Property="IsMouseOver" Value="True">
+        <Setter Property="Background" Value="{StaticResource ButtonAccentMutedBrush}"/>
+      </Trigger>
+      <Trigger Property="IsChecked" Value="True">
+        <Setter Property="Background" Value="{StaticResource ButtonAccentMutedBrush}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource ButtonAccentBrush}"/>
+      </Trigger>
+    </Style.Triggers>
+  </Style>
+  <Style x:Key="PillToggle.S" TargetType="ToggleButton" BasedOn="{StaticResource PillToggleBase}">
+    <Setter Property="Height" Value="{StaticResource BtnHeight}"/>
+    <Setter Property="MinWidth" Value="{StaticResource BtnWidthS}"/>
+    <Setter Property="FontSize" Value="15"/>
+    <Setter Property="Padding" Value="4,1.5"/>
+    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
   </Style>
 
 </ResourceDictionary>

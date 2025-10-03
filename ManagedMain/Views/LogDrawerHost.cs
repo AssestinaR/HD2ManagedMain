@@ -253,9 +253,32 @@ namespace ManagedMain.Views
         {
             var st = GetState(host); if (st == null || st.Drawer == null || st.Transform == null) return;
             if (st.Open) { TryScrollToEnd(st); return; }
+            BringToFront(st);
             st.Open = true; st.Drawer.Visibility = Visibility.Visible; st.Drawer.Focus();
             var anim = new DoubleAnimation { From = st.DrawerHeight, To = 0, Duration = TimeSpan.FromMilliseconds(220), EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
             st.Transform.BeginAnimation(TranslateTransform.YProperty, anim); StartBreathing(st);
+        }
+
+        private static void BringToFront(State st)
+        {
+            try
+            {
+                if (st.Drawer == null) return;
+                if (st.HostElement is System.Windows.Controls.Panel panel)
+                {
+                    int max = 0;
+                    foreach (System.Windows.UIElement child in panel.Children)
+                    {
+                        max = Math.Max(max, System.Windows.Controls.Panel.GetZIndex(child));
+                    }
+                    System.Windows.Controls.Panel.SetZIndex(st.Drawer, max + 1);
+                }
+                else
+                {
+                    System.Windows.Controls.Panel.SetZIndex(st.Drawer, 3000);
+                }
+            }
+            catch { }
         }
 
         private static void Close(DependencyObject host)

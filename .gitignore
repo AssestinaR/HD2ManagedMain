@@ -361,3 +361,17 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Local editor / archive / scratch
+.idea/
+.history/
+*.db-shm
+*.db-wal
+bak/
+legacy/
+BAK/
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.lnk
+docs/

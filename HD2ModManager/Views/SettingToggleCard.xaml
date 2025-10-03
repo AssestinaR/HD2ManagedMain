@@ -1,0 +1,15 @@
+<UserControl x:Class="HD2ModManager.Views.SettingToggleCard"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="120" d:DesignWidth="239.172">
+    <Border Style="{DynamicResource CardContainer}" Width="220">
+        <StackPanel>
+            <TextBlock Text="{Binding Title}" FontWeight="SemiBold"/>
+            <TextBlock Text="{Binding Description}" Foreground="#666" Margin="0,4,0,8"/>
+            <ToggleButton IsChecked="{Binding Value}" Content="Enable"/>
+        </StackPanel>
+    </Border>
+</UserControl>

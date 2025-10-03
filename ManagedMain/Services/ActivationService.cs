@@ -85,6 +85,29 @@ namespace ManagedMain.Services
 
         public LinkStats NormalizeAndRelinkAll(string profileRoot, string gameFolder, IEnumerable<MainModItem> mods)
         {
+            // Safety: do not operate if game folder equals or is inside profile root
+            try
+            {
+                var pr = Path.GetFullPath(profileRoot);
+                var gf = Path.GetFullPath(gameFolder);
+                if (string.Equals(pr, gf, StringComparison.OrdinalIgnoreCase) || gf.StartsWith(pr + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException($"Invalid configuration: game folder inside profile root: {gf}");
+            }
+            catch { }
+
+            // Preflight: verify game folder is writable before any deletion
+            try
+            {
+                Directory.CreateDirectory(gameFolder);
+                var probe = Path.Combine(gameFolder, ".hd2_write_probe.tmp");
+                File.WriteAllText(probe, "probe");
+                try { File.Delete(probe); } catch { }
+            }
+            catch
+            {
+                throw new IOException($"Game folder not writable: {gameFolder}. Check antivirus/Controlled Folder Access or permissions.");
+            }
+
             // Build per-hex buckets in UI order of enabled items. Within a single item (main/option/sub)
             // if multiple groups have the same hex, order them by their original PatchN ascending.
             var perHex = new Dictionary<string, List<(string mainName, ModFileGroup group)>>(StringComparer.OrdinalIgnoreCase);
@@ -142,15 +165,42 @@ namespace ManagedMain.Services
                         try
                         {
                             Directory.CreateDirectory(Path.GetDirectoryName(newAbs)!);
+                            bool updated = false;
                             if (!string.Equals(oldAbs, newAbs, StringComparison.OrdinalIgnoreCase))
                             {
                                 if (File.Exists(oldAbs))
                                 {
-                                    if (File.Exists(newAbs)) try { File.Delete(newAbs); } catch { }
-                                    File.Move(oldAbs, newAbs);
+                                    if (File.Exists(newAbs))
+                                    {
+                                        try { File.Delete(newAbs); } catch { }
+                                    }
+                                    try
+                                    {
+                                        File.Move(oldAbs, newAbs);
+                                        updated = true;
+                                    }
+                                    catch
+                                    {
+                                        // fall back: if move fails but new already exists, accept it
+                                        updated = File.Exists(newAbs);
+                                    }
+                                }
+                                else
+                                {
+                                    // old not found; if target already exists (previously normalized), accept new path
+                                    updated = File.Exists(newAbs);
                                 }
                             }
-                            g.Files[i] = newRel;
+                            else
+                            {
+                                updated = File.Exists(oldAbs);
+                            }
+
+                            if (updated)
+                            {
+                                g.Files[i] = newRel; // only update mapping if file actually exists at new location
+                            }
+                            // else keep original rel to avoid breaking linking
                         }
                         catch { }
                     }
@@ -170,6 +220,7 @@ namespace ManagedMain.Services
                     foreach (var rel in g.Files)
                     {
                         var src = Path.Combine(modRoot, rel.Replace('/', Path.DirectorySeparatorChar));
+                        if (!File.Exists(src)) { fail++; continue; }
                         var fileName = Path.GetFileName(rel);
                         var dst = Path.Combine(gameFolder, fileName);
                         bool ok = CreateLinkPreferHard(dst, src) || TryCopy(dst, src);

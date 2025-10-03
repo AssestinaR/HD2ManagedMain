@@ -1,0 +1,11 @@
+﻿namespace HD2ModCore.Domain;
+
+// 作用：对象节点元数据（用于人类辨识、筛选、展示）。
+// Purpose: Object node metadata (for human identification, filtering and display).
+public sealed record ModNodeMetadata(
+	string Name,
+	string? Notes,
+	IReadOnlyList<string> UserTags,
+	string? ImagePath,
+	DateTimeOffset CreatedUtc,
+	DateTimeOffset? ModifiedUtc);
