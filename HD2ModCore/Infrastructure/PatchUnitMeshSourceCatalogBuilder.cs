@@ -65,9 +65,6 @@ public sealed class PatchUnitMeshSourceCatalogBuilder : IPatchUnitMeshSourceCata
 				continue;
 			}
 
-			var patchUnitMeshReader = this.patchUnitMeshReader is PatchUnitMeshReader concreteReader
-				? concreteReader.WithEntries(allScannedEntries)
-				: this.patchUnitMeshReader;
 			foreach (var entry in scannedEntries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
 			{
 				cancellationToken.ThrowIfCancellationRequested();
@@ -82,7 +79,7 @@ public sealed class PatchUnitMeshSourceCatalogBuilder : IPatchUnitMeshSourceCata
 
 				try
 				{
-					var patchUnitMesh = await patchUnitMeshReader.ReadUnitMeshAsync(entry, cancellationToken).ConfigureAwait(false);
+					var patchUnitMesh = await patchUnitMeshReader.ReadUnitMeshAsync(entry, allScannedEntries, cancellationToken).ConfigureAwait(false);
 					var meshSummaries = BuildMeshSummaries(patchUnitMesh.Model).ToArray();
 					if (meshSummaries.Length == 0)
 					{
@@ -110,7 +107,7 @@ public sealed class PatchUnitMeshSourceCatalogBuilder : IPatchUnitMeshSourceCata
 			}
 		}
 
-		return new PatchUnitMeshSourceCatalog(fileSet.RootDirectoryPath, fileSet.PatchTocFilePaths, entries, failures);
+		return new PatchUnitMeshSourceCatalog(fileSet.RootDirectoryPath, fileSet.PatchTocFilePaths, allScannedEntries, entries, failures);
 	}
 
 	private static bool IsUnsupportedUnitMeshFormat(Exception exception)

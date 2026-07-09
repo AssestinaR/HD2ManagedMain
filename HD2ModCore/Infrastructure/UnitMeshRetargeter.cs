@@ -79,20 +79,24 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 
 	private static UnitRawMeshData CopyRawMeshIntoTargetSlot(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceRawMesh, UnitStreamInfo targetStream, bool allowExperimentalLayoutFallback, MaterialSlotMap? materialMap)
 	{
-		var maxVertices = allowExperimentalLayoutFallback && targetStream.IndexBufferType != 1
-			? Math.Min(sourceRawMesh.Vertices.Count, ushort.MaxValue + 1)
+		var vertexLimit = allowExperimentalLayoutFallback && targetStream.IndexBufferType != 1
+			? ushort.MaxValue + 1
 			: sourceRawMesh.Vertices.Count;
 		var maxSections = allowExperimentalLayoutFallback && targetRawMesh.Sections.Count > 0
 			? Math.Min(sourceRawMesh.Sections.Count, targetRawMesh.Sections.Count)
 			: sourceRawMesh.Sections.Count;
+		var vertexIndexMap = BuildRetainedVertexIndexMap(sourceRawMesh.Sections.Take(maxSections), vertexLimit, sourceRawMesh.Vertices.Count);
 		var sections = sourceRawMesh.Sections.Count == 0
 			? Array.Empty<UnitRawMeshSectionData>()
-			: sourceRawMesh.Sections.Take(maxSections).Select((section, index) => CopySectionIntoTargetSlot(targetRawMesh, section, index, maxVertices, materialMap)).ToArray();
+			: sourceRawMesh.Sections.Take(maxSections).Select((section, index) => CopySectionIntoTargetSlot(targetRawMesh, section, index, vertexIndexMap, materialMap)).ToArray();
 		var triangles = sections.SelectMany(section => section.Triangles).ToArray();
-		var boneMap = CreateBoneMap(targetModel, targetRawMesh, sourceModel, sourceRawMesh);
-		var vertices = sourceRawMesh.Vertices
-			.Take(maxVertices)
-			.Select((vertex, index) => new UnitRawVertexRecord((uint)index, BuildTargetVertexData(vertex, targetStream, allowExperimentalLayoutFallback, boneMap), vertex.Components))
+		var boneMap = CreateBoneMap(targetModel, targetRawMesh, sourceModel, sourceRawMesh, sections);
+		var vertexMaterialMap = boneMap is null
+			? null
+			: CreateVertexMaterialMap(sections, vertexIndexMap.Count);
+		var vertices = vertexIndexMap
+			.Select(pair => sourceRawMesh.Vertices[(int)pair.Key])
+			.Select((vertex, index) => new UnitRawVertexRecord((uint)index, BuildTargetVertexData(vertex, targetStream, allowExperimentalLayoutFallback, boneMap, vertexMaterialMap, index), vertex.Components))
 			.ToArray();
 
 		return targetRawMesh with
@@ -103,13 +107,95 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 		};
 	}
 
-	private static byte[] BuildTargetVertexData(UnitRawVertexRecord sourceVertex, UnitStreamInfo targetStream, bool allowExperimentalLayoutFallback, BoneIndexMap? boneMap)
+	private static IReadOnlyDictionary<uint, uint> BuildRetainedVertexIndexMap(IEnumerable<UnitRawMeshSectionData> sections, int vertexLimit, int sourceVertexCount)
 	{
+		var boundedVertexLimit = Math.Min(vertexLimit, sourceVertexCount);
+		if (vertexLimit >= ushort.MaxValue + 1)
+		{
+			return BuildReferencedVertexIndexMap(sections, boundedVertexLimit, sourceVertexCount);
+		}
+
+		return Enumerable.Range(0, boundedVertexLimit).ToDictionary(index => (uint)index, index => (uint)index);
+	}
+
+	private static IReadOnlyDictionary<uint, uint> BuildReferencedVertexIndexMap(IEnumerable<UnitRawMeshSectionData> sections, int vertexLimit, int sourceVertexCount)
+	{
+		var map = new Dictionary<uint, uint>();
+		foreach (var triangle in sections.SelectMany(section => section.Triangles))
+		{
+			if (!CanAddTriangle(map, triangle, vertexLimit, sourceVertexCount))
+			{
+				continue;
+			}
+
+			AddVertexIndex(map, triangle.A);
+			AddVertexIndex(map, triangle.B);
+			AddVertexIndex(map, triangle.C);
+		}
+
+		return map;
+	}
+
+	private static bool CanAddTriangle(Dictionary<uint, uint> map, UnitTriangleIndices triangle, int vertexLimit, int sourceVertexCount)
+	{
+		var required = CountNewTriangleVertices(map, triangle, sourceVertexCount);
+		return required >= 0 && map.Count + required <= vertexLimit;
+	}
+
+	private static int CountNewTriangleVertices(Dictionary<uint, uint> map, UnitTriangleIndices triangle, int sourceVertexCount)
+	{
+		var required = 0;
+		Span<uint> vertices = [triangle.A, triangle.B, triangle.C];
+		for (var i = 0; i < vertices.Length; i++)
+		{
+			var sourceIndex = vertices[i];
+			if (sourceIndex >= sourceVertexCount)
+			{
+				return -1;
+			}
+
+			if (map.ContainsKey(sourceIndex) || Contains(vertices[..i], sourceIndex))
+			{
+				continue;
+			}
+
+			required++;
+		}
+
+		return required;
+	}
+
+	private static bool Contains(ReadOnlySpan<uint> values, uint value)
+	{
+		foreach (var candidate in values)
+		{
+			if (candidate == value)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private static void AddVertexIndex(Dictionary<uint, uint> map, uint sourceIndex)
+	{
+		if (map.ContainsKey(sourceIndex))
+		{
+			return;
+		}
+
+		map.Add(sourceIndex, checked((uint)map.Count));
+	}
+
+	private static byte[] BuildTargetVertexData(UnitRawVertexRecord sourceVertex, UnitStreamInfo targetStream, bool allowExperimentalLayoutFallback, BoneIndexMap? boneMap, IReadOnlyList<VertexMaterialMapEntry>? vertexMaterialMap, int vertexIndex)
+	{
+		var vertexMaterial = GetVertexMaterial(vertexMaterialMap, vertexIndex);
 		if (!allowExperimentalLayoutFallback)
 		{
 			return boneMap is null
 				? NormalizeVertexData(sourceVertex.Data, targetStream.VertexStride)
-				: RewriteCompatibleVertexBoneIndices(sourceVertex, targetStream, boneMap);
+				: RewriteCompatibleVertexBoneIndices(sourceVertex, targetStream, boneMap, vertexMaterial);
 		}
 
 		var data = new byte[checked((int)targetStream.VertexStride)];
@@ -123,7 +209,7 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 			}
 
 			var sourceComponent = FindSourceComponent(sourceVertex.Components, targetComponent);
-			WriteTargetComponent(data.AsSpan(cursor, size), targetComponent, sourceComponent, boneMap);
+			WriteTargetComponent(data.AsSpan(cursor, size), targetComponent, sourceComponent, boneMap, vertexMaterial);
 			cursor += size;
 		}
 
@@ -136,7 +222,7 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 			?? sourceComponents.FirstOrDefault(component => component.Type == targetComponent.Type);
 	}
 
-	private static void WriteTargetComponent(Span<byte> destination, UnitStreamComponentInfo targetComponent, UnitVertexComponentValue? sourceComponent, BoneIndexMap? boneMap)
+	private static void WriteTargetComponent(Span<byte> destination, UnitStreamComponentInfo targetComponent, UnitVertexComponentValue? sourceComponent, BoneIndexMap? boneMap, VertexMaterialMapEntry vertexMaterial)
 	{
 		if (sourceComponent is not null && sourceComponent.Format == targetComponent.Format && sourceComponent.RawData.Length == destination.Length && (targetComponent.Type != 6 || boneMap is null))
 		{
@@ -161,7 +247,7 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 				WriteColorComponent(destination, targetComponent, sourceComponent);
 				break;
 			case 6:
-				WriteIntegerComponent(destination, targetComponent, sourceComponent, boneMap);
+				WriteIntegerComponent(destination, targetComponent, sourceComponent, boneMap, vertexMaterial);
 				break;
 			case 7:
 				WriteFloatComponent(destination, targetComponent, GetFloatValues(sourceComponent, [1f, 0f, 0f, 0f]));
@@ -237,7 +323,7 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 		destination[3] = 255;
 	}
 
-	private static void WriteIntegerComponent(Span<byte> destination, UnitStreamComponentInfo component, UnitVertexComponentValue? sourceComponent, BoneIndexMap? boneMap = null)
+	private static void WriteIntegerComponent(Span<byte> destination, UnitStreamComponentInfo component, UnitVertexComponentValue? sourceComponent, BoneIndexMap? boneMap = null, VertexMaterialMapEntry? vertexMaterial = null)
 	{
 		if (sourceComponent is not null && sourceComponent.RawData.Length == destination.Length && (component.Type != 6 || boneMap is null))
 		{
@@ -247,7 +333,7 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 
 		if (component.FormatName == "vec4_uint32")
 		{
-			var values = RemapBoneIndices(sourceComponent?.UIntValues ?? Array.Empty<uint>(), boneMap);
+			var values = RemapBoneIndices(sourceComponent?.UIntValues ?? Array.Empty<uint>(), boneMap, vertexMaterial);
 			WriteUInt32(destination, 0, values.Length > 0 ? values[0] : 0);
 			WriteUInt32(destination, 4, values.Length > 1 ? values[1] : 0);
 			WriteUInt32(destination, 8, values.Length > 2 ? values[2] : 0);
@@ -255,7 +341,7 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 		}
 		else if (component.FormatName == "vec4_uint8")
 		{
-			var values = RemapBoneIndices(sourceComponent?.UIntValues ?? Array.Empty<uint>(), boneMap);
+			var values = RemapBoneIndices(sourceComponent?.UIntValues ?? Array.Empty<uint>(), boneMap, vertexMaterial);
 			destination[0] = values.Length > 0 ? ClampToByte(values[0]) : (byte)0;
 			destination[1] = values.Length > 1 ? ClampToByte(values[1]) : (byte)0;
 			destination[2] = values.Length > 2 ? ClampToByte(values[2]) : (byte)0;
@@ -263,7 +349,7 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 		}
 	}
 
-	private static byte[] RewriteCompatibleVertexBoneIndices(UnitRawVertexRecord sourceVertex, UnitStreamInfo targetStream, BoneIndexMap boneMap)
+	private static byte[] RewriteCompatibleVertexBoneIndices(UnitRawVertexRecord sourceVertex, UnitStreamInfo targetStream, BoneIndexMap boneMap, VertexMaterialMapEntry vertexMaterial)
 	{
 		var data = NormalizeVertexData(sourceVertex.Data, targetStream.VertexStride);
 		var cursor = 0;
@@ -278,7 +364,7 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 			if (component.Type == 6)
 			{
 				var sourceComponent = FindSourceComponent(sourceVertex.Components, component);
-				WriteIntegerComponent(data.AsSpan(cursor, size), component, sourceComponent, boneMap);
+				WriteIntegerComponent(data.AsSpan(cursor, size), component, sourceComponent, boneMap, vertexMaterial);
 			}
 
 			cursor += size;
@@ -287,19 +373,19 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 		return data;
 	}
 
-	private static uint[] RemapBoneIndices(IReadOnlyList<uint> values, BoneIndexMap? boneMap)
+	private static uint[] RemapBoneIndices(IReadOnlyList<uint> values, BoneIndexMap? boneMap, VertexMaterialMapEntry? vertexMaterial)
 	{
 		var remapped = new uint[Math.Max(values.Count, 4)];
 		for (var i = 0; i < remapped.Length; i++)
 		{
 			var value = i < values.Count ? values[i] : 0;
-			remapped[i] = boneMap?.TryMap(value, out var mapped) == true ? mapped : value;
+			remapped[i] = boneMap?.TryMap(value, vertexMaterial, out var mapped) == true ? mapped : value;
 		}
 
 		return remapped;
 	}
 
-	private static BoneIndexMap? CreateBoneMap(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceRawMesh)
+	private static BoneIndexMap? CreateBoneMap(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceRawMesh, IReadOnlyList<UnitRawMeshSectionData> replacementSections)
 	{
 		var targetBoneInfo = FindBoneInfoForMesh(targetModel, targetRawMesh);
 		var sourceBoneInfo = FindBoneInfoForMesh(sourceModel, sourceRawMesh);
@@ -308,14 +394,47 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 			return null;
 		}
 
-		var targetMaterialIndex = targetRawMesh.Sections.FirstOrDefault()?.MaterialIndex ?? 0;
-		var sourceMaterialIndex = sourceRawMesh.Sections.FirstOrDefault()?.MaterialIndex ?? 0;
-		var targetRemap = FindBoneRemap(targetBoneInfo, targetMaterialIndex);
-		var sourceRemap = FindBoneRemap(sourceBoneInfo, sourceMaterialIndex);
-		return targetRemap is null || sourceRemap is null
+		var targetRemaps = replacementSections
+			.Select(section => FindBoneRemap(targetBoneInfo, section.MaterialIndex))
+			.ToArray();
+		var sourceRemaps = sourceRawMesh.Sections
+			.Select(section => FindBoneRemap(sourceBoneInfo, section.MaterialIndex))
+			.ToArray();
+		return targetRemaps.Length == 0 || sourceRemaps.Length == 0 || targetRemaps.Any(remap => remap is null) || sourceRemaps.Any(remap => remap is null)
 			? null
-			: new BoneIndexMap(sourceBoneInfo, sourceRemap, targetBoneInfo, targetRemap);
+			: new BoneIndexMap(sourceBoneInfo, sourceRemaps!, targetBoneInfo, targetRemaps!);
 	}
+
+	private static IReadOnlyList<VertexMaterialMapEntry> CreateVertexMaterialMap(IReadOnlyList<UnitRawMeshSectionData> replacementSections, int vertexCount)
+	{
+		var result = Enumerable.Range(0, vertexCount)
+			.Select(_ => new VertexMaterialMapEntry(0, 0))
+			.ToArray();
+		for (var sectionIndex = 0; sectionIndex < replacementSections.Count; sectionIndex++)
+		{
+			foreach (var triangle in replacementSections[sectionIndex].Triangles)
+			{
+				AssignVertexMaterial(result, triangle.A, sectionIndex);
+				AssignVertexMaterial(result, triangle.B, sectionIndex);
+				AssignVertexMaterial(result, triangle.C, sectionIndex);
+			}
+		}
+
+		return result;
+	}
+
+	private static void AssignVertexMaterial(VertexMaterialMapEntry[] result, uint vertexIndex, int sectionIndex)
+	{
+		if (vertexIndex < result.Length)
+		{
+			result[(int)vertexIndex] = new VertexMaterialMapEntry(sectionIndex, sectionIndex);
+		}
+	}
+
+	private static VertexMaterialMapEntry GetVertexMaterial(IReadOnlyList<VertexMaterialMapEntry>? vertexMaterialMap, int vertexIndex)
+		=> vertexMaterialMap is not null && vertexIndex < vertexMaterialMap.Count
+			? vertexMaterialMap[vertexIndex]
+			: new VertexMaterialMapEntry(0, 0);
 
 	private static UnitBoneInfo? FindBoneInfoForMesh(UnitMeshModel model, UnitRawMeshData mesh)
 	{
@@ -340,12 +459,12 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 		return data;
 	}
 
-	private static UnitRawMeshSectionData CopySectionIntoTargetSlot(UnitRawMeshData targetRawMesh, UnitRawMeshSectionData sourceSection, int sectionIndex, int maxVertices, MaterialSlotMap? materialMap)
+	private static UnitRawMeshSectionData CopySectionIntoTargetSlot(UnitRawMeshData targetRawMesh, UnitRawMeshSectionData sourceSection, int sectionIndex, IReadOnlyDictionary<uint, uint> vertexIndexMap, MaterialSlotMap? materialMap)
 	{
 		var targetSection = sectionIndex < targetRawMesh.Sections.Count ? targetRawMesh.Sections[sectionIndex] : targetRawMesh.Sections.FirstOrDefault();
 		var triangles = sourceSection.Triangles
-			.Where(triangle => triangle.A < maxVertices && triangle.B < maxVertices && triangle.C < maxVertices)
-			.Select(triangle => new UnitTriangleIndices(triangle.A, triangle.B, triangle.C))
+			.Where(triangle => vertexIndexMap.ContainsKey(triangle.A) && vertexIndexMap.ContainsKey(triangle.B) && vertexIndexMap.ContainsKey(triangle.C))
+			.Select(triangle => new UnitTriangleIndices(vertexIndexMap[triangle.A], vertexIndexMap[triangle.B], vertexIndexMap[triangle.C]))
 			.ToArray();
 		if (materialMap?.TryMap(sourceSection.MaterialSlotId, out var materialIndex, out var materialSlotId) == true)
 		{
@@ -482,28 +601,54 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 
 	private sealed class BoneIndexMap
 	{
-		private readonly Dictionary<uint, uint> sourceToTarget = new();
+		private readonly IReadOnlyList<Dictionary<uint, uint>> sourceToTargetByMaterial;
 
-		public BoneIndexMap(UnitBoneInfo sourceBoneInfo, UnitBoneRemap sourceRemap, UnitBoneInfo targetBoneInfo, UnitBoneRemap targetRemap)
+		public BoneIndexMap(UnitBoneInfo sourceBoneInfo, IReadOnlyList<UnitBoneRemap> sourceRemaps, UnitBoneInfo targetBoneInfo, IReadOnlyList<UnitBoneRemap> targetRemaps)
 		{
-			var targetRealToFake = BuildRealToFakeIndex(targetBoneInfo, targetRemap);
-			for (var sourceIndex = 0; sourceIndex < sourceRemap.FakeIndices.Count; sourceIndex++)
+			var count = Math.Min(sourceRemaps.Count, targetRemaps.Count);
+			var maps = new List<Dictionary<uint, uint>>(count);
+			for (var materialIndex = 0; materialIndex < count; materialIndex++)
 			{
-				var sourceFakeIndex = sourceRemap.FakeIndices[sourceIndex];
-				if (sourceFakeIndex >= sourceBoneInfo.RealIndices.Count)
+				var sourceToTarget = new Dictionary<uint, uint>();
+				var sourceRemap = sourceRemaps[materialIndex];
+				var targetRealToFake = BuildRealToFakeIndex(targetBoneInfo, targetRemaps[materialIndex]);
+				for (var sourceIndex = 0; sourceIndex < sourceRemap.FakeIndices.Count; sourceIndex++)
 				{
-					continue;
+					var sourceFakeIndex = sourceRemap.FakeIndices[sourceIndex];
+					if (sourceFakeIndex >= sourceBoneInfo.RealIndices.Count)
+					{
+						continue;
+					}
+
+					var realIndex = sourceBoneInfo.RealIndices[(int)sourceFakeIndex];
+					if (targetRealToFake.TryGetValue(realIndex, out var targetIndex))
+					{
+						sourceToTarget[(uint)sourceIndex] = targetIndex;
+					}
 				}
 
-				var realIndex = sourceBoneInfo.RealIndices[(int)sourceFakeIndex];
-				if (targetRealToFake.TryGetValue(realIndex, out var targetIndex))
-				{
-					sourceToTarget[(uint)sourceIndex] = targetIndex;
-				}
+				maps.Add(sourceToTarget);
 			}
+
+			sourceToTargetByMaterial = maps;
 		}
 
-		public bool TryMap(uint sourceIndex, out uint targetIndex) => sourceToTarget.TryGetValue(sourceIndex, out targetIndex);
+		public bool TryMap(uint sourceIndex, VertexMaterialMapEntry? vertexMaterial, out uint targetIndex)
+		{
+			var materialIndex = vertexMaterial?.SourceMaterialIndex ?? 0;
+			if (materialIndex >= 0 && materialIndex < sourceToTargetByMaterial.Count && sourceToTargetByMaterial[materialIndex].TryGetValue(sourceIndex, out targetIndex))
+			{
+				return true;
+			}
+
+			if (sourceToTargetByMaterial.Count > 0 && sourceToTargetByMaterial[0].TryGetValue(sourceIndex, out targetIndex))
+			{
+				return true;
+			}
+
+			targetIndex = 0;
+			return false;
+		}
 
 		private static Dictionary<uint, uint> BuildRealToFakeIndex(UnitBoneInfo boneInfo, UnitBoneRemap remap)
 		{
@@ -522,6 +667,8 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 			return result;
 		}
 	}
+
+	private sealed record VertexMaterialMapEntry(int SourceMaterialIndex, int TargetMaterialIndex);
 
 	private sealed record MaterialSlotReplacement(uint TargetSlotId, uint SourceSlotId, ulong SourceMaterialId, uint SourceMaterialIndex);
 

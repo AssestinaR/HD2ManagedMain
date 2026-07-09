@@ -7,4 +7,6 @@ namespace HD2ModCore.Application;
 public interface IPatchUnitMeshReader
 {
 	ValueTask<PatchUnitMesh> ReadUnitMeshAsync(PatchTocEntry entry, CancellationToken cancellationToken = default);
+
+	ValueTask<PatchUnitMesh> ReadUnitMeshAsync(PatchTocEntry entry, IReadOnlyList<PatchTocEntry> entries, CancellationToken cancellationToken = default);
 }

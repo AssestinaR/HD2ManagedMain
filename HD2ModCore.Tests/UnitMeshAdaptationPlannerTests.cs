@@ -21,11 +21,12 @@ public sealed class UnitMeshAdaptationPlannerTests
 		Assert.NotNull(plan.WriteResult);
 		Assert.NotEmpty(plan.WriteResult!.TocData);
 		Assert.NotEmpty(plan.WriteResult.GpuData);
+		Assert.NotNull(plan.EditedModel);
 		Assert.Single(plan.Candidates);
-		Assert.Equal(2, plan.Steps.Count);
+		Assert.Single(plan.Steps);
 		Assert.Equal(1, plan.ReplacementCount);
-		Assert.Equal(1, plan.MinifiedCount);
-		Assert.Contains(plan.EditedModel.RawMeshData, mesh => mesh.MeshInfoIndex == 0 && mesh.Vertices[0].Components[0].FloatValues.SequenceEqual([10f, 20f, 30f]));
+		Assert.Equal(0, plan.MinifiedCount);
+		Assert.Contains(plan.EditedModel!.RawMeshData, mesh => mesh.MeshInfoIndex == 0 && mesh.Vertices[0].Components[0].FloatValues.SequenceEqual([10f, 20f, 30f]));
 	}
 
 	[Fact]
@@ -42,9 +43,10 @@ public sealed class UnitMeshAdaptationPlannerTests
 		var plan = planner.BuildPlan(source, archive, sourceMeshInfoIndex: 1);
 
 		Assert.True(plan.CanWrite, plan.Reason);
+		Assert.NotNull(plan.EditedModel);
 		var replacement = Assert.Single(plan.Steps, step => step.Kind == UnitMeshAdaptationStepKind.ReplaceWithSource);
 		Assert.Equal(1, replacement.SourceMeshInfoIndex);
-		Assert.Contains(plan.EditedModel.RawMeshData, mesh => mesh.MeshInfoIndex == 0 && mesh.Vertices[0].Data[0] == 60);
+		Assert.Contains(plan.EditedModel!.RawMeshData, mesh => mesh.MeshInfoIndex == 0 && mesh.Vertices[0].Data[0] == 60);
 	}
 
 	[Fact]
@@ -60,14 +62,15 @@ public sealed class UnitMeshAdaptationPlannerTests
 
 		var plan = planner.BuildPlan(source, archive);
 
-		Assert.Equal(2, plan.MinifiedCount);
+		Assert.NotNull(plan.EditedModel);
+		Assert.Equal(1, plan.MinifiedCount);
 		Assert.Contains(plan.Steps, step => step.Kind == UnitMeshAdaptationStepKind.MinifyTarget && step.TargetMeshInfoIndex == 0);
-		Assert.Contains(plan.EditedModel.RawMeshData, mesh => mesh.MeshInfoIndex == 0 && mesh.Vertices.Count == 3 && mesh.Vertices[0].Data[0] == 0);
-		Assert.Contains(plan.EditedModel.RawMeshData, mesh => mesh.MeshInfoIndex == 1 && mesh.Vertices[0].Data[0] == 60);
+		Assert.Contains(plan.EditedModel!.RawMeshData, mesh => mesh.MeshInfoIndex == 0 && mesh.Vertices.Count == 3 && mesh.Vertices[0].Data[0] == 0);
+		Assert.Contains(plan.EditedModel!.RawMeshData, mesh => mesh.MeshInfoIndex == 1 && mesh.Vertices[0].Data[0] == 60);
 	}
 
 	[Fact]
-	public void BuildPlan_IncompatibleLayouts_ProducesWritableMinifyOnlyPlan()
+	public void BuildPlan_IncompatibleLayouts_WritesMinifyOnlyPlan()
 	{
 		var target = CreatePatchUnitMesh(BuildMinimalUnitTocData(), BuildMinimalGpuData());
 		var source = CreatePatchUnitMesh(BuildVec2ComponentUnitTocData(), BuildMinimalGpuData());
@@ -81,8 +84,9 @@ public sealed class UnitMeshAdaptationPlannerTests
 		Assert.Equal(0, plan.ReplacementCount);
 		Assert.Equal(1, plan.MinifiedCount);
 		Assert.NotNull(plan.WriteResult);
-		Assert.Contains(plan.EditedModel.RawMeshData, mesh => mesh.MeshInfoIndex == 0 && mesh.Vertices.Count == 3 && mesh.Triangles.Count == 1);
+		Assert.NotNull(plan.EditedModel);
 		Assert.Contains("minify-only", plan.Reason, StringComparison.OrdinalIgnoreCase);
+		Assert.Contains(plan.EditedModel!.RawMeshData, mesh => mesh.MeshInfoIndex == 0 && mesh.Vertices.Count == 3 && mesh.Vertices[0].Data[0] == 0);
 	}
 
 	[Fact]

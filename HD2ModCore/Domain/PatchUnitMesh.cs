@@ -5,4 +5,5 @@ namespace HD2ModCore.Domain;
 public sealed record PatchUnitMesh(
 	PatchTocEntry Entry,
 	PatchEntryPayload Payload,
-	UnitMeshModel Model);
+	UnitMeshModel Model,
+	PatchEntryPayload? CompositePayload = null);

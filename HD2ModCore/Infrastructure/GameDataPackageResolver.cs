@@ -21,6 +21,7 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 	private readonly string _gameDataDirectory;
 	private readonly Dictionary<string, PackageInfo> _packages = new(StringComparer.OrdinalIgnoreCase);
 	private readonly Dictionary<string, Dictionary<long, int>> _bundleChunkOffsets = new(StringComparer.OrdinalIgnoreCase);
+	private readonly Dictionary<string, byte[]> _reconstructedPackages = new(StringComparer.OrdinalIgnoreCase);
 	private bool _initialized;
 
 	public GameDataPackageResolver(string gameDataDirectory)
@@ -43,7 +44,7 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 		{
 			PackageStorageType.Legacy => await ReadLegacyTocAsync(fullPath, cancellationToken).ConfigureAwait(false),
 			PackageStorageType.Dsar => await GetResourceFromDsarAsync(fullPath, 0, cancellationToken).ConfigureAwait(false),
-			PackageStorageType.Bundled => await GetBundledPackageTocAsync(Path.GetFileName(packageName), cancellationToken).ConfigureAwait(false),
+			PackageStorageType.Bundled => await ReconstructBundledPackageAsync(Path.GetFileName(packageName), cancellationToken).ConfigureAwait(false),
 			_ => null,
 		};
 
@@ -75,6 +76,29 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 		}
 
 		return data;
+	}
+
+	public async ValueTask<IReadOnlyList<string>> GetPackageNamesAsync(CancellationToken cancellationToken = default)
+	{
+		await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+		if (_packages.Count > 0)
+		{
+			return _packages.Keys.Order(StringComparer.OrdinalIgnoreCase).ToArray();
+		}
+
+		if (!Directory.Exists(_gameDataDirectory))
+		{
+			return Array.Empty<string>();
+		}
+
+		return Directory.EnumerateFiles(_gameDataDirectory)
+			.Select(Path.GetFileName)
+			.Where(name => !string.IsNullOrWhiteSpace(name)
+				&& !name.Contains(".patch", StringComparison.OrdinalIgnoreCase)
+				&& Path.GetExtension(name) is "" or ".stream" or ".gpu_resources")
+			.Cast<string>()
+			.Order(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
 	}
 
 	public async ValueTask<string> GetPackageFingerprintAsync(string packageName, CancellationToken cancellationToken = default)
@@ -126,62 +150,83 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 			cancellationToken).ConfigureAwait(false);
 	}
 
-	private async ValueTask<byte[]?> GetBundledPackageResourceAsync(string packageName, long resourceOffset, uint resourceSize, CancellationToken cancellationToken)
+	private async ValueTask<byte[]?> ReconstructBundledPackageAsync(string packageName, CancellationToken cancellationToken)
 	{
 		await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+		if (_reconstructedPackages.TryGetValue(packageName, out var cached))
+		{
+			return cached;
+		}
+
 		if (!_packages.TryGetValue(packageName, out var package) || package.Entries.Count == 0)
 		{
 			return null;
 		}
 
+		var packageData = new byte[checked((int)package.Size)];
 		var orderedEntries = package.Entries
 			.OrderBy(e => e.OriginalArchiveOffset)
 			.ToArray();
-		var startIndex = Array.FindLastIndex(orderedEntries, e => e.OriginalArchiveOffset <= resourceOffset);
-		if (startIndex < 0)
-		{
-			return null;
-		}
 
-		var targetSize = checked((int)resourceSize);
-		var result = new byte[targetSize];
-		var written = 0;
-		var currentOffset = resourceOffset;
-		for (var i = startIndex; i < orderedEntries.Length && written < targetSize; i++)
+		for (var i = 0; i < orderedEntries.Length; i++)
 		{
 			var entry = orderedEntries[i];
-			if (entry.OriginalArchiveOffset > currentOffset)
-			{
-				break;
-			}
-
-			var chunkData = await GetResourceFromDsarAsync(
-				Path.Combine(_gameDataDirectory, $"bundles.{entry.BundleIndex:00}.nxa"),
-				entry.StartOffset,
-				cancellationToken).ConfigureAwait(false);
-			var chunkOffset = checked((int)(currentOffset - entry.OriginalArchiveOffset));
-			if (chunkOffset >= chunkData.Length)
+			var nextOffset = i + 1 < orderedEntries.Length ? orderedEntries[i + 1].OriginalArchiveOffset : package.Size;
+			var itemSize = checked((int)(nextOffset - entry.OriginalArchiveOffset));
+			if (itemSize <= 0)
 			{
 				continue;
 			}
 
-			var copyLength = Math.Min(chunkData.Length - chunkOffset, targetSize - written);
-			Buffer.BlockCopy(chunkData, chunkOffset, result, written, copyLength);
-			written += copyLength;
-			currentOffset += copyLength;
+			var resources = await GetBundledResourcesAsync(
+				Path.Combine(_gameDataDirectory, $"bundles.{entry.BundleIndex:00}.nxa"),
+				entry.StartOffset,
+				itemSize,
+				cancellationToken).ConfigureAwait(false);
+			var combined = Combine(resources);
+			var copyLength = Math.Min(combined.Length, itemSize);
+			Buffer.BlockCopy(combined, 0, packageData, checked((int)entry.OriginalArchiveOffset), copyLength);
 		}
 
-		if (written == 0)
+		_reconstructedPackages[packageName] = packageData;
+		return packageData;
+	}
+
+	private async ValueTask<byte[]?> GetBundledPackageResourceAsync(string packageName, long resourceOffset, uint resourceSize, CancellationToken cancellationToken)
+	{
+		var packageData = await ReconstructBundledPackageAsync(packageName, cancellationToken).ConfigureAwait(false);
+		if (packageData is null || resourceSize == 0)
 		{
 			return null;
 		}
 
-		if (written < result.Length)
+		var offset = checked((int)resourceOffset);
+		var size = checked((int)resourceSize);
+		if (offset < 0 || offset + size > packageData.Length)
 		{
-			Array.Resize(ref result, written);
+			return null;
 		}
 
-		return result;
+		return packageData.AsSpan(offset, size).ToArray();
+	}
+
+	private async ValueTask<IReadOnlyList<byte[]>> GetBundledResourcesAsync(string bundlePath, long startOffset, int size, CancellationToken cancellationToken)
+	{
+		var resources = new List<byte[]>();
+		var currentSize = 0;
+		while (currentSize < size)
+		{
+			var resource = await GetResourceFromDsarAsync(bundlePath, startOffset + currentSize, cancellationToken).ConfigureAwait(false);
+			if (resource.Length == 0)
+			{
+				break;
+			}
+
+			currentSize += resource.Length;
+			resources.Add(resource);
+		}
+
+		return resources;
 	}
 
 	private async ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)

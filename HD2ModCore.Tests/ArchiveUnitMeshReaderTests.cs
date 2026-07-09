@@ -115,6 +115,66 @@ public sealed class ArchiveUnitMeshReaderTests
 	}
 
 	[Fact]
+	public async Task ReadUnitMeshAsync_CompositeBackedUnit_ReadsCompositePayloadFromSearchArchive()
+	{
+		var unitKey = new AssetKey(UnitTypeId, 0x123456789abcdef0);
+		var compositeKey = new AssetKey(CompositeUnitTypeId, 0xfedcba9876543210);
+		var unitEntry = new PatchTocEntry(
+			unitKey,
+			"archive",
+			"archive",
+			TocDataOffset: 10,
+			GpuResourceOffset: 30,
+			TocDataSize: 24,
+			GpuResourceSize: 4,
+			EntryIndex: 7);
+		var compositeEntry = new PatchTocEntry(
+			compositeKey,
+			"dependency",
+			"dependency",
+			TocDataOffset: 40,
+			GpuResourceOffset: 70,
+			TocDataSize: 5,
+			GpuResourceSize: 6,
+			EntryIndex: 8);
+		var unitTocData = new byte[24];
+		WriteUInt64(unitTocData, 16, compositeKey.FileId);
+		var unitGpuData = new byte[] { 1, 2, 3, 4 };
+		var compositeTocData = new byte[] { 5, 6, 7, 8, 9 };
+		var compositeGpuData = new byte[] { 10, 11, 12, 13, 14, 15 };
+		var model = CreateEmptyModel(version: 42);
+		var resolver = new FakeGameDataPackageResolver(
+			new Dictionary<string, GameDataPackageToc?>
+			{
+				["archive"] = new(new byte[] { 99 }, UsesSlimEntryOffset: true),
+				["dependency"] = new(new byte[] { 100 }, UsesSlimEntryOffset: true),
+			},
+			new Dictionary<(string PackageName, ulong Offset, uint Size), byte[]>
+			{
+				[("archive", unitEntry.TocDataOffset, unitEntry.TocDataSize)] = unitTocData,
+				[("archive.gpu_resources", unitEntry.GpuResourceOffset, unitEntry.GpuResourceSize)] = unitGpuData,
+				[("dependency", compositeEntry.TocDataOffset, compositeEntry.TocDataSize)] = compositeTocData,
+				[("dependency.gpu_resources", compositeEntry.GpuResourceOffset, compositeEntry.GpuResourceSize)] = compositeGpuData,
+			},
+			new[] { "archive", "dependency" });
+		var scanner = new FakePatchTocScanner(new Dictionary<string, IReadOnlyList<PatchTocEntry>>
+		{
+			["archive"] = new[] { unitEntry },
+			["dependency"] = new[] { compositeEntry },
+		});
+		var unitReader = new FakeUnitMeshReader(model);
+		var reader = new ArchiveUnitMeshReader(_ => resolver, scanner, unitReader);
+
+		var result = await reader.ReadUnitMeshAsync("game", "archive", unitKey);
+
+		Assert.Equal(unitKey, result.Entry.AssetKey);
+		Assert.Equal(unitTocData, unitReader.LastTocData);
+		Assert.Equal(unitGpuData, unitReader.LastGpuData);
+		Assert.Equal(compositeTocData, unitReader.LastCompositeTocData);
+		Assert.Equal(compositeGpuData, unitReader.LastCompositeGpuData);
+	}
+
+	[Fact]
 	public async Task ReadUnitMeshAsync_NonUnitAssetKey_Throws()
 	{
 		var reader = CreateReader();
@@ -192,8 +252,9 @@ public sealed class ArchiveUnitMeshReaderTests
 
 	private sealed class FakeGameDataPackageResolver : IGameDataPackageResolver
 	{
-		private readonly GameDataPackageToc? toc;
+		private readonly IReadOnlyDictionary<string, GameDataPackageToc?> tocs;
 		private readonly IReadOnlyDictionary<(string PackageName, ulong Offset, uint Size), byte[]> resources;
+		private readonly IReadOnlyList<string> packageNames;
 
 		public FakeGameDataPackageResolver(GameDataPackageToc? toc, IReadOnlyDictionary<(ulong Offset, uint Size), byte[]> resources)
 			: this(toc, resources.ToDictionary(pair => ("archive", pair.Key.Offset, pair.Key.Size), pair => pair.Value))
@@ -201,45 +262,62 @@ public sealed class ArchiveUnitMeshReaderTests
 		}
 
 		public FakeGameDataPackageResolver(GameDataPackageToc? toc, IReadOnlyDictionary<(string PackageName, ulong Offset, uint Size), byte[]> resources)
+			: this(new Dictionary<string, GameDataPackageToc?> { ["archive"] = toc }, resources, new[] { "archive" })
 		{
-			this.toc = toc;
+		}
+
+		public FakeGameDataPackageResolver(
+			IReadOnlyDictionary<string, GameDataPackageToc?> tocs,
+			IReadOnlyDictionary<(string PackageName, ulong Offset, uint Size), byte[]> resources,
+			IReadOnlyList<string> packageNames)
+		{
+			this.tocs = tocs;
 			this.resources = resources;
+			this.packageNames = packageNames;
 		}
 
 		public ValueTask<GameDataPackageToc?> GetPackageTocAsync(string packageName, CancellationToken cancellationToken = default)
-			=> ValueTask.FromResult(toc);
+			=> ValueTask.FromResult(tocs.TryGetValue(Path.GetFileName(packageName), out var toc) ? toc : null);
 
 		public ValueTask<byte[]?> GetPackageResourceAsync(string packageName, ulong resourceOffset, uint resourceSize, CancellationToken cancellationToken = default)
 			=> ValueTask.FromResult(resources.TryGetValue((Path.GetFileName(packageName), resourceOffset, resourceSize), out var data) ? data : null);
+
+		public ValueTask<IReadOnlyList<string>> GetPackageNamesAsync(CancellationToken cancellationToken = default)
+			=> ValueTask.FromResult(packageNames);
 	}
 
 	private sealed class FakePatchTocScanner : IPatchTocScanner
 	{
-		private readonly IReadOnlyList<PatchTocEntry> entries;
+		private readonly IReadOnlyDictionary<string, IReadOnlyList<PatchTocEntry>> entriesByFile;
 
 		public FakePatchTocScanner(IReadOnlyList<PatchTocEntry> entries)
+			: this(new Dictionary<string, IReadOnlyList<PatchTocEntry>> { ["archive"] = entries })
 		{
-			this.entries = entries;
+		}
+
+		public FakePatchTocScanner(IReadOnlyDictionary<string, IReadOnlyList<PatchTocEntry>> entriesByFile)
+		{
+			this.entriesByFile = entriesByFile;
 		}
 
 		public bool UsesSlimEntryOffset { get; private set; }
 		public string? SourceFilePath { get; private set; }
 
 		public ValueTask<IReadOnlySet<AssetKey>> ScanAssetKeysAsync(string patchTocFilePath, CancellationToken cancellationToken = default)
-			=> ValueTask.FromResult<IReadOnlySet<AssetKey>>(entries.Select(e => e.AssetKey).ToHashSet());
+			=> ValueTask.FromResult<IReadOnlySet<AssetKey>>(entriesByFile.Values.SelectMany(e => e).Select(e => e.AssetKey).ToHashSet());
 
 		public IReadOnlySet<AssetKey> ScanAssetKeys(ReadOnlySpan<byte> tocData, bool usesSlimEntryOffset = false)
-			=> entries.Select(e => e.AssetKey).ToHashSet();
+			=> entriesByFile.Values.SelectMany(e => e).Select(e => e.AssetKey).ToHashSet();
 
 		public IReadOnlyList<PatchTocEntry> ScanEntries(ReadOnlySpan<byte> tocData, string sourceFilePath, bool usesSlimEntryOffset = false)
 		{
 			UsesSlimEntryOffset = usesSlimEntryOffset;
 			SourceFilePath = sourceFilePath;
-			return entries;
+			return entriesByFile.TryGetValue(Path.GetFileName(sourceFilePath), out var entries) ? entries : Array.Empty<PatchTocEntry>();
 		}
 
 		public ValueTask<IReadOnlyList<PatchTocEntry>> ScanEntriesAsync(string patchTocFilePath, CancellationToken cancellationToken = default)
-			=> ValueTask.FromResult(entries);
+			=> ValueTask.FromResult(entriesByFile.TryGetValue(Path.GetFileName(patchTocFilePath), out var entries) ? entries : Array.Empty<PatchTocEntry>());
 	}
 
 	private sealed class FakeUnitMeshReader : IUnitMeshReader
@@ -256,7 +334,7 @@ public sealed class ArchiveUnitMeshReaderTests
 		public byte[]? LastCompositeTocData { get; private set; }
 		public byte[]? LastCompositeGpuData { get; private set; }
 
-		public UnitMeshModel Read(ReadOnlySpan<byte> tocData, ReadOnlySpan<byte> gpuData, ReadOnlySpan<byte> compositeTocData = default, ReadOnlySpan<byte> compositeGpuData = default)
+		public UnitMeshModel Read(ReadOnlySpan<byte> tocData, ReadOnlySpan<byte> gpuData, ReadOnlySpan<byte> compositeTocData = default, ReadOnlySpan<byte> compositeGpuData = default, UnitBoneNames? boneNames = null)
 		{
 			LastTocData = tocData.ToArray();
 			LastGpuData = gpuData.ToArray();

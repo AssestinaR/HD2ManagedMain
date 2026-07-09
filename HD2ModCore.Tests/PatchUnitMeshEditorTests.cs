@@ -30,7 +30,7 @@ public sealed class PatchUnitMeshEditorTests
 
 			Assert.Equal(entry, result.Entry);
 			Assert.Equal(0, result.TocDataSizeDelta);
-			Assert.Equal(-22, result.GpuResourceSizeDelta);
+			Assert.Equal(-10, result.GpuResourceSizeDelta);
 			Assert.Equal(originalPatchBytes, await File.ReadAllBytesAsync(patchPath));
 			Assert.Equal(originalGpuBytes, await File.ReadAllBytesAsync(patchPath + ".gpu_resources"));
 			var rawMesh = Assert.Single(reparsed.RawMeshData);

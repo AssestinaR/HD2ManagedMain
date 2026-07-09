@@ -278,5 +278,8 @@ public sealed class PatchUnitMeshSourceCatalogBuilderTests
 
 			return ValueTask.FromResult(units[entry]);
 		}
+
+		public ValueTask<PatchUnitMesh> ReadUnitMeshAsync(PatchTocEntry entry, IReadOnlyList<PatchTocEntry> entries, CancellationToken cancellationToken = default)
+			=> ReadUnitMeshAsync(entry, cancellationToken);
 	}
 }

@@ -5,6 +5,7 @@ namespace HD2ModCore.Domain;
 public sealed record PatchUnitMeshSourceCatalog(
 	string PatchDirectoryPath,
 	IReadOnlyList<string> PatchTocFilePaths,
+	IReadOnlyList<PatchTocEntry> ScannedEntries,
 	IReadOnlyList<PatchUnitMeshSourceCatalogEntry> Entries,
 	IReadOnlyList<PatchUnitMeshSourceCatalogFailure> Failures)
 {

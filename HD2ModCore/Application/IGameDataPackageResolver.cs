@@ -9,4 +9,6 @@ public interface IGameDataPackageResolver
 	ValueTask<GameDataPackageToc?> GetPackageTocAsync(string packageName, CancellationToken cancellationToken = default);
 
 	ValueTask<byte[]?> GetPackageResourceAsync(string packageName, ulong resourceOffset, uint resourceSize, CancellationToken cancellationToken = default);
+
+	ValueTask<IReadOnlyList<string>> GetPackageNamesAsync(CancellationToken cancellationToken = default);
 }

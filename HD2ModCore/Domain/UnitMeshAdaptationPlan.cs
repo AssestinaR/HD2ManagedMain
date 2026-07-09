@@ -7,7 +7,7 @@ public sealed record UnitMeshAdaptationPlan(
 	bool CanWrite,
 	IReadOnlyList<UnitMeshReplacementCandidate> Candidates,
 	IReadOnlyList<UnitMeshAdaptationStep> Steps,
-	UnitMeshModel EditedModel,
+	UnitMeshModel? EditedModel,
 	UnitMeshWriteResult? WriteResult,
 	string Reason)
 {

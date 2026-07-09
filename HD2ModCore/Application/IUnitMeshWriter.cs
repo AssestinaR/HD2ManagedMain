@@ -6,5 +6,5 @@ namespace HD2ModCore.Application;
 // Purpose: Defines the Unit mesh writer API for serializing UnitMeshModel into Unit TocData and GPU sidecar data.
 public interface IUnitMeshWriter
 {
-	UnitMeshWriteResult Write(UnitMeshModel model, ReadOnlySpan<byte> originalTocData);
+	UnitMeshWriteResult Write(UnitMeshModel model, ReadOnlySpan<byte> originalTocData, ReadOnlySpan<byte> originalCompositeTocData = default);
 }

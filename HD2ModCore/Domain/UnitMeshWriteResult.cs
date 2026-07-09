@@ -4,4 +4,6 @@ namespace HD2ModCore.Domain;
 // Purpose: Represents serialized Unit TocData and GPU sidecar data produced by the Unit mesh writer.
 public sealed record UnitMeshWriteResult(
 	byte[] TocData,
-	byte[] GpuData);
+	byte[] GpuData,
+	byte[]? CompositeTocData = null,
+	byte[]? CompositeGpuData = null);

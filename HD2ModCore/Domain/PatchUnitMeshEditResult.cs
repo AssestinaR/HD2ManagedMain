@@ -8,7 +8,10 @@ public sealed record PatchUnitMeshEditResult(
 	UnitMeshModel OriginalModel,
 	UnitMeshModel EditedModel,
 	byte[] TocData,
-	byte[] GpuResourceData)
+	byte[] GpuResourceData,
+	AssetKey? CompositeAssetKey = null,
+	byte[]? CompositeTocData = null,
+	byte[]? CompositeGpuResourceData = null)
 {
 	public int TocDataSizeDelta => TocData.Length - OriginalPayload.TocData.Length;
 

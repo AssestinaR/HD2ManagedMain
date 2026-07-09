@@ -191,6 +191,9 @@ public sealed class PatchUnitMeshReplacementPlannerTests
 
 		public ValueTask<PatchUnitMesh> ReadUnitMeshAsync(PatchTocEntry entry, CancellationToken cancellationToken = default)
 			=> ValueTask.FromResult(CreateUnit(entry, models[entry]));
+
+		public ValueTask<PatchUnitMesh> ReadUnitMeshAsync(PatchTocEntry entry, IReadOnlyList<PatchTocEntry> entries, CancellationToken cancellationToken = default)
+			=> ReadUnitMeshAsync(entry, cancellationToken);
 	}
 
 	private sealed class FakePatchUnitMeshEditor : IPatchUnitMeshEditor

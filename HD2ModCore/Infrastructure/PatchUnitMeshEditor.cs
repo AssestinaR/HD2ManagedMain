@@ -53,13 +53,18 @@ public sealed class PatchUnitMeshEditor : IPatchUnitMeshEditor
 
 	private PatchUnitMeshEditResult BuildResult(PatchUnitMesh unit, UnitMeshModel editedModel)
 	{
-		var written = writer.Write(editedModel, unit.Payload.TocData);
+		var written = unit.CompositePayload is null
+			? writer.Write(editedModel, unit.Payload.TocData)
+			: writer.Write(editedModel, unit.Payload.TocData, unit.CompositePayload.TocData);
 		return new PatchUnitMeshEditResult(
 			unit.Entry,
 			unit.Payload,
 			unit.Model,
 			editedModel,
 			written.TocData,
-			written.GpuData);
+			unit.CompositePayload is null ? written.GpuData : Array.Empty<byte>(),
+			unit.CompositePayload?.Entry.AssetKey,
+			written.CompositeTocData,
+			unit.CompositePayload is null ? null : written.GpuData);
 	}
 }

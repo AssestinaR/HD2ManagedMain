@@ -12,11 +12,11 @@ public sealed class UnitMeshReader : IUnitMeshReader
 	private const int StreamInfoComponentBlockSize = 320;
 	private const uint UnsupportedOffset = 0;
 
-	public UnitMeshModel Read(ReadOnlySpan<byte> tocData, ReadOnlySpan<byte> gpuData, ReadOnlySpan<byte> compositeTocData = default, ReadOnlySpan<byte> compositeGpuData = default)
+	public UnitMeshModel Read(ReadOnlySpan<byte> tocData, ReadOnlySpan<byte> gpuData, ReadOnlySpan<byte> compositeTocData = default, ReadOnlySpan<byte> compositeGpuData = default, UnitBoneNames? boneNames = null)
 	{
 		try
 		{
-			return ReadCore(tocData, gpuData, compositeTocData, compositeGpuData);
+			return ReadCore(tocData, gpuData, compositeTocData, compositeGpuData, boneNames ?? UnitBoneNames.Empty);
 		}
 		catch (OverflowException ex)
 		{
@@ -24,7 +24,7 @@ public sealed class UnitMeshReader : IUnitMeshReader
 		}
 	}
 
-	private static UnitMeshModel ReadCore(ReadOnlySpan<byte> tocData, ReadOnlySpan<byte> gpuData, ReadOnlySpan<byte> compositeTocData, ReadOnlySpan<byte> compositeGpuData)
+	private static UnitMeshModel ReadCore(ReadOnlySpan<byte> tocData, ReadOnlySpan<byte> gpuData, ReadOnlySpan<byte> compositeTocData, ReadOnlySpan<byte> compositeGpuData, UnitBoneNames boneNames)
 	{
 		if (tocData.Length < 96)
 		{
@@ -67,7 +67,7 @@ public sealed class UnitMeshReader : IUnitMeshReader
 		var boneInfos = boneInfoOffset == UnsupportedOffset
 			? Array.Empty<UnitBoneInfo>()
 			: ReadBoneInfos(tocData, boneInfoOffset, streamInfoOffset == UnsupportedOffset ? meshInfoOffset : streamInfoOffset);
-		var meshes = ReadMeshes(tocData, meshInfoOffset, readInlineMaterialSections: !isCompositeBacked, customizationInfo);
+		var meshes = ReadMeshes(tocData, meshInfoOffset, readInlineMaterialSections: !isCompositeBacked, customizationInfo, boneNames);
 		var effectiveGpuData = gpuData;
 		if (isCompositeBacked)
 		{
@@ -431,7 +431,7 @@ public sealed class UnitMeshReader : IUnitMeshReader
 			components);
 	}
 
-	private static IReadOnlyList<UnitMeshInfo> ReadMeshes(ReadOnlySpan<byte> data, uint meshInfoOffset, bool readInlineMaterialSections, UnitCustomizationInfo customizationInfo)
+	private static IReadOnlyList<UnitMeshInfo> ReadMeshes(ReadOnlySpan<byte> data, uint meshInfoOffset, bool readInlineMaterialSections, UnitCustomizationInfo customizationInfo, UnitBoneNames boneNames)
 	{
 		EnsureRange(data, meshInfoOffset, 4, "mesh info count");
 		var count = checked((int)ReadUInt32(data, meshInfoOffset));
@@ -450,13 +450,13 @@ public sealed class UnitMeshReader : IUnitMeshReader
 		for (var i = 0; i < count; i++)
 		{
 			var absoluteOffset = checked(meshInfoOffset + offsets[i]);
-			result.Add(ReadMesh(data, i, absoluteOffset, meshIds[i], readInlineMaterialSections, customizationInfo));
+			result.Add(ReadMesh(data, i, absoluteOffset, meshIds[i], readInlineMaterialSections, customizationInfo, boneNames));
 		}
 
 		return result;
 	}
 
-	private static UnitMeshInfo ReadMesh(ReadOnlySpan<byte> data, int index, uint absoluteOffset, uint fallbackMeshId, bool readInlineMaterialSections, UnitCustomizationInfo customizationInfo)
+	private static UnitMeshInfo ReadMesh(ReadOnlySpan<byte> data, int index, uint absoluteOffset, uint fallbackMeshId, bool readInlineMaterialSections, UnitCustomizationInfo customizationInfo, UnitBoneNames boneNames)
 	{
 		EnsureRange(data, absoluteOffset, 112, $"mesh info {index}");
 		var cursor = checked((int)absoluteOffset + 40);
@@ -476,7 +476,7 @@ public sealed class UnitMeshReader : IUnitMeshReader
 		cursor += 8; // unk8
 		var numSections = ReadUInt32(data, cursor); cursor += 4;
 		var sectionsOffset = ReadUInt32(data, cursor);
-		var semanticInfo = BuildSemanticInfo(customizationInfo, meshId, lodIndex, index);
+		var semanticInfo = BuildSemanticInfo(customizationInfo, boneNames, meshId, lodIndex, index);
 		if (!readInlineMaterialSections)
 		{
 			return new UnitMeshInfo(
@@ -592,12 +592,17 @@ public sealed class UnitMeshReader : IUnitMeshReader
 		return value;
 	}
 
-	private static UnitMeshSemanticInfo BuildSemanticInfo(UnitCustomizationInfo customizationInfo, uint meshId, int lodIndex, int meshInfoIndex)
+	private static UnitMeshSemanticInfo BuildSemanticInfo(UnitCustomizationInfo customizationInfo, UnitBoneNames boneNames, uint meshId, int lodIndex, int meshInfoIndex)
 	{
+		var boneName = FindBoneNameForMeshId(boneNames, meshId);
 		if (!customizationInfo.HasValue)
 		{
 			var fallbackName = lodIndex == -1 ? $"{meshId}_mesh{meshInfoIndex}" : $"{meshId}_lod{lodIndex}";
-			return new UnitMeshSemanticInfo(fallbackName, string.Empty, string.Empty, string.Empty, string.Empty, lodIndex, meshInfoIndex, false, false, lodIndex is not 0 and not -1);
+			var fallbackSemantic = InferSemanticFromName(boneName) ?? UnitMeshSemanticInfo.Empty(lodIndex, meshInfoIndex) with
+			{
+				Name = boneName ?? fallbackName
+			};
+			return fallbackSemantic with { LodIndex = lodIndex, MeshInfoIndex = meshInfoIndex, IsLod = lodIndex is not 0 and not -1 };
 		}
 
 		var slot = StripPrefix(customizationInfo.Slot, "HelldiverCustomizationSlot_");
@@ -606,7 +611,58 @@ public sealed class UnitMeshReader : IUnitMeshReader
 		var weight = StripPrefix(customizationInfo.Weight, "HelldiverCustomizationWeight_");
 		var suffix = lodIndex == -1 ? $"_mesh{meshInfoIndex}" : $"_lod{lodIndex}";
 		var name = $"{slot}_{pieceType}_{bodyType}{suffix}";
+		if (boneName is not null)
+		{
+			name = boneName;
+			var inferred = InferSemanticFromName(boneName);
+			if (inferred is not null)
+			{
+				slot = inferred.Slot;
+				pieceType = inferred.PieceType;
+				bodyType = inferred.BodyType;
+			}
+		}
 		return new UnitMeshSemanticInfo(name, slot, pieceType, bodyType, weight, lodIndex, meshInfoIndex, false, false, lodIndex is not 0 and not -1);
+	}
+
+	private static string? FindBoneNameForMeshId(UnitBoneNames boneNames, uint meshId)
+	{
+		if (!boneNames.HasValue)
+		{
+			return null;
+		}
+
+		foreach (var name in boneNames.Names)
+		{
+			if (MurmurHash.Murmur32(name) == meshId)
+			{
+				return name;
+			}
+		}
+		return null;
+	}
+
+	private static UnitMeshSemanticInfo? InferSemanticFromName(string? name)
+	{
+		if (string.IsNullOrWhiteSpace(name))
+		{
+			return null;
+		}
+
+		var baseName = name;
+		var dotIndex = baseName.IndexOf('.', StringComparison.Ordinal);
+		if (dotIndex >= 0)
+		{
+			baseName = baseName[..dotIndex];
+		}
+
+		var parts = baseName.Split('_', StringSplitOptions.RemoveEmptyEntries);
+		if (parts.Length < 3)
+		{
+			return null;
+		}
+
+		return new UnitMeshSemanticInfo(name, parts[0], parts[1], parts[2], string.Empty, 0, 0, false, false, false);
 	}
 
 	private static IReadOnlyList<UnitMeshInfo> ApplySdkMeshClassification(IReadOnlyList<UnitMeshInfo> meshes, IReadOnlyList<UnitRawMeshData> rawMeshes, IReadOnlyList<UnitMaterialBinding> materials)
@@ -734,6 +790,7 @@ public sealed class UnitMeshReader : IUnitMeshReader
 	private static IReadOnlyList<UnitRawMeshSectionData> ReadRawMeshSections(UnitMeshInfo mesh, UnitStreamInfo stream, ReadOnlySpan<byte> gpuData)
 	{
 		var indexStride = stream.IndexBufferType == 1 ? 4 : 2;
+		var baseVertexOffset = mesh.Sections.Count == 0 ? 0u : mesh.Sections.Min(section => section.VertexOffset);
 		var sections = new List<UnitRawMeshSectionData>(mesh.Sections.Count);
 		foreach (var section in mesh.Sections)
 		{
@@ -748,7 +805,10 @@ public sealed class UnitMeshReader : IUnitMeshReader
 				var a = ReadIndex(gpuData, cursor, indexStride); cursor += indexStride;
 				var b = ReadIndex(gpuData, cursor, indexStride); cursor += indexStride;
 				var c = ReadIndex(gpuData, cursor, indexStride); cursor += indexStride;
-				triangles.Add(new UnitTriangleIndices(a, b, c));
+				triangles.Add(new UnitTriangleIndices(
+					NormalizeVertexIndex(a, baseVertexOffset),
+					NormalizeVertexIndex(b, baseVertexOffset),
+					NormalizeVertexIndex(c, baseVertexOffset)));
 			}
 
 			sections.Add(new UnitRawMeshSectionData(section.MaterialIndex, section.MaterialSlotId, triangles));
@@ -757,6 +817,9 @@ public sealed class UnitMeshReader : IUnitMeshReader
 		return sections;
 	}
 
+	private static uint NormalizeVertexIndex(uint index, uint baseVertexOffset)
+		=> index >= baseVertexOffset ? index - baseVertexOffset : index;
+
 	private static IReadOnlyList<UnitRawVertexRecord> ReadVertexRecords(UnitMeshInfo mesh, UnitStreamInfo stream, ReadOnlySpan<byte> gpuData)
 	{
 		if (mesh.Sections.Count == 0 || stream.VertexStride == 0)
@@ -764,15 +827,16 @@ public sealed class UnitMeshReader : IUnitMeshReader
 			return Array.Empty<UnitRawVertexRecord>();
 		}
 
-		var mainSection = mesh.Sections[0];
-		var vertexOffset = checked(stream.VertexBufferOffset + mainSection.VertexOffset * stream.VertexStride);
-		var vertexBytes = checked((int)(mainSection.NumVertices * stream.VertexStride));
+		var baseVertexOffset = mesh.Sections.Min(section => section.VertexOffset);
+		var vertexCount = mesh.Sections.Max(section => section.VertexOffset + section.NumVertices) - baseVertexOffset;
+		var vertexOffset = checked(stream.VertexBufferOffset + baseVertexOffset * stream.VertexStride);
+		var vertexBytes = checked((int)(vertexCount * stream.VertexStride));
 		EnsureGpuRange(gpuData, vertexOffset, vertexBytes, $"mesh {mesh.Index} vertex section");
 
-		var vertices = new List<UnitRawVertexRecord>(checked((int)mainSection.NumVertices));
+		var vertices = new List<UnitRawVertexRecord>(checked((int)vertexCount));
 		var cursor = checked((int)vertexOffset);
 		var stride = checked((int)stream.VertexStride);
-		for (var i = 0u; i < mainSection.NumVertices; i++)
+		for (var i = 0u; i < vertexCount; i++)
 		{
 			var rawData = gpuData.Slice(cursor, stride).ToArray();
 			var components = DecodeVertexComponents(rawData, stream.Components);

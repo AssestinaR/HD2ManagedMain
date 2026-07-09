@@ -47,6 +47,7 @@ public sealed class PatchArchiveDryWriter : IPatchArchiveDryWriter
 		}
 
 		var editsByEntry = BuildEditMap(patchTocFilePath, unitMeshEdits);
+		var compositeEditsByAsset = BuildCompositeEditMap(patchTocFilePath, unitMeshEdits);
 		var removedEntryKeys = BuildRemovedEntrySet(patchTocFilePath, removedEntries);
 		var keptEntries = entries.Where(entry => !removedEntryKeys.Contains(CreateEditKey(entry))).ToArray();
 		var headerData = originalTocFileData.AsSpan(0, entriesOffset).ToArray();
@@ -66,10 +67,12 @@ public sealed class PatchArchiveDryWriter : IPatchArchiveDryWriter
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var key = CreateEditKey(entry);
-			var hasEdit = editsByEntry.TryGetValue(key, out var edit);
-			var payload = hasEdit ? edit!.OriginalPayload : await payloadReader.ReadPayloadAsync(entry, cancellationToken).ConfigureAwait(false);
-			var newTocPayload = hasEdit ? edit!.TocData : payload.TocData;
-			var newGpuPayload = hasEdit ? edit!.GpuResourceData : payload.GpuResourceData;
+			var hasUnitEdit = editsByEntry.TryGetValue(key, out var edit);
+			var hasCompositeEdit = !hasUnitEdit && compositeEditsByAsset.TryGetValue(entry.AssetKey, out edit);
+			var hasEdit = hasUnitEdit || hasCompositeEdit;
+			var payload = hasUnitEdit ? edit!.OriginalPayload : await payloadReader.ReadPayloadAsync(entry, cancellationToken).ConfigureAwait(false);
+			var newTocPayload = hasUnitEdit ? edit!.TocData : hasCompositeEdit ? edit!.CompositeTocData! : payload.TocData;
+			var newGpuPayload = hasUnitEdit ? edit!.GpuResourceData : hasCompositeEdit ? edit!.CompositeGpuResourceData! : payload.GpuResourceData;
 
 			var newTocOffset = checked((ulong)tocOutput.Position);
 			tocOutput.Write(newTocPayload, 0, newTocPayload.Length);
@@ -127,6 +130,30 @@ public sealed class PatchArchiveDryWriter : IPatchArchiveDryWriter
 			if (!map.TryAdd(key, edit))
 			{
 				throw new InvalidDataException($"Duplicate edit for entry index {edit.Entry.EntryIndex}.");
+			}
+		}
+
+		return map;
+	}
+
+	private static Dictionary<AssetKey, PatchUnitMeshEditResult> BuildCompositeEditMap(string patchTocFilePath, IReadOnlyCollection<PatchUnitMeshEditResult> edits)
+	{
+		var map = new Dictionary<AssetKey, PatchUnitMeshEditResult>();
+		foreach (var edit in edits)
+		{
+			if (edit.CompositeAssetKey is not { } compositeAssetKey || edit.CompositeTocData is null || edit.CompositeGpuResourceData is null)
+			{
+				continue;
+			}
+
+			if (!Path.GetFullPath(edit.Entry.SourceFilePath).Equals(Path.GetFullPath(patchTocFilePath), StringComparison.OrdinalIgnoreCase))
+			{
+				throw new InvalidDataException("All patch unit mesh edits must belong to the patch being rebuilt.");
+			}
+
+			if (!map.TryAdd(compositeAssetKey, edit))
+			{
+				throw new InvalidDataException($"Duplicate composite edit for asset {compositeAssetKey.TypeId:x16}/{compositeAssetKey.FileId:x16}.");
 			}
 		}
 

@@ -9,13 +9,21 @@ public sealed class UnitMeshWriter : IUnitMeshWriter
 {
 	private const uint UnsupportedOffset = 0;
 
-	public UnitMeshWriteResult Write(UnitMeshModel model, ReadOnlySpan<byte> originalTocData)
+	public UnitMeshWriteResult Write(UnitMeshModel model, ReadOnlySpan<byte> originalTocData, ReadOnlySpan<byte> originalCompositeTocData = default)
 	{
 		var tocData = originalTocData.ToArray();
-		WriteMeshMaterialSlots(tocData, model.Meshes);
+		var meshTocData = tocData;
+		byte[]? compositeTocData = null;
+		if (model.StreamInfoOffset == UnsupportedOffset && !originalCompositeTocData.IsEmpty)
+		{
+			compositeTocData = originalCompositeTocData.ToArray();
+			meshTocData = compositeTocData;
+		}
+
+		WriteMeshMaterialSlots(meshTocData, model.Meshes);
 		WriteMaterialBindings(tocData, model);
-		var gpuData = BuildGpuData(model, tocData);
-		return new UnitMeshWriteResult(tocData, gpuData);
+		var gpuData = BuildGpuData(model, meshTocData);
+		return new UnitMeshWriteResult(tocData, gpuData, compositeTocData, compositeTocData is null ? null : gpuData);
 	}
 
 	private static byte[] BuildGpuData(UnitMeshModel model, byte[] tocData)
@@ -41,6 +49,7 @@ public sealed class UnitMeshWriter : IUnitMeshWriter
 			}
 
 			var vertexBufferSize = checked((uint)gpuData.Count - vertexBufferOffset);
+			PadToAlignment(gpuData, 16);
 			var indexBufferOffset = checked((uint)gpuData.Count);
 			var indexCount = 0u;
 			var indexStride = stream.IndexBufferType == 1 ? 4 : 2;
@@ -65,6 +74,20 @@ public sealed class UnitMeshWriter : IUnitMeshWriter
 		}
 
 		return gpuData.ToArray();
+	}
+
+	private static void PadToAlignment(List<byte> data, int alignment)
+	{
+		if (alignment <= 0)
+		{
+			return;
+		}
+
+		var padding = (alignment - data.Count % alignment) % alignment;
+		for (var i = 0; i < padding; i++)
+		{
+			data.Add(0);
+		}
 	}
 
 	private static void ValidateTriangleReferences(UnitRawMeshData mesh, UnitTriangleIndices triangle)

@@ -49,7 +49,8 @@ public sealed class UnitMeshAdaptationPlanner : IUnitMeshAdaptationPlanner
 		var selected = candidates.Length == 0
 			? Array.Empty<UnitMeshReplacementCandidate>()
 			: SelectNonConflictingCandidates(candidates);
-		var meshIndexesToMinify = GetTargetMeshIndexesToMinify(targetTemplate.Model);
+		var selectedTargetIndexes = selected.Select(candidate => candidate.TargetMeshInfoIndex).ToHashSet();
+		var meshIndexesToMinify = GetTargetMeshIndexesToMinify(targetTemplate.Model, selectedTargetIndexes);
 		var editedModel = targetTemplate.Model;
 		var steps = new List<UnitMeshAdaptationStep>();
 		foreach (var meshInfoIndex in meshIndexesToMinify)
@@ -79,7 +80,9 @@ public sealed class UnitMeshAdaptationPlanner : IUnitMeshAdaptationPlanner
 
 		try
 		{
-			var writeResult = writer.Write(editedModel, targetTemplate.Payload.TocData);
+			var writeResult = targetTemplate.CompositePayload is null
+				? writer.Write(editedModel, targetTemplate.Payload.TocData)
+				: writer.Write(editedModel, targetTemplate.Payload.TocData, targetTemplate.CompositePayload.TocData);
 			return new UnitMeshAdaptationPlan(
 				intent,
 				CanWrite: true,
@@ -120,13 +123,16 @@ public sealed class UnitMeshAdaptationPlanner : IUnitMeshAdaptationPlanner
 		return selected;
 	}
 
-	private static IReadOnlyList<int> GetTargetMeshIndexesToMinify(UnitMeshModel model)
+	private static IReadOnlyList<int> GetTargetMeshIndexesToMinify(UnitMeshModel model, IReadOnlySet<int> replacementMeshIndexes)
 		=> model.RawMeshData
 			.Select(mesh => mesh.MeshInfoIndex)
+			.Where(meshInfoIndex => !replacementMeshIndexes.Contains(meshInfoIndex))
 			.ToArray();
 
 	private static string BuildSuccessReason(int replacementCount, int minifiedCount, int candidateCount)
-		=> candidateCount == 0
-			? $"Dry-run adaptation produced a minify-only target Unit with {minifiedCount} minified target slot(s)."
-			: $"Dry-run adaptation produced {replacementCount} replacement(s) and {minifiedCount} minified target slot(s).";
+	{
+		return replacementCount == 0
+			? $"Dry-run adaptation produced a minify-only target Unit with {minifiedCount} minified target slot(s) because no source replacement candidates were found."
+			: $"Dry-run adaptation produced {replacementCount} replacement(s) and {minifiedCount} minified target slot(s) from {candidateCount} candidate(s).";
+	}
 }

@@ -292,6 +292,36 @@ public sealed class AssetArchiveIndexServiceTests
 	}
 
 	[Fact]
+	public async Task GameDataPackageResolver_BundledResource_ReadsFromReconstructedPackageSlice()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(gameData);
+
+		try
+		{
+			var archiveA = "aaaaaaaaaaaaaaaa";
+			var payload = new byte[128];
+			for (var i = 0; i < payload.Length; i++)
+			{
+				payload[i] = (byte)(i + 1);
+			}
+
+			File.WriteAllBytes(Path.Combine(gameData, "bundles.nxa"), BuildDsar(BuildBundleDatabase(archiveA, payload.Length)));
+			File.WriteAllBytes(Path.Combine(gameData, "bundles.00.nxa"), BuildDsar(payload));
+
+			var resolver = new GameDataPackageResolver(gameData);
+			var data = await resolver.GetPackageResourceAsync(archiveA, 80, 16);
+
+			Assert.Equal(payload.AsSpan(80, 16).ToArray(), data);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
 	public async Task ModCompatibilityAnalyzer_ClassifiesByCurrentIndexMatches()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));

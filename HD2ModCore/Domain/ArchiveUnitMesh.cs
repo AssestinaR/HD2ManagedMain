@@ -5,4 +5,5 @@ namespace HD2ModCore.Domain;
 public sealed record ArchiveUnitMesh(
 	ArchiveTocEntry Entry,
 	ArchiveEntryPayload Payload,
-	UnitMeshModel Model);
+	UnitMeshModel Model,
+	ArchiveEntryPayload? CompositePayload = null);

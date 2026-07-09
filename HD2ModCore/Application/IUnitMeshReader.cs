@@ -6,5 +6,5 @@ namespace HD2ModCore.Application;
 // Purpose: Reads Helldivers 2 Unit mesh/stream/material summaries as the entry point for future RawMesh rewriting.
 public interface IUnitMeshReader
 {
-	UnitMeshModel Read(ReadOnlySpan<byte> tocData, ReadOnlySpan<byte> gpuData, ReadOnlySpan<byte> compositeTocData = default, ReadOnlySpan<byte> compositeGpuData = default);
+	UnitMeshModel Read(ReadOnlySpan<byte> tocData, ReadOnlySpan<byte> gpuData, ReadOnlySpan<byte> compositeTocData = default, ReadOnlySpan<byte> compositeGpuData = default, UnitBoneNames? boneNames = null);
 }

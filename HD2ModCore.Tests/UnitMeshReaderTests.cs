@@ -82,6 +82,49 @@ public sealed class UnitMeshReaderTests
 	}
 
 	[Fact]
+	public void Murmur32_MatchesHd2SdkKnownMeshNameHash()
+	{
+		Assert.Equal(0x2ed924fau, MurmurHash.Murmur32("RightArm_Undergarment_Slim_lod0"));
+		Assert.Equal(0x4a24d412u, MurmurHash.Murmur32("RightLeg_Undergarment_Any_lod0"));
+	}
+
+	[Fact]
+	public void Read_WithBoneNamesMatchingMeshId_UsesSdkMeshNameFallback()
+	{
+		var tocData = BuildMinimalUnitTocData();
+		var meshName = "RightArm_Undergarment_Slim_lod0";
+		var meshId = MurmurHash.Murmur32(meshName);
+		WriteUInt32(tocData, 0x260 + 8, meshId);
+		WriteUInt32(tocData, 0x260 + 0x20 + 40, meshId);
+		var gpuData = BuildMinimalGpuData();
+		var boneNames = new UnitBoneNames([meshId], [meshName]);
+		var reader = new UnitMeshReader();
+
+		var model = reader.Read(tocData, gpuData, boneNames: boneNames);
+
+		var semantic = Assert.Single(model.Meshes).SemanticInfo;
+		Assert.Equal(meshName, semantic.Name);
+		Assert.Equal("RightArm", semantic.Slot);
+		Assert.Equal("Undergarment", semantic.PieceType);
+		Assert.Equal("Slim", semantic.BodyType);
+		Assert.True(semantic.HasValue);
+	}
+
+	[Fact]
+	public void UnitBoneNamesReader_ReadsHashesAndNames()
+	{
+		var meshName = "RightLeg_Undergarment_Any_lod0";
+		var meshId = MurmurHash.Murmur32(meshName);
+		var data = BuildBoneNamesData(meshId, meshName);
+		var reader = new UnitBoneNamesReader();
+
+		var names = reader.Read(data);
+
+		Assert.Equal([meshId], names.Hashes);
+		Assert.Equal([meshName], names.Names);
+	}
+
+	[Fact]
 	public void Read_ZeroMeshInfoOffset_Throws()
 	{
 		var tocData = BuildMinimalUnitTocData();
@@ -103,11 +146,11 @@ public sealed class UnitMeshReaderTests
 		var written = writer.Write(model, tocData);
 		var reparsed = reader.Read(written.TocData, written.GpuData);
 
-		Assert.Equal(42, written.GpuData.Length);
+		Assert.Equal(54, written.GpuData.Length);
 		var stream = reparsed.Streams[0];
 		Assert.Equal(0u, stream.VertexBufferOffset);
 		Assert.Equal(36u, stream.VertexBufferSize);
-		Assert.Equal(36u, stream.IndexBufferOffset);
+		Assert.Equal(48u, stream.IndexBufferOffset);
 		Assert.Equal(6u, stream.IndexBufferSize);
 		Assert.Equal(3u, stream.NumVertices);
 		Assert.Equal(3u, stream.NumIndices);
@@ -141,7 +184,7 @@ public sealed class UnitMeshReaderTests
 		var written = writer.Write(minified, tocData);
 		var reparsed = reader.Read(written.TocData, written.GpuData);
 
-		Assert.Equal(42, written.GpuData.Length);
+		Assert.Equal(54, written.GpuData.Length);
 		var rawMeshData = Assert.Single(reparsed.RawMeshData);
 		Assert.Equal(3, rawMeshData.Vertices.Count);
 		var triangle = Assert.Single(rawMeshData.Triangles);
@@ -237,6 +280,40 @@ public sealed class UnitMeshReaderTests
 	}
 
 	[Fact]
+	public void Retarget_BoneInfoRemapsBoneIndexComponentsPerSectionMaterial()
+	{
+		var targetModel = CreateMultiSectionBoneRetargetModel(
+			[[0u], [1u, 0u, 2u]],
+			[0u, 0u]);
+		var sourceModel = CreateMultiSectionBoneRetargetModel(
+			[[2u], [2u, 0u, 1u]],
+			[0u, 0u]);
+		var retargeter = new UnitMeshRetargeter();
+
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal(0, retargeted.RawMeshData[0].Vertices[0].Data[12]);
+		Assert.Equal(2, retargeted.RawMeshData[0].Vertices[1].Data[12]);
+	}
+
+	[Fact]
+	public void Retarget_ExperimentalFallbackWithReferencedVertexCompactionKeepsTriangles()
+	{
+		var targetModel = CreateLargeFallbackRetargetModel(vertexCount: 4, [0u, 1u, 2u]);
+		var sourceModel = CreateLargeFallbackRetargetModel(vertexCount: ushort.MaxValue + 4, [65536u, 65537u, 65538u]);
+		var retargeter = new UnitMeshRetargeter(allowExperimentalLayoutFallback: true);
+
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+
+		var rawMesh = Assert.Single(retargeted.RawMeshData);
+		Assert.Equal(3, rawMesh.Vertices.Count);
+		Assert.Equal(new UnitTriangleIndices(0, 1, 2), Assert.Single(rawMesh.Triangles));
+		Assert.Equal([65536f, 0f, 0f], rawMesh.Vertices[0].Components[0].FloatValues);
+		Assert.Equal([65537f, 0f, 0f], rawMesh.Vertices[1].Components[0].FloatValues);
+		Assert.Equal([65538f, 0f, 0f], rawMesh.Vertices[2].Components[0].FloatValues);
+	}
+
+	[Fact]
 	public void Write_ReadRoundTrip_PreservesMultiSectionRawMesh()
 	{
 		var tocData = BuildTwoSectionUnitTocData();
@@ -248,10 +325,10 @@ public sealed class UnitMeshReaderTests
 		var written = writer.Write(model, tocData);
 		var reparsed = reader.Read(written.TocData, written.GpuData);
 
-		Assert.Equal(48, written.GpuData.Length);
+		Assert.Equal(60, written.GpuData.Length);
 		var stream = reparsed.Streams[0];
 		Assert.Equal(36u, stream.VertexBufferSize);
-		Assert.Equal(36u, stream.IndexBufferOffset);
+		Assert.Equal(48u, stream.IndexBufferOffset);
 		Assert.Equal(12u, stream.IndexBufferSize);
 		Assert.Equal(6u, stream.NumIndices);
 
@@ -282,10 +359,10 @@ public sealed class UnitMeshReaderTests
 		var written = writer.Write(model, tocData);
 		var reparsed = reader.Read(written.TocData, written.GpuData);
 
-		Assert.Equal(48, written.GpuData.Length);
+		Assert.Equal(60, written.GpuData.Length);
 		var stream = reparsed.Streams[0];
 		Assert.Equal(1u, stream.IndexBufferType);
-		Assert.Equal(36u, stream.IndexBufferOffset);
+		Assert.Equal(48u, stream.IndexBufferOffset);
 		Assert.Equal(12u, stream.IndexBufferSize);
 
 		var rawMeshData = Assert.Single(reparsed.RawMeshData);
@@ -427,6 +504,15 @@ public sealed class UnitMeshReaderTests
 	}
 
 	private static UnitMeshModel CreateBoneRetargetModel(uint[] remapFakeIndices, uint[] vertexBoneIndices)
+		=> CreateBoneRetargetModel([remapFakeIndices], [vertexBoneIndices], [new UnitTriangleIndices(0, 0, 0)]);
+
+	private static UnitMeshModel CreateMultiSectionBoneRetargetModel(uint[][] remapFakeIndicesByMaterial, uint[] vertexBoneIndices)
+		=> CreateBoneRetargetModel(
+			remapFakeIndicesByMaterial,
+			vertexBoneIndices.Select(index => new[] { index, 0u, 0u, 0u }).ToArray(),
+			Enumerable.Range(0, remapFakeIndicesByMaterial.Length).Select(index => new UnitTriangleIndices((uint)index, (uint)index, (uint)index)).ToArray());
+
+	private static UnitMeshModel CreateBoneRetargetModel(uint[][] remapFakeIndicesByMaterial, uint[][] vertexBoneIndices, UnitTriangleIndices[] triangles)
 	{
 		var stream = new UnitStreamInfo(
 			0,
@@ -447,21 +533,27 @@ public sealed class UnitMeshReaderTests
 				new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
 				new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4)
 			]);
-		var section = new UnitRawMeshSectionData(0, 123, [new UnitTriangleIndices(0, 0, 0)]);
-		var vertexData = new byte[16];
-		for (var i = 0; i < Math.Min(4, vertexBoneIndices.Length); i++)
+		var sections = remapFakeIndicesByMaterial
+			.Select((_, index) => new UnitRawMeshSectionData((uint)index, 123u + (uint)index, [triangles[index]]))
+			.ToArray();
+		var vertices = vertexBoneIndices.Select((boneIndices, vertexIndex) =>
 		{
-			vertexData[12 + i] = (byte)vertexBoneIndices[i];
-		}
+			var vertexData = new byte[16];
+			for (var i = 0; i < Math.Min(4, boneIndices.Length); i++)
+			{
+				vertexData[12 + i] = (byte)boneIndices[i];
+			}
 
-		var vertex = new UnitRawVertexRecord(
-			0,
-			vertexData,
-			[
-				new UnitVertexComponentValue(0, "position", 2, "vec3_float", 0, [0f, 0f, 0f], [], vertexData.Take(12).ToArray()),
-				new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, [], vertexBoneIndices, vertexData.Skip(12).Take(4).ToArray())
-			]);
-		var rawMesh = new UnitRawMeshData(0, 0x12345678, 0, 0, [section], section.Triangles, [vertex]);
+			return new UnitRawVertexRecord(
+				(uint)vertexIndex,
+				vertexData,
+				[
+					new UnitVertexComponentValue(0, "position", 2, "vec3_float", 0, [0f, 0f, 0f], [], vertexData.Take(12).ToArray()),
+					new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, [], boneIndices, vertexData.Skip(12).Take(4).ToArray())
+				]);
+		}).ToArray();
+
+		var rawMesh = new UnitRawMeshData(0, 0x12345678, 0, 0, sections, sections.SelectMany(section => section.Triangles).ToArray(), vertices);
 		var mesh = new UnitMeshInfo(
 			0,
 			0,
@@ -471,11 +563,11 @@ public sealed class UnitMeshReaderTests
 			0,
 			1,
 			0,
-			1,
+			(uint)sections.Length,
 			0,
 			UnitMeshSemanticInfo.Empty(0, 0),
-			[123u],
-			[new UnitMeshSectionInfo(0, 0, 123, 0, 1, 0, 3, 0)]);
+			sections.Select(section => section.MaterialSlotId).ToArray(),
+			sections.Select((section, index) => new UnitMeshSectionInfo((uint)index, section.MaterialIndex, section.MaterialSlotId, 0, (uint)vertices.Length, (uint)(index * 3), 3, 0)).ToArray());
 		var boneInfo = new UnitBoneInfo(
 			0,
 			0,
@@ -484,7 +576,7 @@ public sealed class UnitMeshReaderTests
 			0,
 			0,
 			[10u, 20u, 30u],
-			[new UnitBoneRemap(0, 0, remapFakeIndices)]);
+			remapFakeIndicesByMaterial.Select((remap, index) => new UnitBoneRemap(index, 0, remap)).ToArray());
 
 		return new UnitMeshModel(
 			0,
@@ -736,6 +828,19 @@ public sealed class UnitMeshReaderTests
 		return data;
 	}
 
+	private static byte[] BuildBoneNamesData(uint hash, string name)
+	{
+		var nameBytes = System.Text.Encoding.UTF8.GetBytes(name + "\0");
+		var data = new byte[20 + nameBytes.Length];
+		WriteUInt32(data, 0, 1);
+		WriteUInt32(data, 4, 1);
+		WriteSingle(data, 8, 0f);
+		WriteUInt32(data, 12, hash);
+		WriteUInt32(data, 16, 1);
+		nameBytes.CopyTo(data.AsSpan(20));
+		return data;
+	}
+
 	private static byte[] BuildTwoSectionGpuData()
 	{
 		var data = BuildMinimalGpuData();
@@ -796,6 +901,57 @@ public sealed class UnitMeshReaderTests
 		WriteUInt16(data, 36, 0);
 		WriteUInt16(data, 38, 2);
 		WriteUInt16(data, 40, 1);
+		return data;
+	}
+
+	private static UnitMeshModel CreateLargeFallbackRetargetModel(int vertexCount, IReadOnlyList<uint> triangleIndices)
+	{
+		var vertices = Enumerable.Range(0, vertexCount)
+			.Select(index =>
+			{
+				var data = CreatePositionVertexData(index, stride: 12);
+				return new UnitRawVertexRecord(
+					(uint)index,
+					data,
+					[new UnitVertexComponentValue(0, "position", 0, "vec3_float", 0, [index, 0f, 0f], [], data)]);
+			})
+			.ToArray();
+		var triangle = new UnitTriangleIndices(triangleIndices[0], triangleIndices[1], triangleIndices[2]);
+		var rawMesh = new UnitRawMeshData(
+			0,
+			0x12345678,
+			0,
+			0,
+			[new UnitRawMeshSectionData(0, 123, [triangle])],
+			[triangle],
+			vertices);
+
+		return new UnitMeshModel(
+			0x00A4CD36,
+			0,
+			0,
+			0,
+			0,
+			0,
+			0,
+			0,
+			0,
+			0,
+			UnitCustomizationInfo.Empty,
+			[],
+			[new UnitStreamInfo(0, 0, 0, 1, 0, (uint)vertexCount, 12, 0, 3, 0, 0, (uint)(vertexCount * 12), 0, 6, [new UnitStreamComponentInfo(0, "position", 0, "vec3_float", 0, 0, 12)])],
+			[new UnitMeshInfo(0, 0, 0x12345678, 0, 0, 0, 1, 0, 1, 0, UnitMeshSemanticInfo.Empty(0, 0), [123], [new UnitMeshSectionInfo(0, 0, 123, 0, (uint)vertexCount, 0, 3, 0)])],
+			[new UnitMaterialBinding(123, 0x8877665544332211ul)],
+			[new UnitRawMeshSummary(0, 0x12345678, 0, 0, (uint)vertexCount, 3, 1, 1, true, true)],
+			[rawMesh]);
+	}
+
+	private static byte[] CreatePositionVertexData(int x, int stride)
+	{
+		var data = new byte[stride];
+		WriteSingle(data, 0, x);
+		WriteSingle(data, 4, 0f);
+		WriteSingle(data, 8, 0f);
 		return data;
 	}
 
