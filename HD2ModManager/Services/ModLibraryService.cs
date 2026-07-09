@@ -3,213 +3,110 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
-using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure;
 using HD2ModManager.Models;
 
 namespace HD2ModManager.Services
 {
+    // 作用：为现有 WPF UI 提供基于 HD2ModCore LibrarySnapshot 的模组库外观。
     public class ModLibraryService
     {
-        private readonly string _libraryPath;
-        private readonly JsonSerializerOptions _options = new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            AllowTrailingCommas = true,
-            ReadCommentHandling = JsonCommentHandling.Skip,
-            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-        };
-
+        private readonly StoragePaths _paths;
+        private readonly HD2ModCore.Application.IModLibraryManager _manager;
+        private readonly HD2ModCore.Application.ILibraryDerivedDataService _derivedDataService;
+        private readonly HD2ModCore.Application.IModUnitRepairService _unitRepairService;
+        private LibrarySnapshot _snapshot;
+        private DerivedLibraryData _derivedData;
         private readonly Dictionary<string, ModEntity> _byGuid = new();
+        private readonly SemaphoreSlim _derivedRefreshGate = new(1, 1);
+
         public ReadOnlyDictionary<string, ModEntity> ByGuid => new(_byGuid);
+        public LibrarySnapshot Snapshot => _snapshot;
+        public DerivedLibraryData DerivedData => _derivedData;
+        public string ModsRootDirectory => _paths.ModsDirectory;
 
         public ModLibraryService(string libraryPath)
         {
-            _libraryPath = libraryPath;
+            _paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
+            _manager = CoreServices.CreateModLibraryManager(_paths);
+            _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths);
+            _unitRepairService = CoreServices.CreateModUnitRepairService();
+            _snapshot = EmptySnapshot();
+            _derivedData = EmptyDerivedData();
         }
 
-        public void Load()
+        public void Load(bool buildDerivedData = true)
         {
-            _byGuid.Clear();
-            if (!File.Exists(_libraryPath)) return;
-           var json = TextEncodingUtil.ReadAllTextDetect(_libraryPath);
+            _snapshot = _manager.LoadOrCreateAsync().AsTask().GetAwaiter().GetResult();
+            RebuildIndex(buildDerivedData);
+        }
+
+        public async Task RefreshDerivedDataAsync(CancellationToken cancellationToken = default)
+        {
+            await _derivedRefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var list = JsonSerializer.Deserialize<List<ModEntity>>(json, _options) ?? new List<ModEntity>();
-                foreach (var m in list)
-                {
-                    if (!string.IsNullOrWhiteSpace(m.Guid)) _byGuid[m.Guid] = m;
-                }
+                var snapshot = _snapshot;
+                var derivedData = await _derivedDataService.BuildAsync(snapshot, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), cancellationToken).AsTask().ConfigureAwait(false);
+                _derivedData = derivedData;
+                RebuildEntityIndex();
             }
-            catch
+            finally
             {
-                // fallback: attempt simple cleaning and retry
-                json = JsonCleaning(json);
-                var list = JsonSerializer.Deserialize<List<ModEntity>>(json, _options) ?? new List<ModEntity>();
-                foreach (var m in list)
-                {
-                    if (!string.IsNullOrWhiteSpace(m.Guid)) _byGuid[m.Guid] = m;
-                }
+                _derivedRefreshGate.Release();
             }
         }
 
         public void Save()
         {
-            var root = SettingsService.GetModLibraryFolder();
-            var list = _byGuid.Values.Select(m =>
-            {
-                // ensure SourcePath is relative to library root
-                if (!string.IsNullOrWhiteSpace(m.SourcePath))
-                {
-                    try
-                    {
-                        var full = ResolveAbsolutePath(m.SourcePath);
-                        // only make relative if under root
-                        var rel = Path.GetRelativePath(root, full);
-                        var combined = Path.GetFullPath(Path.Combine(root, rel));
-                        if (combined.StartsWith(Path.GetFullPath(root), StringComparison.OrdinalIgnoreCase))
-                        {
-                            m.SourcePath = rel.Replace('\\', '/');
-                        }
-                    }
-                    catch { }
-                }
-                return m;
-            }).ToList();
-            var json = JsonSerializer.Serialize(list, _options);
-            File.WriteAllText(_libraryPath, json, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            var store = CoreServices.CreateModLibraryStore(_paths);
+            store.SaveAsync(_snapshot).AsTask().GetAwaiter().GetResult();
+            RebuildIndex(buildDerivedData: false);
         }
 
         public bool Add(ModEntity mod)
         {
-            if (string.IsNullOrWhiteSpace(mod.Guid)) mod.Guid = System.Guid.NewGuid().ToString();
-            mod.CreatedAt = mod.CreatedAt == default ? DateTime.UtcNow : mod.CreatedAt;
-            mod.UpdatedAt = DateTime.UtcNow;
-            _byGuid[mod.Guid] = mod;
+            if (!TryParseNodeId(mod.Guid, out var nodeId)) return false;
+            if (!_snapshot.Nodes.TryGetValue(nodeId, out var node)) return false;
+
+            var metadata = node.Metadata with
+            {
+                Name = string.IsNullOrWhiteSpace(mod.Name) ? node.Metadata.Name : mod.Name,
+                Notes = mod.Description,
+                UserTags = mod.Tags?.ToList() ?? new List<string>(),
+                ModifiedUtc = DateTimeOffset.UtcNow,
+            };
+
+            _snapshot = _manager.UpdateNodeMetadataAsync(nodeId, metadata).AsTask().GetAwaiter().GetResult();
+            RebuildIndex(buildDerivedData: false);
             return true;
         }
 
         public bool Remove(string guid)
         {
-            if (!_byGuid.TryGetValue(guid, out var mod)) return false;
-            try
-            {
-                var path = ResolveAbsolutePath(mod.SourcePath);
-                LogService.Info($"Remove requested: guid={guid} name={mod.Name} rel={mod.SourcePath} abs={path}");
-                if (!string.IsNullOrWhiteSpace(path))
-                {
-                    TryDeleteDirectory(path);
-                }
-            }
-            catch { }
-            return _byGuid.Remove(guid);
+            if (!TryParseNodeId(guid, out var nodeId)) return false;
+            _snapshot = _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true).AsTask().GetAwaiter().GetResult();
+            RebuildIndex(buildDerivedData: false);
+            return true;
         }
 
         public bool Rename(string guid, string newName)
         {
             if (string.IsNullOrWhiteSpace(newName)) return false;
-            if (!_byGuid.TryGetValue(guid, out var mod)) return false;
-            try
-            {
-                var root = SettingsService.GetModLibraryFolder();
-                var oldAbs = ResolveAbsolutePath(mod.SourcePath);
-                LogService.Info($"Rename requested: guid={guid} oldName={mod.Name} oldRel={mod.SourcePath} oldAbs={oldAbs} newName={newName}");
-                if (string.IsNullOrWhiteSpace(oldAbs) || !Directory.Exists(oldAbs)) return false;
-                var safeName = SanitizeName(newName);
-                var targetAbs = EnsureUniqueFolder(Path.Combine(root, safeName));
-                LogService.Info($"Rename moving directory: {oldAbs} -> {targetAbs}");
-                Directory.Move(oldAbs, targetAbs);
-                mod.Name = newName.Trim();
-                mod.SourcePath = Path.GetRelativePath(root, targetAbs).Replace('\\', '/');
-                mod.UpdatedAt = DateTime.UtcNow;
-                _byGuid[guid] = mod;
-                Save();
-                LogService.Info($"Rename completed: guid={guid} newRel={mod.SourcePath}");
-                return true;
-            }
-            catch { return false; }
-        }
+            if (!TryParseNodeId(guid, out var nodeId)) return false;
+            if (!_snapshot.Nodes.TryGetValue(nodeId, out var node)) return false;
 
-        private static string SanitizeName(string name)
-        {
-            foreach (var ch in Path.GetInvalidFileNameChars()) name = name.Replace(ch, '_');
-            name = name.Trim();
-            if (string.IsNullOrWhiteSpace(name)) name = "ImportedMod";
-            return name;
-        }
-
-        private static string EnsureUniqueFolder(string baseDir)
-        {
-            var dir = baseDir;
-            int i = 1;
-            while (Directory.Exists(dir))
+            var metadata = node.Metadata with
             {
-                dir = baseDir + "_" + i;
-                i++;
-            }
-            return dir;
-        }
-
-        private static string ResolveAbsolutePath(string? maybeRelative)
-        {
-            if (string.IsNullOrWhiteSpace(maybeRelative)) return string.Empty;
-            try
-            {
-                var root = SettingsService.GetModLibraryFolder();
-                var rel = maybeRelative.Replace('/', Path.DirectorySeparatorChar);
-                // prevent path escape: remove leading ../ or ..\ segments
-                while (rel.StartsWith(".." + Path.DirectorySeparatorChar))
-                {
-                    rel = rel.Substring(3);
-                }
-                var combined = Path.Combine(root, rel);
-                return Path.GetFullPath(combined);
-            }
-            catch { return maybeRelative!; }
-        }
-
-        private static void TryDeleteDirectory(string path)
-        {
-            try
-            {
-                if (Directory.Exists(path))
-                {
-                    LogService.Info($"TryDeleteDirectory start: {path}");
-                    // Clear read-only attributes on files and directories
-                    foreach (var dir in Directory.EnumerateDirectories(path, "*", SearchOption.AllDirectories))
-                    {
-                        try { var attr = File.GetAttributes(dir); File.SetAttributes(dir, attr & ~FileAttributes.ReadOnly); } catch { }
-                    }
-                    foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
-                    {
-                        try { var attr = File.GetAttributes(file); File.SetAttributes(file, attr & ~FileAttributes.ReadOnly); } catch { }
-                    }
-                    Directory.Delete(path, recursive: true);
-                    LogService.Info($"TryDeleteDirectory done: {path}");
-                }
-            }
-            catch
-            {
-                // Attempt fallback: move to temp then delete
-                try
-                {
-                    var tmpRoot = Path.Combine(Path.GetTempPath(), "HD2ModManager_Delete");
-                    Directory.CreateDirectory(tmpRoot);
-                    var tmp = Path.Combine(tmpRoot, Guid.NewGuid().ToString("N"));
-                    LogService.Warn($"Delete fallback: moving {path} -> {tmp}");
-                    Directory.Move(path, tmp);
-                    foreach (var dir in Directory.EnumerateDirectories(tmp, "*", SearchOption.AllDirectories))
-                    {
-                        try { var attr = File.GetAttributes(dir); File.SetAttributes(dir, attr & ~FileAttributes.ReadOnly); } catch { }
-                    }
-                    foreach (var file in Directory.EnumerateFiles(tmp, "*", SearchOption.AllDirectories))
-                    {
-                        try { var attr = File.GetAttributes(file); File.SetAttributes(file, attr & ~FileAttributes.ReadOnly); } catch { }
-                    }
-                    Directory.Delete(tmp, recursive: true);
-                    LogService.Info($"Delete fallback done: {tmp}");
-                }
-                catch { }
-            }
+                Name = newName.Trim(),
+                ModifiedUtc = DateTimeOffset.UtcNow,
+            };
+            _snapshot = _manager.UpdateNodeMetadataAsync(nodeId, metadata).AsTask().GetAwaiter().GetResult();
+            RebuildIndex(buildDerivedData: false);
+            return true;
         }
 
         public ModEntity? Get(string guid)
@@ -220,13 +117,120 @@ namespace HD2ModManager.Services
 
         public IEnumerable<ModEntity> All() => _byGuid.Values;
 
-        private static string JsonCleaning(string input)
+        public DerivedModNodeData? GetDerivedData(string guid)
         {
-            // remove trailing commas before } or ] and strip // comments
-            var s = System.Text.RegularExpressions.Regex.Replace(input, @",\s*(\}|\])", "$1");
-            s = System.Text.RegularExpressions.Regex.Replace(s, @"//.*", string.Empty);
-            s = System.Text.RegularExpressions.Regex.Replace(s, @"/\*.*?\*/", string.Empty, System.Text.RegularExpressions.RegexOptions.Singleline);
-            return s;
+            return TryParseNodeId(guid, out var nodeId) ? _derivedData.Find(nodeId) : null;
         }
+
+        public async Task<ModUnitRepairResult> RepairModUnitsAsync(string guid, CancellationToken cancellationToken = default)
+        {
+            if (!TryParseNodeId(guid, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var node))
+            {
+                return new ModUnitRepairResult(default, false, 0, 0, 0, 0, new[] { new CoreIssue(CoreIssueSeverity.Error, "ModNotFound", "找不到要修复的 Mod。") });
+            }
+
+            var gameData = SettingsService.GetGameDataFolder();
+            var report = _derivedData.Find(nodeId)?.UnitCompatibility;
+            var result = await _unitRepairService.RepairNodeAsync(node, _paths.ModsDirectory, gameData, report, cancellationToken).AsTask().ConfigureAwait(false);
+            await RefreshDerivedDataAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+
+        public async Task<IReadOnlyList<ModUnitRepairResult>> RepairAllOutdatedUnitsAsync(CancellationToken cancellationToken = default)
+        {
+            var targets = _snapshot.Nodes.Values
+                .Where(node => _derivedData.Find(node.Id)?.UnitCompatibility?.CanRepair == true)
+                .OrderBy(node => node.Metadata.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var gameData = SettingsService.GetGameDataFolder();
+            var results = new List<ModUnitRepairResult>();
+            foreach (var node in targets)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var report = _derivedData.Find(node.Id)?.UnitCompatibility;
+                results.Add(await _unitRepairService.RepairNodeAsync(node, _paths.ModsDirectory, gameData, report, cancellationToken).AsTask().ConfigureAwait(false));
+            }
+
+            await RefreshDerivedDataAsync(cancellationToken).ConfigureAwait(false);
+            return results;
+        }
+
+        public string ResolveAbsolutePath(string? maybeRelative)
+        {
+            if (string.IsNullOrWhiteSpace(maybeRelative)) return string.Empty;
+            if (Path.IsPathRooted(maybeRelative)) return maybeRelative;
+            return Path.GetFullPath(Path.Combine(_paths.ModsDirectory, maybeRelative.Replace('/', Path.DirectorySeparatorChar)));
+        }
+
+        public void ReplaceSnapshot(LibrarySnapshot snapshot, bool buildDerivedData = false)
+        {
+            _snapshot = snapshot ?? EmptySnapshot();
+            RebuildIndex(buildDerivedData);
+        }
+
+        private void RebuildIndex(bool buildDerivedData = true)
+        {
+            if (buildDerivedData)
+            {
+                _derivedData = _derivedDataService.BuildAsync(_snapshot, _paths.ModsDirectory, SettingsService.GetGameDataFolder()).AsTask().GetAwaiter().GetResult();
+            }
+
+            RebuildEntityIndex();
+        }
+
+        private void RebuildEntityIndex()
+        {
+            _byGuid.Clear();
+            foreach (var node in _snapshot.Nodes.Values.OrderBy(n => n.Metadata.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                _byGuid[node.Id.Value.ToString("N")] = ToEntity(node);
+            }
+        }
+
+        private ModEntity ToEntity(ModNode node)
+        {
+            var derived = _derivedData.Find(node.Id);
+            return new ModEntity
+            {
+                Guid = node.Id.Value.ToString("N"),
+                Name = node.Metadata.Name,
+                Description = node.Metadata.Notes,
+                Image = derived?.IconPath,
+                Tags = node.Metadata.UserTags?.ToList() ?? new List<string>(),
+                SourcePath = node.RelativePath,
+                CreatedAt = node.Metadata.CreatedUtc.UtcDateTime,
+                UpdatedAt = (node.Metadata.ModifiedUtc ?? node.Metadata.CreatedUtc).UtcDateTime,
+                FileGroups = (derived?.PatchFiles.Where(f => f.SidecarKind == PatchSidecarKind.Base)
+                    .OrderBy(f => f.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(f => f.NormalizedOrder)
+                    .Select(f => new FileGroup
+                {
+                    HexPrefix = f.ArchiveHex16,
+                    PatchN = f.SourcePatchIndex,
+                    RelativePath = node.RelativePath,
+                    Files = new List<string> { f.FileName }
+                }) ?? Enumerable.Empty<FileGroup>()).ToList(),
+            };
+        }
+
+        private static bool TryParseNodeId(string? value, out ModNodeId nodeId)
+        {
+            nodeId = default;
+            if (!Guid.TryParse(value, out var guid)) return false;
+            nodeId = new ModNodeId(guid);
+            return true;
+        }
+
+        private static LibrarySnapshot EmptySnapshot() => new(
+            Version: 1,
+            SavedUtc: DateTimeOffset.UtcNow,
+            Nodes: new Dictionary<ModNodeId, ModNode>(),
+            Profiles: new List<HD2ModCore.Domain.Profile>());
+
+        private static DerivedLibraryData EmptyDerivedData() => new(
+            BuiltUtc: DateTimeOffset.UtcNow,
+            Nodes: new Dictionary<ModNodeId, DerivedModNodeData>(),
+            Issues: Array.Empty<CoreIssue>());
     }
 }

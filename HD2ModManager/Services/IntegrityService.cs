@@ -27,7 +27,7 @@ namespace HD2ModManager.Services
             foreach (var kv in _library.ByGuid)
             {
                 var mod = kv.Value;
-                var basePath = string.IsNullOrWhiteSpace(mod.SourcePath) ? string.Empty : ResolveAbsolutePath(mod.SourcePath!);
+                var basePath = string.IsNullOrWhiteSpace(mod.SourcePath) ? string.Empty : _library.ResolveAbsolutePath(mod.SourcePath!);
                 debug.Add($"Check mod: {mod.Name} [{mod.Guid}] base={basePath} groups={mod.FileGroups.Count}");
                 var toRemoveGroups = new List<Models.FileGroup>();
                 foreach (var group in mod.FileGroups)
@@ -113,17 +113,6 @@ namespace HD2ModManager.Services
             var combined = basePath;
             foreach (var p in parts) combined = Path.Combine(combined, p);
             return Path.GetFullPath(combined);
-        }
-
-        private static string ResolveAbsolutePath(string sourcePath)
-        {
-            try
-            {
-                var root = SettingsService.GetModLibraryFolder();
-                if (Path.IsPathRooted(sourcePath)) return sourcePath;
-                return Path.GetFullPath(Path.Combine(root, sourcePath.Replace('/', Path.DirectorySeparatorChar)));
-            }
-            catch { return sourcePath; }
         }
     }
 }

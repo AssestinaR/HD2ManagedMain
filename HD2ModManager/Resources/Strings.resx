@@ -179,15 +179,6 @@
   <data name="Notification_ImportFailed" xml:space="preserve">
     <value>Import failed: {0}</value>
   </data>
-  <data name="Notification_ImportQueueSummary" xml:space="preserve">
-    <value>Import queue - Total: {0}, Imported: {1}, Pending: {2}</value>
-  </data>
-  <data name="Notification_ImportComplete" xml:space="preserve">
-    <value>Import completed: {0}</value>
-  </data>
-  <data name="Notification_ImportFailed" xml:space="preserve">
-    <value>Import failed: {0}</value>
-  </data>
   <data name="Integrity_LogGenerated" xml:space="preserve">
     <value>Library integrity: removed {0} missing files; log generated.</value>
   </data>

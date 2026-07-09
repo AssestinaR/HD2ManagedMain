@@ -25,6 +25,9 @@
     <PackageReference Include="SharpCompress" Version="0.40.0" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\HD2ModCore\HD2ModCore.csproj" />
+  </ItemGroup>
+  <ItemGroup>
     <Resource Include="Resources\helldivers2.ico" />
     <Resource Include="Resources\helldivers2.png" />
   </ItemGroup>

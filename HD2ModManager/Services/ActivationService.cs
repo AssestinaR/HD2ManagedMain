@@ -1,125 +1,74 @@
-﻿using System;
-using System.Collections.Generic;
+using System;
 using System.IO;
 using System.Linq;
+using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure;
 
 namespace HD2ModManager.Services
 {
+    public sealed class ActivationResult
+    {
+        public bool Success { get; init; }
+        public string Message { get; init; } = string.Empty;
+        public ApplyResult? CoreResult { get; init; }
+    }
+
+    // 作用：使用 HD2ModCore 的一站式 Profile 应用服务替代旧复制式部署。
     public class ActivationService
     {
         private readonly ModLibraryService _library;
         private readonly ProfileService _profiles;
         private readonly NotificationService _notify;
-        private readonly string _configDir;
-
-        private const string ManifestFile = "activation.json";
+        private readonly StoragePaths _paths;
 
         public ActivationService(ModLibraryService library, ProfileService profiles, NotificationService notify)
         {
             _library = library;
             _profiles = profiles;
             _notify = notify;
-            _configDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config");
+            _paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
         }
 
-        // Map files from active profile into game data folder. For now we copy files (simple and robust).
         public bool ApplyActiveProfile(bool dryRun = false)
         {
-            var active = _profiles.Active;
-            if (active == null)
-            {
-                _notify.Show("未启用配置。", NotificationLevel.Info, TimeSpan.FromSeconds(3));
-                return false;
-            }
-
-            var targetRoot = SettingsService.GetGameDataFolder();
-            if (string.IsNullOrWhiteSpace(targetRoot))
-            {
-                _notify.Show("未设置游戏数据目录。", NotificationLevel.Error, TimeSpan.FromSeconds(5));
-                return false;
-            }
-            Directory.CreateDirectory(targetRoot);
-
-            // cleanup previous mappings
-            var manifestPath = Path.Combine(_configDir, ManifestFile);
-            var previous = LoadManifest(manifestPath);
-            if (!dryRun)
-            {
-                foreach (var file in previous)
-                {
-                    try { if (File.Exists(file)) File.Delete(file); } catch { }
-                }
-            }
-
-            var sorted = _profiles.GetSortedEntries(active);
-            var created = new List<string>();
-            foreach (var entry in sorted)
-            {
-                var mod = _library.Get(entry.Guid);
-                if (mod == null) continue;
-                var basePath = ResolveAbsoluteModPath(mod.SourcePath);
-                foreach (var group in mod.FileGroups)
-                {
-                    foreach (var rel in group.Files)
-                    {
-                        try
-                        {
-                            var src = Path.GetFullPath(Path.Combine(basePath, rel.Replace('/', Path.DirectorySeparatorChar)));
-                            var dest = Path.GetFullPath(Path.Combine(targetRoot, rel.Replace('/', Path.DirectorySeparatorChar)));
-                            Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-                            if (!dryRun)
-                            {
-                                TryCopy(src, dest);
-                            }
-                            created.Add(dest);
-                        }
-                        catch { }
-                    }
-                }
-            }
-
-            if (!dryRun)
-            {
-                SaveManifest(manifestPath, created);
-            }
-            _notify.Show(dryRun ? "激活预览完成。" : $"已应用配置，映射 {created.Count} 个文件。", NotificationLevel.Info, TimeSpan.FromSeconds(5));
-            return true;
+            return ApplyActiveProfileDetailed(dryRun).Success;
         }
 
-        private static void TryCopy(string src, string dest)
+        public ActivationResult ApplyActiveProfileDetailed(bool dryRun = false)
         {
-            try { if (File.Exists(dest)) File.Delete(dest); } catch { }
-            File.Copy(src, dest, overwrite: true);
-        }
-
-        private static string ResolveAbsoluteModPath(string? sourcePath)
-        {
-            if (string.IsNullOrWhiteSpace(sourcePath)) return string.Empty;
-            if (Path.IsPathRooted(sourcePath)) return sourcePath;
-            var root = SettingsService.GetModLibraryFolder();
-            return Path.GetFullPath(Path.Combine(root, sourcePath.Replace('/', Path.DirectorySeparatorChar)));
-        }
-
-        private static List<string> LoadManifest(string path)
-        {
-            try
+            if (dryRun)
             {
-                if (!File.Exists(path)) return new List<string>();
-                var json = File.ReadAllText(path);
-                return System.Text.Json.JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+                var previewMessage = "新版部署由 HD2ModCore 在执行时生成计划；当前暂不支持旧 dry-run。";
+                _notify.Show(previewMessage, NotificationLevel.Info, TimeSpan.FromSeconds(4));
+                return new ActivationResult { Success = true, Message = previewMessage };
             }
-            catch { return new List<string>(); }
-        }
 
-        private static void SaveManifest(string path, List<string> files)
-        {
-            try
+            var profile = _profiles.ActiveCoreProfile;
+            if (profile == null)
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                var json = System.Text.Json.JsonSerializer.Serialize(files.Distinct().ToList(), new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(path, json);
+                const string message = "未启用配置。";
+                _notify.Show(message, NotificationLevel.Info, TimeSpan.FromSeconds(3));
+                return new ActivationResult { Success = false, Message = message };
             }
-            catch { }
+
+            var gameData = SettingsService.GetGameDataFolder();
+            if (string.IsNullOrWhiteSpace(gameData))
+            {
+                const string message = "未设置游戏数据目录。";
+                _notify.Show(message, NotificationLevel.Error, TimeSpan.FromSeconds(5));
+                return new ActivationResult { Success = false, Message = message };
+            }
+            Directory.CreateDirectory(gameData);
+
+            var service = CoreServices.CreateProfileApplyService();
+            var result = service.ApplyAsync(profile, _library.Snapshot, _paths.ModsDirectory, gameData).AsTask().GetAwaiter().GetResult();
+            var errors = result.Issues.Count(i => i.Severity == CoreIssueSeverity.Error);
+            var warnings = result.Issues.Count(i => i.Severity == CoreIssueSeverity.Warning);
+            var messageText = result.Success
+                ? $"已应用配置：{result.Operations.Count} 个操作，警告 {warnings}。"
+                : $"应用配置失败：错误 {errors}，警告 {warnings}。";
+            _notify.Show(messageText, result.Success ? NotificationLevel.Info : NotificationLevel.Error, TimeSpan.FromSeconds(6));
+            return new ActivationResult { Success = result.Success, Message = messageText, CoreResult = result };
         }
     }
 }

@@ -6,10 +6,21 @@ public interface IAssetArchiveIndexService
 {
 	ValueTask<bool> IndexExistsAsync(CancellationToken cancellationToken = default);
 
+	ValueTask<GameDataIndexFingerprint?> GetFingerprintAsync(CancellationToken cancellationToken = default);
+
+	ValueTask<GameDataIndexStatus> GetIndexStatusAsync(
+		string gameDataDirectory,
+		string archiveHashesJson,
+		CancellationToken cancellationToken = default);
+
 	ValueTask BuildOrRebuildAsync(
 		string gameDataDirectory,
 		string archiveHashesJson,
 		IProgress<IndexBuildProgress>? progress = null,
+		CancellationToken cancellationToken = default);
+
+	ValueTask<IReadOnlyList<AssetArchiveMatch>> FindAssetArchivesAsync(
+		IReadOnlySet<AssetKey> assetKeys,
 		CancellationToken cancellationToken = default);
 
 	ValueTask<IReadOnlyDictionary<string, int>> VoteArchivesAsync(

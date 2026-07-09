@@ -32,7 +32,7 @@ public sealed class ApplyPlannerTests
 			var first = new ModNode(
 				Id: firstId,
 				RelativePath: "first",
-				Metadata: new ModNodeMetadata("first", null, Array.Empty<string>(), null, DateTimeOffset.UtcNow, null),
+				Metadata: new ModNodeMetadata("first", null, Array.Empty<string>(), DateTimeOffset.UtcNow, null),
 				PatchGroups: Array.Empty<PatchGroupKey>(),
 				Children: Array.Empty<ModNodeId>());
 			var second = first with { Id = secondId, RelativePath = "second", Metadata = first.Metadata with { Name = "second" } };

@@ -1,15 +1,27 @@
 ﻿using System.Collections.ObjectModel;
 using System.Linq;
+using System.Threading.Tasks;
+using System.Windows.Input;
+using HD2ModCore.Domain;
 using HD2ModManager.Models;
 using HD2ModManager.Services;
 
 namespace HD2ModManager.ViewModels
 {
+    // 作用：管理模组库列表、分组、行选择与库内条目操作。
     public class LibraryPageViewModel : PageViewModel
     {
+        private const string SelectionScope = "Library";
         private readonly ModLibraryService _library;
+        private readonly ProfileService? _profiles;
+        private readonly NotificationService? _notifications;
         private readonly TagCatalogService _tags;
+        private readonly LibrarySectionBuilder _sectionBuilder;
+        private readonly SelectionCoordinator? _selection;
+        private readonly ObservableCollection<string> _selectedGuids = new();
+        private string? _selectionAnchorGuid;
 
+        public ObservableCollection<ModCardViewModel> Items { get; } = new();
         public ObservableCollection<SectionViewModel> Sections { get; } = new();
 
         private string _query = string.Empty;
@@ -17,22 +29,109 @@ namespace HD2ModManager.ViewModels
 
         public RelayCommand RefreshCommand { get; }
         public RelayCommand RemoveModCommand { get; }
+        public RelayCommand ToggleSelectionCommand { get; }
+        public RelayCommand AddToProfileCommand { get; }
+        public RelayCommand EditTagsCommand { get; }
+        public RelayCommand OpenFolderCommand { get; }
+        public RelayCommand RepairModCommand { get; }
+        public RelayCommand RepairAllOutdatedCommand { get; }
+        public RelayCommand RenameCommand { get; }
+        public RelayCommand EditDescriptionCommand { get; }
+        public RelayCommand EditImageCommand { get; }
+        public RelayCommand RemoveCommand { get; }
         private bool _isCompact = true;
         public bool IsCompact { get => _isCompact; set { _isCompact = value; OnPropertyChanged(nameof(IsCompact)); } }
 
-        public LibraryPageViewModel(ModLibraryService library)
+        public LibraryPageViewModel(ModLibraryService library, SelectionCoordinator? selection = null, ProfileService? profiles = null, NotificationService? notifications = null)
         {
             Title = "Library";
             _library = library;
+            _profiles = profiles;
+            _notifications = notifications;
             _tags = TagCatalogService.Instance;
+            _sectionBuilder = new LibrarySectionBuilder(_tags, IsSelected);
+            _selection = selection;
+            if (_selection != null) _selection.SelectionChanged += (_, _) => SyncSelectionFromCoordinator();
             RefreshCommand = new RelayCommand(Refresh);
             RemoveModCommand = new RelayCommand(() => { /* parameter passed via CommandParameter not used here */ });
+            ToggleSelectionCommand = new RelayCommand(ToggleSelection);
+            AddToProfileCommand = new RelayCommand(parameter => AddToProfile(parameter as ModCardViewModel));
+            EditTagsCommand = new RelayCommand(_ => { });
+            OpenFolderCommand = new RelayCommand(parameter => OpenFolder(parameter as ModCardViewModel));
+            RepairModCommand = new RelayCommand(parameter => RepairMod(parameter as ModCardViewModel), parameter => (parameter as ModCardViewModel)?.CanRepair == true);
+            RepairAllOutdatedCommand = new RelayCommand(_ => RepairAllOutdated(), _ => Items.Any(i => i.CanRepair));
+            RenameCommand = new RelayCommand(_ => { });
+            EditDescriptionCommand = new RelayCommand(_ => { });
+            EditImageCommand = new RelayCommand(_ => { });
+            RemoveCommand = new RelayCommand(parameter => RemoveMod(parameter as ModCardViewModel));
+            Refresh();
+        }
+
+        public void SelectRow(ModCardViewModel card, ModifierKeys modifiers)
+        {
+            var allCards = Items.ToList();
+            if ((modifiers & ModifierKeys.Shift) == ModifierKeys.Shift && !string.IsNullOrWhiteSpace(_selectionAnchorGuid))
+            {
+                var anchorIndex = allCards.FindIndex(c => string.Equals(c.Mod.Guid, _selectionAnchorGuid, System.StringComparison.OrdinalIgnoreCase));
+                var targetIndex = allCards.FindIndex(c => string.Equals(c.Mod.Guid, card.Mod.Guid, System.StringComparison.OrdinalIgnoreCase));
+                if (anchorIndex >= 0 && targetIndex >= 0)
+                {
+                    _selectedGuids.Clear();
+                    foreach (var selected in allCards.Skip(System.Math.Min(anchorIndex, targetIndex)).Take(System.Math.Abs(anchorIndex - targetIndex) + 1))
+                    {
+                        _selectedGuids.Add(selected.Mod.Guid);
+                    }
+                }
+            }
+            else if ((modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            {
+                if (!_selectedGuids.Remove(card.Mod.Guid)) _selectedGuids.Add(card.Mod.Guid);
+                _selectionAnchorGuid = card.Mod.Guid;
+            }
+            else
+            {
+                _selectedGuids.Clear();
+                _selectedGuids.Add(card.Mod.Guid);
+                _selectionAnchorGuid = card.Mod.Guid;
+            }
+
+            _selection?.Replace(SelectionScope, _selectedGuids);
+            RefreshSelectionFlags();
+        }
+
+        public bool RenameMod(ModCardViewModel? card, string newName)
+        {
+            if (card == null || string.IsNullOrWhiteSpace(newName) || newName == card.Mod.Name) return false;
+            var ok = _library.Rename(card.Mod.Guid, newName);
+            if (ok) _notifications?.Show($"已重命名：{newName.Trim()}");
+            Refresh();
+            return ok;
+        }
+
+        public void UpdateDescription(ModCardViewModel? card, string? description)
+        {
+            if (card == null) return;
+            card.Mod.Description = description ?? string.Empty;
+            _library.Add(card.Mod);
+            _library.Save();
+            _notifications?.Show($"已更新备注：{card.Mod.Name}");
+            Refresh();
+        }
+
+        public void UpdateIcon(ModCardViewModel? card, string sourceImagePath)
+        {
+            if (card == null || string.IsNullOrWhiteSpace(sourceImagePath)) return;
+            var modDir = _library.ResolveAbsolutePath(card.Mod.SourcePath);
+            if (string.IsNullOrWhiteSpace(modDir) || !System.IO.Directory.Exists(modDir)) return;
+            var destination = System.IO.Path.Combine(modDir, "icon" + System.IO.Path.GetExtension(sourceImagePath).ToLowerInvariant());
+            System.IO.File.Copy(sourceImagePath, destination, overwrite: true);
+            card.Mod.Image = destination;
+            _notifications?.Show($"已更新图标：{card.Mod.Name}");
             Refresh();
         }
 
         public void Refresh()
         {
-            Sections.Clear();
             var all = _library.All().ToList();
             var q = (_query ?? string.Empty).Trim();
             if (!string.IsNullOrWhiteSpace(q))
@@ -42,117 +141,121 @@ namespace HD2ModManager.ViewModels
                     (m.Description?.IndexOf(q, System.StringComparison.OrdinalIgnoreCase) ?? -1) >= 0 ||
                     (m.Tags?.Any(t => t.IndexOf(q, System.StringComparison.OrdinalIgnoreCase) >= 0) ?? false)).ToList();
             }
+            _sectionBuilder.Rebuild(Sections, all);
+            Items.Clear();
+            foreach (var mod in all.OrderBy(m => m.Name, System.StringComparer.CurrentCultureIgnoreCase))
+            {
+                var derived = _library.GetDerivedData(mod.Guid);
+                Items.Add(new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, derived?.UnitCompatibility));
+            }
+            RepairAllOutdatedCommand.RaiseCanExecuteChanged();
+        }
 
-            // Build sections driven by TagCatalogService: top-level where Parent==null
-            var tagAll = _tags.GetAll();
-            var topLevels = tagAll.Where(t => string.IsNullOrWhiteSpace(t.Parent)).Select(t => t.Name).Distinct().ToList();
-            var sectionMap = new System.Collections.Generic.Dictionary<string, SectionViewModel>(System.StringComparer.OrdinalIgnoreCase);
-            foreach (var top in topLevels)
+        private async void RepairMod(ModCardViewModel? card)
+        {
+            if (card == null || !card.CanRepair) return;
+            try
             {
-                var sec = new SectionViewModel(top);
-                sectionMap[top] = sec;
-                // children: Parent==top
-                var children = tagAll.Where(t => string.Equals(t.Parent, top, System.StringComparison.OrdinalIgnoreCase)).Select(t => t.Name).Distinct().ToList();
-                foreach (var child in children)
-                {
-                    sec.Subsections.Add(new SubsectionViewModel(child));
-                }
+                var result = await _library.RepairModUnitsAsync(card.Mod.Guid);
+                _notifications?.Show(result.SummaryText, result.Success ? NotificationLevel.Info : NotificationLevel.Error);
             }
+            catch (System.Exception ex)
+            {
+                _notifications?.Show($"修复失败：{ex.Message}", NotificationLevel.Error);
+            }
+            Refresh();
+        }
 
-            // Fallback section for unclassified
-            var others = sectionMap.ContainsKey("其他") ? sectionMap["其他"] : new SectionViewModel("其他");
-            if (!sectionMap.ContainsKey("其他")) sectionMap["其他"] = others;
-            if (others.Subsections.Count == 0) others.Subsections.Add(new SubsectionViewModel("未分类"));
-
-            // Build a fast lookup of tag keys -> TagItem
-            var tagIndex = new System.Collections.Generic.Dictionary<string, Services.TagCatalogService.TagItem>(System.StringComparer.OrdinalIgnoreCase);
-            foreach (var ti in tagAll)
+        private async void RepairAllOutdated()
+        {
+            try
             {
-                if (!string.IsNullOrWhiteSpace(ti.Name)) tagIndex[ti.Name] = ti;
-                if (!string.IsNullOrWhiteSpace(ti.Code)) tagIndex[ti.Code] = ti;
-                if (!string.IsNullOrWhiteSpace(ti.EnglishName)) tagIndex[ti.EnglishName] = ti;
-                if (!string.IsNullOrWhiteSpace(ti.ChineseName)) tagIndex[ti.ChineseName] = ti;
+                var results = await _library.RepairAllOutdatedUnitsAsync();
+                var success = results.Count(r => r.Success);
+                var units = results.Sum(r => r.UpdatedUnitCount);
+                var failed = results.Count - success;
+                var message = failed > 0 ? $"已修复 {units} 个 unit，{failed} 个 Mod 失败。" : $"已修复 {units} 个 unit。";
+                _notifications?.Show(message, failed > 0 ? NotificationLevel.Error : NotificationLevel.Info);
             }
-
-            // Build staging map: subsection -> list of cards (to be added in batches)
-            var staging = new System.Collections.Generic.Dictionary<SubsectionViewModel, System.Collections.Generic.List<ModCardViewModel>>();
-            void Enqueue(SubsectionViewModel sub, ModEntity m)
+            catch (System.Exception ex)
             {
-                if (!staging.TryGetValue(sub, out var list)) { list = new System.Collections.Generic.List<ModCardViewModel>(); staging[sub] = list; }
-                list.Add(new ModCardViewModel(m));
+                _notifications?.Show($"批量修复失败：{ex.Message}", NotificationLevel.Error);
             }
-            foreach (var m in all)
-            {
-                var placed = false;
-                foreach (var tag in m.Tags)
-                {
-                    if (!tagIndex.TryGetValue(tag, out var ti)) continue;
-                    var top = !string.IsNullOrWhiteSpace(ti.Category) ? ti.Category : (string.IsNullOrWhiteSpace(ti.Parent) ? ti.Name : string.Empty);
-                    var child = !string.IsNullOrWhiteSpace(ti.Parent) ? ti.Parent : ti.Name;
-                    if (!string.IsNullOrWhiteSpace(top) && sectionMap.TryGetValue(top!, out var sec))
-                    {
-                        var sub = sec.Subsections.FirstOrDefault(s => string.Equals(s.Title, child, System.StringComparison.OrdinalIgnoreCase));
-                        if (sub == null)
-                        {
-                            if (sec.Subsections.Count == 0) sec.Subsections.Add(new SubsectionViewModel("未分类"));
-                            sub = sec.Subsections.FirstOrDefault();
-                        }
-                        Enqueue(sub!, m);
-                        placed = true; break;
-                    }
-                }
-                if (!placed)
-                {
-                    var def = others.Subsections.FirstOrDefault() ?? new SubsectionViewModel("未分类");
-                    if (!others.Subsections.Contains(def)) others.Subsections.Add(def);
-                    Enqueue(def, m);
-                }
-            }
-
-            // Append sections in a stable order (topLevels order, then 其他)
-            foreach (var top in topLevels)
-            {
-                Sections.Add(sectionMap[top]);
-            }
-            if (!topLevels.Any(t => t == "其他")) Sections.Add(others);
-
-            // Batched append to UI to avoid long blocking
-            const int BatchSize = 30;
-            var dispatcher = System.Windows.Application.Current?.Dispatcher;
-            foreach (var kv in staging)
-            {
-                var sub = kv.Key;
-                var list = kv.Value;
-                int idx = 0;
-                void AppendBatch()
-                {
-                    int take = System.Math.Min(BatchSize, list.Count - idx);
-                    for (int i = 0; i < take; i++) sub.Mods.Add(list[idx + i]);
-                    idx += take;
-                    sub.HasContent = sub.Mods.Count > 0;
-                    if (idx < list.Count)
-                    {
-                        dispatcher?.BeginInvoke(new System.Action(AppendBatch), System.Windows.Threading.DispatcherPriority.Background);
-                    }
-                }
-                AppendBatch();
-            }
-            foreach (var sec in Sections)
-            {
-                sec.HasContent = sec.Subsections.Any(s => s.HasContent);
-            }
+            Refresh();
         }
 
         private void RemoveMod(ModCardViewModel? card)
         {
             if (card == null) return;
+            var confirm = System.Windows.MessageBox.Show($"确定删除 Mod“{card.Mod.Name}”？\n这会同时删除库中的已存储文件。", "删除 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
+            if (confirm != System.Windows.MessageBoxResult.Yes) return;
             try
             {
+                ThumbnailService.CancelPendingGeneration();
                 _library.Remove(card.Mod.Guid);
                 _library.Save();
+                _ = _library.RefreshDerivedDataAsync();
+                _notifications?.Show($"已删除：{card.Mod.Name}");
+            }
+            catch (System.Exception ex)
+            {
+                _notifications?.Show($"删除失败：{ex.Message}", NotificationLevel.Error);
+            }
+            Refresh();
+        }
+
+        private void AddToProfile(ModCardViewModel? card)
+        {
+            if (card == null || _profiles == null) return;
+            if (_profiles.AddModToActive(card.Mod.Guid))
+            {
+                _notifications?.Show($"已加入当前配置：{card.Mod.Name}");
+            }
+            else
+            {
+                _notifications?.Show("无法加入当前配置，可能未创建活动配置或该 Mod 已存在。", NotificationLevel.Info);
+            }
+        }
+
+        private void OpenFolder(ModCardViewModel? card)
+        {
+            if (card == null) return;
+            try
+            {
+                var abs = _library.ResolveAbsolutePath(card.Mod.SourcePath);
+                if (!System.IO.Directory.Exists(abs)) System.IO.Directory.CreateDirectory(abs);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = abs, UseShellExecute = true });
             }
             catch { }
-            Refresh();
+        }
+
+        private void ToggleSelection(object? parameter)
+        {
+            if (parameter is not ModCardViewModel card) return;
+            if (!_selectedGuids.Remove(card.Mod.Guid)) _selectedGuids.Add(card.Mod.Guid);
+            _selection?.Replace(SelectionScope, _selectedGuids);
+            RefreshSelectionFlags();
+        }
+
+        private bool IsSelected(string guid) => _selectedGuids.Any(id => string.Equals(id, guid, System.StringComparison.OrdinalIgnoreCase));
+
+        private void SyncSelectionFromCoordinator()
+        {
+            if (_selection == null) return;
+            _selectedGuids.Clear();
+            if (string.Equals(_selection.Scope, SelectionScope, System.StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var id in _selection.SelectedIds) _selectedGuids.Add(id);
+            }
+            RefreshSelectionFlags();
+        }
+
+        private void RefreshSelectionFlags()
+        {
+            foreach (var card in Items)
+            {
+                card.IsSelected = IsSelected(card.Mod.Guid);
+            }
         }
 
         // Helpers removed: now driven by TagCatalogService
@@ -174,15 +277,35 @@ namespace HD2ModManager.ViewModels
         public SubsectionViewModel(string title) { Title = title; }
     }
 
-    public class ModCardViewModel
+    public class ModCardViewModel : BaseViewModel
     {
         public HD2ModManager.Models.ModEntity Mod { get; }
+        public ModAssetSummary? AssetSummary { get; }
+        public ModUnitCompatibilityReport? UnitCompatibility { get; }
         public string Name => Mod.Name;
         public string TagsString => string.Join(", ", Mod.Tags ?? new System.Collections.Generic.List<string>());
+        public string? ImagePath => Mod.Image;
+        public string? Description => Mod.Description;
         public string ArmorInfo { get; }
-        public ModCardViewModel(HD2ModManager.Models.ModEntity mod)
+        public bool HasCompatibilityBadge => UnitCompatibility?.HasHighConfidenceOutdated == true;
+        public bool CanRepair => UnitCompatibility?.CanRepair == true;
+        public string CompatibilityBadgeText => UnitCompatibility?.BadgeText ?? string.Empty;
+        public string CompatibilityTooltip => UnitCompatibility is null
+            ? string.Empty
+            : string.Join("\n", new[]
+            {
+                UnitCompatibility.SummaryText,
+                UnitCompatibility.Issues.FirstOrDefault(i => i.IsHighConfidenceOutdated)?.Message ?? UnitCompatibility.Issues.FirstOrDefault()?.Message ?? string.Empty,
+                UnitCompatibility.CanRepair ? "可以执行一键修复。" : string.Empty
+            }.Where(s => !string.IsNullOrWhiteSpace(s)));
+        private bool _isSelected;
+        public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
+        public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUnitCompatibilityReport? unitCompatibility = null)
         {
             Mod = mod;
+            AssetSummary = assetSummary;
+            UnitCompatibility = unitCompatibility;
+            _isSelected = isSelected;
             ArmorInfo = BuildArmorInfo(mod);
         }
 

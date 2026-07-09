@@ -40,16 +40,8 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 
 		var sourceName = new DirectoryInfo(full).Name;
 		var tree = await _folderImporter.ImportFolderAsync(full, cancellationToken).ConfigureAwait(false);
-
-		// Persist source content under mods/<guid>/...
-		var importId = Guid.NewGuid().ToString("N");
-		var destRoot = Path.Combine(_paths.ModsDirectory, importId);
-		Directory.CreateDirectory(_paths.ModsDirectory);
-		DirectoryCopy.CopyRecursively(full, destRoot, cancellationToken);
-		NormalizePatchDirectories(destRoot, cancellationToken);
-
-		var storedTree = await _folderImporter.ImportFolderAsync(destRoot, cancellationToken).ConfigureAwait(false);
-		var snapshot = await MergeIntoSnapshotAsync(storedTree, destRoot, cancellationToken).ConfigureAwait(false);
+		var storedTree = PersistFlattenedTree(tree, full, sourceName, cancellationToken);
+		var snapshot = await MergeIntoSnapshotAsync(storedTree, cancellationToken).ConfigureAwait(false);
 		await _store.SaveAsync(snapshot, cancellationToken).ConfigureAwait(false);
 
 		return new ImportResult(snapshot, storedTree.RootId, sourceName);
@@ -63,24 +55,26 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			throw new FileNotFoundException("Archive file not found.", full);
 		}
 
-		// Persist extracted content under mods/<guid>/...
-		var importId = Guid.NewGuid().ToString("N");
-		var destRoot = Path.Combine(_paths.ModsDirectory, importId);
-		Directory.CreateDirectory(destRoot);
+		var sourceName = Path.GetFileNameWithoutExtension(full);
+		var extractRoot = Path.Combine(Path.GetTempPath(), "HD2ModCore", "import", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(extractRoot);
 
-		// Keep a copy of the source archive for reference/debug.
-		var destArchivePath = Path.Combine(destRoot, Path.GetFileName(full));
-		File.Copy(full, destArchivePath, overwrite: true);
+		ImportedObjectTree storedTree;
+		try
+		{
+			await Task.Run(() => ExtractToDirectory(full, extractRoot, cancellationToken), cancellationToken).ConfigureAwait(false);
+			var tree = await _folderImporter.ImportFolderAsync(extractRoot, cancellationToken).ConfigureAwait(false);
+			storedTree = PersistFlattenedTree(tree, extractRoot, sourceName, cancellationToken);
+		}
+		finally
+		{
+			try { Directory.Delete(extractRoot, recursive: true); } catch { }
+		}
 
-		await Task.Run(() => ExtractToDirectory(full, destRoot, cancellationToken), cancellationToken).ConfigureAwait(false);
-		NormalizePatchDirectories(destRoot, cancellationToken);
-
-		// Build the object tree from the stored extracted content.
-		var tree = await _folderImporter.ImportFolderAsync(destRoot, cancellationToken).ConfigureAwait(false);
-		var snapshot = await MergeIntoSnapshotAsync(tree, destRoot, cancellationToken).ConfigureAwait(false);
+		var snapshot = await MergeIntoSnapshotAsync(storedTree, cancellationToken).ConfigureAwait(false);
 		await _store.SaveAsync(snapshot, cancellationToken).ConfigureAwait(false);
 
-		return new ImportResult(snapshot, tree.RootId, Path.GetFileName(full));
+		return new ImportResult(snapshot, storedTree.RootId, sourceName);
 	}
 
 	private void NormalizePatchDirectories(string rootDirectory, CancellationToken cancellationToken)
@@ -110,7 +104,42 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 	}
 
-	private async ValueTask<LibrarySnapshot> MergeIntoSnapshotAsync(ImportedObjectTree imported, string storedModsRoot, CancellationToken cancellationToken)
+	private ImportedObjectTree PersistFlattenedTree(ImportedObjectTree imported, string sourceRoot, string sourceDisplayName, CancellationToken cancellationToken)
+	{
+		Directory.CreateDirectory(_paths.ModsDirectory);
+		var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		var nodes = new Dictionary<ModNodeId, ModNode>();
+
+		foreach (var kvp in imported.Nodes)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var node = kvp.Value;
+			var sourceNodeDir = string.IsNullOrWhiteSpace(node.RelativePath)
+				? sourceRoot
+				: Path.Combine(sourceRoot, node.RelativePath);
+
+			var displayName = BuildDisplayName(sourceDisplayName, node.RelativePath);
+			var flatDirName = CreateUniqueDirectoryName(_paths.ModsDirectory, displayName, usedNames);
+			var destDir = Path.Combine(_paths.ModsDirectory, flatDirName);
+			CopyTopLevelFiles(sourceNodeDir, destDir, cancellationToken);
+			NormalizePatchDirectories(destDir, cancellationToken);
+
+			nodes[kvp.Key] = node with
+			{
+				RelativePath = flatDirName,
+				Metadata = node.Metadata with { Name = displayName },
+				Children = Array.Empty<ModNodeId>(),
+			};
+		}
+
+		return imported with
+		{
+			Nodes = nodes,
+			SourceDisplayName = sourceDisplayName,
+		};
+	}
+
+	private async ValueTask<LibrarySnapshot> MergeIntoSnapshotAsync(ImportedObjectTree imported, CancellationToken cancellationToken)
 	{
 		var current = await _store.TryLoadAsync(cancellationToken).ConfigureAwait(false);
 		var nodes = current?.Nodes is not null
@@ -120,11 +149,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		foreach (var kvp in imported.Nodes)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
-			var node = kvp.Value;
-
-			// Rewrite RelativePath so it is rooted under the stored mods folder for this import.
-			var newRel = Path.Combine(Path.GetFileName(storedModsRoot), node.RelativePath);
-			nodes[kvp.Key] = node with { RelativePath = newRel };
+			nodes[kvp.Key] = kvp.Value;
 		}
 
 		var profiles = current?.Profiles?.ToList() ?? new List<Profile>();
@@ -134,5 +159,51 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			SavedUtc: DateTimeOffset.UtcNow,
 			Nodes: nodes,
 			Profiles: profiles);
+	}
+
+	private static void CopyTopLevelFiles(string sourceDir, string destDir, CancellationToken cancellationToken)
+	{
+		Directory.CreateDirectory(destDir);
+		foreach (var file in Directory.EnumerateFiles(sourceDir))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)), overwrite: true);
+		}
+	}
+
+	private static string BuildDisplayName(string sourceDisplayName, string relativePath)
+	{
+		if (string.IsNullOrWhiteSpace(relativePath) || relativePath == ".")
+		{
+			return sourceDisplayName;
+		}
+
+		var parts = relativePath.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
+		return string.Join('-', new[] { sourceDisplayName }.Concat(parts));
+	}
+
+	private static string CreateUniqueDirectoryName(string parent, string displayName, HashSet<string>? reservedNames = null)
+	{
+		var baseName = SanitizeFileName(displayName);
+		var candidate = baseName;
+		var index = 2;
+		while ((reservedNames is not null && !reservedNames.Add(candidate)) || Directory.Exists(Path.Combine(parent, candidate)))
+		{
+			candidate = $"{baseName}_{index}";
+			index++;
+		}
+
+		return candidate;
+	}
+
+	private static string SanitizeFileName(string value)
+	{
+		var sanitized = string.IsNullOrWhiteSpace(value) ? "ImportedMod" : value.Trim();
+		foreach (var ch in Path.GetInvalidFileNameChars())
+		{
+			sanitized = sanitized.Replace(ch, '_');
+		}
+
+		return string.IsNullOrWhiteSpace(sanitized) ? "ImportedMod" : sanitized;
 	}
 }

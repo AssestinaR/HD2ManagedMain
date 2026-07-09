@@ -19,7 +19,11 @@ namespace HD2ModManager.Services
             public bool AutoCleanup { get; set; } = false;
             public bool AutoOpenTagEdit { get; set; } = false;
             public bool EnableLibraryImages { get; set; } = true;
+            public bool AutoUpdateAssetMetadata { get; set; } = false;
+            public string? AssetMetadataRepository { get; set; }
         }
+
+        public const string DefaultAssetMetadataRepository = "https://raw.githubusercontent.com/Boxofbiscuits97/HD2SDK-CommunityEdition/main";
 
         public static string? GetLanguage()
         {
@@ -51,6 +55,54 @@ namespace HD2ModManager.Services
             {
                 var model = LoadAll() ?? new SettingsModel();
                 model.EnableLibraryImages = enabled;
+                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(SettingsPath, json);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static bool GetAutoUpdateAssetMetadata()
+        {
+            try
+            {
+                if (!File.Exists(SettingsPath)) return false;
+                var json = File.ReadAllText(SettingsPath);
+                var model = JsonSerializer.Deserialize<SettingsModel>(json);
+                return model?.AutoUpdateAssetMetadata ?? false;
+            }
+            catch { return false; }
+        }
+
+        public static bool SetAutoUpdateAssetMetadata(bool enabled)
+        {
+            try
+            {
+                var model = LoadAll() ?? new SettingsModel();
+                model.AutoUpdateAssetMetadata = enabled;
+                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(SettingsPath, json);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static string GetAssetMetadataRepository()
+        {
+            try
+            {
+                var model = LoadAll();
+                return string.IsNullOrWhiteSpace(model?.AssetMetadataRepository) ? DefaultAssetMetadataRepository : model!.AssetMetadataRepository!;
+            }
+            catch { return DefaultAssetMetadataRepository; }
+        }
+
+        public static bool SetAssetMetadataRepository(string? repository)
+        {
+            try
+            {
+                var model = LoadAll() ?? new SettingsModel();
+                model.AssetMetadataRepository = string.IsNullOrWhiteSpace(repository) ? DefaultAssetMetadataRepository : repository;
                 var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(SettingsPath, json);
                 return true;

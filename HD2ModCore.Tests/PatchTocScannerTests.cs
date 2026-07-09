@@ -57,6 +57,71 @@ public sealed class PatchTocScannerTests
 		}
 	}
 
+	[Fact]
+	public async Task ScanAssetKeysAsync_StandardHeaderToc_ReturnsKeys()
+	{
+		var tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(tmp);
+		var path = Path.Combine(tmp, "9ba626afa44a3aa3.patch_0");
+
+		try
+		{
+			var unitType = new AssetKey(0xe0a48d0be9a7453f, 0x7336c6b662522f0e);
+			var textureType = new AssetKey(0xcd4238c6a0c69e32, 0x1111222233334444);
+			await File.WriteAllBytesAsync(path, BuildStandardHeaderToc(new[] { unitType, textureType }));
+
+			var scanner = new PatchTocScanner();
+			var keys = await scanner.ScanAssetKeysAsync(path);
+
+			Assert.Contains(unitType, keys);
+			Assert.Contains(textureType, keys);
+			Assert.Equal(2, keys.Count);
+		}
+		finally
+		{
+			try { Directory.Delete(tmp, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task ScanEntriesAsync_StandardHeaderToc_ReturnsEntryOffsetsAndSizes()
+	{
+		var tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(tmp);
+		var path = Path.Combine(tmp, "9ba626afa44a3aa3.patch_0");
+
+		try
+		{
+			var unit = new AssetKey(0xe0a48d0be9a7453f, 0x7336c6b662522f0e);
+			var bytes = BuildStandardHeaderToc(new[] { unit });
+			var entryOffset = 72 + 32;
+			WriteUInt64(bytes, entryOffset + 16, 0x1000);
+			WriteUInt64(bytes, entryOffset + 24, 0x2000);
+			WriteUInt64(bytes, entryOffset + 32, 0x3000);
+			WriteUInt32(bytes, entryOffset + 56, 0x44);
+			WriteUInt32(bytes, entryOffset + 60, 0x55);
+			WriteUInt32(bytes, entryOffset + 64, 0x66);
+			WriteUInt32(bytes, entryOffset + 76, 7);
+			await File.WriteAllBytesAsync(path, bytes);
+
+			var scanner = new PatchTocScanner();
+			var entry = Assert.Single(await scanner.ScanEntriesAsync(path));
+
+			Assert.Equal(unit, entry.AssetKey);
+			Assert.Equal(0x1000ul, entry.TocDataOffset);
+			Assert.Equal(0x2000ul, entry.StreamOffset);
+			Assert.Equal(0x3000ul, entry.GpuResourceOffset);
+			Assert.Equal(0x44u, entry.TocDataSize);
+			Assert.Equal(0x55u, entry.StreamSize);
+			Assert.Equal(0x66u, entry.GpuResourceSize);
+			Assert.Equal(7u, entry.EntryIndex);
+		}
+		finally
+		{
+			try { Directory.Delete(tmp, recursive: true); } catch { }
+		}
+	}
+
 	private static byte[] BuildToc(int numTypes, AssetKey[] entries)
 	{
 		const uint magic = 4026531857;
@@ -79,6 +144,39 @@ public sealed class PatchTocScannerTests
 			WriteUInt64(buffer, offset, entries[i].FileId);
 			WriteUInt64(buffer, offset + 8, entries[i].TypeId);
 			offset += 80;
+		}
+
+		return buffer;
+	}
+
+	private static byte[] BuildStandardHeaderToc(AssetKey[] entries)
+	{
+		const uint magic = 4026531857;
+		var groups = entries.GroupBy(e => e.TypeId).ToList();
+		var entriesOffset = 72 + groups.Count * 32;
+		var totalSize = entriesOffset + entries.Length * 80;
+		var buffer = new byte[totalSize];
+
+		WriteUInt32(buffer, 0, magic);
+		WriteUInt32(buffer, 4, (uint)groups.Count);
+		WriteUInt32(buffer, 8, (uint)entries.Length);
+
+		var typeOffset = 72;
+		foreach (var group in groups)
+		{
+			WriteUInt64(buffer, typeOffset + 8, group.Key);
+			WriteUInt64(buffer, typeOffset + 16, (ulong)group.Count());
+			WriteUInt32(buffer, typeOffset + 24, 16);
+			WriteUInt32(buffer, typeOffset + 28, 64);
+			typeOffset += 32;
+		}
+
+		var entryOffset = entriesOffset;
+		foreach (var entry in entries)
+		{
+			WriteUInt64(buffer, entryOffset, entry.FileId);
+			WriteUInt64(buffer, entryOffset + 8, entry.TypeId);
+			entryOffset += 80;
 		}
 
 		return buffer;

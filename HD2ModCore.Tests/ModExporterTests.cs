@@ -32,7 +32,7 @@ public sealed class ModExporterTests
 			var node = new ModNode(
 				Id: rootId,
 				RelativePath: importId,
-				Metadata: new ModNodeMetadata("MyRoot", "n", new[] { "chiffon" }, null, DateTimeOffset.UtcNow, null),
+				Metadata: new ModNodeMetadata("MyRoot", "n", new[] { "chiffon" }, DateTimeOffset.UtcNow, null),
 				PatchGroups: Array.Empty<PatchGroupKey>(),
 				Children: Array.Empty<ModNodeId>());
 

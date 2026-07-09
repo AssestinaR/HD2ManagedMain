@@ -1,237 +1,202 @@
-using System;
-using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.IO;
-using System.Linq;
-using System.Text.Json;
-using HD2ModManager.Models;
+using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure;
 
 namespace HD2ModManager.Services
 {
-    public class ProfileService
+    // ‰ΩúÁî®Ôºö‰∏∫ Manager Êö¥Èú≤Âü∫‰∫é HD2ModCore Profile ËØ≠‰πâÁöÑÈÖçÁΩÆÊúçÂä°„ÄÇ
+    public sealed class ProfileService
     {
-        private readonly string _profilesPath;
-        private readonly JsonSerializerOptions _options = new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            AllowTrailingCommas = true,
-            ReadCommentHandling = JsonCommentHandling.Skip
-        };
-
-        private readonly Dictionary<string, Profile> _profiles = new();
-        private string? _activeProfileKey;
+        private readonly HD2ModCore.Application.IModLibraryManager _manager;
+        private LibrarySnapshot _snapshot;
+        private readonly Dictionary<string, ProfileId> _profileIds = new(StringComparer.OrdinalIgnoreCase);
+        private string? _activeProfileName;
 
         public ProfileService(string profilesPath)
         {
-            _profilesPath = profilesPath;
+            var paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
+            _manager = CoreServices.CreateModLibraryManager(paths);
+            _snapshot = EmptySnapshot();
         }
+
+        public LibrarySnapshot Snapshot => _snapshot;
+        public IReadOnlyList<Profile> Profiles => _snapshot.Profiles.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        public string? ActiveKey => _activeProfileName;
+        public Profile? ActiveProfile => ActiveProfileId is ProfileId id ? _snapshot.Profiles.FirstOrDefault(p => p.Id == id) : null;
+        public Profile? ActiveCoreProfile => ActiveProfile;
+        public ProfileId? ActiveProfileId => !string.IsNullOrWhiteSpace(_activeProfileName) && _profileIds.TryGetValue(_activeProfileName, out var id) ? id : null;
 
         public void Load()
         {
-            _profiles.Clear();
-            _activeProfileKey = null;
-            if (!Directory.Exists(_profilesPath)) Directory.CreateDirectory(_profilesPath);
-            foreach (var file in Directory.EnumerateFiles(_profilesPath, "*.profile.json"))
-            {
-                var json = File.ReadAllText(file);
-                Profile? profile = null;
-                try { profile = JsonSerializer.Deserialize<Profile>(json, _options); }
-                catch { json = ModLibraryServiceJsonClean(json); profile = JsonSerializer.Deserialize<Profile>(json, _options); }
-                if (profile != null)
-                {
-                    var key = Path.GetFileNameWithoutExtension(file);
-                    _profiles[key] = profile;
-                    // First profile becomes active by default if none set
-                    _activeProfileKey ??= key;
-                }
-            // Persisted active key from settings overrides default selection
-            var persisted = SettingsService.GetActiveProfileKey();
-            if (!string.IsNullOrWhiteSpace(persisted) && _profiles.ContainsKey(persisted!))
-            {
-                _activeProfileKey = persisted;
-            }
-            }
+            _snapshot = _manager.LoadOrCreateAsync().AsTask().GetAwaiter().GetResult();
+            RebuildIndex();
         }
 
-        public void Save(string key)
+        public IReadOnlyList<Profile> All() => Profiles;
+
+        public string CreateNew(string? requestedName = null)
         {
-            if (!_profiles.TryGetValue(key, out var profile)) return;
-            var json = JsonSerializer.Serialize(profile, _options);
-            File.WriteAllText(Path.Combine(_profilesPath, key + ".profile.json"), json);
+            var name = CreateUniqueName(requestedName);
+            var profile = new Profile(ProfileId.New(), name, DateTimeOffset.UtcNow, null, Array.Empty<ProfileEntry>());
+            _snapshot = _manager.UpsertProfileAsync(profile).AsTask().GetAwaiter().GetResult();
+            _activeProfileName = name;
+            SettingsService.SetActiveProfileKey(_activeProfileName);
+            RebuildIndex();
+            return name;
         }
 
-        public string CreateNew()
+        public bool Remove(string name)
         {
-            //  π”√¥ø ˝◊÷µ›‘ˆ√¸√˚£∫1°¢2°¢3°≠°≠
-            int next = 1;
-            if (_profiles.Count > 0)
+            if (!_profileIds.TryGetValue(name, out var id)) return false;
+            _snapshot = _manager.DeleteProfileAsync(id).AsTask().GetAwaiter().GetResult();
+            if (string.Equals(_activeProfileName, name, StringComparison.OrdinalIgnoreCase))
             {
-                // ≥¢ ‘Ω‚Œˆœ÷”–º¸÷–µƒ◊Ó¥Û ˝◊÷
-                var max = _profiles.Keys
-                    .Select(k => int.TryParse(k, out var n) ? n : 0)
-                    .DefaultIfEmpty(0)
-                    .Max();
-                next = Math.Max(1, max + 1);
+                _activeProfileName = _snapshot.Profiles.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault()?.Name;
+                SettingsService.SetActiveProfileKey(_activeProfileName);
             }
-            var key = next.ToString();
-            _profiles[key] = new Profile();
-            _activeProfileKey ??= key; // auto activate first profile
-            Save(key);
-            return key;
+            RebuildIndex();
+            return true;
         }
 
-        public bool Remove(string key)
+        public void SetActive(string name)
         {
-            var path = Path.Combine(_profilesPath, key + ".profile.json");
-            try
+            if (_profileIds.ContainsKey(name))
             {
-                if (File.Exists(path))
-                {
-                    File.Delete(path);
-                }
-                else
-                {
-                    // fallback: delete matching file by name
-                    foreach (var f in Directory.EnumerateFiles(_profilesPath, "*.profile.json"))
-                    {
-                        var name = Path.GetFileNameWithoutExtension(f);
-                        if (string.Equals(name, key, StringComparison.OrdinalIgnoreCase))
-                        {
-                            try { File.Delete(f); } catch { }
-                        }
-                    }
-                }
-            }
-            catch { }
-            var removed = _profiles.Remove(key);
-            if (removed && _activeProfileKey == key)
-            {
-                _activeProfileKey = _profiles.Keys.FirstOrDefault();
-                SettingsService.SetActiveProfileKey(_activeProfileKey);
-            }
-            return removed;
-        }
-
-        public IReadOnlyDictionary<string, Profile> All() => new ReadOnlyDictionary<string, Profile>(_profiles);
-        public string? ActiveKey => _activeProfileKey;
-        public Profile? Active => _activeProfileKey != null && _profiles.TryGetValue(_activeProfileKey, out var p) ? p : null;
-        public void SetActive(string key)
-        {
-            if (_profiles.ContainsKey(key))
-            {
-                _activeProfileKey = key;
-                SettingsService.SetActiveProfileKey(key);
+                _activeProfileName = name;
+                SettingsService.SetActiveProfileKey(name);
             }
         }
 
         public bool DisableActive()
         {
-            if (_activeProfileKey == null) return false;
-            _activeProfileKey = null;
+            if (_activeProfileName == null) return false;
+            _activeProfileName = null;
             SettingsService.SetActiveProfileKey(null);
             return true;
         }
 
-        public bool Rename(string oldKey, string newKey)
+        public bool Rename(string oldName, string newName)
         {
-            if (string.IsNullOrWhiteSpace(oldKey) || string.IsNullOrWhiteSpace(newKey)) return false;
-            if (!_profiles.ContainsKey(oldKey)) return false;
-            // πÊ∑∂ªØ–¬√˚≥∆£∫»•ø’∏Ò
-            newKey = newKey.Trim();
-            // Ω˚÷π±£¡Ù‘≠√˚ªÚø’
-            if (string.IsNullOrWhiteSpace(newKey) || string.Equals(oldKey, newKey, StringComparison.OrdinalIgnoreCase)) return false;
-            // ≤ª‘ –Ì∞¸∫¨∑«∑®Œƒº˛√˚◊÷∑˚
-            foreach (var ch in System.IO.Path.GetInvalidFileNameChars())
+            if (string.IsNullOrWhiteSpace(oldName) || string.IsNullOrWhiteSpace(newName)) return false;
+            if (!_profileIds.TryGetValue(oldName, out var id)) return false;
+
+            try
             {
-                if (newKey.Contains(ch)) return false;
+                _snapshot = _manager.RenameProfileAsync(id, newName).AsTask().GetAwaiter().GetResult();
             }
-            // ≥ÂÕªºÏ≤‚£∫±‹√‚∏≤∏«Õ¨√˚≈‰÷√
-            if (_profiles.ContainsKey(newKey)) return false;
-            var oldPath = Path.Combine(_profilesPath, oldKey + ".profile.json");
-            var newPath = Path.Combine(_profilesPath, newKey + ".profile.json");
-            // Persist profile under new name
-            var profile = _profiles[oldKey];
-            var json = JsonSerializer.Serialize(profile, _options);
-            File.WriteAllText(newPath, json);
-            if (File.Exists(oldPath))
+            catch
             {
-                try { File.Delete(oldPath); } catch { /* ignore */ }
+                return false;
             }
-            _profiles.Remove(oldKey);
-            _profiles[newKey] = profile;
-            if (_activeProfileKey == oldKey)
+
+            var normalized = newName.Trim();
+            if (string.Equals(_activeProfileName, oldName, StringComparison.OrdinalIgnoreCase))
             {
-                _activeProfileKey = newKey;
-                SettingsService.SetActiveProfileKey(newKey);
+                _activeProfileName = normalized;
+                SettingsService.SetActiveProfileKey(normalized);
             }
+            RebuildIndex();
             return true;
         }
 
-        public List<ProfileEntry> GetSortedEntries(Profile profile)
+        public bool AddModToActive(string nodeGuid)
         {
-            var entries = profile.Entries.ToList();
-            // Split by marker
-            var top = entries.Where(e => e.Marker == -1).ToList();
-            var middle = entries.Where(e => e.Marker == 0).ToList();
-            var bottom = entries.Where(e => e.Marker == 1).ToList();
-            var result = new List<ProfileEntry>();
-            result.AddRange(TopoSortStable(top));
-            result.AddRange(TopoSortStable(middle));
-            result.AddRange(TopoSortStable(bottom));
-            return result;
+            if (ActiveProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+            _snapshot = _manager.AddProfileEntryAsync(profileId, nodeId).AsTask().GetAwaiter().GetResult();
+            RebuildIndex();
+            return true;
         }
 
-        private static List<ProfileEntry> TopoSortStable(List<ProfileEntry> segment)
+        public bool RemoveModFromActive(string nodeGuid)
         {
-            // base order: the input list order
-            var index = segment.Select((e, i) => (e.Guid, i)).ToDictionary(t => t.Guid, t => t.i);
-            var graph = new Dictionary<string, HashSet<string>>(); // u -> set(v) means u before v
-            var indeg = new Dictionary<string, int>();
-            foreach (var e in segment)
-            {
-                if (!graph.ContainsKey(e.Guid)) graph[e.Guid] = new HashSet<string>();
-                indeg.TryAdd(e.Guid, 0);
-            }
-            foreach (var e in segment)
-            {
-                foreach (var a in e.After ?? Enumerable.Empty<string>())
-                {
-                    if (!graph.ContainsKey(a) || !graph.ContainsKey(e.Guid)) continue; // ignore references outside segment
-                    if (graph[a].Add(e.Guid)) indeg[e.Guid] = indeg.GetValueOrDefault(e.Guid) + 1;
-                }
-                foreach (var b in e.Before ?? Enumerable.Empty<string>())
-                {
-                    if (!graph.ContainsKey(e.Guid) || !graph.ContainsKey(b)) continue;
-                    if (graph[e.Guid].Add(b)) indeg[b] = indeg.GetValueOrDefault(b) + 1;
-                }
-            }
-            var res = new List<ProfileEntry>();
-            var pq = new SortedSet<(int, string)>(Comparer<(int, string)>.Create((x, y) => x.Item1 == y.Item1 ? string.CompareOrdinal(x.Item2, y.Item2) : x.Item1.CompareTo(y.Item1)));
-            foreach (var e in segment.Where(s => indeg.GetValueOrDefault(s.Guid) == 0)) pq.Add((index.GetValueOrDefault(e.Guid, int.MaxValue), e.Guid));
-            var remaining = segment.ToDictionary(s => s.Guid, s => s);
-            while (pq.Count > 0)
-            {
-                var (idx, g) = pq.Min; pq.Remove(pq.Min);
-                if (!remaining.TryGetValue(g, out var entry)) continue;
-                res.Add(entry);
-                remaining.Remove(g);
-                foreach (var v in graph[g])
-                {
-                    indeg[v] = indeg.GetValueOrDefault(v) - 1;
-                    if (indeg[v] == 0) pq.Add((index.GetValueOrDefault(v, int.MaxValue), v));
-                }
-            }
-            // append any remaining (cycles broken) by base order
-            res.AddRange(remaining.Values.OrderBy(e => index.GetValueOrDefault(e.Guid, int.MaxValue)).ToList());
-            return res;
+            if (ActiveProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+            _snapshot = _manager.RemoveProfileEntryAsync(profileId, nodeId).AsTask().GetAwaiter().GetResult();
+            RebuildIndex();
+            return true;
         }
 
-        private static string ModLibraryServiceJsonClean(string input)
+        public bool MoveModInActive(string nodeGuid, int direction)
         {
-            var s = System.Text.RegularExpressions.Regex.Replace(input, ",\\s*(\\}|\\])", "$1");
-            s = System.Text.RegularExpressions.Regex.Replace(s, "//.*", string.Empty);
-            s = System.Text.RegularExpressions.Regex.Replace(s, "/\\*.*?\\*/", string.Empty, System.Text.RegularExpressions.RegexOptions.Singleline);
-            return s;
+            if (ActiveProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+            _snapshot = _manager.MoveProfileEntryAsync(profileId, nodeId, direction).AsTask().GetAwaiter().GetResult();
+            RebuildIndex();
+            return true;
         }
+
+        public bool SetModEnabledInActive(string nodeGuid, bool enabled)
+        {
+            if (ActiveProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+            _snapshot = _manager.SetProfileEntryEnabledAsync(profileId, nodeId, enabled).AsTask().GetAwaiter().GetResult();
+            RebuildIndex();
+            return true;
+        }
+
+        public int SetModsEnabledInActive(IEnumerable<string> nodeGuids, bool enabled)
+        {
+            var changed = 0;
+            foreach (var guid in nodeGuids)
+            {
+                if (SetModEnabledInActive(guid, enabled)) changed++;
+            }
+            return changed;
+        }
+
+        public IReadOnlyList<ProfileEntry> GetSortedEntries(Profile profile)
+        {
+            return profile.Entries.OrderBy(e => e.LoadOrder).ThenBy(e => e.AddedUtc).ToList();
+        }
+
+        private void RebuildIndex()
+        {
+            _profileIds.Clear();
+            foreach (var profile in _snapshot.Profiles.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                _profileIds[profile.Name] = profile.Id;
+            }
+
+            var persisted = SettingsService.GetActiveProfileKey();
+            if (!string.IsNullOrWhiteSpace(persisted) && _profileIds.ContainsKey(persisted))
+            {
+                _activeProfileName = persisted;
+            }
+            else if (_activeProfileName == null || !_profileIds.ContainsKey(_activeProfileName))
+            {
+                _activeProfileName = _profileIds.Keys.FirstOrDefault();
+                SettingsService.SetActiveProfileKey(_activeProfileName);
+            }
+        }
+
+        private string CreateUniqueName(string? requestedName)
+        {
+            var baseName = string.IsNullOrWhiteSpace(requestedName) ? "Profile" : requestedName.Trim();
+            if (!_profileIds.ContainsKey(baseName)) return baseName;
+
+            var index = 2;
+            string candidate;
+            do
+            {
+                candidate = $"{baseName} {index}";
+                index++;
+            }
+            while (_profileIds.ContainsKey(candidate));
+            return candidate;
+        }
+
+        private static bool TryParseNodeId(string nodeGuid, out ModNodeId nodeId)
+        {
+            if (Guid.TryParse(nodeGuid, out var guid))
+            {
+                nodeId = new ModNodeId(guid);
+                return true;
+            }
+
+            nodeId = default;
+            return false;
+        }
+
+        private static LibrarySnapshot EmptySnapshot() => new(
+            Version: 1,
+            SavedUtc: DateTimeOffset.UtcNow,
+            Nodes: new Dictionary<ModNodeId, ModNode>(),
+            Profiles: Array.Empty<Profile>());
     }
 }

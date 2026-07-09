@@ -1,0 +1,95 @@
+<UserControl x:Class="HD2ModManager.Views.ProfilePageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:HD2ModManager.Views">
+    <UserControl.Resources>
+        <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
+    </UserControl.Resources>
+    <DockPanel Background="Transparent">
+        <Border DockPanel.Dock="Top" Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+            <DockPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
+                    <TextBlock Text="配置页" FontSize="20" FontWeight="SemiBold" Margin="0,0,14,0"/>
+                    <ComboBox Width="180" ItemsSource="{Binding Profiles}" SelectedItem="{Binding ActiveProfileKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                    <TextBox Width="180" Text="{Binding RenameText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="8,0,0,0"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+        <Border Style="{StaticResource CardContainer}" Padding="0">
+            <ListBox ItemsSource="{Binding Items}">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Border x:Name="RowBack" Style="{StaticResource ModListRowContainer}" MouseLeftButtonUp="OnProfileRowClick">
+                            <Border.ToolTip>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
+                                    <TextBlock Text="{Binding StatusText}" Foreground="#1E63D6"/>
+                                    <TextBlock Text="{Binding Description}"/>
+                                    <TextBlock Text="{Binding TagsString}" Foreground="#666"/>
+                                </StackPanel>
+                            </Border.ToolTip>
+                            <Grid ClipToBounds="True" Background="Transparent">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Width="36" Height="36" CornerRadius="7" ClipToBounds="True" VerticalAlignment="Center" Margin="0,0,9,0" Background="#EEF1F6">
+                                    <Image Source="{Binding ImagePath, Converter={StaticResource ImagePlaceholder}, ConverterParameter=72}" Stretch="UniformToFill"/>
+                                </Border>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding SecondaryText}" Foreground="#6C7280" FontSize="12" Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                                <Border x:Name="ActionScrim" Grid.Column="1" HorizontalAlignment="Right" Width="244" Margin="0,3,2,3" CornerRadius="10" Opacity="0" IsHitTestVisible="False">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                            <GradientStop Color="#00FFFFFF" Offset="0"/>
+                                            <GradientStop Color="#FFFFFFFF" Offset="0.28"/>
+                                            <GradientStop Color="#FFFFFFFF" Offset="1"/>
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                </Border>
+                                <StackPanel x:Name="ActionPanel" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right" Opacity="0" IsHitTestVisible="False">
+                                    <Button Content="ⓘ" ToolTip="查看详情" Click="OnOpenDetailsClick" Style="{StaticResource RowIconButton}"/>
+                                    <Button Content="✓" ToolTip="启用" Command="{Binding DataContext.EnableModCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}"/>
+                                    <Button Content="⏸" ToolTip="禁用" Command="{Binding DataContext.DisableModCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}"/>
+                                    <Button Content="↑" ToolTip="上移" Command="{Binding DataContext.MoveUpCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}"/>
+                                    <Button Content="↓" ToolTip="下移" Command="{Binding DataContext.MoveDownCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}"/>
+                                    <Button Content="−" ToolTip="从配置移除" Command="{Binding DataContext.RemoveModCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}" Foreground="#B3261E"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                        <DataTemplate.Triggers>
+                            <Trigger SourceName="RowBack" Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ActionPanel" Property="Opacity" Value="1"/>
+                                <Setter TargetName="ActionPanel" Property="IsHitTestVisible" Value="True"/>
+                                <Setter TargetName="ActionScrim" Property="Opacity" Value="1"/>
+                                <Setter TargetName="RowBack" Property="Background" Value="White"/>
+                                <Setter TargetName="RowBack" Property="BorderBrush" Value="#D9DEE8"/>
+                            </Trigger>
+                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                <Setter TargetName="RowBack" Property="Background" Value="#EAF1FF"/>
+                                <Setter TargetName="RowBack" Property="BorderBrush" Value="#1E63D6"/>
+                            </DataTrigger>
+                        </DataTemplate.Triggers>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+                <ListBox.Style>
+                    <Style TargetType="ListBox" BasedOn="{StaticResource ModListBox}">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Items.Count}" Value="0">
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBox">
+                                            <TextBlock Text="当前配置中没有启用的模组。可从模组库右键添加。" Foreground="#888" Margin="16"/>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ListBox.Style>
+            </ListBox>
+        </Border>
+    </DockPanel>
+</UserControl>

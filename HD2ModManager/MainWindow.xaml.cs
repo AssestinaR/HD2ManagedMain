@@ -1,16 +1,12 @@
 ﻿using System;
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
-using System.Text;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
+using HD2ModManager.Enums;
+using HD2ModManager.ViewModels;
 
 namespace HD2ModManager
 {
@@ -35,10 +31,10 @@ namespace HD2ModManager
 
         public MainWindow()
         {
+            DataContext = new ShellViewModel();
             InitializeComponent();
             SourceInitialized += MainWindow_SourceInitialized;
             StateChanged += MainWindow_StateChanged; // 处理最大化时的阴影切换
-            DataContext = new HD2ModManager.ViewModels.ShellViewModel();
             Title = HD2ModManager.Resources.Strings.App_Title;
             AllowDrop = true;
             DragOver += MainWindow_DragOver;
@@ -142,15 +138,15 @@ namespace HD2ModManager
             {
                 if (DataContext is HD2ModManager.ViewModels.ShellViewModel shell)
                 {
-                    var crumbs = shell.Breadcrumbs;
-                    var targetIndex = crumbs.Count - 2; // go to previous level
-                    if (targetIndex >= 0)
-                    {
-                        shell.GoBackToIndexCommand.Execute(targetIndex);
-                        e.Handled = true;
-                    }
+                    shell.Navigate(WorkspaceMode.Home);
+                    e.Handled = true;
                 }
             }
+        }
+
+        private void Button_Click(object sender, RoutedEventArgs e)
+        {
+
         }
     }
 }

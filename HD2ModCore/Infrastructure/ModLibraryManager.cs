@@ -111,6 +111,103 @@ public sealed class ModLibraryManager : IModLibraryManager
 		return updated;
 	}
 
+	public async ValueTask<LibrarySnapshot> RenameProfileAsync(ProfileId profileId, string newName, CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrWhiteSpace(newName))
+		{
+			throw new ArgumentException("Profile name cannot be empty.", nameof(newName));
+		}
+
+		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+		var profiles = snapshot.Profiles.ToList();
+		var index = profiles.FindIndex(p => p.Id == profileId);
+		if (index < 0)
+		{
+			return snapshot;
+		}
+
+		var normalizedName = newName.Trim();
+		if (profiles.Any(p => p.Id != profileId && string.Equals(p.Name, normalizedName, StringComparison.OrdinalIgnoreCase)))
+		{
+			throw new InvalidOperationException($"Profile name already exists: {normalizedName}");
+		}
+
+		profiles[index] = profiles[index] with { Name = normalizedName, ModifiedUtc = DateTimeOffset.UtcNow };
+		var updated = snapshot with { Profiles = profiles, SavedUtc = DateTimeOffset.UtcNow };
+		await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
+		return updated;
+	}
+
+	public async ValueTask<LibrarySnapshot> AddProfileEntryAsync(ProfileId profileId, ModNodeId nodeId, CancellationToken cancellationToken = default)
+	{
+		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+		if (!snapshot.Nodes.ContainsKey(nodeId))
+		{
+			throw new InvalidOperationException($"Mod node does not exist: {nodeId.Value:N}");
+		}
+
+		return await UpdateProfileEntriesAsync(
+			profileId,
+			entries =>
+			{
+				if (entries.Any(e => e.NodeId == nodeId))
+				{
+					return entries;
+				}
+
+				var nextOrder = entries.Count == 0 ? 0 : entries.Max(e => e.LoadOrder) + 1;
+				entries.Add(new ProfileEntry(nodeId, nextOrder, true));
+				return NormalizeEntryOrder(entries);
+			},
+			cancellationToken).ConfigureAwait(false);
+	}
+
+	public async ValueTask<LibrarySnapshot> RemoveProfileEntryAsync(ProfileId profileId, ModNodeId nodeId, CancellationToken cancellationToken = default)
+	{
+		return await UpdateProfileEntriesAsync(
+			profileId,
+			entries => NormalizeEntryOrder(entries.Where(e => e.NodeId != nodeId).ToList()),
+			cancellationToken).ConfigureAwait(false);
+	}
+
+	public async ValueTask<LibrarySnapshot> MoveProfileEntryAsync(ProfileId profileId, ModNodeId nodeId, int direction, CancellationToken cancellationToken = default)
+	{
+		if (direction == 0)
+		{
+			return await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+		}
+
+		return await UpdateProfileEntriesAsync(
+			profileId,
+			entries =>
+			{
+				var ordered = entries.OrderBy(e => e.LoadOrder).ThenBy(e => e.AddedUtc).ToList();
+				var index = ordered.FindIndex(e => e.NodeId == nodeId);
+				if (index < 0)
+				{
+					return ordered;
+				}
+
+				var target = direction < 0 ? index - 1 : index + 1;
+				if (target < 0 || target >= ordered.Count)
+				{
+					return NormalizeEntryOrder(ordered);
+				}
+
+				(ordered[index], ordered[target]) = (ordered[target], ordered[index]);
+				return NormalizeEntryOrder(ordered);
+			},
+			cancellationToken).ConfigureAwait(false);
+	}
+
+	public async ValueTask<LibrarySnapshot> SetProfileEntryEnabledAsync(ProfileId profileId, ModNodeId nodeId, bool enabled, CancellationToken cancellationToken = default)
+	{
+		return await UpdateProfileEntriesAsync(
+			profileId,
+			entries => NormalizeEntryOrder(entries.Select(e => e.NodeId == nodeId ? e with { Enabled = enabled } : e).ToList()),
+			cancellationToken).ConfigureAwait(false);
+	}
+
 	public async ValueTask<LibrarySnapshot> UpdateNodeMetadataAsync(ModNodeId nodeId, ModNodeMetadata metadata, CancellationToken cancellationToken = default)
 	{
 		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
@@ -126,6 +223,36 @@ public sealed class ModLibraryManager : IModLibraryManager
 		return updated;
 	}
 
+	private async ValueTask<LibrarySnapshot> UpdateProfileEntriesAsync(ProfileId profileId, Func<List<ProfileEntry>, IReadOnlyList<ProfileEntry>> update, CancellationToken cancellationToken)
+	{
+		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+		var profiles = snapshot.Profiles.ToList();
+		var index = profiles.FindIndex(p => p.Id == profileId);
+		if (index < 0)
+		{
+			return snapshot;
+		}
+
+		var profile = profiles[index];
+		var entries = profile.Entries.OrderBy(e => e.LoadOrder).ThenBy(e => e.AddedUtc).ToList();
+		profiles[index] = profile with
+		{
+			Entries = update(entries),
+			ModifiedUtc = DateTimeOffset.UtcNow,
+		};
+
+		var updated = snapshot with { Profiles = profiles, SavedUtc = DateTimeOffset.UtcNow };
+		await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
+		return updated;
+	}
+
+	private static IReadOnlyList<ProfileEntry> NormalizeEntryOrder(IReadOnlyList<ProfileEntry> entries)
+	{
+		return entries
+			.Select((entry, index) => entry with { LoadOrder = index })
+			.ToList();
+	}
+
 	private void TryDeleteStoredRoot(string nodeRelativePath)
 	{
 		try
@@ -136,11 +263,16 @@ public sealed class ModLibraryManager : IModLibraryManager
 				return;
 			}
 
-			// Stored path is mods/<importId>/..., so the 1st segment is the import root.
-			var importRoot = Path.Combine(_paths.ModsDirectory, parts[0]);
-			if (Directory.Exists(importRoot))
+			var storedRoot = Path.GetFullPath(Path.Combine(_paths.ModsDirectory, nodeRelativePath));
+			var modsRoot = Path.GetFullPath(_paths.ModsDirectory);
+			if (!storedRoot.StartsWith(modsRoot, StringComparison.OrdinalIgnoreCase))
 			{
-				Directory.Delete(importRoot, recursive: true);
+				return;
+			}
+
+			if (Directory.Exists(storedRoot))
+			{
+				Directory.Delete(storedRoot, recursive: true);
 			}
 		}
 		catch

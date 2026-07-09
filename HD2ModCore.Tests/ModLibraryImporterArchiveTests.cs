@@ -33,16 +33,17 @@ public sealed class ModLibraryImporterArchiveTests
 			var result = await importer.ImportArchiveAsync(zipPath);
 
 			Assert.True(Directory.Exists(paths.ModsDirectory));
-			Assert.True(File.Exists(Path.Combine(paths.LibraryDirectory, "library.json")));
+			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, "library.json")));
 
-			// The stored archive should exist somewhere below mods
-			Assert.True(Directory.EnumerateFiles(paths.ModsDirectory, "mod.zip", SearchOption.AllDirectories).Any());
+			// The source archive should not be copied into the portable mods library.
+			Assert.False(Directory.EnumerateFiles(paths.ModsDirectory, "mod.zip", SearchOption.AllDirectories).Any());
 
-			// The extracted patch should exist somewhere below mods
+			// The extracted patch should exist in a flattened mod directory below mods.
 			Assert.True(Directory.EnumerateFiles(paths.ModsDirectory, "*.patch_0", SearchOption.AllDirectories).Any());
 
-			Assert.Equal("mod.zip", result.SourceDisplayName);
+			Assert.Equal("mod", result.SourceDisplayName);
 			Assert.True(result.Snapshot.Nodes.Count > 0);
+			Assert.All(result.Snapshot.Nodes.Values, node => Assert.Single(node.RelativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
 		}
 		finally
 		{

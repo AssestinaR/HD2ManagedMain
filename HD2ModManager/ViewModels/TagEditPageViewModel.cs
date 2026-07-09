@@ -10,7 +10,7 @@ namespace HD2ModManager.ViewModels
         private readonly ModLibraryService _library;
         private readonly TagCatalogService _catalog = TagCatalogService.Instance;
 
-        public ModEntity Current { get; private set; }
+        public ModEntity Current { get; private set; } = new();
         public ObservableCollection<string> Tags { get; } = new();
         public ObservableCollection<string> AvailableTags { get; } = new();
         private System.ComponentModel.ICollectionView? _availableView;
@@ -79,10 +79,7 @@ namespace HD2ModManager.ViewModels
             var vm = shell?.DataContext as ShellViewModel;
             if (vm != null)
             {
-                // go back one breadcrumb level to return page
-                var targetIndex = vm.Breadcrumbs.Count - 2;
-                if (targetIndex >= 0)
-                    vm.GoBackToIndexCommand.Execute(targetIndex);
+                vm.Navigate(_returnKey == "library" ? HD2ModManager.Enums.WorkspaceMode.LibraryOnly : HD2ModManager.Enums.WorkspaceMode.Home);
             }
         }
     }

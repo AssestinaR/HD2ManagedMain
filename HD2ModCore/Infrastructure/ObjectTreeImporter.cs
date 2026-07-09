@@ -48,7 +48,6 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 				Name: BuildFlatName(rootDir.Name, rel),
 				Notes: null,
 				UserTags: Array.Empty<string>(),
-				ImagePath: null,
 				CreatedUtc: DateTimeOffset.UtcNow,
 				ModifiedUtc: null);
 

@@ -119,15 +119,6 @@
   <data name="Notification_ImportFailed" xml:space="preserve">
     <value>导入失败：{0}</value>
   </data>
-  <data name="Notification_ImportQueueSummary" xml:space="preserve">
-    <value>导入队列 - 总数：{0}，已导入：{1}，待处理：{2}</value>
-  </data>
-  <data name="Notification_ImportComplete" xml:space="preserve">
-    <value>导入完成：{0}</value>
-  </data>
-  <data name="Notification_ImportFailed" xml:space="preserve">
-    <value>导入失败：{0}</value>
-  </data>
   <data name="Integrity_LogGenerated" xml:space="preserve">
     <value>库完整性：移除 {0} 个缺失文件，日志已生成。</value>
   </data>

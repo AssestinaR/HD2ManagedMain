@@ -1,4 +1,5 @@
 ﻿<UserControl x:Class="HD2ModManager.Views.LibraryPageView"
+             x:Name="Root"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HD2ModManager.Views"
@@ -11,96 +12,113 @@
         <local:StringNotEmptyToVisibilityConverter x:Key="StrNotEmptyToVis"/>
         <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
     </UserControl.Resources>
-    <DockPanel>
+    <DockPanel Background="Transparent">
         <!-- Top controls -->
-        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8">
+        <Border DockPanel.Dock="Top" Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+        <StackPanel Orientation="Horizontal">
             <TextBlock Text="Library" FontSize="18" FontWeight="Bold"/>
             <TextBox Width="240" Margin="12,0,0,0" x:Name="QueryBox"/>
             <Button Content="Search" Margin="8,0,0,0" Click="OnSearch"/>
-            <ToggleButton Content="Compact" Margin="12,0,0,0" IsChecked="{Binding IsCompact}"/>
+            <Button Content="一键修复所有已过时" Margin="8,0,0,0" Command="{Binding RepairAllOutdatedCommand}"/>
         </StackPanel>
-        <Separator DockPanel.Dock="Top" Margin="0,4"/>
-        <!-- Segmented card area -->
-        <ScrollViewer>
-            <StackPanel>
-                <ItemsControl ItemsSource="{Binding Sections}">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <GroupBox Header="{Binding Title}" Margin="8,4" Visibility="{Binding HasContent, Converter={StaticResource BoolToVis}}">
-                                <ItemsControl ItemsSource="{Binding Subsections}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <StackPanel Visibility="{Binding HasContent, Converter={StaticResource BoolToVis}}">
-                                                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Margin="8,4"/>
-                                                <ItemsControl ItemsSource="{Binding Mods}">
-                                                    <ItemsControl.ItemsPanel>
-                                                        <ItemsPanelTemplate>
-                                                            <WrapPanel/>
-                                                        </ItemsPanelTemplate>
-                                                    </ItemsControl.ItemsPanel>
-                                                    <ItemsControl.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <Border Margin="6" Padding="8" BorderBrush="#DDD" BorderThickness="1" CornerRadius="6" Background="#FAFAFA" Width="{Binding DataContext.IsCompact, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource CompactToWidth}}" MinHeight="{Binding DataContext.IsCompact, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource CompactToMinHeight}}">
-                                                                <Border.ToolTip>
-                                                                    <StackPanel>
-                                                                        <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
-                                                                        <TextBlock Text="{Binding Mod.Description}"/>
-                                                                        <TextBlock Text="{Binding TagsString}" Foreground="#666"/>
-                                                                    </StackPanel>
-                                                                </Border.ToolTip>
-                                                                <Grid>
-                                                                    <Grid.RowDefinitions>
-                                                                        <RowDefinition Height="Auto"/>
-                                                                        <RowDefinition Height="Auto"/>
-                                                                    </Grid.RowDefinitions>
-                                                                    <Grid.ColumnDefinitions>
-                                                                        <ColumnDefinition Width="Auto"/>
-                                                                        <ColumnDefinition Width="*"/>
-                                                                    </Grid.ColumnDefinitions>
-                                                                    <!-- Compact layout: image left, text right -->
-                                                                    <Image x:Name="CompactImage" Source="{Binding Mod.Image, Converter={StaticResource ImagePlaceholder}, ConverterParameter=96}" Width="48" Height="48" Margin="0,0,8,0" Grid.Row="0" Grid.Column="0"
-                                                                           Visibility="{Binding DataContext.IsCompact, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}"/>
-                                                                    <StackPanel x:Name="CompactText" Grid.Column="1" Visibility="{Binding DataContext.IsCompact, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}">
-                                                                        <TextBlock Text="{Binding Name}" FontWeight="Bold" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-                                                                        <TextBlock Text="{Binding Mod.Description}" Foreground="#666" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-                                                                        <TextBlock Text="{Binding TagsString}" Foreground="#666" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-                                                                    </StackPanel>
-                                                                    <!-- Large layout: image on top, text below -->
-                                                                    <Image x:Name="LargeImage" Source="{Binding Mod.Image, Converter={StaticResource ImagePlaceholder}, ConverterParameter=256}" Width="224" Height="224" Grid.Row="0" Grid.ColumnSpan="2" HorizontalAlignment="Center" Margin="0,8,0,8"
-                                                                           Visibility="{Binding DataContext.IsCompact, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolInverseToVis}}"/>
-                                                                    <StackPanel x:Name="LargeText" Grid.Row="1" Grid.ColumnSpan="2" Visibility="{Binding DataContext.IsCompact, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolInverseToVis}}" Width="224" Height="56">
-                                                                        <TextBlock Text="{Binding Name}" FontWeight="Bold" Margin="0,0,0,2" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-                                                                        <TextBlock Text="{Binding Mod.Description}" Foreground="#666" TextWrapping="NoWrap" Margin="0,0,0,2" TextTrimming="CharacterEllipsis"/>
-                                                                        <TextBlock Text="{Binding TagsString}" Foreground="#666" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-                                                                    </StackPanel>
-                                                                    <!-- No triggers: visibility controlled via converters above -->
-                                                                </Grid>
-                                                                <Border.ContextMenu>
-                                                                    <ContextMenu PreviewKeyDown="OnCardContextMenuKeyDown">
-                                                                        <MenuItem Header="Add to Profile (A)" Click="OnAddToProfileClick"/>
-                                                                        <MenuItem Header="Open Folder (O)" Click="OnOpenModFolderClick"/>
-                                                                        <Separator/>
-                                                                        <MenuItem Header="Rename (R)" Click="OnRenameModClick"/>
-                                                                        <MenuItem Header="Edit Description (E)" Click="OnEditDescriptionClick"/>
-                                                                        <MenuItem Header="Edit Image (I)" Click="OnEditImageClick"/>
-                                                                        <MenuItem Header="Edit Tags (T)" Click="OnEditTagsPageClick"/>
-                                                                        <Separator/>
-                                                                        <MenuItem Header="Remove (D)" Click="OnRemoveModClick"/>
-                                                                    </ContextMenu>
-                                                                </Border.ContextMenu>
-                                                            </Border>
-                                                        </DataTemplate>
-                                                    </ItemsControl.ItemTemplate>
-                                                </ItemsControl>
-                                            </StackPanel>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </GroupBox>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </StackPanel>
-        </ScrollViewer>
+        </Border>
+        <Border Style="{StaticResource CardContainer}" Padding="0">
+            <ListBox ItemsSource="{Binding Items}">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Border x:Name="RowBack" Style="{StaticResource ModListRowContainer}" MouseLeftButtonUp="OnModRowClick">
+                            <Border.ToolTip>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
+                                    <TextBlock Text="{Binding Description}"/>
+                                    <TextBlock Text="{Binding TagsString}" Foreground="#666"/>
+                                </StackPanel>
+                            </Border.ToolTip>
+                            <Grid ClipToBounds="True" Background="Transparent">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Width="36" Height="36" CornerRadius="7" ClipToBounds="True" VerticalAlignment="Center" Margin="0,0,9,0" Background="#EEF1F6">
+                                    <Image Source="{Binding ImagePath, Converter={StaticResource ImagePlaceholder}, ConverterParameter=72}" Stretch="UniformToFill"/>
+                                </Border>
+                                <StackPanel x:Name="TextPanel" Grid.Column="1" VerticalAlignment="Center" Margin="0,0,0,0">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold" FontSize="14" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                                        <Border Grid.Column="1" Background="#FFF1F0" BorderBrush="#D93025" BorderThickness="1" CornerRadius="8" Padding="6,1" Margin="8,0,0,0" Visibility="{Binding HasCompatibilityBadge, Converter={StaticResource BoolToVis}}" ToolTip="{Binding CompatibilityTooltip}">
+                                            <TextBlock Text="{Binding CompatibilityBadgeText}" Foreground="#B3261E" FontSize="11" FontWeight="SemiBold"/>
+                                        </Border>
+                                    </Grid>
+                                    <TextBlock Text="{Binding TagsString}" Foreground="#6C7280" FontSize="12" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
+                                </StackPanel>
+                                <Border x:Name="ActionScrim" Grid.Column="1" HorizontalAlignment="Right" Width="220" Margin="0,3,2,3" CornerRadius="10" Opacity="0" IsHitTestVisible="False">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                            <GradientStop Color="#00FFFFFF" Offset="0"/>
+                                            <GradientStop Color="#FFFFFFFF" Offset="0.28"/>
+                                            <GradientStop Color="#FFFFFFFF" Offset="1"/>
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                </Border>
+                                <StackPanel x:Name="ActionPanel" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right" Opacity="0" IsHitTestVisible="False">
+                                    <Button Style="{StaticResource RowIconButton}" ToolTip="查看详情" Content="ⓘ" Click="OnOpenDetailsClick"/>
+                                    <Button Style="{StaticResource RowIconButton}" ToolTip="加入当前配置" Content="＋" Command="{Binding DataContext.AddToProfileCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}"/>
+                                    <Button Style="{StaticResource RowIconButton}" ToolTip="修复过时 unit" Content="↻" Command="{Binding DataContext.RepairModCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Visibility="{Binding CanRepair, Converter={StaticResource BoolToVis}}"/>
+                                    <Button Style="{StaticResource RowIconButton}" ToolTip="编辑标签" Content="#" Click="OnEditTagsPageClick"/>
+                                    <Button Style="{StaticResource RowIconButton}" ToolTip="打开文件夹" Content="📁" Command="{Binding DataContext.OpenFolderCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}"/>
+                                    <Button Style="{StaticResource RowIconButton}" ToolTip="删除" Content="🗑" Command="{Binding DataContext.RemoveCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Foreground="#B3261E"/>
+                                </StackPanel>
+                            </Grid>
+                            <Border.ContextMenu>
+                                <ContextMenu PreviewKeyDown="OnCardContextMenuKeyDown">
+                                    <MenuItem Header="Add to Profile (A)" Command="{Binding DataContext.AddToProfileCommand, Source={x:Reference Root}}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                    <MenuItem Header="Repair outdated units" Command="{Binding DataContext.RepairModCommand, Source={x:Reference Root}}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                    <MenuItem Header="Open Folder (O)" Command="{Binding DataContext.OpenFolderCommand, Source={x:Reference Root}}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                    <Separator/>
+                                    <MenuItem Header="Rename (R)" Click="OnRenameModClick"/>
+                                    <MenuItem Header="Edit Description (E)" Click="OnEditDescriptionClick"/>
+                                    <MenuItem Header="Edit Image (I)" Click="OnEditImageClick"/>
+                                    <MenuItem Header="Edit Tags (T)" Click="OnEditTagsPageClick"/>
+                                    <Separator/>
+                                    <MenuItem Header="Remove (D)" Command="{Binding DataContext.RemoveCommand, Source={x:Reference Root}}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                </ContextMenu>
+                            </Border.ContextMenu>
+                        </Border>
+                        <DataTemplate.Triggers>
+                            <Trigger SourceName="RowBack" Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ActionPanel" Property="Opacity" Value="1"/>
+                                <Setter TargetName="ActionPanel" Property="IsHitTestVisible" Value="True"/>
+                                <Setter TargetName="ActionScrim" Property="Opacity" Value="1"/>
+                                <Setter TargetName="RowBack" Property="Background" Value="White"/>
+                                <Setter TargetName="RowBack" Property="BorderBrush" Value="#D9DEE8"/>
+                            </Trigger>
+                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                <Setter TargetName="RowBack" Property="Background" Value="#EAF1FF"/>
+                                <Setter TargetName="RowBack" Property="BorderBrush" Value="#1E63D6"/>
+                            </DataTrigger>
+                        </DataTemplate.Triggers>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+                <ListBox.Style>
+                    <Style TargetType="ListBox" BasedOn="{StaticResource ModListBox}">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Items.Count}" Value="0">
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBox">
+                                            <TextBlock Text="模组库中没有可显示的模组。" Foreground="#888" Margin="16"/>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ListBox.Style>
+            </ListBox>
+        </Border>
     </DockPanel>
 </UserControl>

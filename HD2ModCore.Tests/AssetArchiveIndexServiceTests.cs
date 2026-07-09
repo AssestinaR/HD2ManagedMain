@@ -121,6 +121,236 @@ public sealed class AssetArchiveIndexServiceTests
 		}
 	}
 
+	[Fact]
+	public async Task Build_IndexFingerprintAndAssetLookup_ArePersisted()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+
+		try
+		{
+			var archiveA = "aaaaaaaaaaaaaaaa";
+			File.WriteAllBytes(Path.Combine(gameData, archiveA), BuildToc(new[]
+			{
+				new AssetKey(20, 200),
+			}));
+
+			var archiveHashes = new Dictionary<string, Dictionary<string, string>>
+			{
+				["Armor"] = new Dictionary<string, string>
+				{
+					[archiveA] = "Armor A",
+					["missingmissing00"] = "Missing Archive",
+				}
+			};
+			var json = JsonSerializer.Serialize(archiveHashes);
+
+			var paths = new StoragePaths(appRoot);
+			var indexService = new AssetArchiveIndexService(paths, new PatchTocScanner());
+			await indexService.BuildOrRebuildAsync(gameData, json);
+
+			var fingerprint = await indexService.GetFingerprintAsync();
+			Assert.NotNull(fingerprint);
+			Assert.Equal(2, fingerprint.ArchivesTotal);
+			Assert.Equal(1, fingerprint.ArchivesIndexed);
+			Assert.Equal(1, fingerprint.AssetKeysTotal);
+			Assert.False(string.IsNullOrWhiteSpace(fingerprint.SourceFingerprint));
+
+			var matches = await indexService.FindAssetArchivesAsync(new HashSet<AssetKey>
+			{
+				new AssetKey(20, 200),
+				new AssetKey(99, 999),
+			});
+
+			Assert.Equal(2, matches.Count);
+			var found = Assert.Single(matches, x => x.Found);
+			Assert.Equal(new AssetKey(20, 200), found.AssetKey);
+			var archive = Assert.Single(found.Archives);
+			Assert.Equal(archiveA, archive.ArchiveId);
+			Assert.Equal("Armor", archive.Category);
+			Assert.Equal("Armor A", archive.DisplayName);
+			Assert.Single(matches, x => !x.Found);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task GetIndexStatusAsync_DetectsCurrentStaleAndMissingIndex()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var missingAppRoot = Path.Combine(root, "missing-app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(missingAppRoot);
+		Directory.CreateDirectory(gameData);
+
+		try
+		{
+			var archiveA = "aaaaaaaaaaaaaaaa";
+			var archivePath = Path.Combine(gameData, archiveA);
+			File.WriteAllBytes(archivePath, BuildToc(new[]
+			{
+				new AssetKey(20, 200),
+			}));
+
+			var archiveHashes = new Dictionary<string, Dictionary<string, string>>
+			{
+				["Armor"] = new Dictionary<string, string>
+				{
+					[archiveA] = "Armor A",
+				}
+			};
+			var json = JsonSerializer.Serialize(archiveHashes);
+
+			var indexService = new AssetArchiveIndexService(new StoragePaths(appRoot), new PatchTocScanner());
+			await indexService.BuildOrRebuildAsync(gameData, json);
+
+			var current = await indexService.GetIndexStatusAsync(gameData, json);
+			Assert.Equal(GameDataIndexState.Current, current.State);
+			Assert.True(current.IsCurrent);
+			Assert.NotNull(current.StoredFingerprint);
+			Assert.False(string.IsNullOrWhiteSpace(current.CurrentSourceFingerprint));
+
+			await using (var stream = new FileStream(archivePath, FileMode.Append, FileAccess.Write, FileShare.Read))
+			{
+				await stream.WriteAsync(new byte[] { 1, 2, 3, 4 });
+			}
+			var stale = await indexService.GetIndexStatusAsync(gameData, json);
+			Assert.Equal(GameDataIndexState.Stale, stale.State);
+			Assert.False(stale.IsCurrent);
+			Assert.NotEqual(current.CurrentSourceFingerprint, stale.CurrentSourceFingerprint);
+
+			var missingIndexService = new AssetArchiveIndexService(new StoragePaths(missingAppRoot), new PatchTocScanner());
+			var missing = await missingIndexService.GetIndexStatusAsync(gameData, json);
+			Assert.Equal(GameDataIndexState.Missing, missing.State);
+			Assert.Null(missing.StoredFingerprint);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task Build_BundledSlimArchive_IsIndexed()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+
+		try
+		{
+			var archiveA = "aaaaaaaaaaaaaaaa";
+			var toc = BuildSlimToc(new[]
+			{
+				new AssetKey(20, 200),
+			});
+			File.WriteAllBytes(Path.Combine(gameData, "bundles.nxa"), BuildDsar(BuildBundleDatabase(archiveA, toc.Length)));
+			File.WriteAllBytes(Path.Combine(gameData, "bundles.00.nxa"), BuildDsar(toc));
+
+			var archiveHashes = new Dictionary<string, Dictionary<string, string>>
+			{
+				["Armor"] = new Dictionary<string, string>
+				{
+					[archiveA] = "Armor A",
+				}
+			};
+			var json = JsonSerializer.Serialize(archiveHashes);
+
+			var paths = new StoragePaths(appRoot);
+			var indexService = new AssetArchiveIndexService(paths, new PatchTocScanner());
+			await indexService.BuildOrRebuildAsync(gameData, json);
+
+			var fingerprint = await indexService.GetFingerprintAsync();
+			Assert.NotNull(fingerprint);
+			Assert.Equal(1, fingerprint.ArchivesTotal);
+			Assert.Equal(1, fingerprint.ArchivesIndexed);
+			Assert.Equal(1, fingerprint.AssetKeysTotal);
+
+			var matches = await indexService.FindAssetArchivesAsync(new HashSet<AssetKey>
+			{
+				new AssetKey(20, 200),
+			});
+
+			var found = Assert.Single(matches);
+			Assert.True(found.Found);
+			Assert.Equal(archiveA, Assert.Single(found.Archives).ArchiveId);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task ModCompatibilityAnalyzer_ClassifiesByCurrentIndexMatches()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+
+		try
+		{
+			var archiveA = "aaaaaaaaaaaaaaaa";
+			File.WriteAllBytes(Path.Combine(gameData, archiveA), BuildToc(new[]
+			{
+				new AssetKey(10, 100),
+				new AssetKey(20, 200),
+			}));
+
+			var archiveHashes = new Dictionary<string, Dictionary<string, string>>
+			{
+				["Armor"] = new Dictionary<string, string>
+				{
+					[archiveA] = "Armor A",
+				}
+			};
+			var json = JsonSerializer.Serialize(archiveHashes);
+
+			var paths = new StoragePaths(appRoot);
+			var indexService = new AssetArchiveIndexService(paths, new PatchTocScanner());
+			await indexService.BuildOrRebuildAsync(gameData, json);
+
+			var summary = new ModAssetSummary(
+				new ModNodeId(Guid.NewGuid()),
+				"Old Mod",
+				new[]
+				{
+					BuildAssetEntry(archiveA, new AssetKey(10, 100)),
+					BuildAssetEntry(archiveA, new AssetKey(20, 200)),
+					BuildAssetEntry(archiveA, new AssetKey(30, 300)),
+					BuildAssetEntry(archiveA, new AssetKey(40, 400)),
+				},
+				Array.Empty<string>(),
+				Array.Empty<ModAssetTargetGroup>());
+
+			var analyzer = new ModCompatibilityAnalyzer(indexService);
+			var report = await analyzer.AnalyzeAsync(summary);
+
+			Assert.Equal(ModCompatibilityStatus.Partial, report.Status);
+			Assert.Equal(4, report.TotalAssets);
+			Assert.Equal(2, report.MatchedAssets);
+			Assert.Equal(2, report.MissingAssets);
+			Assert.Equal(0.5, report.MatchRatio);
+			Assert.True(report.HasIndex);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
 	private static byte[] BuildToc(AssetKey[] entries)
 	{
 		const uint magic = 4026531857;
@@ -144,6 +374,76 @@ public sealed class AssetArchiveIndexServiceTests
 
 		return buffer;
 	}
+
+	private static byte[] BuildSlimToc(AssetKey[] entries)
+	{
+		const uint magic = 4026531857;
+		var numTypes = 0;
+		var numFiles = entries.Length;
+		var entriesOffset = 72 + numTypes * 32;
+		var totalSize = entriesOffset + numFiles * 80;
+		var buffer = new byte[totalSize];
+
+		WriteUInt32(buffer, 0, magic);
+		WriteUInt32(buffer, 4, (uint)numTypes);
+		WriteUInt32(buffer, 8, (uint)numFiles);
+
+		var offset = entriesOffset;
+		foreach (var e in entries)
+		{
+			WriteUInt64(buffer, offset, e.FileId);
+			WriteUInt64(buffer, offset + 8, e.TypeId);
+			offset += 80;
+		}
+
+		return buffer;
+	}
+
+	private static byte[] BuildBundleDatabase(string archiveId, int packageSize)
+	{
+		var data = new byte[0x90];
+		WriteUInt32(data, 0x0C, 1); // num bundles
+		WriteUInt32(data, 0x10, 1); // num packages
+		WriteUInt64(data, 0x18, (ulong)packageSize);
+		WriteUInt32(data, 0x20, 0x40); // name offset
+		WriteUInt32(data, 0x24, 1); // items count
+		WriteUInt32(data, 0x28, 0x60); // items offset
+		var nameBytes = System.Text.Encoding.ASCII.GetBytes(archiveId);
+		Array.Copy(nameBytes, 0, data, 0x40, nameBytes.Length);
+		WriteUInt64(data, 0x60, 0); // original archive offset
+		WriteUInt32(data, 0x68, 0); // uncompressed bundle offset
+		data[0x6F] = 0; // bundle index
+		return data;
+	}
+
+	private static byte[] BuildDsar(byte[] payload)
+	{
+		var dataOffset = 0x40;
+		var buffer = new byte[dataOffset + payload.Length];
+		WriteUInt32(buffer, 0, 0x52415344);
+		WriteUInt32(buffer, 8, 1);
+		WriteUInt64(buffer, 0x20, 0); // uncompressed offset
+		WriteUInt64(buffer, 0x28, (ulong)dataOffset); // compressed offset
+		WriteUInt32(buffer, 0x30, (uint)payload.Length); // uncompressed size
+		WriteUInt32(buffer, 0x34, (uint)payload.Length); // compressed size
+		buffer[0x38] = 0; // uncompressed
+		buffer[0x39] = 2; // start chunk
+		Array.Copy(payload, 0, buffer, dataOffset, payload.Length);
+		return buffer;
+	}
+
+	private static PatchAssetEntry BuildAssetEntry(string archiveId, AssetKey key)
+		=> new(
+			new PatchAssetKey(archiveId, key.TypeId, key.FileId),
+			"Archive",
+			"Armor",
+			0,
+			0,
+			"File",
+			"unit",
+			AssetTypeCategory.Model,
+			Array.Empty<string>(),
+			Array.Empty<string>());
 
 	private static void WriteUInt32(byte[] buffer, int offset, uint value)
 	{

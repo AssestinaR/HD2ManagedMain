@@ -1,6 +1,7 @@
 ﻿using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views
@@ -14,21 +15,6 @@ namespace HD2ModManager.Views
             Loaded += LibraryPageView_Loaded;
         }
 
-        private void OnOpenModFolderClick(object sender, RoutedEventArgs e)
-        {
-            var card = (sender as System.Windows.Controls.MenuItem)?.DataContext as HD2ModManager.ViewModels.ModCardViewModel;
-            if (card == null) return;
-            try
-            {
-                var root = HD2ModManager.Services.SettingsService.GetModLibraryFolder();
-                var rel = card.Mod.SourcePath ?? string.Empty;
-                var abs = System.IO.Path.IsPathRooted(rel) ? rel : System.IO.Path.GetFullPath(System.IO.Path.Combine(root, rel.Replace('/', System.IO.Path.DirectorySeparatorChar)));
-                if (!System.IO.Directory.Exists(abs)) System.IO.Directory.CreateDirectory(abs);
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = abs, UseShellExecute = true });
-            }
-            catch { }
-        }
-
         private void OnCardContextMenuKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
         {
             var cm = sender as System.Windows.Controls.ContextMenu;
@@ -38,9 +24,9 @@ namespace HD2ModManager.Views
             switch (e.Key)
             {
                 case System.Windows.Input.Key.A:
-                    OnAddToProfileClick(cm!, new RoutedEventArgs()); e.Handled = true; break;
+                    VM?.AddToProfileCommand.Execute(card); e.Handled = true; break;
                 case System.Windows.Input.Key.O:
-                    OnOpenModFolderClick(cm!, new RoutedEventArgs()); e.Handled = true; break;
+                    VM?.OpenFolderCommand.Execute(card); e.Handled = true; break;
                 case System.Windows.Input.Key.R:
                     OnRenameModClick(cm!, new RoutedEventArgs()); e.Handled = true; break;
                 case System.Windows.Input.Key.E:
@@ -50,7 +36,7 @@ namespace HD2ModManager.Views
                 case System.Windows.Input.Key.T:
                     OnEditTagsPageClick(cm!, new RoutedEventArgs()); e.Handled = true; break;
                 case System.Windows.Input.Key.D:
-                    OnRemoveModClick(cm!, new RoutedEventArgs()); e.Handled = true; break;
+                    VM?.RemoveCommand.Execute(card); e.Handled = true; break;
             }
         }
 
@@ -62,11 +48,17 @@ namespace HD2ModManager.Views
 
         private void EnsureVM()
         {
+            if (DataContext is LibraryPageViewModel existing)
+            {
+                VM = existing;
+                return;
+            }
+
             if (VM == null)
             {
                 var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as HD2ModManager.ViewModels.ShellViewModel;
                 if (shell == null) return;
-                VM = new LibraryPageViewModel(shell.LibraryService);
+                VM = new LibraryPageViewModel(shell.LibraryService, shell.Selection, shell.ProfileService);
                 DataContext = VM;
             }
         }
@@ -81,90 +73,29 @@ namespace HD2ModManager.Views
             }
         }
 
-        private void OnRemoveModClick(object sender, RoutedEventArgs e)
-        {
-            EnsureVM();
-            if (sender is System.Windows.Controls.MenuItem mi)
-            {
-                var card = (mi.DataContext as HD2ModManager.ViewModels.ModCardViewModel);
-                // call VM private method via reflection or expose a public wrapper; we will replicate the remove here
-                if (card != null)
-                {
-                    try
-                    {
-                        var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as HD2ModManager.ViewModels.ShellViewModel;
-                        var lib = shell?.LibraryService;
-                        if (lib != null)
-                        {
-                            var root = HD2ModManager.Services.SettingsService.GetModLibraryFolder();
-                            var rel = card.Mod.SourcePath ?? string.Empty;
-                            var abs = System.IO.Path.IsPathRooted(rel) ? rel : System.IO.Path.GetFullPath(System.IO.Path.Combine(root, rel.Replace('/', System.IO.Path.DirectorySeparatorChar)));
-                            try { if (System.IO.Directory.Exists(abs)) System.IO.Directory.Delete(abs, true); } catch { }
-                            lib.Remove(card.Mod.Guid);
-                            lib.Save();
-                        }
-                    }
-                    catch { }
-                    VM!.Refresh();
-                }
-            }
-        }
-
-        
-
         private void OnRenameModClick(object sender, RoutedEventArgs e)
         {
             EnsureVM();
-            var mi = sender as System.Windows.Controls.MenuItem;
-            var card = mi?.DataContext as HD2ModManager.ViewModels.ModCardViewModel;
+            var card = GetCard(sender);
             if (card == null) return;
             var oldName = card.Mod.Name;
             var newName = Microsoft.VisualBasic.Interaction.InputBox("输入新名称:", "Rename", oldName);
-            if (string.IsNullOrWhiteSpace(newName) || newName == oldName) return;
-            try
-            {
-                var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as HD2ModManager.ViewModels.ShellViewModel;
-                var lib = shell?.LibraryService;
-                if (lib != null)
-                {
-                    var ok = lib.Rename(card.Mod.Guid, newName);
-                    if (ok)
-                    {
-                        HD2ModManager.Services.LogService.Info($"UI rename ok for {card.Mod.Guid} -> {newName}");
-                        var refreshed = lib.Get(card.Mod.Guid);
-                        if (refreshed != null)
-                        {
-                            card.Mod.Name = refreshed.Name;
-                            card.Mod.SourcePath = refreshed.SourcePath;
-                        }
-                    }
-                    else
-                    {
-                        HD2ModManager.Services.LogService.Error($"UI rename failed for {card.Mod.Guid} -> {newName}");
-                    }
-                }
-            }
-            catch { }
-            VM!.Refresh();
+            VM?.RenameMod(card, newName);
         }
 
         private void OnEditDescriptionClick(object sender, RoutedEventArgs e)
         {
             EnsureVM();
-            var card = (sender as System.Windows.Controls.MenuItem)?.DataContext as HD2ModManager.ViewModels.ModCardViewModel;
+            var card = GetCard(sender);
             if (card == null) return;
             var newDesc = Microsoft.VisualBasic.Interaction.InputBox("编辑备注:", "Description", card.Mod.Description ?? string.Empty);
-            card.Mod.Description = newDesc;
-            var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as HD2ModManager.ViewModels.ShellViewModel;
-            shell?.LibraryService.Add(card.Mod);
-            shell?.LibraryService.Save();
-            VM!.Refresh();
+            VM?.UpdateDescription(card, newDesc);
         }
 
         private void OnEditImageClick(object sender, RoutedEventArgs e)
         {
             EnsureVM();
-            var card = (sender as System.Windows.Controls.MenuItem)?.DataContext as HD2ModManager.ViewModels.ModCardViewModel;
+            var card = GetCard(sender);
             if (card == null) return;
             var ofd = new Microsoft.Win32.OpenFileDialog
             {
@@ -173,67 +104,52 @@ namespace HD2ModManager.Views
             };
             if (ofd.ShowDialog() == true)
             {
-                card.Mod.Image = ofd.FileName;
+                VM?.UpdateIcon(card, ofd.FileName);
             }
-            var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as HD2ModManager.ViewModels.ShellViewModel;
-            shell?.LibraryService.Add(card.Mod);
-            shell?.LibraryService.Save();
-            VM!.Refresh();
-        }
-
-
-        private static string EnsureUniqueFolder(string baseDir)
-        {
-            var dir = baseDir;
-            int i = 1;
-            while (System.IO.Directory.Exists(dir))
-            {
-                dir = baseDir + "_" + i;
-                i++;
-            }
-            return dir;
-        }
-
-        private static string SanitizeName(string name)
-        {
-            foreach (var ch in System.IO.Path.GetInvalidFileNameChars()) name = name.Replace(ch, '_');
-            name = name.Trim();
-            if (string.IsNullOrWhiteSpace(name)) name = "ImportedMod";
-            return name;
         }
 
         private void OnEditTagsPageClick(object sender, RoutedEventArgs e)
         {
-            var card = (sender as System.Windows.Controls.MenuItem)?.DataContext as HD2ModManager.ViewModels.ModCardViewModel;
+            var card = GetCard(sender);
             if (card == null) return;
             var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as HD2ModManager.ViewModels.ShellViewModel;
             if (shell == null) return;
-            var vm = new HD2ModManager.ViewModels.TagEditPageViewModel(shell.LibraryService, card.Mod, new System.Collections.Generic.List<string>(), returnKey: "library");
-            shell.CurrentPage = vm;
+            shell.OpenTagEdit(new[] { card.Mod.Guid });
         }
 
-        private void OnAddToProfileClick(object sender, RoutedEventArgs e)
+        private void OnOpenDetailsClick(object sender, RoutedEventArgs e)
         {
-            var card = (sender as System.Windows.Controls.MenuItem)?.DataContext as HD2ModManager.ViewModels.ModCardViewModel;
+            EnsureVM();
+            var card = GetCard(sender);
             if (card == null) return;
             var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as HD2ModManager.ViewModels.ShellViewModel;
-            var profile = shell?.ProfileService.Active;
-            var activeKey = shell?.ProfileService.ActiveKey;
-            if (profile == null || string.IsNullOrWhiteSpace(activeKey))
+            shell?.OpenModDetailsFromPage(VM, card.Mod.Guid);
+        }
+
+        private void OnModRowClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (e.OriginalSource is DependencyObject source && FindAncestor<Button>(source) != null) return;
+            EnsureVM();
+            if ((sender as FrameworkElement)?.DataContext is ModCardViewModel card)
             {
-                MessageBox.Show("未找到活动配置，请先创建或激活配置。", "Profile", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
+                VM?.SelectRow(card, System.Windows.Input.Keyboard.Modifiers);
+                e.Handled = true;
             }
-            if (!profile.Entries.Any(e => e.Guid == card.Mod.Guid))
+        }
+
+        private static ModCardViewModel? GetCard(object sender)
+        {
+            return (sender as FrameworkElement)?.DataContext as ModCardViewModel;
+        }
+
+        private static T? FindAncestor<T>(DependencyObject current) where T : DependencyObject
+        {
+            while (current != null)
             {
-                profile.Entries.Add(new HD2ModManager.Models.ProfileEntry { Guid = card.Mod.Guid, Marker = 0 });
-                shell!.ProfileService.Save(activeKey!);
-                MessageBox.Show("已添加到当前配置。", "Profile", MessageBoxButton.OK, MessageBoxImage.Information);
+                if (current is T match) return match;
+                current = VisualTreeHelper.GetParent(current);
             }
-            else
-            {
-                MessageBox.Show("该模组已在配置中。", "Profile", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
+            return null;
         }
     }
 }

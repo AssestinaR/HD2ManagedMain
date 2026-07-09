@@ -37,6 +37,17 @@ namespace HD2ModManager.Services
             item.Status = ImportTaskStatus.Running;
         }
 
+        public ImportTaskItem? DequeueNextQueued()
+        {
+            var item = _tasks.FirstOrDefault(t => t.Status == ImportTaskStatus.Queued);
+            if (item != null)
+            {
+                MarkRunning(item);
+            }
+
+            return item;
+        }
+
         public void MarkDone(ImportTaskItem item)
         {
             item.Status = ImportTaskStatus.Done;

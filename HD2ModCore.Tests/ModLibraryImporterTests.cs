@@ -33,13 +33,14 @@ public sealed class ModLibraryImporterTests
 			var result = await importer.ImportFolderAsync(src);
 
 			Assert.True(Directory.Exists(paths.ModsDirectory));
-			Assert.True(File.Exists(Path.Combine(paths.LibraryDirectory, "library.json")));
+			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, "library.json")));
 			Assert.Equal(2, result.Snapshot.Nodes.Count);
 
 			foreach (var node in result.Snapshot.Nodes.Values)
 			{
 				var storedDir = Path.Combine(appRoot, "mods", node.RelativePath);
 				Assert.True(Directory.Exists(storedDir));
+				Assert.Single(node.RelativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 				Assert.True(File.Exists(Path.Combine(storedDir, "9ba626afa44a3aa3.patch_0")));
 				Assert.DoesNotContain(Directory.EnumerateFiles(storedDir), p => Path.GetFileName(p).Contains("patch_5") || Path.GetFileName(p).Contains("patch_9"));
 			}

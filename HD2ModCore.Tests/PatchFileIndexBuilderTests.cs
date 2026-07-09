@@ -22,7 +22,7 @@ public sealed class PatchFileIndexBuilderTests
 			File.WriteAllText(Path.Combine(modDir, "9ba626afa44a3aa3.patch_9.gpu_resources"), "");
 
 			var nodeId = ModNodeId.New();
-			var node = new ModNode(nodeId, "mod", new ModNodeMetadata("mod", null, Array.Empty<string>(), null, DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
+			var node = new ModNode(nodeId, "mod", new ModNodeMetadata("mod", null, Array.Empty<string>(), DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
 			var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, Array.Empty<Profile>());
 
 			var index = await new PatchFileIndexBuilder(new PatchFileNameParser()).BuildAsync(snapshot, modsRoot);
