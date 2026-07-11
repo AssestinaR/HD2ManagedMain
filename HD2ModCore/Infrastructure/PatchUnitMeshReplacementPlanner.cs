@@ -64,14 +64,26 @@ public sealed class PatchUnitMeshReplacementPlanner : IPatchUnitMeshReplacementP
 				}
 
 				candidates.Add(new PatchUnitMeshReplacementCandidate(targetEntry, sourceEntry, candidate));
-				return await unitMeshEditor.ReplaceRawMeshAsync(
+				var edit = await unitMeshEditor.ReplaceRawMeshAsync(
 					targetEntry,
 					candidate.TargetMeshInfoIndex,
 					sourceEntry,
 					candidate.SourceMeshInfoIndex,
 					token).ConfigureAwait(false);
+				return edit with
+				{
+					AdaptationSteps =
+					[
+						new UnitMeshAdaptationStep(
+							UnitMeshAdaptationStepKind.ReplaceWithSource,
+							candidate.TargetMeshInfoIndex,
+							candidate.SourceMeshInfoIndex,
+							candidate.Reason,
+							candidate)
+					]
+				};
 			},
-			cancellationToken).ConfigureAwait(false);
+			cancellationToken: cancellationToken).ConfigureAwait(false);
 
 		return new PatchUnitMeshReplacementPlan(sourceEntry, sourceMeshInfoIndex, candidates, batchPlan);
 	}

@@ -9,5 +9,6 @@ public interface IPatchArchiveBatchPlanner
 	ValueTask<PatchArchiveBatchPlan> BuildBatchPlanAsync(
 		IReadOnlyCollection<string> patchTocFilePaths,
 		Func<PatchTocEntry, CancellationToken, ValueTask<PatchUnitMeshEditResult?>> editFactory,
+		Func<string, IReadOnlyCollection<PatchUnitMeshEditResult>, CancellationToken, ValueTask<IReadOnlyCollection<PatchArchiveAdditionalEntry>>>? additionalEntryFactory = null,
 		CancellationToken cancellationToken = default);
 }

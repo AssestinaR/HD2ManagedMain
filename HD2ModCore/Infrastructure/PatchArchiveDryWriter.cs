@@ -28,6 +28,7 @@ public sealed class PatchArchiveDryWriter : IPatchArchiveDryWriter
 		string patchTocFilePath,
 		IReadOnlyCollection<PatchUnitMeshEditResult> unitMeshEdits,
 		IReadOnlyCollection<PatchTocEntry>? removedEntries = null,
+		IReadOnlyCollection<PatchArchiveAdditionalEntry>? additionalEntries = null,
 		CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrWhiteSpace(patchTocFilePath))
@@ -35,6 +36,7 @@ public sealed class PatchArchiveDryWriter : IPatchArchiveDryWriter
 			throw new ArgumentException("Value cannot be null or whitespace.", nameof(patchTocFilePath));
 		}
 		ArgumentNullException.ThrowIfNull(unitMeshEdits);
+		additionalEntries ??= Array.Empty<PatchArchiveAdditionalEntry>();
 
 		var originalTocFileData = await File.ReadAllBytesAsync(patchTocFilePath, cancellationToken).ConfigureAwait(false);
 		var layout = ResolveTocLayout(originalTocFileData);
@@ -50,32 +52,48 @@ public sealed class PatchArchiveDryWriter : IPatchArchiveDryWriter
 		var compositeEditsByAsset = BuildCompositeEditMap(patchTocFilePath, unitMeshEdits);
 		var removedEntryKeys = BuildRemovedEntrySet(patchTocFilePath, removedEntries);
 		var keptEntries = entries.Where(entry => !removedEntryKeys.Contains(CreateEditKey(entry))).ToArray();
-		var headerData = originalTocFileData.AsSpan(0, entriesOffset).ToArray();
-		WriteUInt32(headerData, 8, checked((uint)keptEntries.Length));
-		WriteTypeCounts(headerData, layout, keptEntries);
+		ValidateAdditionalEntries(keptEntries, additionalEntries);
+		var entrySources = OrderEntrySourcesByTypeTable(originalTocFileData, layout, BuildEntrySources(patchTocFilePath, keptEntries, additionalEntries));
+		var headerData = BuildHeaderData(originalTocFileData, layout, entrySources.Select(source => source.Entry).ToArray());
+		entriesOffset = headerData.Length;
 
-		var tocOutput = new MemoryStream(Math.Max(originalTocFileData.Length, checked(entriesOffset + keptEntries.Length * EntryRecordSize)));
+		var tocOutput = new MemoryStream(Math.Max(originalTocFileData.Length, checked(entriesOffset + entrySources.Count * EntryRecordSize)));
 		tocOutput.Write(headerData, 0, headerData.Length);
-		tocOutput.SetLength(checked(entriesOffset + keptEntries.Length * EntryRecordSize));
+		tocOutput.SetLength(checked(entriesOffset + entrySources.Count * EntryRecordSize));
 		tocOutput.Position = tocOutput.Length;
 
+		var streamFileData = await ReadOptionalFileAsync(patchTocFilePath + ".stream", cancellationToken).ConfigureAwait(false);
+		var streamOutput = new MemoryStream(streamFileData.Length);
+		streamOutput.Write(streamFileData, 0, streamFileData.Length);
 		var gpuOutput = new MemoryStream();
-		var updatedEntries = new List<PatchTocEntry>(keptEntries.Length);
+		var updatedEntries = new List<PatchTocEntry>(entrySources.Count);
 		var placements = new List<PatchArchiveEditPlacement>();
 
-		foreach (var entry in keptEntries)
+		foreach (var source in entrySources)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
+			var entry = source.Entry;
 			var key = CreateEditKey(entry);
 			var hasUnitEdit = editsByEntry.TryGetValue(key, out var edit);
-			var hasCompositeEdit = !hasUnitEdit && compositeEditsByAsset.TryGetValue(entry.AssetKey, out edit);
+			var hasCompositeEdit = source.AdditionalEntry is null && !hasUnitEdit && compositeEditsByAsset.TryGetValue(entry.AssetKey, out edit);
 			var hasEdit = hasUnitEdit || hasCompositeEdit;
-			var payload = hasUnitEdit ? edit!.OriginalPayload : await payloadReader.ReadPayloadAsync(entry, cancellationToken).ConfigureAwait(false);
-			var newTocPayload = hasUnitEdit ? edit!.TocData : hasCompositeEdit ? edit!.CompositeTocData! : payload.TocData;
-			var newGpuPayload = hasUnitEdit ? edit!.GpuResourceData : hasCompositeEdit ? edit!.CompositeGpuResourceData! : payload.GpuResourceData;
+			var payload = source.AdditionalEntry is null
+				? hasUnitEdit ? edit!.OriginalPayload : await payloadReader.ReadPayloadAsync(entry, cancellationToken).ConfigureAwait(false)
+				: new PatchEntryPayload(entry, source.AdditionalEntry.TocData, source.AdditionalEntry.StreamData, source.AdditionalEntry.GpuResourceData);
+			var newTocPayload = source.AdditionalEntry is not null ? source.AdditionalEntry.TocData : hasUnitEdit ? edit!.TocData : hasCompositeEdit ? edit!.CompositeTocData! : payload.TocData;
+			var newStreamPayload = source.AdditionalEntry?.StreamData ?? payload.StreamData;
+			var newGpuPayload = source.AdditionalEntry is not null ? source.AdditionalEntry.GpuResourceData : hasUnitEdit ? edit!.GpuResourceData : hasCompositeEdit ? edit!.CompositeGpuResourceData! : payload.GpuResourceData;
 
 			var newTocOffset = checked((ulong)tocOutput.Position);
 			tocOutput.Write(newTocPayload, 0, newTocPayload.Length);
+
+			var newStreamOffset = entry.StreamOffset;
+			if (source.AdditionalEntry is not null && newStreamPayload.Length > 0)
+			{
+				PadToAlignment(streamOutput, SidecarAlignment);
+				newStreamOffset = checked((ulong)streamOutput.Position);
+				streamOutput.Write(newStreamPayload, 0, newStreamPayload.Length);
+			}
 
 			var newGpuOffset = 0UL;
 			if (newGpuPayload.Length > 0)
@@ -88,10 +106,12 @@ public sealed class PatchArchiveDryWriter : IPatchArchiveDryWriter
 			var updatedEntry = entry with
 			{
 				TocDataOffset = newTocOffset,
+				StreamOffset = newStreamOffset,
 				GpuResourceOffset = newGpuOffset,
 				TocDataSize = checked((uint)newTocPayload.Length),
+				StreamSize = checked((uint)newStreamPayload.Length),
 				GpuResourceSize = checked((uint)newGpuPayload.Length),
-				EntryIndex = checked((uint)updatedEntries.Count)
+				EntryIndex = checked((uint)updatedEntries.Count + 1U)
 			};
 			updatedEntries.Add(updatedEntry);
 			WriteEntryRecord(tocOutput.GetBuffer(), entriesOffset, updatedEntries.Count - 1, updatedEntry);
@@ -106,14 +126,145 @@ public sealed class PatchArchiveDryWriter : IPatchArchiveDryWriter
 			}
 		}
 
-		var streamFileData = await ReadOptionalFileAsync(patchTocFilePath + ".stream", cancellationToken).ConfigureAwait(false);
+		PadTocToSdkMinimumSize(tocOutput, entrySources.Count);
+
 		return new PatchArchiveWritePlan(
 			patchTocFilePath,
 			tocOutput.ToArray(),
-			streamFileData,
+			streamOutput.ToArray(),
 			gpuOutput.ToArray(),
 			updatedEntries,
 			placements);
+	}
+
+	private static void PadTocToSdkMinimumSize(MemoryStream tocOutput, int entryCount)
+	{
+		var minimumLength = checked(entryCount * 256);
+		if (tocOutput.Length < minimumLength)
+		{
+			tocOutput.SetLength(minimumLength);
+		}
+	}
+
+	private static void ValidateAdditionalEntries(IReadOnlyList<PatchTocEntry> keptEntries, IReadOnlyCollection<PatchArchiveAdditionalEntry> additionalEntries)
+	{
+		var existingKeys = keptEntries.Select(entry => entry.AssetKey).ToHashSet();
+		var additionalKeys = new HashSet<AssetKey>();
+		foreach (var additionalEntry in additionalEntries)
+		{
+			ArgumentNullException.ThrowIfNull(additionalEntry);
+			if (existingKeys.Contains(additionalEntry.AssetKey))
+			{
+				throw new InvalidDataException($"Additional entry duplicates existing asset {additionalEntry.AssetKey.TypeId:x16}/{additionalEntry.AssetKey.FileId:x16}.");
+			}
+
+			if (!additionalKeys.Add(additionalEntry.AssetKey))
+			{
+				throw new InvalidDataException($"Duplicate additional entry for asset {additionalEntry.AssetKey.TypeId:x16}/{additionalEntry.AssetKey.FileId:x16}.");
+			}
+		}
+	}
+
+	private static List<EntrySource> BuildEntrySources(
+		string patchTocFilePath,
+		IReadOnlyList<PatchTocEntry> keptEntries,
+		IReadOnlyCollection<PatchArchiveAdditionalEntry> additionalEntries)
+	{
+		var sources = new List<EntrySource>(checked(keptEntries.Count + additionalEntries.Count));
+		foreach (var entry in keptEntries)
+		{
+			sources.Add(new EntrySource(entry, null));
+		}
+
+		foreach (var additionalEntry in additionalEntries)
+		{
+			var entry = new PatchTocEntry(
+				additionalEntry.AssetKey,
+				patchTocFilePath,
+				Path.GetFileName(patchTocFilePath),
+				Unknown1: additionalEntry.Unknown1,
+				Unknown2: additionalEntry.Unknown2,
+				Unknown3: additionalEntry.Unknown3,
+				Unknown4: additionalEntry.Unknown4);
+			sources.Add(new EntrySource(entry, additionalEntry));
+		}
+
+		return sources;
+	}
+
+	private static List<EntrySource> OrderEntrySourcesByTypeTable(byte[] originalTocFileData, TocLayout layout, IReadOnlyList<EntrySource> sources)
+	{
+		var originalTypeIds = ReadTypeRecords(originalTocFileData, layout).Select(record => record.TypeId).ToArray();
+		var knownTypeIds = originalTypeIds.ToHashSet();
+		var additionalTypeIds = sources
+			.Select(source => source.Entry.AssetKey.TypeId)
+			.Where(typeId => !knownTypeIds.Contains(typeId))
+			.Distinct()
+			.OrderBy(typeId => typeId)
+			.ToArray();
+		var typeOrder = originalTypeIds.Concat(additionalTypeIds).Select((typeId, index) => new { typeId, index }).ToDictionary(item => item.typeId, item => item.index);
+
+		return sources
+			.Select((source, index) => new { source, index })
+			.OrderBy(item => typeOrder[item.source.Entry.AssetKey.TypeId])
+			.ThenBy(item => item.index)
+			.Select(item => item.source)
+			.ToList();
+	}
+
+	private static byte[] BuildHeaderData(byte[] originalTocFileData, TocLayout layout, IReadOnlyList<PatchTocEntry> entries)
+	{
+		var originalTypeRecords = ReadTypeRecords(originalTocFileData, layout);
+		var originalTypeIds = originalTypeRecords.Select(record => record.TypeId).ToHashSet();
+		var newTypeIds = entries
+			.Select(entry => entry.AssetKey.TypeId)
+			.Where(typeId => !originalTypeIds.Contains(typeId))
+			.Distinct()
+			.OrderBy(typeId => typeId)
+			.ToArray();
+
+		var typeRecords = new List<TypeRecord>(checked(originalTypeRecords.Count + newTypeIds.Length));
+		typeRecords.AddRange(originalTypeRecords);
+		foreach (var typeId in newTypeIds)
+		{
+			typeRecords.Add(CreateAdditionalTypeRecord(typeId, originalTypeRecords.FirstOrDefault().Data));
+		}
+
+		var headerData = new byte[checked(layout.TypeTableOffset + typeRecords.Count * TypeRecordSize)];
+		originalTocFileData.AsSpan(0, layout.TypeTableOffset).CopyTo(headerData);
+		WriteUInt32(headerData, 4, checked((uint)typeRecords.Count));
+		WriteUInt32(headerData, 8, checked((uint)entries.Count));
+
+		for (var i = 0; i < typeRecords.Count; i++)
+		{
+			typeRecords[i].Data.CopyTo(headerData.AsSpan(layout.TypeTableOffset + i * TypeRecordSize, TypeRecordSize));
+		}
+
+		WriteTypeCounts(headerData, new TocLayout(layout.TypeTableOffset, headerData.Length, checked((uint)typeRecords.Count)), entries);
+		return headerData;
+	}
+
+	private static List<TypeRecord> ReadTypeRecords(byte[] tocData, TocLayout layout)
+	{
+		var records = new List<TypeRecord>(checked((int)layout.TypeCount));
+		for (var i = 0; i < layout.TypeCount; i++)
+		{
+			var offset = layout.TypeTableOffset + i * TypeRecordSize;
+			var data = tocData.AsSpan(offset, TypeRecordSize).ToArray();
+			records.Add(new TypeRecord(BinaryPrimitivesLE.ReadUInt64(data.AsSpan(8, 8)), data));
+		}
+
+		return records;
+	}
+
+	private static TypeRecord CreateAdditionalTypeRecord(ulong typeId, byte[]? template)
+	{
+		var data = template is { Length: TypeRecordSize } ? template.ToArray() : new byte[TypeRecordSize];
+		WriteUInt64(data, 8, typeId);
+		WriteUInt64(data, 16, 0);
+		WriteUInt32(data, 24, 16);
+		WriteUInt32(data, 28, 64);
+		return new TypeRecord(typeId, data);
 	}
 
 	private static Dictionary<EditKey, PatchUnitMeshEditResult> BuildEditMap(string patchTocFilePath, IReadOnlyCollection<PatchUnitMeshEditResult> edits)
@@ -316,4 +467,8 @@ public sealed class PatchArchiveDryWriter : IPatchArchiveDryWriter
 	private readonly record struct EditKey(uint EntryIndex, ulong TypeId, ulong FileId);
 
 	private readonly record struct TocLayout(int TypeTableOffset, int EntriesOffset, uint TypeCount);
+
+	private readonly record struct TypeRecord(ulong TypeId, byte[] Data);
+
+	private readonly record struct EntrySource(PatchTocEntry Entry, PatchArchiveAdditionalEntry? AdditionalEntry);
 }

@@ -11,7 +11,8 @@ public sealed record PatchUnitMeshEditResult(
 	byte[] GpuResourceData,
 	AssetKey? CompositeAssetKey = null,
 	byte[]? CompositeTocData = null,
-	byte[]? CompositeGpuResourceData = null)
+	byte[]? CompositeGpuResourceData = null,
+	IReadOnlyList<UnitMeshAdaptationStep>? AdaptationSteps = null)
 {
 	public int TocDataSizeDelta => TocData.Length - OriginalPayload.TocData.Length;
 

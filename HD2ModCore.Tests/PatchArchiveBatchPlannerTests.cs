@@ -54,6 +54,33 @@ public sealed class PatchArchiveBatchPlannerTests
 	}
 
 	[Fact]
+	public async Task BuildBatchPlanAsync_AdditionalEntryFactory_PassesEntriesToWriter()
+	{
+		var patchPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".patch_0");
+		var entry = CreateEntry(patchPath, 0, 0x1111);
+		var additionalKey = new AssetKey(0xeac0b497876adedf, 0x2222);
+		var additionalEntry = new PatchArchiveAdditionalEntry(additionalKey, new byte[] { 7 }, Array.Empty<byte>(), Array.Empty<byte>());
+		var scanner = new FakePatchTocScanner(new[] { entry });
+		var dryWriter = new FakePatchArchiveDryWriter();
+		var planner = new PatchArchiveBatchPlanner(scanner, dryWriter);
+
+		var plan = await planner.BuildBatchPlanAsync(
+			new[] { patchPath },
+			(scannedEntry, _) => ValueTask.FromResult<PatchUnitMeshEditResult?>(CreateEdit(scannedEntry)),
+			(path, edits, _) =>
+			{
+				Assert.Equal(patchPath, path);
+				Assert.Single(edits);
+				return ValueTask.FromResult<IReadOnlyCollection<PatchArchiveAdditionalEntry>>(new[] { additionalEntry });
+			});
+
+		Assert.Single(plan.PatchPlans);
+		Assert.Equal(patchPath, dryWriter.LastPatchPath);
+		Assert.Single(dryWriter.LastEdits!);
+		Assert.Equal([additionalEntry], dryWriter.LastAdditionalEntries);
+	}
+
+	[Fact]
 	public async Task BuildBatchPlanAsync_MismatchedEditIdentity_RecordsFailureAndDoesNotPassEditToWriter()
 	{
 		var patchPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".patch_0");
@@ -136,14 +163,18 @@ public sealed class PatchArchiveBatchPlannerTests
 
 		public IReadOnlyCollection<PatchUnitMeshEditResult>? LastEdits { get; private set; }
 
+		public IReadOnlyCollection<PatchArchiveAdditionalEntry>? LastAdditionalEntries { get; private set; }
+
 		public ValueTask<PatchArchiveWritePlan> BuildWritePlanAsync(
 			string patchTocFilePath,
 			IReadOnlyCollection<PatchUnitMeshEditResult> unitMeshEdits,
 			IReadOnlyCollection<PatchTocEntry>? removedEntries = null,
+			IReadOnlyCollection<PatchArchiveAdditionalEntry>? additionalEntries = null,
 			CancellationToken cancellationToken = default)
 		{
 			LastPatchPath = patchTocFilePath;
 			LastEdits = unitMeshEdits.ToArray();
+			LastAdditionalEntries = additionalEntries?.ToArray() ?? Array.Empty<PatchArchiveAdditionalEntry>();
 			var entries = unitMeshEdits.Select(e => e.Entry).ToArray();
 			return ValueTask.FromResult(new PatchArchiveWritePlan(
 				patchTocFilePath,

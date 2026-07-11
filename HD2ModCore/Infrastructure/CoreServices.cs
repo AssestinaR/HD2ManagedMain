@@ -37,7 +37,7 @@ public static class CoreServices
 	public static IArchiveUnitMeshReader CreateArchiveUnitMeshReader()
 		=> new ArchiveUnitMeshReader(gameDataDirectory => new GameDataPackageResolver(gameDataDirectory), CreatePatchTocScanner(), CreateUnitMeshReader());
 	public static IUnitMeshAdaptationPlanner CreateUnitMeshAdaptationPlanner()
-		=> new UnitMeshAdaptationPlanner(new UnitMeshReplacementStrategy(allowExperimentalFallback: true), CreateUnitMeshMinifier(), new UnitMeshRetargeter(allowExperimentalLayoutFallback: true), CreateUnitMeshWriter());
+		=> new UnitMeshAdaptationPlanner(new UnitMeshReplacementStrategy(allowExperimentalFallback: true), CreateUnitMeshMinifier(), new UnitMeshRetargeter(allowExperimentalLayoutFallback: true, propagateSourceMaterials: true), CreateUnitMeshWriter());
    public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths)
 		=> new AssetArchiveIndexService(paths, CreatePatchTocScanner());
    public static IGameDataLocator CreateGameDataLocator(IGameDataSettings settings)
@@ -66,6 +66,10 @@ public static class CoreServices
 		=> new UnitMeshReader();
 	public static IUnitMeshWriter CreateUnitMeshWriter()
 		=> new UnitMeshWriter();
+	public static IMaterialDependencyValidator CreateMaterialDependencyValidator()
+		=> new MaterialDependencyValidator(CreatePatchEntryPayloadReader(), new StingrayMaterialReferenceReader());
+	public static ArchiveDependencyResolver CreateArchiveDependencyResolver()
+		=> new ArchiveDependencyResolver(CreatePatchTocScanner(), CreatePatchEntryPayloadReader(), new StingrayMaterialReferenceReader());
 	public static IUnitMeshMinifier CreateUnitMeshMinifier()
 		=> new UnitMeshMinifier();
 	public static IUnitMeshRetargeter CreateUnitMeshRetargeter()

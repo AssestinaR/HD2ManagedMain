@@ -34,6 +34,12 @@ public sealed class PatchUnitMeshReplacementPlannerTests
 		Assert.Equal(1, plan.BatchPlan.EditedEntryCount);
 		Assert.Equal(2, plan.BatchPlan.SkippedEntryCount);
 		Assert.Equal(0, plan.BatchPlan.FailedEntryCount);
+		var editStep = Assert.Single(Assert.Single(plan.BatchPlan.PatchPlans).Edits).AdaptationSteps is { } steps
+			? Assert.Single(steps)
+			: throw new Xunit.Sdk.XunitException("Expected replacement edit to carry adaptation steps.");
+		Assert.Equal(UnitMeshAdaptationStepKind.ReplaceWithSource, editStep.Kind);
+		Assert.Equal(0, editStep.TargetMeshInfoIndex);
+		Assert.Equal(0, editStep.SourceMeshInfoIndex);
 		Assert.Single(editor.ReplaceCalls);
 		Assert.Equal(compatibleTargetEntry, editor.ReplaceCalls[0].TargetEntry);
 		Assert.Equal(sourceEntry, editor.ReplaceCalls[0].SourceEntry);
@@ -252,6 +258,7 @@ public sealed class PatchUnitMeshReplacementPlannerTests
 			string patchTocFilePath,
 			IReadOnlyCollection<PatchUnitMeshEditResult> unitMeshEdits,
 			IReadOnlyCollection<PatchTocEntry>? removedEntries = null,
+			IReadOnlyCollection<PatchArchiveAdditionalEntry>? additionalEntries = null,
 			CancellationToken cancellationToken = default)
 		{
 			return ValueTask.FromResult(new PatchArchiveWritePlan(

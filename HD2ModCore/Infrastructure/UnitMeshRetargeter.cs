@@ -8,12 +8,16 @@ namespace HD2ModCore.Infrastructure;
 public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 {
 	private readonly bool allowExperimentalLayoutFallback;
+	private readonly bool allowMaterialSectionExpansion;
 	private readonly bool propagateSourceMaterials;
+	private readonly IReadOnlySet<ulong>? allowedSourceMaterialIds;
 
-	public UnitMeshRetargeter(bool allowExperimentalLayoutFallback = false, bool propagateSourceMaterials = false)
+	public UnitMeshRetargeter(bool allowExperimentalLayoutFallback = false, bool propagateSourceMaterials = false, IReadOnlySet<ulong>? allowedSourceMaterialIds = null, bool allowMaterialSectionExpansion = false)
 	{
 		this.allowExperimentalLayoutFallback = allowExperimentalLayoutFallback;
+		this.allowMaterialSectionExpansion = allowMaterialSectionExpansion;
 		this.propagateSourceMaterials = propagateSourceMaterials;
+		this.allowedSourceMaterialIds = allowedSourceMaterialIds;
 	}
 
 	public UnitMeshModel ReplaceRawMesh(UnitMeshModel targetModel, int targetMeshInfoIndex, UnitMeshModel sourceModel, int sourceMeshInfoIndex)
@@ -27,8 +31,8 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 			EnsureCompatibleStreamLayout(targetStream, sourceStream);
 		}
 
-		var materialMap = propagateSourceMaterials ? CreateMaterialMap(targetModel, targetRawMesh, sourceModel, sourceRawMesh) : null;
-		var replacement = CopyRawMeshIntoTargetSlot(targetModel, targetRawMesh, sourceModel, sourceRawMesh, targetStream, allowExperimentalLayoutFallback, materialMap);
+		var materialMap = propagateSourceMaterials ? CreateMaterialMap(targetModel, targetRawMesh, sourceModel, sourceRawMesh, sourceMeshInfoIndex, allowExperimentalLayoutFallback, allowMaterialSectionExpansion, allowedSourceMaterialIds) : null;
+		var replacement = CopyRawMeshIntoTargetSlot(targetModel, targetRawMesh, sourceModel, sourceRawMesh, targetStream, allowExperimentalLayoutFallback, allowMaterialSectionExpansion, materialMap);
 		var rawMeshes = targetModel.RawMeshData
 			.Select(mesh => mesh.MeshInfoIndex == targetMeshInfoIndex ? replacement : mesh)
 			.ToArray();
@@ -77,23 +81,24 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 		}
 	}
 
-	private static UnitRawMeshData CopyRawMeshIntoTargetSlot(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceRawMesh, UnitStreamInfo targetStream, bool allowExperimentalLayoutFallback, MaterialSlotMap? materialMap)
+	private static UnitRawMeshData CopyRawMeshIntoTargetSlot(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceRawMesh, UnitStreamInfo targetStream, bool allowExperimentalLayoutFallback, bool allowMaterialSectionExpansion, MaterialSlotMap? materialMap)
 	{
 		var vertexLimit = allowExperimentalLayoutFallback && targetStream.IndexBufferType != 1
 			? ushort.MaxValue + 1
 			: sourceRawMesh.Vertices.Count;
-		var maxSections = allowExperimentalLayoutFallback && targetRawMesh.Sections.Count > 0
+		var maxSections = allowExperimentalLayoutFallback && !allowMaterialSectionExpansion && targetRawMesh.Sections.Count > 0
 			? Math.Min(sourceRawMesh.Sections.Count, targetRawMesh.Sections.Count)
 			: sourceRawMesh.Sections.Count;
 		var vertexIndexMap = BuildRetainedVertexIndexMap(sourceRawMesh.Sections.Take(maxSections), vertexLimit, sourceRawMesh.Vertices.Count);
+		var sourceSections = sourceRawMesh.Sections.Take(maxSections).ToArray();
 		var sections = sourceRawMesh.Sections.Count == 0
 			? Array.Empty<UnitRawMeshSectionData>()
-			: sourceRawMesh.Sections.Take(maxSections).Select((section, index) => CopySectionIntoTargetSlot(targetRawMesh, section, index, vertexIndexMap, materialMap)).ToArray();
+			: sourceSections.Select((section, index) => CopySectionIntoTargetSlot(targetRawMesh, section, index, vertexIndexMap, materialMap)).ToArray();
 		var triangles = sections.SelectMany(section => section.Triangles).ToArray();
-		var boneMap = CreateBoneMap(targetModel, targetRawMesh, sourceModel, sourceRawMesh, sections);
+		var boneMap = CreateBoneMap(targetModel, targetRawMesh, sourceModel, sourceRawMesh, sourceSections, sections);
 		var vertexMaterialMap = boneMap is null
 			? null
-			: CreateVertexMaterialMap(sections, vertexIndexMap.Count);
+			: CreateVertexMaterialMap(sourceSections, sections, vertexIndexMap.Count);
 		var vertices = vertexIndexMap
 			.Select(pair => sourceRawMesh.Vertices[(int)pair.Key])
 			.Select((vertex, index) => new UnitRawVertexRecord((uint)index, BuildTargetVertexData(vertex, targetStream, allowExperimentalLayoutFallback, boneMap, vertexMaterialMap, index), vertex.Components))
@@ -385,7 +390,7 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 		return remapped;
 	}
 
-	private static BoneIndexMap? CreateBoneMap(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceRawMesh, IReadOnlyList<UnitRawMeshSectionData> replacementSections)
+	private static BoneIndexMap? CreateBoneMap(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceRawMesh, IReadOnlyList<UnitRawMeshSectionData> sourceSections, IReadOnlyList<UnitRawMeshSectionData> replacementSections)
 	{
 		var targetBoneInfo = FindBoneInfoForMesh(targetModel, targetRawMesh);
 		var sourceBoneInfo = FindBoneInfoForMesh(sourceModel, sourceRawMesh);
@@ -394,40 +399,45 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 			return null;
 		}
 
-		var targetRemaps = replacementSections
-			.Select(section => FindBoneRemap(targetBoneInfo, section.MaterialIndex))
-			.ToArray();
-		var sourceRemaps = sourceRawMesh.Sections
-			.Select(section => FindBoneRemap(sourceBoneInfo, section.MaterialIndex))
-			.ToArray();
-		return targetRemaps.Length == 0 || sourceRemaps.Length == 0 || targetRemaps.Any(remap => remap is null) || sourceRemaps.Any(remap => remap is null)
+		var pairs = sourceSections.Zip(replacementSections, (sourceSection, replacementSection) =>
+		{
+			var sourceRemap = FindBoneRemap(sourceBoneInfo, sourceSection.MaterialIndex);
+			var targetRemap = FindBoneRemap(targetBoneInfo, replacementSection.MaterialIndex);
+			return sourceRemap is null || targetRemap is null
+				? null
+				: new BoneRemapPair((int)sourceSection.MaterialIndex, sourceRemap, targetRemap);
+		}).ToArray();
+		return pairs.Length == 0 || pairs.Any(pair => pair is null)
 			? null
-			: new BoneIndexMap(sourceBoneInfo, sourceRemaps!, targetBoneInfo, targetRemaps!);
+			: new BoneIndexMap(sourceBoneInfo, targetBoneInfo, pairs!);
 	}
 
-	private static IReadOnlyList<VertexMaterialMapEntry> CreateVertexMaterialMap(IReadOnlyList<UnitRawMeshSectionData> replacementSections, int vertexCount)
+	private static IReadOnlyList<VertexMaterialMapEntry> CreateVertexMaterialMap(IReadOnlyList<UnitRawMeshSectionData> sourceSections, IReadOnlyList<UnitRawMeshSectionData> replacementSections, int vertexCount)
 	{
 		var result = Enumerable.Range(0, vertexCount)
 			.Select(_ => new VertexMaterialMapEntry(0, 0))
 			.ToArray();
-		for (var sectionIndex = 0; sectionIndex < replacementSections.Count; sectionIndex++)
+		var sectionCount = Math.Min(sourceSections.Count, replacementSections.Count);
+		for (var sectionIndex = 0; sectionIndex < sectionCount; sectionIndex++)
 		{
+			var sourceMaterialIndex = checked((int)sourceSections[sectionIndex].MaterialIndex);
+			var targetMaterialIndex = checked((int)replacementSections[sectionIndex].MaterialIndex);
 			foreach (var triangle in replacementSections[sectionIndex].Triangles)
 			{
-				AssignVertexMaterial(result, triangle.A, sectionIndex);
-				AssignVertexMaterial(result, triangle.B, sectionIndex);
-				AssignVertexMaterial(result, triangle.C, sectionIndex);
+				AssignVertexMaterial(result, triangle.A, sourceMaterialIndex, targetMaterialIndex);
+				AssignVertexMaterial(result, triangle.B, sourceMaterialIndex, targetMaterialIndex);
+				AssignVertexMaterial(result, triangle.C, sourceMaterialIndex, targetMaterialIndex);
 			}
 		}
 
 		return result;
 	}
 
-	private static void AssignVertexMaterial(VertexMaterialMapEntry[] result, uint vertexIndex, int sectionIndex)
+	private static void AssignVertexMaterial(VertexMaterialMapEntry[] result, uint vertexIndex, int sourceMaterialIndex, int targetMaterialIndex)
 	{
 		if (vertexIndex < result.Length)
 		{
-			result[(int)vertexIndex] = new VertexMaterialMapEntry(sectionIndex, sectionIndex);
+			result[(int)vertexIndex] = new VertexMaterialMapEntry(sourceMaterialIndex, targetMaterialIndex);
 		}
 	}
 
@@ -477,40 +487,140 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 			triangles);
 	}
 
-	private static MaterialSlotMap? CreateMaterialMap(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceRawMesh)
+	private static MaterialSlotMap? CreateMaterialMap(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceRawMesh, int sourceMeshInfoIndex, bool allowExperimentalLayoutFallback, bool allowMaterialSectionExpansion, IReadOnlySet<ulong>? allowedSourceMaterialIds)
 	{
 		var targetMeshInfo = targetModel.Meshes.FirstOrDefault(mesh => mesh.Index == targetRawMesh.MeshInfoIndex);
-		var sourceMeshInfo = sourceModel.Meshes.FirstOrDefault(mesh => mesh.Index == sourceRawMesh.MeshInfoIndex);
+		var sourceMeshInfo = sourceModel.Meshes.FirstOrDefault(mesh => mesh.Index == sourceMeshInfoIndex);
 		if (targetMeshInfo is null || targetMeshInfo.MaterialSlotIds.Count == 0)
 		{
 			return null;
 		}
 
-		var sourceSlots = (sourceMeshInfo?.MaterialSlotIds.Count > 0 ? sourceMeshInfo.MaterialSlotIds : sourceRawMesh.Sections.Select(section => section.MaterialSlotId))
-			.Distinct()
-			.ToArray();
-		if (sourceSlots.Length == 0 || sourceSlots.Length > targetMeshInfo.MaterialSlotIds.Count)
+		if (sourceMeshInfo is not null && sourceMeshInfo.MaterialSlotIds.Count > 0 && sourceRawMesh.Sections.Any(section => section.MaterialIndex >= sourceMeshInfo.MaterialSlotIds.Count))
 		{
 			return null;
 		}
 
-		var sourceBindings = sourceModel.Materials
+		var copiedSourceSections = allowExperimentalLayoutFallback && !allowMaterialSectionExpansion && targetRawMesh.Sections.Count > 0
+			? sourceRawMesh.Sections.Take(targetRawMesh.Sections.Count)
+			: sourceRawMesh.Sections;
+		var sourceSlots = (sourceMeshInfo?.MaterialSlotIds.Count > 0 && targetMeshInfo.MaterialSlotIds.Count >= sourceMeshInfo.MaterialSlotIds.Count)
+			? sourceMeshInfo!.MaterialSlotIds
+			: copiedSourceSections.Select(section => section.MaterialSlotId).Distinct().ToArray();
+		if (sourceSlots.Count == 0)
+		{
+			return null;
+		}
+
+		var sourceBindingGroups = sourceModel.Materials
 			.Where(binding => sourceSlots.Contains(binding.SectionId))
-			.ToDictionary(binding => binding.SectionId, binding => binding.MaterialId);
-		if (sourceBindings.Count != sourceSlots.Length)
+			.GroupBy(binding => binding.SectionId)
+			.ToArray();
+		if (sourceBindingGroups.Any(group => group.Select(binding => binding.MaterialId).Distinct().Count() != 1))
 		{
 			return null;
 		}
 
-		var replacements = new List<MaterialSlotReplacement>(sourceSlots.Length);
-		for (var i = 0; i < sourceSlots.Length; i++)
+		var sourceBindings = sourceBindingGroups.ToDictionary(group => group.Key, group => group.First().MaterialId);
+		if (sourceBindings.Count != sourceSlots.Count)
 		{
-			var targetSlot = targetMeshInfo.MaterialSlotIds[i];
-			var sourceSlot = sourceSlots[i];
-			replacements.Add(new MaterialSlotReplacement(targetSlot, sourceSlot, sourceBindings[sourceSlot], (uint)i));
+			return null;
+		}
+		var materialSlots = BuildMaterialSlots(targetModel, targetMeshInfo, sourceSlots, sourceBindings, allowMaterialSectionExpansion);
+		if (materialSlots is null)
+		{
+			return null;
 		}
 
-		return new MaterialSlotMap(replacements);
+		if (materialSlots.SourceTargetSlots.Distinct().Count() != materialSlots.SourceTargetSlots.Count || sourceSlots.Distinct().Count() != sourceSlots.Count)
+		{
+			return null;
+		}
+
+		var replacements = new List<MaterialSlotReplacement>(sourceSlots.Count);
+		for (var i = 0; i < sourceSlots.Count; i++)
+		{
+			var targetSlot = materialSlots.SourceTargetSlots[i];
+			var sourceSlot = sourceSlots[i];
+			var sourceMaterialId = sourceBindings[sourceSlot];
+			var canUseSourceMaterial = allowedSourceMaterialIds is null || allowedSourceMaterialIds.Contains(sourceMaterialId);
+			replacements.Add(new MaterialSlotReplacement(targetSlot, sourceSlot, sourceMaterialId, (uint)i, checked((uint)IndexOf(materialSlots.OutputSlots, targetSlot)), canUseSourceMaterial));
+		}
+
+		return new MaterialSlotMap(replacements, materialSlots.OutputSlots);
+	}
+
+	private static MaterialSlots? BuildMaterialSlots(UnitMeshModel targetModel, UnitMeshInfo targetMeshInfo, IReadOnlyList<uint> sourceSlots, IReadOnlyDictionary<uint, ulong> sourceBindings, bool allowMaterialSectionExpansion)
+	{
+		var outputSlots = targetMeshInfo.MaterialSlotIds.ToList();
+		var originalSlotCount = outputSlots.Count;
+		if (!allowMaterialSectionExpansion && originalSlotCount < sourceSlots.Count)
+		{
+			return null;
+		}
+
+		var targetBindings = targetModel.Materials
+			.GroupBy(binding => binding.SectionId)
+			.Where(group => group.Count() == 1)
+			.ToDictionary(group => group.Key, group => group.Single().MaterialId);
+		var sourceTargetSlots = new List<uint>(sourceSlots.Count);
+		var usedTargetSlots = new HashSet<uint>();
+		foreach (var sourceSlot in sourceSlots)
+		{
+			var sourceMaterialId = sourceBindings[sourceSlot];
+			var matchingSlot = outputSlots.FirstOrDefault(slot => !usedTargetSlots.Contains(slot) && targetBindings.TryGetValue(slot, out var materialId) && materialId == sourceMaterialId);
+			if (matchingSlot != 0 || outputSlots.Any(slot => slot == 0 && !usedTargetSlots.Contains(slot) && targetBindings.TryGetValue(slot, out var materialId) && materialId == sourceMaterialId))
+			{
+				sourceTargetSlots.Add(matchingSlot);
+				usedTargetSlots.Add(matchingSlot);
+				continue;
+			}
+
+			if (!allowMaterialSectionExpansion || (originalSlotCount < sourceSlots.Count && sourceTargetSlots.Count < originalSlotCount))
+			{
+				var reusableSlot = outputSlots.First(slot => !usedTargetSlots.Contains(slot));
+				sourceTargetSlots.Add(reusableSlot);
+				usedTargetSlots.Add(reusableSlot);
+				continue;
+			}
+
+			var addedSlot = FindNextAvailableSlot(targetModel, outputSlots);
+			outputSlots.Add(addedSlot);
+			targetBindings[addedSlot] = sourceMaterialId;
+			sourceTargetSlots.Add(addedSlot);
+			usedTargetSlots.Add(addedSlot);
+		}
+
+		return new MaterialSlots(sourceTargetSlots, outputSlots);
+	}
+
+	private static uint FindNextAvailableSlot(UnitMeshModel targetModel, IReadOnlyCollection<uint> localSlots)
+	{
+		var usedSlots = targetModel.Meshes.SelectMany(mesh => mesh.MaterialSlotIds)
+			.Concat(targetModel.RawMeshData.SelectMany(mesh => mesh.Sections.Select(section => section.MaterialSlotId)))
+			.Concat(targetModel.Materials.Select(binding => binding.SectionId))
+			.Concat(localSlots)
+			.ToHashSet();
+		var nextSlot = 0u;
+		while (usedSlots.Contains(nextSlot))
+		{
+			nextSlot++;
+		}
+
+		return nextSlot;
+	}
+
+	private static int IndexOf(IReadOnlyList<uint> values, uint value)
+	{
+		for (var i = 0; i < values.Count; i++)
+		{
+			if (values[i] == value)
+			{
+				return i;
+			}
+		}
+
+		throw new InvalidDataException("A material replacement slot is missing from the target material slot table.");
 	}
 
 	private static IReadOnlyList<UnitMeshInfo> ApplyMaterialMapToMeshes(IReadOnlyList<UnitMeshInfo> meshes, int targetMeshInfoIndex, MaterialSlotMap materialMap)
@@ -522,16 +632,37 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 
 	private static IReadOnlyList<UnitMeshSectionInfo> ApplyMaterialMapToSections(IReadOnlyList<UnitMeshSectionInfo> sections, MaterialSlotMap materialMap)
 	{
-		return sections.Select(section => materialMap.TryMap(section.MaterialSlotId, out var materialIndex, out var materialSlotId)
-			? section with { MaterialIndex = materialIndex, MaterialSlotId = materialSlotId }
-			: section).ToArray();
+		if (sections.Count == 0)
+		{
+			return Array.Empty<UnitMeshSectionInfo>();
+		}
+
+		return materialMap.Replacements.Count >= sections.Count
+			? materialMap.Replacements.Select((replacement, index) =>
+		{
+			var template = index < sections.Count ? sections[index] : sections[^1];
+			return template with
+			{
+				MaterialIndex = replacement.TargetMaterialIndex,
+				MaterialSlotId = replacement.TargetSlotId
+			};
+			}).ToArray()
+			: sections.Select(section => materialMap.TryMap(section.MaterialSlotId, out var materialIndex, out var materialSlotId)
+				? section with { MaterialIndex = materialIndex, MaterialSlotId = materialSlotId }
+				: section).ToArray();
 	}
 
 	private static IReadOnlyList<UnitMaterialBinding> ApplyMaterialMapToBindings(IReadOnlyList<UnitMaterialBinding> bindings, MaterialSlotMap materialMap)
 	{
-		return bindings.Select(binding => materialMap.TryReplaceTargetBinding(binding.SectionId, out var replacement)
-			? new UnitMaterialBinding(replacement.SourceSlotId, replacement.SourceMaterialId)
-			: binding).ToArray();
+		var updatedBindings = bindings.Select(binding => materialMap.TryReplaceTargetBinding(binding.SectionId, out var replacement)
+			? new UnitMaterialBinding(replacement.TargetSlotId, replacement.UseSourceMaterial ? replacement.SourceMaterialId : binding.MaterialId)
+			: binding).ToList();
+		foreach (var replacement in materialMap.Replacements.Where(replacement => updatedBindings.All(binding => binding.SectionId != replacement.TargetSlotId)))
+		{
+			updatedBindings.Add(new UnitMaterialBinding(replacement.TargetSlotId, replacement.UseSourceMaterial ? replacement.SourceMaterialId : 0));
+		}
+
+		return updatedBindings;
 	}
 
 	private static float GetValue(IReadOnlyList<float> values, int index) => index < values.Count ? values[index] : 0f;
@@ -601,20 +732,19 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 
 	private sealed class BoneIndexMap
 	{
-		private readonly IReadOnlyList<Dictionary<uint, uint>> sourceToTargetByMaterial;
+		private readonly Dictionary<int, Dictionary<uint, uint>> sourceToTargetByMaterial;
+		private readonly Dictionary<uint, uint>? fallbackSourceToTarget;
 
-		public BoneIndexMap(UnitBoneInfo sourceBoneInfo, IReadOnlyList<UnitBoneRemap> sourceRemaps, UnitBoneInfo targetBoneInfo, IReadOnlyList<UnitBoneRemap> targetRemaps)
+		public BoneIndexMap(UnitBoneInfo sourceBoneInfo, UnitBoneInfo targetBoneInfo, IReadOnlyList<BoneRemapPair> remapPairs)
 		{
-			var count = Math.Min(sourceRemaps.Count, targetRemaps.Count);
-			var maps = new List<Dictionary<uint, uint>>(count);
-			for (var materialIndex = 0; materialIndex < count; materialIndex++)
+			var maps = new Dictionary<int, Dictionary<uint, uint>>();
+			foreach (var pair in remapPairs)
 			{
 				var sourceToTarget = new Dictionary<uint, uint>();
-				var sourceRemap = sourceRemaps[materialIndex];
-				var targetRealToFake = BuildRealToFakeIndex(targetBoneInfo, targetRemaps[materialIndex]);
-				for (var sourceIndex = 0; sourceIndex < sourceRemap.FakeIndices.Count; sourceIndex++)
+				var targetRealToFake = BuildRealToFakeIndex(targetBoneInfo, pair.TargetRemap);
+				for (var sourceIndex = 0; sourceIndex < pair.SourceRemap.FakeIndices.Count; sourceIndex++)
 				{
-					var sourceFakeIndex = sourceRemap.FakeIndices[sourceIndex];
+					var sourceFakeIndex = pair.SourceRemap.FakeIndices[sourceIndex];
 					if (sourceFakeIndex >= sourceBoneInfo.RealIndices.Count)
 					{
 						continue;
@@ -627,21 +757,24 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 					}
 				}
 
-				maps.Add(sourceToTarget);
+				maps[pair.SourceMaterialIndex] = sourceToTarget;
 			}
 
 			sourceToTargetByMaterial = maps;
+			fallbackSourceToTarget = maps.TryGetValue(0, out var materialZeroMap)
+				? materialZeroMap
+				: maps.Values.FirstOrDefault();
 		}
 
 		public bool TryMap(uint sourceIndex, VertexMaterialMapEntry? vertexMaterial, out uint targetIndex)
 		{
 			var materialIndex = vertexMaterial?.SourceMaterialIndex ?? 0;
-			if (materialIndex >= 0 && materialIndex < sourceToTargetByMaterial.Count && sourceToTargetByMaterial[materialIndex].TryGetValue(sourceIndex, out targetIndex))
+			if (sourceToTargetByMaterial.TryGetValue(materialIndex, out var materialMap) && materialMap.TryGetValue(sourceIndex, out targetIndex))
 			{
 				return true;
 			}
 
-			if (sourceToTargetByMaterial.Count > 0 && sourceToTargetByMaterial[0].TryGetValue(sourceIndex, out targetIndex))
+			if (fallbackSourceToTarget is not null && fallbackSourceToTarget.TryGetValue(sourceIndex, out targetIndex))
 			{
 				return true;
 			}
@@ -668,9 +801,13 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 		}
 	}
 
+	private sealed record BoneRemapPair(int SourceMaterialIndex, UnitBoneRemap SourceRemap, UnitBoneRemap TargetRemap);
+
 	private sealed record VertexMaterialMapEntry(int SourceMaterialIndex, int TargetMaterialIndex);
 
-	private sealed record MaterialSlotReplacement(uint TargetSlotId, uint SourceSlotId, ulong SourceMaterialId, uint SourceMaterialIndex);
+	private sealed record MaterialSlots(IReadOnlyList<uint> SourceTargetSlots, IReadOnlyList<uint> OutputSlots);
+
+	private sealed record MaterialSlotReplacement(uint TargetSlotId, uint SourceSlotId, ulong SourceMaterialId, uint SourceMaterialIndex, uint TargetMaterialIndex, bool UseSourceMaterial);
 
 	private sealed class MaterialSlotMap
 	{
@@ -678,9 +815,12 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 		private readonly Dictionary<uint, MaterialSlotReplacement> sourceSlotLookup;
 		private readonly Dictionary<uint, MaterialSlotReplacement> targetSlotLookup;
 
-		public MaterialSlotMap(IReadOnlyList<MaterialSlotReplacement> replacements)
+		private readonly IReadOnlyList<uint> outputSlots;
+
+		public MaterialSlotMap(IReadOnlyList<MaterialSlotReplacement> replacements, IReadOnlyList<uint> outputSlots)
 		{
 			this.replacements = replacements;
+			this.outputSlots = outputSlots;
 			sourceSlotLookup = replacements.ToDictionary(replacement => replacement.SourceSlotId);
 			targetSlotLookup = replacements.ToDictionary(replacement => replacement.TargetSlotId);
 		}
@@ -689,8 +829,8 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 		{
 			if (sourceSlotLookup.TryGetValue(sourceSlotId, out var replacement))
 			{
-				materialIndex = replacement.SourceMaterialIndex;
-				materialSlotId = replacement.SourceSlotId;
+				materialIndex = replacement.TargetMaterialIndex;
+				materialSlotId = replacement.TargetSlotId;
 				return true;
 			}
 
@@ -702,15 +842,11 @@ public sealed class UnitMeshRetargeter : IUnitMeshRetargeter
 		public bool TryReplaceTargetBinding(uint targetSlotId, out MaterialSlotReplacement replacement)
 			=> targetSlotLookup.TryGetValue(targetSlotId, out replacement!);
 
+		public IReadOnlyList<MaterialSlotReplacement> Replacements => replacements;
+
 		public IReadOnlyList<uint> BuildMaterialSlotIds(IReadOnlyList<uint> existingSlots)
 		{
-			var slots = existingSlots.ToArray();
-			for (var i = 0; i < replacements.Count && i < slots.Length; i++)
-			{
-				slots[i] = replacements[i].SourceSlotId;
-			}
-
-			return slots;
+			return outputSlots;
 		}
 	}
 }

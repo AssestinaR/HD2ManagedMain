@@ -90,6 +90,30 @@ public sealed class UnitMeshAdaptationPlannerTests
 	}
 
 	[Fact]
+	public void BuildPlan_WithMaterialPropagation_PreservesTargetSlotAndUsesSourceMaterial()
+	{
+		var targetTocData = BuildMinimalUnitTocData();
+		var sourceTocData = BuildMinimalUnitTocData();
+		WriteMinimalUnitMaterialSlot(sourceTocData, 456);
+		WriteUInt32(sourceTocData, 0x340 + 4, 456);
+		WriteUInt64(sourceTocData, 0x340 + 8, 0xbbbbbbbbbbbbbbbbul);
+		var target = CreatePatchUnitMesh(targetTocData, BuildMinimalGpuData());
+		var source = CreatePatchUnitMesh(sourceTocData, BuildReplacementGpuData());
+		var archive = CreateArchiveUnitMesh(target.Model, target.Payload.TocData, target.Payload.GpuResourceData);
+		var planner = new UnitMeshAdaptationPlanner(new UnitMeshReplacementStrategy(allowExperimentalFallback: true), new UnitMeshMinifier(), new UnitMeshRetargeter(allowExperimentalLayoutFallback: true, propagateSourceMaterials: true), new UnitMeshWriter());
+
+		var plan = planner.BuildPlan(source, archive);
+
+		Assert.True(plan.CanWrite, plan.Reason);
+		Assert.NotNull(plan.EditedModel);
+		var mesh = Assert.Single(plan.EditedModel!.RawMeshData);
+		Assert.Equal(123u, Assert.Single(mesh.Sections).MaterialSlotId);
+		var binding = Assert.Single(plan.EditedModel.Materials);
+		Assert.Equal(123u, binding.SectionId);
+		Assert.Equal(0xbbbbbbbbbbbbbbbbul, binding.MaterialId);
+	}
+
+	[Fact]
 	public void BuildPlan_MissingSourceMeshFilter_Throws()
 	{
 		var target = CreatePatchUnitMesh(BuildMinimalUnitTocData(), BuildMinimalGpuData());
@@ -143,7 +167,10 @@ public sealed class UnitMeshAdaptationPlannerTests
 	private static UnitMeshModel CreateModel(UnitRawMeshData rawMesh, uint componentFormat = 1)
 		=> CreateModel([rawMesh], componentFormat);
 
-	private static UnitMeshModel CreateModel(UnitRawMeshData[] rawMeshes, uint componentFormat, Func<int, bool>? isCullingBody = null)
+	private static UnitMeshModel CreateModel(UnitRawMeshData rawMesh, UnitMaterialBinding[] materials)
+		=> CreateModel([rawMesh], componentFormat: 1, materials: materials);
+
+	private static UnitMeshModel CreateModel(UnitRawMeshData[] rawMeshes, uint componentFormat, Func<int, bool>? isCullingBody = null, UnitMaterialBinding[]? materials = null)
 	{
 		var streamIndexes = rawMeshes.Select(mesh => mesh.StreamIndex).Distinct().ToArray();
 		var streams = streamIndexes.Select(index => CreateStream((int)index, componentFormat)).ToArray();
@@ -176,7 +203,7 @@ public sealed class UnitMeshAdaptationPlannerTests
 			Array.Empty<UnitBoneInfo>(),
 			streams,
 			meshes,
-			Array.Empty<UnitMaterialBinding>(),
+			materials ?? Array.Empty<UnitMaterialBinding>(),
 			rawMeshes.Select(mesh => new UnitRawMeshSummary(mesh.MeshInfoIndex, mesh.MeshId, mesh.LodIndex, mesh.StreamIndex, (uint)mesh.Vertices.Count, (uint)(mesh.Triangles.Count * 3), (uint)mesh.Sections.Count, (uint)mesh.Sections.Count, true, true)).ToArray(),
 			rawMeshes);
 	}
@@ -308,6 +335,24 @@ public sealed class UnitMeshAdaptationPlannerTests
 		const int stream = 0x80 + 0x20;
 		WriteUInt32(data, stream + 12, 1);
 		return data;
+	}
+
+	private static void WriteMinimalUnitMaterialSlot(byte[] data, uint materialSlotId)
+	{
+		var meshCursor = 0x260 + 0x20 + 40;
+		meshCursor += 4; // mesh id
+		meshCursor += 4; // transform index
+		meshCursor += 4; // lod index
+		meshCursor += 4; // stream index
+		meshCursor += 4; // unknown
+		meshCursor += 4; // unknown
+		meshCursor += 40;
+		meshCursor += 4; // material count
+		meshCursor += 4; // material offset
+		meshCursor += 8; // unknown
+		meshCursor += 4; // section count
+		meshCursor += 4; // sections offset
+		WriteUInt32(data, meshCursor, materialSlotId);
 	}
 
 	private static byte[] BuildMinimalGpuData()

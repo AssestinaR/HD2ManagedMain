@@ -60,6 +60,7 @@ public sealed class PatchArchiveDryWriterTests
 			Assert.Equal(plan.Entries[0].GpuResourceOffset, ReadUInt64(plan.TocFileData, 136));
 			Assert.Equal((uint)editedTocPayload.Length, ReadUInt32(plan.TocFileData, 160));
 			Assert.Equal((uint)editedGpuPayload.Length, ReadUInt32(plan.TocFileData, 168));
+			Assert.True(plan.TocFileData.Length >= plan.Entries.Count * 256);
 		}
 		finally
 		{
@@ -130,12 +131,81 @@ public sealed class PatchArchiveDryWriterTests
 
 			Assert.Single(plan.Entries);
 			Assert.Equal(secondKey, plan.Entries[0].AssetKey);
-			Assert.Equal(0u, plan.Entries[0].EntryIndex);
+			Assert.Equal(1u, plan.Entries[0].EntryIndex);
 			Assert.Equal(1u, ReadUInt32(plan.TocFileData, 8));
 			Assert.Equal(1ul, ReadUInt64(plan.TocFileData, 88));
 			Assert.Equal(secondKey.FileId, ReadUInt64(plan.TocFileData, 104));
 			Assert.Equal(secondKey.TypeId, ReadUInt64(plan.TocFileData, 112));
-			Assert.Equal(0u, ReadUInt32(plan.TocFileData, 180));
+			Assert.Equal(1u, ReadUInt32(plan.TocFileData, 180));
+			Assert.True(plan.TocFileData.Length >= plan.Entries.Count * 256);
+		}
+		finally
+		{
+			try { Directory.Delete(tmp, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task BuildWritePlanAsync_AdditionalEntries_RebuildsTypeTableAndSidecarOffsets()
+	{
+		var tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(tmp);
+		var patchPath = Path.Combine(tmp, "9ba626afa44a3aa3.patch_0");
+
+		try
+		{
+			var unitKey = new AssetKey(0xe0a48d0be9a7453f, 0x1111111111111111);
+			var materialKey = new AssetKey(0xeac0b497876adedf, 0x2222222222222222);
+			var textureKey = new AssetKey(0xcd4238c6a0c69e32, 0x3333333333333333);
+			var unitTocPayload = new byte[] { 1, 2, 3 };
+			var unitGpuPayload = new byte[] { 4, 5 };
+			var materialTocPayload = new byte[] { 10, 11, 12, 13 };
+			var textureTocPayload = new byte[] { 20, 21 };
+			var textureStreamPayload = new byte[] { 30, 31, 32 };
+			var textureGpuPayload = new byte[] { 40, 41, 42, 43, 44 };
+			var patchBytes = BuildStandardHeaderPatch(
+				patchPath,
+				new[] { unitKey },
+				new[] { unitTocPayload },
+				new[] { unitGpuPayload },
+				out _,
+				out var gpuBytes);
+			await File.WriteAllBytesAsync(patchPath, patchBytes);
+			await File.WriteAllBytesAsync(patchPath + ".gpu_resources", gpuBytes);
+			await File.WriteAllBytesAsync(patchPath + ".stream", new byte[] { 99 });
+
+			var additionalEntries = new[]
+			{
+				new PatchArchiveAdditionalEntry(materialKey, materialTocPayload, Array.Empty<byte>(), Array.Empty<byte>()),
+				new PatchArchiveAdditionalEntry(textureKey, textureTocPayload, textureStreamPayload, textureGpuPayload)
+			};
+			var writer = new PatchArchiveDryWriter(new PatchTocScanner(), new PatchEntryPayloadReader());
+
+			var plan = await writer.BuildWritePlanAsync(patchPath, Array.Empty<PatchUnitMeshEditResult>(), additionalEntries: additionalEntries);
+
+			Assert.Equal(3, plan.Entries.Count);
+			Assert.Equal(3u, ReadUInt32(plan.TocFileData, 4));
+			Assert.Equal(3u, ReadUInt32(plan.TocFileData, 8));
+			Assert.Equal(unitKey.TypeId, ReadUInt64(plan.TocFileData, 80));
+			Assert.Equal(1ul, ReadUInt64(plan.TocFileData, 88));
+			Assert.Equal(textureKey.TypeId, ReadUInt64(plan.TocFileData, 112));
+			Assert.Equal(1ul, ReadUInt64(plan.TocFileData, 120));
+			Assert.Equal(materialKey.TypeId, ReadUInt64(plan.TocFileData, 144));
+			Assert.Equal(1ul, ReadUInt64(plan.TocFileData, 152));
+			Assert.Equal(textureKey, plan.Entries[1].AssetKey);
+			Assert.Equal(materialKey, plan.Entries[2].AssetKey);
+			Assert.Equal(1u, plan.Entries[0].EntryIndex);
+			Assert.Equal(2u, plan.Entries[1].EntryIndex);
+			Assert.Equal(3u, plan.Entries[2].EntryIndex);
+			var materialEntry = plan.Entries.Single(entry => entry.AssetKey == materialKey);
+			var textureEntry = plan.Entries.Single(entry => entry.AssetKey == textureKey);
+			Assert.Equal(materialTocPayload, ReadSlice(plan.TocFileData, materialEntry.TocDataOffset, materialEntry.TocDataSize));
+			Assert.Equal(textureTocPayload, ReadSlice(plan.TocFileData, textureEntry.TocDataOffset, textureEntry.TocDataSize));
+			Assert.Equal(64ul, textureEntry.StreamOffset);
+			Assert.Equal(textureStreamPayload, ReadSlice(plan.StreamFileData, textureEntry.StreamOffset, textureEntry.StreamSize));
+			Assert.Equal(64ul, textureEntry.GpuResourceOffset);
+			Assert.Equal(textureGpuPayload, ReadSlice(plan.GpuResourceFileData, textureEntry.GpuResourceOffset, textureEntry.GpuResourceSize));
+			Assert.True(plan.TocFileData.Length >= plan.Entries.Count * 256);
 		}
 		finally
 		{

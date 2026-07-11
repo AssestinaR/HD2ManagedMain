@@ -11,19 +11,130 @@ public sealed class UnitMeshWriter : IUnitMeshWriter
 
 	public UnitMeshWriteResult Write(UnitMeshModel model, ReadOnlySpan<byte> originalTocData, ReadOnlySpan<byte> originalCompositeTocData = default)
 	{
-		var tocData = originalTocData.ToArray();
+		var (tocData, writableModel) = PrepareTocForExpandedMetadata(model, originalTocData);
 		var meshTocData = tocData;
 		byte[]? compositeTocData = null;
-		if (model.StreamInfoOffset == UnsupportedOffset && !originalCompositeTocData.IsEmpty)
+		if (writableModel.StreamInfoOffset == UnsupportedOffset && !originalCompositeTocData.IsEmpty)
 		{
 			compositeTocData = originalCompositeTocData.ToArray();
 			meshTocData = compositeTocData;
 		}
 
-		WriteMeshMaterialSlots(meshTocData, model.Meshes);
-		WriteMaterialBindings(tocData, model);
-		var gpuData = BuildGpuData(model, meshTocData);
+		WriteMeshMaterialSlots(meshTocData, writableModel.Meshes);
+		WriteMaterialBindings(tocData, writableModel);
+		var gpuData = BuildGpuData(writableModel, meshTocData);
 		return new UnitMeshWriteResult(tocData, gpuData, compositeTocData, compositeTocData is null ? null : gpuData);
+	}
+
+	private static (byte[] TocData, UnitMeshModel Model) PrepareTocForExpandedMetadata(UnitMeshModel model, ReadOnlySpan<byte> originalTocData)
+	{
+		if (model.StreamInfoOffset == UnsupportedOffset)
+		{
+			return (originalTocData.ToArray(), model);
+		}
+
+		var tocData = originalTocData.ToArray().ToList();
+		var updatedMeshes = new List<UnitMeshInfo>(model.Meshes.Count);
+		foreach (var mesh in model.Meshes)
+		{
+			var rawMesh = model.RawMeshData.FirstOrDefault(raw => raw.MeshInfoIndex == mesh.Index);
+			var meshOffset = checked((int)mesh.Offset);
+			var originalMaterialCount = checked((int)ReadUInt32(tocData.ToArray(), meshOffset + 104));
+			var originalSectionCount = checked((int)ReadUInt32(tocData.ToArray(), meshOffset + 120));
+			var wantsExpansion = mesh.MaterialSlotIds.Count > originalMaterialCount || mesh.Sections.Count > originalSectionCount;
+			if (wantsExpansion)
+			{
+				// MeshInfo records embed their slot and section tables; append a complete replacement record
+				// and redirect only the documented mesh-info table entry.
+				var replacementOffset = tocData.Count;
+				EnsureWritableRange(tocData.ToArray(), meshOffset, 128, $"mesh {mesh.Index} record header");
+				tocData.AddRange(tocData.Skip(meshOffset).Take(128));
+				var materialOffset = replacementOffset + 128;
+				for (var i = 0; i < mesh.MaterialSlotIds.Count; i++)
+				{
+					AppendUInt32(tocData, mesh.MaterialSlotIds[i]);
+				}
+
+				var sectionsOffset = tocData.Count;
+				for (var i = 0; i < mesh.Sections.Count; i++)
+				{
+					AppendUInt32(tocData, mesh.Sections[i].MaterialIndex);
+					AppendUInt32(tocData, mesh.Sections[i].VertexOffset);
+					AppendUInt32(tocData, mesh.Sections[i].NumVertices);
+					AppendUInt32(tocData, mesh.Sections[i].IndexOffset);
+					AppendUInt32(tocData, mesh.Sections[i].NumIndices);
+					AppendUInt32(tocData, mesh.Sections[i].GroupIndex);
+				}
+
+				var writableTocData = tocData.ToArray();
+				WriteUInt32(writableTocData, replacementOffset + 104, checked((uint)mesh.MaterialSlotIds.Count));
+				WriteUInt32(writableTocData, replacementOffset + 108, 128);
+				WriteUInt32(writableTocData, replacementOffset + 120, checked((uint)mesh.Sections.Count));
+				WriteUInt32(writableTocData, replacementOffset + 124, checked((uint)(sectionsOffset - replacementOffset)));
+				WriteUInt32(writableTocData, checked((int)model.MeshInfoOffset + 4 + mesh.Index * 4), checked((uint)(replacementOffset - model.MeshInfoOffset)));
+				tocData = writableTocData.ToList();
+				updatedMeshes.Add(mesh with
+				{
+					Offset = checked((uint)replacementOffset),
+					NumMaterials = checked((uint)mesh.MaterialSlotIds.Count),
+					MaterialOffset = checked((uint)materialOffset),
+					NumSections = checked((uint)mesh.Sections.Count),
+					SectionsOffset = checked((uint)sectionsOffset),
+					Sections = mesh.Sections.Select((section, index) => section with { Offset = checked((uint)(sectionsOffset + index * 24)) }).ToArray()
+				});
+				continue;
+			}
+
+			updatedMeshes.Add(mesh);
+		}
+
+		var materialsOffset = model.MaterialsOffset;
+		if (model.MaterialsOffset != UnsupportedOffset && model.Materials.Count > 0)
+		{
+			var writableTocData = tocData.ToArray();
+			var originalBindingCount = checked((int)ReadUInt32(writableTocData, checked((int)materialsOffset)));
+			if (model.Materials.Count > originalBindingCount)
+			{
+				materialsOffset = checked((uint)tocData.Count);
+				tocData.AddRange(BuildMaterialBindingPayload(model.Materials));
+				writableTocData = tocData.ToArray();
+				WriteUInt32(writableTocData, 0x70, materialsOffset);
+				tocData = writableTocData.ToList();
+			}
+		}
+
+		if (model.EndingOffset != UnsupportedOffset)
+		{
+			var writableTocData = tocData.ToArray();
+			WriteUInt32(writableTocData, 0x60, checked((uint)tocData.Count));
+			tocData = writableTocData.ToList();
+		}
+
+		return (tocData.ToArray(), model with
+		{
+			MaterialsOffset = materialsOffset,
+			Meshes = updatedMeshes
+		});
+	}
+
+	private static void AppendUInt32(List<byte> data, uint value)
+	{
+		data.Add((byte)value);
+		data.Add((byte)(value >> 8));
+		data.Add((byte)(value >> 16));
+		data.Add((byte)(value >> 24));
+	}
+
+	private static byte[] BuildMaterialBindingPayload(IReadOnlyList<UnitMaterialBinding> materials)
+	{
+		var payload = new byte[checked(4 + materials.Count * 12)];
+		WriteUInt32(payload, 0, checked((uint)materials.Count));
+		for (var i = 0; i < materials.Count; i++)
+		{
+			WriteUInt32(payload, 4 + i * 4, materials[i].SectionId);
+			WriteUInt64(payload, 4 + materials.Count * 4 + i * 8, materials[i].MaterialId);
+		}
+		return payload;
 	}
 
 	private static byte[] BuildGpuData(UnitMeshModel model, byte[] tocData)

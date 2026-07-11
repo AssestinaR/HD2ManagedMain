@@ -19,6 +19,7 @@ public sealed class PatchArchiveBatchPlanner : IPatchArchiveBatchPlanner
 	public async ValueTask<PatchArchiveBatchPlan> BuildBatchPlanAsync(
 		IReadOnlyCollection<string> patchTocFilePaths,
 		Func<PatchTocEntry, CancellationToken, ValueTask<PatchUnitMeshEditResult?>> editFactory,
+		Func<string, IReadOnlyCollection<PatchUnitMeshEditResult>, CancellationToken, ValueTask<IReadOnlyCollection<PatchArchiveAdditionalEntry>>>? additionalEntryFactory = null,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(patchTocFilePaths);
@@ -66,7 +67,10 @@ public sealed class PatchArchiveBatchPlanner : IPatchArchiveBatchPlanner
 				}
 			}
 
-			var writePlan = await dryWriter.BuildWritePlanAsync(patchTocFilePath, edits, cancellationToken: cancellationToken).ConfigureAwait(false);
+			var additionalEntries = additionalEntryFactory is null
+				? Array.Empty<PatchArchiveAdditionalEntry>()
+				: await additionalEntryFactory(patchTocFilePath, edits, cancellationToken).ConfigureAwait(false);
+			var writePlan = await dryWriter.BuildWritePlanAsync(patchTocFilePath, edits, additionalEntries: additionalEntries, cancellationToken: cancellationToken).ConfigureAwait(false);
 			patchPlans.Add(new PatchArchiveBatchPatchPlan(patchTocFilePath, writePlan, edits));
 		}
 

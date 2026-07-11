@@ -222,7 +222,7 @@ public sealed class UnitMeshReaderTests
 	}
 
 	[Fact]
-	public void Retarget_WriteReadRoundTrip_ReplacesTargetMaterialBindingWithSourceBinding()
+	public void Retarget_WriteReadRoundTrip_PreservesTargetSlotAndUsesSourceMaterial()
 	{
 		var targetTocData = BuildMinimalUnitTocData();
 		var sourceTocData = BuildMinimalUnitTocData();
@@ -255,15 +255,250 @@ public sealed class UnitMeshReaderTests
 		var reparsed = reader.Read(written.TocData, written.GpuData);
 
 		var mesh = Assert.Single(reparsed.Meshes);
-		Assert.Equal([456u], mesh.MaterialSlotIds);
-		Assert.Equal(456u, mesh.Sections[0].MaterialSlotId);
+		Assert.Equal([123u], mesh.MaterialSlotIds);
+		Assert.Equal(123u, mesh.Sections[0].MaterialSlotId);
 
 		var material = Assert.Single(reparsed.Materials);
-		Assert.Equal(456u, material.SectionId);
+		Assert.Equal(123u, material.SectionId);
 		Assert.Equal(0x0102030405060708ul, material.MaterialId);
 
 		var rawMeshData = Assert.Single(reparsed.RawMeshData);
-		Assert.Equal(456u, rawMeshData.Sections[0].MaterialSlotId);
+		Assert.Equal(123u, rawMeshData.Sections[0].MaterialSlotId);
+	}
+
+	[Fact]
+	public void Retarget_SourceMaterialNotAllowed_FallsBackToTargetMaterial()
+	{
+		var targetTocData = BuildMinimalUnitTocData();
+		var sourceTocData = BuildMinimalUnitTocData();
+		var meshCursor = 0x260 + 0x20 + 40;
+		meshCursor += 4; // mesh id
+		meshCursor += 4; // transform index
+		meshCursor += 4; // lod index
+		meshCursor += 4; // stream index
+		meshCursor += 4; // unknown
+		meshCursor += 4; // unknown
+		meshCursor += 40;
+		meshCursor += 4; // material count
+		meshCursor += 4; // material offset
+		meshCursor += 8; // unknown
+		meshCursor += 4; // section count
+		meshCursor += 4; // sections offset
+		WriteUInt32(sourceTocData, meshCursor, 456);
+		WriteUInt32(sourceTocData, 0x340 + 4, 456);
+		WriteUInt64(sourceTocData, 0x340 + 8, 0x0102030405060708ul);
+		var reader = new UnitMeshReader();
+		var retargeter = new UnitMeshRetargeter(propagateSourceMaterials: true, allowedSourceMaterialIds: new HashSet<ulong>());
+
+		var targetModel = reader.Read(targetTocData, BuildMinimalGpuData());
+		var sourceModel = reader.Read(sourceTocData, BuildReplacementGpuData());
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+
+		var material = Assert.Single(retargeted.Materials);
+		Assert.Equal(123u, material.SectionId);
+		Assert.Equal(0x8877665544332211ul, material.MaterialId);
+		Assert.Equal(123u, Assert.Single(retargeted.RawMeshData).Sections[0].MaterialSlotId);
+	}
+
+	[Fact]
+	public void Retarget_DuplicateSourceBindingsWithSameMaterial_UsesSourceMaterial()
+	{
+		var targetModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		var sourceModel = targetModel with
+		{
+			Meshes = [targetModel.Meshes[0] with { MaterialSlotIds = [700u] }],
+			Materials = [new UnitMaterialBinding(700u, 0x3333333333333333ul), new UnitMaterialBinding(700u, 0x3333333333333333ul)],
+			RawMeshData = [targetModel.RawMeshData[0] with { Sections = [targetModel.RawMeshData[0].Sections[0] with { MaterialSlotId = 700u }] }]
+		};
+		var retargeter = new UnitMeshRetargeter(allowExperimentalLayoutFallback: true, propagateSourceMaterials: true);
+
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal(0x3333333333333333ul, Assert.Single(retargeted.Materials).MaterialId);
+	}
+
+	[Fact]
+	public void Retarget_PartiallyAllowedSourceMaterials_PropagatesAllowedSlotsOnly()
+	{
+		var targetModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		targetModel = targetModel with
+		{
+			Meshes = [targetModel.Meshes[0] with { MaterialSlotIds = [123u, 456u] }],
+			Materials = [new UnitMaterialBinding(123u, 0x1111111111111111ul), new UnitMaterialBinding(456u, 0x2222222222222222ul)],
+			RawMeshData = [targetModel.RawMeshData[0] with
+			{
+				Sections =
+				[
+					targetModel.RawMeshData[0].Sections[0] with { MaterialIndex = 0, MaterialSlotId = 123u },
+					targetModel.RawMeshData[0].Sections[0] with { MaterialIndex = 1, MaterialSlotId = 456u }
+				]
+			}]
+		};
+		var sourceModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		sourceModel = sourceModel with
+		{
+			Meshes = [sourceModel.Meshes[0] with { MaterialSlotIds = [700u, 800u] }],
+			Materials = [new UnitMaterialBinding(700u, 0x3333333333333333ul), new UnitMaterialBinding(800u, 0x4444444444444444ul)],
+			RawMeshData = [sourceModel.RawMeshData[0] with
+			{
+				Sections =
+				[
+					sourceModel.RawMeshData[0].Sections[0] with { MaterialIndex = 0, MaterialSlotId = 700u },
+					sourceModel.RawMeshData[0].Sections[0] with { MaterialIndex = 1, MaterialSlotId = 800u }
+				]
+			}]
+		};
+		var retargeter = new UnitMeshRetargeter(
+			allowExperimentalLayoutFallback: true,
+			propagateSourceMaterials: true,
+			allowedSourceMaterialIds: new HashSet<ulong> { 0x3333333333333333ul });
+
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal([123u, 456u], Assert.Single(retargeted.Meshes).MaterialSlotIds);
+		Assert.Equal([new UnitMaterialBinding(123u, 0x3333333333333333ul), new UnitMaterialBinding(456u, 0x2222222222222222ul)], retargeted.Materials);
+		Assert.Equal(123u, retargeted.RawMeshData[0].Sections[0].MaterialSlotId);
+		Assert.Equal(456u, retargeted.RawMeshData[0].Sections[1].MaterialSlotId);
+		Assert.Equal(0u, retargeted.RawMeshData[0].Sections[0].MaterialIndex);
+		Assert.Equal(1u, retargeted.RawMeshData[0].Sections[1].MaterialIndex);
+	}
+
+	[Fact]
+	public void Retarget_TargetBindingOrderDiffersFromMeshSlots_UsesTargetMeshMaterialIndex()
+	{
+		var targetModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		targetModel = targetModel with
+		{
+			Meshes = [targetModel.Meshes[0] with { MaterialSlotIds = [123u, 456u] }],
+			Materials = [new UnitMaterialBinding(456u, 0x2222222222222222ul), new UnitMaterialBinding(123u, 0x1111111111111111ul)],
+			RawMeshData = [targetModel.RawMeshData[0] with
+			{
+				Sections = [targetModel.RawMeshData[0].Sections[0] with { MaterialIndex = 1, MaterialSlotId = 456u }]
+			}]
+		};
+		var sourceModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		sourceModel = sourceModel with
+		{
+			Meshes = [sourceModel.Meshes[0] with { MaterialSlotIds = [700u, 800u] }],
+			Materials = [new UnitMaterialBinding(700u, 0x3333333333333333ul), new UnitMaterialBinding(800u, 0x4444444444444444ul)],
+			RawMeshData = [sourceModel.RawMeshData[0] with
+			{
+				Sections = [sourceModel.RawMeshData[0].Sections[0] with { MaterialIndex = 1, MaterialSlotId = 800u }]
+			}]
+		};
+		var retargeter = new UnitMeshRetargeter(
+			allowExperimentalLayoutFallback: true,
+			propagateSourceMaterials: true,
+			allowedSourceMaterialIds: new HashSet<ulong>());
+
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+
+		var section = Assert.Single(retargeted.RawMeshData[0].Sections);
+		Assert.Equal(456u, section.MaterialSlotId);
+		Assert.Equal(1u, section.MaterialIndex);
+		Assert.Equal([new UnitMaterialBinding(456u, 0x2222222222222222ul), new UnitMaterialBinding(123u, 0x1111111111111111ul)], retargeted.Materials);
+	}
+
+	[Fact]
+	public void Retarget_SourceHasMoreSlotsThanCopiedSections_UsesCopiedSectionMaterial()
+	{
+		var targetModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		targetModel = targetModel with
+		{
+			Meshes = [targetModel.Meshes[0] with { MaterialSlotIds = [123u] }],
+			Materials = [new UnitMaterialBinding(123u, 0x1111111111111111ul)],
+			RawMeshData = [targetModel.RawMeshData[0] with
+			{
+				Sections = [targetModel.RawMeshData[0].Sections[0] with { MaterialIndex = 0, MaterialSlotId = 123u }]
+			}]
+		};
+		var sourceModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		sourceModel = sourceModel with
+		{
+			Meshes = [sourceModel.Meshes[0] with { MaterialSlotIds = [700u, 800u] }],
+			Materials = [new UnitMaterialBinding(700u, 0x3333333333333333ul), new UnitMaterialBinding(800u, 0x4444444444444444ul)],
+			RawMeshData = [sourceModel.RawMeshData[0] with
+			{
+				Sections =
+				[
+					sourceModel.RawMeshData[0].Sections[0] with { MaterialIndex = 1, MaterialSlotId = 800u },
+					sourceModel.RawMeshData[0].Sections[0] with { MaterialIndex = 0, MaterialSlotId = 700u }
+				]
+			}]
+		};
+		var retargeter = new UnitMeshRetargeter(allowExperimentalLayoutFallback: true, propagateSourceMaterials: true);
+
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal([123u], Assert.Single(retargeted.Meshes).MaterialSlotIds);
+		Assert.Equal([new UnitMaterialBinding(123u, 0x4444444444444444ul)], retargeted.Materials);
+		var section = Assert.Single(retargeted.RawMeshData[0].Sections);
+		Assert.Equal(123u, section.MaterialSlotId);
+		Assert.Equal(0u, section.MaterialIndex);
+	}
+
+	[Fact]
+	public void Retarget_SourceRawSectionSlotNotInMeshInfo_StillUsesSourceMaterial()
+	{
+		var targetModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		var sourceModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		sourceModel = sourceModel with
+		{
+			Meshes = [sourceModel.Meshes[0] with { MaterialSlotIds = [] }],
+			Materials = [new UnitMaterialBinding(700u, 0x3333333333333333ul)],
+			RawMeshData = [sourceModel.RawMeshData[0] with
+			{
+				Sections = [sourceModel.RawMeshData[0].Sections[0] with { MaterialIndex = 0, MaterialSlotId = 700u }]
+			}]
+		};
+		var retargeter = new UnitMeshRetargeter(allowExperimentalLayoutFallback: true, propagateSourceMaterials: true);
+
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal([123u], Assert.Single(retargeted.Meshes).MaterialSlotIds);
+		Assert.Equal([new UnitMaterialBinding(123u, 0x3333333333333333ul)], retargeted.Materials);
+		Assert.Equal(123u, Assert.Single(retargeted.RawMeshData).Sections[0].MaterialSlotId);
+	}
+
+	[Fact]
+	public void Retarget_SourceSlotCollisionStillUsesTargetBindingSlot()
+	{
+		var targetModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		targetModel = targetModel with { Materials = [new UnitMaterialBinding(123, 0x1111111111111111ul), new UnitMaterialBinding(456, 0x2222222222222222ul)] };
+		var sourceModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		sourceModel = sourceModel with
+		{
+			Meshes = [sourceModel.Meshes[0] with { MaterialSlotIds = [456] }],
+			Materials = [new UnitMaterialBinding(456, 0x3333333333333333ul)],
+			RawMeshData = [sourceModel.RawMeshData[0] with { Sections = [sourceModel.RawMeshData[0].Sections[0] with { MaterialSlotId = 456 }] }]
+		};
+		var retargeter = new UnitMeshRetargeter(allowExperimentalLayoutFallback: true, propagateSourceMaterials: true);
+
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal([123u], Assert.Single(retargeted.Meshes).MaterialSlotIds);
+		Assert.Equal(123u, Assert.Single(retargeted.RawMeshData).Sections[0].MaterialSlotId);
+		Assert.Equal([new UnitMaterialBinding(123, 0x3333333333333333ul), new UnitMaterialBinding(456, 0x2222222222222222ul)], retargeted.Materials);
+	}
+
+	[Fact]
+	public void Retarget_DuplicateSourceMaterialBindings_FallsBackToTargetBinding()
+	{
+		var targetModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		var sourceModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		sourceModel = sourceModel with
+		{
+			Meshes = [sourceModel.Meshes[0] with { MaterialSlotIds = [456] }],
+			Materials = [new UnitMaterialBinding(456, 0x3333333333333333ul), new UnitMaterialBinding(456, 0x4444444444444444ul)],
+			RawMeshData = [sourceModel.RawMeshData[0] with { Sections = [sourceModel.RawMeshData[0].Sections[0] with { MaterialSlotId = 456 }] }]
+		};
+		var retargeter = new UnitMeshRetargeter(allowExperimentalLayoutFallback: true, propagateSourceMaterials: true);
+
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal([123u], Assert.Single(retargeted.Meshes).MaterialSlotIds);
+		Assert.Equal(123u, Assert.Single(retargeted.RawMeshData).Sections[0].MaterialSlotId);
+		Assert.Equal([new UnitMaterialBinding(123, 0x8877665544332211ul)], retargeted.Materials);
 	}
 
 	[Fact]
@@ -294,6 +529,41 @@ public sealed class UnitMeshReaderTests
 
 		Assert.Equal(0, retargeted.RawMeshData[0].Vertices[0].Data[12]);
 		Assert.Equal(2, retargeted.RawMeshData[0].Vertices[1].Data[12]);
+	}
+
+	[Fact]
+	public void Retarget_BoneInfoUsesSectionMaterialIndexWhenSectionsAreReordered()
+	{
+		var targetModel = CreateMultiSectionBoneRetargetModel(
+			[[0u], [1u, 0u, 2u]],
+			[0u, 0u]);
+		var targetSections = targetModel.RawMeshData[0].Sections.ToArray();
+		targetModel = targetModel with
+		{
+			RawMeshData = [targetModel.RawMeshData[0] with
+			{
+				Sections = [targetSections[1], targetSections[0]],
+				Triangles = [.. targetSections[1].Triangles, .. targetSections[0].Triangles]
+			}]
+		};
+		var sourceModel = CreateMultiSectionBoneRetargetModel(
+			[[2u], [2u, 0u, 1u]],
+			[0u, 0u]);
+		var sourceSections = sourceModel.RawMeshData[0].Sections.ToArray();
+		sourceModel = sourceModel with
+		{
+			RawMeshData = [sourceModel.RawMeshData[0] with
+			{
+				Sections = [sourceSections[1], sourceSections[0]],
+				Triangles = [.. sourceSections[1].Triangles, .. sourceSections[0].Triangles]
+			}]
+		};
+		var retargeter = new UnitMeshRetargeter();
+
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal(2, retargeted.RawMeshData[0].Vertices[1].Data[12]);
+		Assert.Equal(0, retargeted.RawMeshData[0].Vertices[0].Data[12]);
 	}
 
 	[Fact]
@@ -367,6 +637,168 @@ public sealed class UnitMeshReaderTests
 
 		var rawMeshData = Assert.Single(reparsed.RawMeshData);
 		Assert.Equal(new UnitTriangleIndices(0, 1, 2), Assert.Single(rawMeshData.Triangles));
+	}
+
+	[Fact]
+	public void Write_ReadRoundTrip_ExpandsMeshMetadataAndMaterialBindings()
+	{
+		var tocData = BuildMinimalUnitTocData();
+		var gpuData = BuildMinimalGpuData();
+		var reader = new UnitMeshReader();
+		var writer = new UnitMeshWriter();
+
+		var model = reader.Read(tocData, gpuData);
+		var rawMesh = Assert.Single(model.RawMeshData);
+		var secondSection = rawMesh.Sections[0] with
+		{
+			MaterialIndex = 1,
+			MaterialSlotId = 456u,
+			Triangles = [new UnitTriangleIndices(0, 2, 1)]
+		};
+		var expandedRawMesh = rawMesh with
+		{
+			Sections = [rawMesh.Sections[0], secondSection],
+			Triangles = rawMesh.Sections[0].Triangles.Concat(secondSection.Triangles).ToArray()
+		};
+		var expandedMesh = model.Meshes[0] with
+		{
+			MaterialSlotIds = [123u, 456u],
+			Sections =
+			[
+				model.Meshes[0].Sections[0],
+				model.Meshes[0].Sections[0] with { MaterialIndex = 1, IndexOffset = 3, NumIndices = 3 }
+			]
+		};
+		var expandedModel = model with
+		{
+			Meshes = [expandedMesh],
+			Materials = [new UnitMaterialBinding(123u, 0x8877665544332211ul), new UnitMaterialBinding(456u, 0x1122334455667788ul)],
+			RawMeshData = [expandedRawMesh]
+		};
+
+		var written = writer.Write(expandedModel, tocData);
+		var reparsed = reader.Read(written.TocData, written.GpuData);
+
+		var mesh = Assert.Single(reparsed.Meshes);
+		Assert.Equal([123u, 456u], mesh.MaterialSlotIds);
+		Assert.Equal(2u, mesh.NumSections);
+		Assert.Equal([0u, 1u], mesh.Sections.Select(section => section.MaterialIndex));
+		Assert.Equal(
+			[new UnitMaterialBinding(123u, 0x8877665544332211ul), new UnitMaterialBinding(456u, 0x1122334455667788ul)],
+			reparsed.Materials);
+		var reparsedRawMesh = Assert.Single(reparsed.RawMeshData);
+		Assert.Equal(2, reparsedRawMesh.Sections.Count);
+		Assert.Equal(456u, reparsedRawMesh.Sections[1].MaterialSlotId);
+		Assert.Equal(new UnitTriangleIndices(0, 2, 1), Assert.Single(reparsedRawMesh.Sections[1].Triangles));
+	}
+
+	[Fact]
+	public void Retarget_WriteReadRoundTrip_ExpandsMaterialSectionsWhenExplicitlyEnabled()
+	{
+		var targetTocData = BuildMinimalUnitTocData();
+		var sourceTocData = BuildMinimalUnitTocData();
+		var reader = new UnitMeshReader();
+		var writer = new UnitMeshWriter();
+		var targetModel = reader.Read(targetTocData, BuildMinimalGpuData());
+		var sourceModel = reader.Read(sourceTocData, BuildMinimalGpuData());
+		var sourceRawMesh = Assert.Single(sourceModel.RawMeshData);
+		var sourceSecondSection = sourceRawMesh.Sections[0] with
+		{
+			MaterialIndex = 1,
+			MaterialSlotId = 789u,
+			Triangles = [new UnitTriangleIndices(0, 2, 1)]
+		};
+		sourceModel = sourceModel with
+		{
+			Meshes = [sourceModel.Meshes[0] with
+			{
+				MaterialSlotIds = [456u, 789u],
+				Sections =
+				[
+					sourceModel.Meshes[0].Sections[0] with { MaterialSlotId = 456u },
+					sourceModel.Meshes[0].Sections[0] with { MaterialIndex = 1, MaterialSlotId = 789u, IndexOffset = 3, NumIndices = 3 }
+				]
+			}],
+			Materials = [new UnitMaterialBinding(456u, 0x0102030405060708ul), new UnitMaterialBinding(789u, 0x1020304050607080ul)],
+			RawMeshData = [sourceRawMesh with
+			{
+				Sections = [sourceRawMesh.Sections[0] with { MaterialSlotId = 456u }, sourceSecondSection],
+				Triangles = [.. sourceRawMesh.Sections[0].Triangles, .. sourceSecondSection.Triangles]
+			}]
+		};
+		var retargeter = new UnitMeshRetargeter(
+			allowExperimentalLayoutFallback: true,
+			propagateSourceMaterials: true,
+			allowMaterialSectionExpansion: true);
+
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+		var written = writer.Write(retargeted, targetTocData);
+		var reparsed = reader.Read(written.TocData, written.GpuData);
+
+		var mesh = Assert.Single(reparsed.Meshes);
+		Assert.Equal([123u, 0u], mesh.MaterialSlotIds);
+		Assert.Equal([0u, 1u], mesh.Sections.Select(section => section.MaterialIndex));
+		Assert.Equal(
+			[new UnitMaterialBinding(123u, 0x0102030405060708ul), new UnitMaterialBinding(0u, 0x1020304050607080ul)],
+			reparsed.Materials);
+		var rawMesh = Assert.Single(reparsed.RawMeshData);
+		Assert.Equal(2, rawMesh.Sections.Count);
+		Assert.Equal(0u, rawMesh.Sections[1].MaterialSlotId);
+		Assert.Equal(new UnitTriangleIndices(0, 2, 1), Assert.Single(rawMesh.Sections[1].Triangles));
+	}
+
+	[Fact]
+	public void Retarget_MaterialExpansion_PreservesConflictingTargetSlotAndAppendsSourceBinding()
+	{
+		var targetModel = CreateLargeFallbackRetargetModel(4, [0u, 1u, 2u]);
+		targetModel = targetModel with
+		{
+			Meshes = [targetModel.Meshes[0] with
+			{
+				MaterialSlotIds = [123u, 456u],
+				Sections =
+				[
+					targetModel.Meshes[0].Sections[0] with { MaterialIndex = 0, MaterialSlotId = 123u },
+					targetModel.Meshes[0].Sections[0] with { MaterialIndex = 1, MaterialSlotId = 456u }
+				]
+			}],
+			Materials = [new UnitMaterialBinding(123u, 0x1111111111111111ul), new UnitMaterialBinding(456u, 0x2222222222222222ul)],
+			RawMeshData = [targetModel.RawMeshData[0] with
+			{
+				Sections =
+				[
+					targetModel.RawMeshData[0].Sections[0] with { MaterialIndex = 0, MaterialSlotId = 123u },
+					targetModel.RawMeshData[0].Sections[0] with { MaterialIndex = 1, MaterialSlotId = 456u }
+				]
+			}]
+		};
+		var sourceModel = targetModel with
+		{
+			Meshes = [targetModel.Meshes[0] with { MaterialSlotIds = [700u, 800u] }],
+			Materials = [new UnitMaterialBinding(700u, 0x1111111111111111ul), new UnitMaterialBinding(800u, 0x3333333333333333ul)],
+			RawMeshData = [targetModel.RawMeshData[0] with
+			{
+				Sections =
+				[
+					targetModel.RawMeshData[0].Sections[0] with { MaterialIndex = 0, MaterialSlotId = 700u },
+					targetModel.RawMeshData[0].Sections[0] with { MaterialIndex = 1, MaterialSlotId = 800u }
+				]
+			}]
+		};
+		var retargeter = new UnitMeshRetargeter(
+			allowExperimentalLayoutFallback: true,
+			propagateSourceMaterials: true,
+			allowMaterialSectionExpansion: true);
+
+		var retargeted = retargeter.ReplaceRawMesh(targetModel, 0, sourceModel, 0);
+
+		var mesh = Assert.Single(retargeted.Meshes);
+		Assert.Equal([123u, 456u, 0u], mesh.MaterialSlotIds);
+		Assert.Equal([0u, 2u], mesh.Sections.Select(section => section.MaterialIndex));
+		Assert.Equal(
+			[new UnitMaterialBinding(123u, 0x1111111111111111ul), new UnitMaterialBinding(456u, 0x2222222222222222ul), new UnitMaterialBinding(0u, 0x3333333333333333ul)],
+			retargeted.Materials);
+		Assert.Equal([123u, 0u], retargeted.RawMeshData[0].Sections.Select(section => section.MaterialSlotId));
 	}
 
 	[Fact]

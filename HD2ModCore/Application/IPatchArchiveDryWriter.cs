@@ -10,5 +10,6 @@ public interface IPatchArchiveDryWriter
 		string patchTocFilePath,
 		IReadOnlyCollection<PatchUnitMeshEditResult> unitMeshEdits,
 		IReadOnlyCollection<PatchTocEntry>? removedEntries = null,
+		IReadOnlyCollection<PatchArchiveAdditionalEntry>? additionalEntries = null,
 		CancellationToken cancellationToken = default);
 }
