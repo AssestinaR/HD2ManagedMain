@@ -23,6 +23,28 @@ public sealed class StrictUnitMeshTransferTests
 	}
 
 	[Fact]
+	public void Transfer_RemapsBonesByRealIndexOnly_IgnoresTransformHashDifferences()
+	{
+		// This test verifies that bone remapping uses realIndex directly, not TransformHash.
+		// TransformHash matching was removed because it causes cross-version bone misalignment.
+		// In cross-version patch migration, old patch hashes don't match current game hashes.
+		var source = CreateModel(materialSlot: 10, materialId: 0x100, realBoneIndices: new uint[] { 1 }, fakeBoneIndices: new uint[] { 0 }, boneValue: 0) with
+		{
+			TransformNameHashes = new uint[] { 0xaaaa, 0x1234 }
+		};
+		var target = CreateModel(materialSlot: 20, materialId: 0x200, realBoneIndices: new uint[] { 0, 1 }, fakeBoneIndices: new uint[] { 0, 1 }, boneValue: 0) with
+		{
+			TransformNameHashes = new uint[] { 0xbbbb, 0xcccc }
+		};
+
+		var result = new StrictUnitMeshTransfer().Transfer(target, 0, source, 0);
+
+		var vertex = Assert.Single(result.Model.RawMeshData).Vertices[0];
+		// Should map to target bone index 1 (realIndex 1 matches), regardless of hash mismatch
+		Assert.Equal((byte)1, vertex.Data[0]);
+	}
+
+	[Fact]
 	public void Transfer_RejectsDifferentVertexLayouts()
 	{
 		var source = CreateModel(10, 0x100, new uint[] { 42 }, new uint[] { 0 }, 0);

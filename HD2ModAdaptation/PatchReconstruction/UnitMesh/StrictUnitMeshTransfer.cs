@@ -328,7 +328,12 @@ public sealed class StrictUnitMeshTransfer
 		var pairs = sourceRawMesh.Sections.Zip(replacementSections, (sourceSection, replacementSection) =>
 		{
 			var sourceRemap = FindBoneRemap(sourceBoneInfo, sourceSection.MaterialIndex);
-			var targetRemap = FindBoneRemap(targetBoneInfo, replacementSection.MaterialIndex);
+			// Use the target section's MaterialIndex based on section position, not the converted MaterialIndex
+			var targetSectionIndex = sourceRawMesh.Sections.ToList().IndexOf(sourceSection);
+			var targetSection = targetSectionIndex < targetRawMesh.Sections.Count 
+				? targetRawMesh.Sections[targetSectionIndex] 
+				: targetRawMesh.Sections.FirstOrDefault();
+			var targetRemap = targetSection is not null ? FindBoneRemap(targetBoneInfo, targetSection.MaterialIndex) : null;
 			return sourceRemap is null || targetRemap is null
 				? null
 				: new BoneRemapPair(sourceSection.MaterialIndex, sourceRemap, targetRemap);
@@ -359,11 +364,11 @@ public sealed class StrictUnitMeshTransfer
 		return vertexIndexMap.Select(pair => sourceRawMesh.Vertices[(int)pair.Key]).Select((vertex, index) => CopyVertex(vertex, (uint)index, targetStream, boneMap, sourceMaterialByVertex[index], convertToTargetLayout)).ToArray();
 	}
 
-	private static UnitRawVertexRecord CopyVertex(UnitRawVertexRecord sourceVertex, uint outputIndex, UnitStreamInfo targetStream, BoneIndexMap? boneMap, uint materialIndex, bool convertToTargetLayout)
+	private static UnitRawVertexRecord CopyVertex(UnitRawVertexRecord sourceVertex, uint outputIndex, UnitStreamInfo targetStream, BoneIndexMap? boneMap, VertexMaterialIndex materialIndex, bool convertToTargetLayout)
 	{
 		var data = convertToTargetLayout
-			? BuildTargetVertexData(sourceVertex, targetStream, boneMap, materialIndex)
-			: RewriteBoneIndices(sourceVertex, targetStream, boneMap, materialIndex);
+			? BuildTargetVertexData(sourceVertex, targetStream, boneMap, materialIndex.SourceMaterialIndex)
+			: RewriteBoneIndices(sourceVertex, targetStream, boneMap, materialIndex.SourceMaterialIndex);
 		var components = DecodeVertexComponents(targetStream, data);
 		return new UnitRawVertexRecord(outputIndex, data, components);
 	}
@@ -542,33 +547,34 @@ public sealed class StrictUnitMeshTransfer
 		data[offset + 3] = (byte)(value >> 24);
 	}
 
-	private static IReadOnlyList<uint> BuildSourceMaterialByVertex(UnitRawMeshData sourceRawMesh, IReadOnlyList<UnitRawMeshSectionData> replacementSections, int vertexCount)
+	private static IReadOnlyList<VertexMaterialIndex> BuildSourceMaterialByVertex(UnitRawMeshData sourceRawMesh, IReadOnlyList<UnitRawMeshSectionData> replacementSections, int vertexCount)
 	{
-		var materials = Enumerable.Repeat(uint.MaxValue, vertexCount).ToArray();
+		var materials = Enumerable.Repeat(new VertexMaterialIndex(uint.MaxValue, uint.MaxValue), vertexCount).ToArray();
 		for (var sectionIndex = 0; sectionIndex < replacementSections.Count; sectionIndex++)
 		{
-			var materialIndex = sectionIndex < sourceRawMesh.Sections.Count ? sourceRawMesh.Sections[sectionIndex].MaterialIndex : replacementSections[sectionIndex].MaterialIndex;
+			var sourceMaterialIndex = sectionIndex < sourceRawMesh.Sections.Count ? sourceRawMesh.Sections[sectionIndex].MaterialIndex : replacementSections[sectionIndex].MaterialIndex;
+			var targetMaterialIndex = replacementSections[sectionIndex].MaterialIndex;
 			foreach (var triangle in replacementSections[sectionIndex].Triangles)
 			{
-				AssignMaterial(materials, triangle.A, materialIndex);
-				AssignMaterial(materials, triangle.B, materialIndex);
-				AssignMaterial(materials, triangle.C, materialIndex);
+				AssignMaterial(materials, triangle.A, sourceMaterialIndex, targetMaterialIndex);
+				AssignMaterial(materials, triangle.B, sourceMaterialIndex, targetMaterialIndex);
+				AssignMaterial(materials, triangle.C, sourceMaterialIndex, targetMaterialIndex);
 			}
 		}
 		return materials;
 	}
 
-	private static void AssignMaterial(uint[] materials, uint vertexIndex, uint materialIndex)
+	private static void AssignMaterial(VertexMaterialIndex[] materials, uint vertexIndex, uint sourceMaterialIndex, uint targetMaterialIndex)
 	{
 		if (vertexIndex >= materials.Length)
 		{
 			throw new InvalidDataException("Cannot transfer Unit mesh because a triangle references a missing source vertex.");
 		}
-		if (materials[(int)vertexIndex] != uint.MaxValue && materials[(int)vertexIndex] != materialIndex)
+		if (materials[(int)vertexIndex].SourceMaterialIndex != uint.MaxValue && materials[(int)vertexIndex].SourceMaterialIndex != sourceMaterialIndex)
 		{
 			throw new InvalidDataException("Cannot transfer Unit mesh because one vertex belongs to multiple bone-remap material sections.");
 		}
-		materials[(int)vertexIndex] = materialIndex;
+		materials[(int)vertexIndex] = new VertexMaterialIndex(sourceMaterialIndex, targetMaterialIndex);
 	}
 
 	private static byte[] RewriteBoneIndices(UnitRawVertexRecord vertex, UnitStreamInfo stream, BoneIndexMap? boneMap, uint materialIndex)
@@ -799,6 +805,8 @@ public sealed class StrictUnitMeshTransfer
 	}
 
 	private sealed record BoneRemapPair(uint SourceMaterialIndex, UnitBoneRemap SourceRemap, UnitBoneRemap TargetRemap);
+
+	private readonly record struct VertexMaterialIndex(uint SourceMaterialIndex, uint TargetMaterialIndex);
 }
 
 public sealed record UnitMeshTransferResult(UnitMeshModel Model, IReadOnlyCollection<ulong> ReplacementMaterialIds);

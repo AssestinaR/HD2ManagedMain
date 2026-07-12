@@ -28,6 +28,7 @@ public sealed class PatchArchiveWriter
 		IReadOnlyCollection<PatchTocEntry>? removedEntries = null,
 		bool overwriteExisting = false,
 		bool preserveOriginalStream = true,
+		byte[]? headerTemplateTocData = null,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchTocPath);
@@ -38,6 +39,8 @@ public sealed class PatchArchiveWriter
 		if (string.Equals(Path.GetDirectoryName(source), output, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Output directory must differ from the source patch directory.");
 		var originalToc = await File.ReadAllBytesAsync(source, cancellationToken).ConfigureAwait(false);
 		var layout = ResolveLayout(originalToc);
+		var headerTemplate = headerTemplateTocData is { Length: > 0 } ? headerTemplateTocData : originalToc;
+		var headerLayout = ResolveLayout(headerTemplate);
 		var entries = await scanner.ScanEntriesAsync(source, cancellationToken).ConfigureAwait(false);
 		var editMap = BuildEditMap(source, edits);
 		var compositeMap = BuildCompositeMap(source, edits);
@@ -45,8 +48,9 @@ public sealed class PatchArchiveWriter
 		var additions = additionalEntries ?? Array.Empty<PatchArchiveAdditionalEntry>();
 		var retained = entries.Where(entry => !removed.Contains(Key(entry))).ToArray();
 		ValidateAdditions(retained, additions);
-		var sources = OrderSources(originalToc, layout, BuildSources(source, retained, additions));
-		var header = BuildHeader(originalToc, layout, sources.Select(item => item.Entry).ToArray());
+		var useTemplateTypesOnly = !ReferenceEquals(headerTemplate, originalToc);
+		var sources = OrderSources(headerTemplate, headerLayout, BuildSources(source, retained, additions));
+		var header = BuildHeader(headerTemplate, headerLayout, sources.Select(item => item.Entry).ToArray(), useTemplateTypesOnly);
 		var entryOffset = header.Length;
 		using var toc = new MemoryStream(Math.Max(originalToc.Length, entryOffset + sources.Count * EntrySize));
 		toc.Write(header); toc.SetLength(entryOffset + sources.Count * EntrySize); toc.Position = toc.Length;
@@ -103,11 +107,14 @@ public sealed class PatchArchiveWriter
 		return sources.Select((source, index) => (source, index)).OrderBy(item => order[item.source.Entry.AssetKey.TypeId]).ThenBy(item => item.index).Select(item => item.source).ToList();
 	}
 
-	private static byte[] BuildHeader(byte[] original, Layout layout, IReadOnlyList<PatchTocEntry> entries)
+	private static byte[] BuildHeader(byte[] original, Layout layout, IReadOnlyList<PatchTocEntry> entries, bool useEntryTypesOnly = false)
 	{
-		var originalTypes = ReadTypes(original, layout); var known = originalTypes.Select(record => record.TypeId).ToHashSet();
-		var extra = entries.Select(entry => entry.AssetKey.TypeId).Where(id => !known.Contains(id)).Distinct().OrderBy(id => id).Select(id => NewType(id, originalTypes.FirstOrDefault().Data)).ToArray();
-		var types = originalTypes.Concat(extra).ToArray(); var result = new byte[layout.TypeOffset + types.Length * TypeSize];
+		var originalTypes = ReadTypes(original, layout); var template = originalTypes.FirstOrDefault().Data;
+		var entryTypeIds = entries.Select(entry => entry.AssetKey.TypeId).Distinct().ToHashSet();
+		var baseTypes = useEntryTypesOnly ? originalTypes.Where(record => entryTypeIds.Contains(record.TypeId)).ToArray() : originalTypes.ToArray();
+		var known = baseTypes.Select(record => record.TypeId).ToHashSet();
+		var extra = entries.Select(entry => entry.AssetKey.TypeId).Where(id => !known.Contains(id)).Distinct().OrderBy(id => id).Select(id => NewType(id, template)).ToArray();
+		var types = baseTypes.Concat(extra).ToArray(); var result = new byte[layout.TypeOffset + types.Length * TypeSize];
 		original.AsSpan(0, layout.TypeOffset).CopyTo(result); Write32(result, 4, (uint)types.Length); Write32(result, 8, (uint)entries.Count);
 		for (var i = 0; i < types.Length; i++) types[i].Data.CopyTo(result.AsSpan(layout.TypeOffset + i * TypeSize));
 		var counts = entries.GroupBy(entry => entry.AssetKey.TypeId).ToDictionary(group => group.Key, group => (ulong)group.Count());

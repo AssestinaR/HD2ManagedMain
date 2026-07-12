@@ -32,6 +32,7 @@ public sealed class UnitMeshReader
 		var bonesRef = ReadUInt64(tocData, 8);
 		var compositeRef = ReadUInt64(tocData, 16);
 		var version = ReadUInt32(tocData, 0x2c);
+		var transformInfoOffset = ReadUInt32(tocData, 0x34);
 		var customizationInfoOffset = ReadUInt32(tocData, 0x50);
 		var boneInfoOffset = ReadUInt32(tocData, 0x58);
 		var streamInfoOffset = ReadUInt32(tocData, 0x5c);
@@ -79,6 +80,9 @@ public sealed class UnitMeshReader
 		var rawMeshes = BuildRawMeshSummaries(meshes, streams, effectiveGpuData.Length);
 		var rawMeshData = ReadRawMeshData(meshes, streams, effectiveGpuData);
 		meshes = ApplySdkMeshClassification(meshes, rawMeshData, materials);
+		var transformNameHashes = transformInfoOffset == UnsupportedOffset
+			? Array.Empty<uint>()
+			: ReadTransformNameHashes(tocData, transformInfoOffset);
 
 		return new UnitMeshModel(
 			version,
@@ -97,7 +101,26 @@ public sealed class UnitMeshReader
 			meshes,
 			materials,
 			rawMeshes,
-			rawMeshData);
+			rawMeshData)
+		{
+			TransformNameHashes = transformNameHashes
+		};
+	}
+
+	private static IReadOnlyList<uint> ReadTransformNameHashes(ReadOnlySpan<byte> data, uint transformInfoOffset)
+	{
+		EnsureRange(data, transformInfoOffset, 16, "transform info header");
+		var count = checked((int)ReadUInt32(data, transformInfoOffset));
+		var hashesOffset = checked((int)transformInfoOffset + 16 + count * 64 + count * 64 + count * 4);
+		EnsureRange(data, hashesOffset, checked(count * 4), "transform name hashes");
+
+		var hashes = new uint[count];
+		for (var i = 0; i < hashes.Length; i++)
+		{
+			hashes[i] = ReadUInt32(data, hashesOffset + i * 4);
+		}
+
+		return hashes;
 	}
 
 	private static IReadOnlyList<UnitBoneInfo> ReadBoneInfos(ReadOnlySpan<byte> data, uint boneInfoOffset, uint endOffset)

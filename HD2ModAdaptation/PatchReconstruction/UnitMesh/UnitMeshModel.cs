@@ -19,7 +19,10 @@ public sealed record UnitMeshModel(
 	IReadOnlyList<UnitMeshInfo> Meshes,
 	IReadOnlyList<UnitMaterialBinding> Materials,
 	IReadOnlyList<UnitRawMeshSummary> RawMeshes,
-	IReadOnlyList<UnitRawMeshData> RawMeshData);
+	IReadOnlyList<UnitRawMeshData> RawMeshData)
+{
+	public IReadOnlyList<uint> TransformNameHashes { get; init; } = Array.Empty<uint>();
+}
 
 public sealed record UnitCustomizationInfo(
 	string BodyType,

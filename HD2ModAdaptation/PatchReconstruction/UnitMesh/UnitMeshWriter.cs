@@ -106,6 +106,7 @@ public sealed class UnitMeshWriter
 			var writableTocData = tocData.ToArray();
 			WriteUInt32(writableTocData, 0x60, checked((uint)tocData.Count));
 			tocData = writableTocData.ToList();
+			AppendUInt64(tocData, checked((ulong)model.Meshes.Count));
 		}
 
 		return (tocData.ToArray(), model with
@@ -121,6 +122,12 @@ public sealed class UnitMeshWriter
 		data.Add((byte)(value >> 8));
 		data.Add((byte)(value >> 16));
 		data.Add((byte)(value >> 24));
+	}
+
+	private static void AppendUInt64(List<byte> data, ulong value)
+	{
+		AppendUInt32(data, unchecked((uint)value));
+		AppendUInt32(data, unchecked((uint)(value >> 32)));
 	}
 
 	private static byte[] BuildMaterialBindingPayload(IReadOnlyList<UnitMaterialBinding> materials)

@@ -49,6 +49,33 @@ public sealed class PatchArchiveWriterTests : IDisposable
 		await Assert.ThrowsAsync<InvalidOperationException>(async () => await new PatchArchiveWriter().WriteAsync(sourcePath, root, Array.Empty<PatchUnitMeshEditResult>()));
 	}
 
+	[Fact]
+	public async Task WriteAsync_RemovesSourceAndAddsFreshEntryWithSameAssetKey()
+	{
+		var sourceDirectory = Path.Combine(root, "source-same-key");
+		var outputDirectory = Path.Combine(root, "output-same-key");
+		Directory.CreateDirectory(sourceDirectory);
+		var sourcePath = Path.Combine(sourceDirectory, "unit.patch");
+		await File.WriteAllBytesAsync(sourcePath, CreateLegacyToc(new byte[] { 1, 2, 3 }));
+		var scanner = new PatchTocScanner();
+		var entry = (await scanner.ScanEntriesAsync(sourcePath)).Single();
+		var addition = new PatchArchiveAdditionalEntry(entry.AssetKey, new byte[] { 7, 7, 7, 7 }, Array.Empty<byte>(), new byte[] { 8, 8 }, entry.Unknown1, entry.Unknown2, entry.Unknown3, entry.Unknown4);
+
+		var result = await new PatchArchiveWriter().WriteAsync(
+			sourcePath,
+			outputDirectory,
+			Array.Empty<PatchUnitMeshEditResult>(),
+			new[] { addition },
+			new[] { entry },
+			preserveOriginalStream: false);
+
+		var rebuilt = (await scanner.ScanEntriesAsync(result.TocFilePath)).Single();
+		Assert.Equal(entry.AssetKey, rebuilt.AssetKey);
+		var payload = await new PatchEntryPayloadReader().ReadPayloadAsync(rebuilt);
+		Assert.Equal(new byte[] { 7, 7, 7, 7 }, payload.TocData);
+		Assert.Equal(new byte[] { 8, 8 }, payload.GpuResourceData);
+	}
+
 	public void Dispose()
 	{
 		if (Directory.Exists(root)) Directory.Delete(root, true);
