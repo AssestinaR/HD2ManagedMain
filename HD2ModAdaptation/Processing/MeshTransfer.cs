@@ -7,10 +7,12 @@ namespace HD2ModAdaptation.Processing;
 public sealed class MeshTransfer
 {
 	private readonly bool allowTargetLayoutConversion;
+	private readonly bool modelOnly;
 
-	public MeshTransfer(bool allowTargetLayoutConversion = false)
+	public MeshTransfer(bool allowTargetLayoutConversion = false, bool modelOnly = false)
 	{
 		this.allowTargetLayoutConversion = allowTargetLayoutConversion;
+		this.modelOnly = modelOnly;
 	}
 
 	/// <summary>
@@ -36,13 +38,19 @@ public sealed class MeshTransfer
 			ValidateStreamCompatibility(targetStream, sourceStream);
 		}
 
-		// 2. Create material mapper
-		var materialMapper = MaterialMapper.Create(targetModel, targetRawMesh, sourceModel, sourceRawMesh, sourceMeshInfoIndex);
+		// 2. Create material mapper (skip in model-only mode)
+		MaterialMapper? materialMapper = null;
+		if (!modelOnly)
+		{
+			materialMapper = MaterialMapper.Create(targetModel, targetRawMesh, sourceModel, sourceRawMesh, sourceMeshInfoIndex);
+		}
 
 		// 3. Build vertex index map and copy sections
 		var vertexLimit = GetVertexLimit(targetStream, sourceRawMesh);
 		var vertexIndexMap = BuildVertexIndexMap(sourceRawMesh.Sections, vertexLimit, sourceRawMesh.Vertices.Count);
-		var replacementSections = TransformSections(sourceRawMesh, vertexIndexMap, materialMapper);
+		var replacementSections = modelOnly 
+			? TransformSectionsPreserveMaterialIndex(sourceRawMesh, vertexIndexMap)
+			: TransformSections(sourceRawMesh, vertexIndexMap, materialMapper!);
 
 		// 4. Create bone remapper
 		var boneRemapper = CreateBoneRemapper(targetModel, targetRawMesh, sourceModel, sourceRawMesh, replacementSections);
@@ -58,8 +66,14 @@ public sealed class MeshTransfer
 			Vertices = vertices
 		};
 
-		var updatedMeshes = ApplyMaterialMapping(targetModel.Meshes, targetMeshInfoIndex, materialMapper);
-		var updatedMaterials = ApplyMaterialBindings(targetModel.Materials, materialMapper);
+		// 7. Apply material changes (skip in model-only mode)
+		var updatedMeshes = modelOnly 
+			? targetModel.Meshes
+			: ApplyMaterialMapping(targetModel.Meshes, targetMeshInfoIndex, materialMapper!);
+		
+		var updatedMaterials = modelOnly
+			? targetModel.Materials
+			: ApplyMaterialBindings(targetModel.Materials, materialMapper!);
 
 		var updatedModel = targetModel with
 		{
@@ -69,11 +83,13 @@ public sealed class MeshTransfer
 				mesh.MeshInfoIndex == targetMeshInfoIndex ? updatedRawMesh : mesh).ToArray()
 		};
 
-		var replacementMaterialIds = materialMapper.Replacements
-			.Select(r => r.SourceMaterialId)
-			.Distinct()
-			.OrderBy(id => id)
-			.ToArray();
+		var replacementMaterialIds = modelOnly
+			? Array.Empty<ulong>()
+			: materialMapper!.Replacements
+				.Select(r => r.SourceMaterialId)
+				.Distinct()
+				.OrderBy(id => id)
+				.ToArray();
 
 		return new MeshTransferResult(updatedModel, replacementMaterialIds);
 	}
@@ -216,6 +232,22 @@ public sealed class MeshTransfer
 				.ToArray();
 
 			return new UnitRawMeshSectionData(targetMaterialIndex, targetSlotId, triangles);
+		}).ToArray();
+	}
+
+	private static IReadOnlyList<UnitRawMeshSectionData> TransformSectionsPreserveMaterialIndex(
+		UnitRawMeshData sourceRawMesh,
+		IReadOnlyDictionary<uint, uint> vertexIndexMap)
+	{
+		return sourceRawMesh.Sections.Select(section =>
+		{
+			// Preserve original material index and slot ID (model-only mode)
+			var triangles = section.Triangles
+				.Where(t => vertexIndexMap.ContainsKey(t.A) && vertexIndexMap.ContainsKey(t.B) && vertexIndexMap.ContainsKey(t.C))
+				.Select(t => new UnitTriangleIndices(vertexIndexMap[t.A], vertexIndexMap[t.B], vertexIndexMap[t.C]))
+				.ToArray();
+
+			return new UnitRawMeshSectionData(section.MaterialIndex, section.MaterialSlotId, triangles);
 		}).ToArray();
 	}
 
