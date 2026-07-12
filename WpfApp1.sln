@@ -23,6 +23,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PelvisUnitDiff", "_diagnost
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CorePatchRebuild", "_diagnostics\CorePatchRebuild\CorePatchRebuild.csproj", "{4D27F6E1-B828-467E-BB2B-FC0AA1FA461E}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MaterialDetectorTest", "_diagnostics\MaterialDetectorTest\MaterialDetectorTest.csproj", "{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -141,6 +143,18 @@ Global
 		{4D27F6E1-B828-467E-BB2B-FC0AA1FA461E}.Release|x64.Build.0 = Release|Any CPU
 		{4D27F6E1-B828-467E-BB2B-FC0AA1FA461E}.Release|x86.ActiveCfg = Release|Any CPU
 		{4D27F6E1-B828-467E-BB2B-FC0AA1FA461E}.Release|x86.Build.0 = Release|Any CPU
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}.Debug|x64.Build.0 = Debug|Any CPU
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}.Debug|x86.Build.0 = Debug|Any CPU
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}.Release|x64.ActiveCfg = Release|Any CPU
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}.Release|x64.Build.0 = Release|Any CPU
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}.Release|x86.ActiveCfg = Release|Any CPU
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -149,6 +163,7 @@ Global
 		{A39BAF4C-6AE2-480B-8F66-752A8A9EB3D3} = {EB6EC0AB-FCF8-FEAA-B24D-0B24342EF864}
 		{484302F7-F4EF-45DA-8F71-B8FFF05E848D} = {EB6EC0AB-FCF8-FEAA-B24D-0B24342EF864}
 		{4D27F6E1-B828-467E-BB2B-FC0AA1FA461E} = {EB6EC0AB-FCF8-FEAA-B24D-0B24342EF864}
+		{565D1FEB-1355-4C52-A2D6-D12470FCE8F6} = {EB6EC0AB-FCF8-FEAA-B24D-0B24342EF864}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {8C670C55-B186-46A1-A42F-250763E09C18}
