@@ -1,6 +1,9 @@
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh;
 
 // Purpose: Transfers one explicitly selected source mesh into a compatible target Unit shell with source material propagation.
+// NOTE: This class is deprecated. Use Processing.MeshTransfer instead, which uses extracted BoneRemapper and MaterialMapper components.
+// This class is kept for reference and as a backup fallback.
+[Obsolete("Use HD2ModAdaptation.Processing.MeshTransfer instead. This class is kept for reference only.")]
 public sealed class StrictUnitMeshTransfer
 {
 	private readonly bool allowTargetLayoutConversion;
