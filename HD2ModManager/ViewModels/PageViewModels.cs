@@ -66,6 +66,7 @@ namespace HD2ModManager.ViewModels
         private readonly ProfileService _profiles;
         private readonly ModLibraryService _library;
         private readonly ImportQueueService _queue;
+        private readonly BackgroundTaskService _backgroundTasks;
         private readonly ApplyStatusService _applyStatus;
         private readonly StoragePaths _paths;
 
@@ -97,20 +98,34 @@ namespace HD2ModManager.ViewModels
         public string AssetMetadataStatus { get => _assetMetadataStatus; private set => SetField(ref _assetMetadataStatus, value); }
         public bool IsBuildingAssetIndex { get => _isBuildingAssetIndex; private set => SetField(ref _isBuildingAssetIndex, value); }
         public ObservableCollection<string> ApplyDetails { get; } = new();
+        public ReadOnlyObservableCollection<BackgroundTaskItem> BackgroundTasks => _backgroundTasks.Tasks;
+        public IEnumerable<BackgroundTaskItem> RunningTasks => BackgroundTasks.Where(t => t.Status == BackgroundTaskStatus.Running);
+        public IEnumerable<BackgroundTaskItem> QueuedTasks => BackgroundTasks.Where(t => t.Status == BackgroundTaskStatus.Queued);
+        public IEnumerable<BackgroundTaskItem> RecentCompletedTasks => BackgroundTasks.Where(t => t.Status == BackgroundTaskStatus.Completed).OrderByDescending(t => t.FinishedAt).Take(4);
+        public int MoreQueuedTaskCount => Math.Max(0, _backgroundTasks.CountQueued - 4);
+        public int MoreCompletedTaskCount => Math.Max(0, _backgroundTasks.CountCompleted - 4);
+        public string BackgroundTaskSummary => $"进行中 {_backgroundTasks.CountRunning} · 排队中 {_backgroundTasks.CountQueued} · 已完成 {_backgroundTasks.CountCompleted} · 失败 {_backgroundTasks.CountFailed}";
+        public bool HasRunningTasks => RunningTasks.Any();
+        public bool HasQueuedTasks => QueuedTasks.Any();
+        public bool HasCompletedTasks => RecentCompletedTasks.Any();
+        public RelayCommand ShowAllTasksCommand { get; }
 
         public RelayCommand RefreshCommand { get; }
         public RelayCommand BuildAssetIndexCommand { get; }
 
-        public StatusPageViewModel(ProfileService profiles, ModLibraryService library, ImportQueueService queue, ApplyStatusService applyStatus)
+        public StatusPageViewModel(ProfileService profiles, ModLibraryService library, ImportQueueService queue, ApplyStatusService applyStatus, BackgroundTaskService backgroundTasks)
         {
             Title = "状态";
             _profiles = profiles;
             _library = library;
             _queue = queue;
+            _backgroundTasks = backgroundTasks;
             _applyStatus = applyStatus;
             _paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
             RefreshCommand = new RelayCommand(Refresh);
             BuildAssetIndexCommand = new RelayCommand(_ => BuildAssetIndex(), _ => !IsBuildingAssetIndex);
+            ShowAllTasksCommand = new RelayCommand(_ => ShowAllTasks());
+            _backgroundTasks.Changed += (_, _) => RefreshBackgroundTaskProperties();
             Refresh();
         }
 
@@ -122,6 +137,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ModCount));
             OnPropertyChanged(nameof(ProfileCount));
             OnPropertyChanged(nameof(QueueSummary));
+            RefreshBackgroundTaskProperties();
             OnPropertyChanged(nameof(ApplySummary));
             OnPropertyChanged(nameof(LastAppliedUtc));
             OnPropertyChanged(nameof(ProfileEntrySummary));
@@ -129,6 +145,34 @@ namespace HD2ModManager.ViewModels
             RefreshAssetIndexStatus();
             ApplyDetails.Clear();
             foreach (var detail in _applyStatus.Details) ApplyDetails.Add(detail);
+        }
+
+        private void RefreshBackgroundTaskProperties()
+        {
+            if (System.Windows.Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
+            {
+                _ = dispatcher.InvokeAsync(RefreshBackgroundTaskProperties);
+                return;
+            }
+            OnPropertyChanged(nameof(BackgroundTaskSummary));
+            OnPropertyChanged(nameof(RunningTasks));
+            OnPropertyChanged(nameof(QueuedTasks));
+            OnPropertyChanged(nameof(RecentCompletedTasks));
+            OnPropertyChanged(nameof(MoreQueuedTaskCount));
+            OnPropertyChanged(nameof(MoreCompletedTaskCount));
+            OnPropertyChanged(nameof(HasRunningTasks));
+            OnPropertyChanged(nameof(HasQueuedTasks));
+            OnPropertyChanged(nameof(HasCompletedTasks));
+            OnPropertyChanged(nameof(BackgroundTasks));
+        }
+
+        private void ShowAllTasks()
+        {
+            var window = new HD2ModManager.Views.BackgroundTasksWindow(_backgroundTasks)
+            {
+                Owner = System.Windows.Application.Current.MainWindow,
+            };
+            window.ShowDialog();
         }
 
         private void RefreshAssetIndexStatus()
@@ -224,6 +268,8 @@ namespace HD2ModManager.ViewModels
             }
 
             IsBuildingAssetIndex = true;
+            var backgroundTask = _backgroundTasks.Enqueue(BackgroundTaskKind.BuildAssetIndex, "建立资产索引", gameData);
+            backgroundTask.MarkRunning("正在准备资产索引");
             BuildAssetIndexCommand.RaiseCanExecuteChanged();
             RefreshCommand.RaiseCanExecuteChanged();
             AssetIndexState = "建立中";
@@ -238,6 +284,7 @@ namespace HD2ModManager.ViewModels
                 var index = CoreServices.CreateAssetArchiveIndexService(_paths);
                 var progress = new Progress<IndexBuildProgress>(p =>
                 {
+                    backgroundTask.UpdateStage($"正在索引 Archive {p.Current}/{p.Total}");
                     AssetIndexCounts = $"Archive {p.Current}/{p.Total}";
                     if (!string.IsNullOrWhiteSpace(p.CurrentArchiveId))
                     {
@@ -245,13 +292,21 @@ namespace HD2ModManager.ViewModels
                     }
                 });
 
-                await index.BuildOrRebuildAsync(gameData, archiveHashesJson, progress).ConfigureAwait(true);
+                await index.BuildOrRebuildAsync(gameData, archiveHashesJson, progress, backgroundTask.CancellationToken).ConfigureAwait(true);
                 ClearAssetAnalysisCache();
                 RefreshAssetIndexStatus();
                 AssetIndexHint = "索引已重建，并已清理旧资产分析缓存；请刷新模组库以重新生成语义资产标签。";
+                backgroundTask.MarkCompleted();
+            }
+            catch (OperationCanceledException)
+            {
+                backgroundTask.MarkCanceled();
+                AssetIndexState = "已取消";
+                AssetIndexSummary = "资产索引建立已取消。";
             }
             catch (Exception ex)
             {
+                backgroundTask.MarkFailed(ex.Message);
                 AssetIndexState = "建立失败";
                 AssetIndexSummary = ex.Message;
                 AssetIndexHint = "请检查 Game Data 路径是否指向 Helldivers 2 的 data 目录，以及 bundles.nxa / bundles.xx.nxa 是否可访问。";

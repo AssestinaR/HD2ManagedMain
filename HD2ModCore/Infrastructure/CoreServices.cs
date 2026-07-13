@@ -11,6 +11,12 @@ public static class CoreServices
 	public static IPatchTocFileCollector CreatePatchTocFileCollector() => new PatchTocFileCollector();
 	public static IPatchFileIndexBuilder CreatePatchFileIndexBuilder()
 		=> new PatchFileIndexBuilder(CreatePatchFileNameParser());
+	public static IPatchFileGroupFingerprintScanner CreatePatchFileGroupFingerprintScanner()
+		=> new PatchFileGroupFingerprintScanner(CreatePatchFileNameParser());
+	public static IPatchStorageIntegrityValidator CreatePatchStorageIntegrityValidator()
+		=> new PatchStorageIntegrityValidator(CreatePatchFileGroupFingerprintScanner());
+	public static IPatchFileGroupFingerprintStore CreatePatchFileGroupFingerprintStore(StoragePaths paths)
+		=> new FileSystemPatchFileGroupFingerprintStore(paths);
 	public static IPatchStateScanner CreatePatchStateScanner()
 		=> new PatchStateScanner(CreatePatchFileNameParser());
 	public static IPatchTocScanner CreatePatchTocScanner() => new PatchTocScanner();
@@ -79,7 +85,8 @@ public static class CoreServices
 	public static IModUnitRepairService CreateModUnitRepairService()
 		=> new ModUnitRepairService(CreatePatchFileNameParser(), CreateModUnitCompatibilityAnalyzer());
 	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths)
-		=> new LibraryDerivedDataService(CreatePatchFileIndexBuilder(), CreateModAssetAnalyzer(paths), CreateModUnitCompatibilityAnalyzer());
+		// Compatibility analysis is deliberately opt-in until its Adaptation implementation is ready.
+		=> new LibraryDerivedDataService(CreatePatchFileIndexBuilder(), CreateModAssetAnalyzer(paths), unitCompatibilityAnalyzer: null);
    public static IReplacementTargetDeriver CreateReplacementTargetDeriver(StoragePaths paths)
 		=> new ReplacementTargetDeriver(paths, CreateAssetArchiveIndexService(paths));
    public static IModCompatibilityAnalyzer CreateModCompatibilityAnalyzer(StoragePaths paths)
@@ -109,7 +116,7 @@ public static class CoreServices
 			CreateArchiveObjectTreeImporter(),
 			CreateModLibraryStore(paths));
    public static IModLibraryManager CreateModLibraryManager(StoragePaths paths)
-		=> new ModLibraryManager(paths, CreateModLibraryStore(paths));
+		=> new ModLibraryManager(paths, CreateModLibraryStore(paths), CreatePatchFileGroupFingerprintStore(paths));
    public static IModExporter CreateModExporter(StoragePaths paths)
 		=> new ModExporter(paths);
    public static IModManifestImporter CreateModManifestImporter(StoragePaths paths)

@@ -59,11 +59,13 @@ namespace HD2ModManager.Services
                 }
 
                 await EnrichImportedMetadataAsync(result, path, ct).ConfigureAwait(false);
-                await _library.RefreshDerivedDataAsync(ct).ConfigureAwait(false);
-                _onInfo?.Invoke($"Imported {result.SourceDisplayName}");
-                return _library.Snapshot.Nodes.Keys.Where(k => !before.Contains(k)).Select(k => k.Value.ToString("N"))
-                    .Where(g => _library.Get(g) != null)
+                var importedGuids = _library.Snapshot.Nodes.Values
+                    .Where(node => !before.Contains(node.Id))
+                    .Select(node => node.Id.Value.ToString("N"))
                     .ToList();
+                await _library.RefreshDerivedDataAsync(importedGuids, ct).ConfigureAwait(false);
+                _onInfo?.Invoke($"Imported {result.SourceDisplayName}");
+                return importedGuids.Where(g => _library.Get(g) != null).ToList();
             }
             catch (Exception ex)
             {

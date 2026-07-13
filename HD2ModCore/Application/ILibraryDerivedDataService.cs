@@ -9,5 +9,6 @@ public interface ILibraryDerivedDataService
 		LibrarySnapshot snapshot,
 		string modsRootDirectory,
 		string? gameDataDirectory = null,
+		IReadOnlySet<ModNodeId>? nodeIds = null,
 		CancellationToken cancellationToken = default);
 }

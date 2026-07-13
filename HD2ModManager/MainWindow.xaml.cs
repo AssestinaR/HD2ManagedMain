@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Shell;
 using HD2ModManager.Enums;
 using HD2ModManager.ViewModels;
 
@@ -21,13 +22,56 @@ namespace HD2ModManager
             public int cxLeftWidth, cxRightWidth, cyTopHeight, cyBottomHeight;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        struct POINT
+        {
+            public int x;
+            public int y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct MINMAXINFO
+        {
+            public POINT ptReserved;
+            public POINT ptMaxSize;
+            public POINT ptMaxPosition;
+            public POINT ptMinTrackSize;
+            public POINT ptMaxTrackSize;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct RECT
+        {
+            public int left;
+            public int top;
+            public int right;
+            public int bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct MONITORINFO
+        {
+            public int cbSize;
+            public RECT rcMonitor;
+            public RECT rcWork;
+            public int dwFlags;
+        }
+
         [DllImport("dwmapi.dll")]
         static extern int DwmExtendFrameIntoClientArea(IntPtr hWnd, ref MARGINS pMarInset);
 
         [DllImport("dwmapi.dll")]
         static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
+        [DllImport("user32.dll")]
+        static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
         const int DWMWA_NCRENDERING_POLICY = 2; // DWMNCRP_ENABLED
+        const int WM_GETMINMAXINFO = 0x0024;
+        const uint MONITOR_DEFAULTTONEAREST = 2;
 
         public MainWindow()
         {
@@ -80,11 +124,65 @@ namespace HD2ModManager
         private void MainWindow_SourceInitialized(object? sender, EventArgs e)
         {
             var hwnd = new WindowInteropHelper(this).Handle;
+            HwndSource.FromHwnd(hwnd)?.AddHook(WindowMessageHook);
             // 启用非客户区渲染（让DWM参与绘制，从而出现系统阴影）
             int val = 2; // DWMNCRP_ENABLED
             DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, ref val, sizeof(int));
 
+            ApplyWindowChromeMetrics(isMaximized: WindowState == WindowState.Maximized);
             ApplyDwmShadowMargins(isMaximized: WindowState == WindowState.Maximized);
+        }
+
+        // 无边框窗口的最大化尺寸由工作区明确约束，避免覆盖任务栏或超出屏幕边界。
+        private static IntPtr WindowMessageHook(
+            IntPtr hwnd,
+            int msg,
+            IntPtr wParam,
+            IntPtr lParam,
+            ref bool handled)
+        {
+            if (msg != WM_GETMINMAXINFO || lParam == IntPtr.Zero)
+            {
+                return IntPtr.Zero;
+            }
+
+            var monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            if (monitor == IntPtr.Zero)
+            {
+                return IntPtr.Zero;
+            }
+
+            var monitorInfo = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+            if (!GetMonitorInfo(monitor, ref monitorInfo))
+            {
+                return IntPtr.Zero;
+            }
+
+            var maxInfo = Marshal.PtrToStructure<MINMAXINFO>(lParam);
+            maxInfo.ptMaxPosition = new POINT
+            {
+                x = monitorInfo.rcWork.left - monitorInfo.rcMonitor.left,
+                y = monitorInfo.rcWork.top - monitorInfo.rcMonitor.top
+            };
+            maxInfo.ptMaxSize = new POINT
+            {
+                x = monitorInfo.rcWork.right - monitorInfo.rcWork.left,
+                y = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top
+            };
+            Marshal.StructureToPtr(maxInfo, lParam, fDeleteOld: false);
+            handled = true;
+            return IntPtr.Zero;
+        }
+
+        // 最大化时不保留 WindowChrome 的调整边框，避免它与系统最大化边界叠加；普通状态恢复正常的拖拽边界。
+        private void ApplyWindowChromeMetrics(bool isMaximized)
+        {
+            var chrome = WindowChrome.GetWindowChrome(this);
+            if (chrome == null) return;
+
+            chrome.ResizeBorderThickness = isMaximized
+                ? new Thickness(0)
+                : new Thickness(6);
         }
 
         // 根据最大化状态设置边距：正常时给极小边距，最大化时清零避免闪烁
@@ -106,6 +204,7 @@ namespace HD2ModManager
 
         private void MainWindow_StateChanged(object? sender, EventArgs e)
         {
+            ApplyWindowChromeMetrics(isMaximized: WindowState == WindowState.Maximized);
             ApplyDwmShadowMargins(isMaximized: WindowState == WindowState.Maximized);
         }
 

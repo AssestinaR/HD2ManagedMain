@@ -1,0 +1,39 @@
+<Window x:Class="HD2ModManager.Views.BackgroundTasksWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="后台任务" Width="720" Height="560"
+        MinWidth="560" MinHeight="360"
+        WindowStartupLocation="CenterOwner"
+        Background="#F5F6F8">
+    <Grid Margin="16">
+        <Border Style="{StaticResource CardContainer}" Padding="0">
+            <ListBox ItemsSource="{Binding Tasks}" Style="{StaticResource ModListBox}">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Border Style="{StaticResource ModListRowContainer}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="36"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Width="30" Height="30" CornerRadius="7" Background="#EEF1F6" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding KindIcon}" FontSize="18" Foreground="#1E63D6" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel Grid.Column="1" Margin="9,0,8,0" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding Stage}" Foreground="#6C7280" FontSize="12" Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding Error}" Foreground="#C43D3D" FontSize="11" TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding StatusText}" Foreground="#6C7280" VerticalAlignment="Center" Margin="8,0,4,0"/>
+                                    <Button Style="{StaticResource RowIconButton}" Content="×" ToolTip="取消任务" Tag="{Binding}" Click="OnCancelTaskClick" IsEnabled="{Binding CanCancel}" Foreground="#B3261E"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Border>
+    </Grid>
+</Window>

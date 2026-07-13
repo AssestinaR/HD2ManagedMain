@@ -17,7 +17,7 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 		_unitCompatibilityAnalyzer = unitCompatibilityAnalyzer;
 	}
 
-	public async ValueTask<DerivedLibraryData> BuildAsync(LibrarySnapshot snapshot, string modsRootDirectory, string? gameDataDirectory = null, CancellationToken cancellationToken = default)
+	public async ValueTask<DerivedLibraryData> BuildAsync(LibrarySnapshot snapshot, string modsRootDirectory, string? gameDataDirectory = null, IReadOnlySet<ModNodeId>? nodeIds = null, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(snapshot);
 		if (string.IsNullOrWhiteSpace(modsRootDirectory))
@@ -32,6 +32,10 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 		foreach (var node in snapshot.Nodes.Values)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
+			if (nodeIds is not null && !nodeIds.Contains(node.Id))
+			{
+				continue;
+			}
 			var directory = ResolveNodeDirectory(modsRootDirectory, node.RelativePath);
 			var directoryExists = Directory.Exists(directory);
 			patchIndex.FilesByNode.TryGetValue(node.Id, out var patchFiles);

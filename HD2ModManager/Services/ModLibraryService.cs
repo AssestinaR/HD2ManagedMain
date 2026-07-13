@@ -44,20 +44,77 @@ namespace HD2ModManager.Services
             RebuildIndex(buildDerivedData);
         }
 
-        public async Task RefreshDerivedDataAsync(CancellationToken cancellationToken = default)
+        public Task RefreshDerivedDataAsync(CancellationToken cancellationToken = default)
+            => RefreshDerivedDataAsync(guids: null, cancellationToken);
+
+        public async Task RefreshDerivedDataAsync(IEnumerable<string>? guids, CancellationToken cancellationToken = default)
         {
             await _derivedRefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 var snapshot = _snapshot;
-                var derivedData = await _derivedDataService.BuildAsync(snapshot, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), cancellationToken).AsTask().ConfigureAwait(false);
-                _derivedData = derivedData;
+                var nodeIds = guids is null
+                    ? null
+                    : guids.Select(ParseNodeId).Where(id => id.HasValue).Select(id => id!.Value).ToHashSet();
+                var rebuilt = await _derivedDataService.BuildAsync(snapshot, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), nodeIds, cancellationToken).AsTask().ConfigureAwait(false);
+
+                if (nodeIds is null)
+                {
+                    _derivedData = rebuilt;
+                }
+                else
+                {
+                    var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
+                    foreach (var pair in rebuilt.Nodes) nodes[pair.Key] = pair.Value;
+                    var issues = nodes.Values.SelectMany(node => node.Issues).ToList();
+                    _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues);
+                }
                 RebuildEntityIndex();
             }
             finally
             {
                 _derivedRefreshGate.Release();
             }
+        }
+
+        public async Task<int> RefreshDirtyDerivedDataAsync(CancellationToken cancellationToken = default)
+        {
+            var scanner = CoreServices.CreatePatchFileGroupFingerprintScanner();
+            var store = CoreServices.CreatePatchFileGroupFingerprintStore(_paths);
+            var previous = await store.TryLoadAsync(cancellationToken).ConfigureAwait(false);
+            var validator = CoreServices.CreatePatchStorageIntegrityValidator();
+            var reports = await validator.ValidateAndRepairAsync(
+                _snapshot,
+                _paths.ModsDirectory,
+                previous?.SupportsFileLevelMatching == true ? previous : null,
+                cancellationToken).ConfigureAwait(false);
+            var current = await scanner.ScanAsync(_snapshot, _paths.ModsDirectory, cancellationToken).ConfigureAwait(false);
+            var dirty = new HashSet<ModNodeId>();
+
+            foreach (var report in reports)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (report.Status is PatchStorageIntegrityStatus.Corrupted or PatchStorageIntegrityStatus.Missing)
+                    continue;
+
+                var currentGroups = current.TryGetValue(report.NodeId, out var groups) ? groups : Array.Empty<PatchFileGroupFingerprint>();
+                var oldGroups = previous?.Nodes.TryGetValue(report.NodeId, out var previousGroups) == true
+                    ? previousGroups : Array.Empty<PatchFileGroupFingerprint>();
+                if (report.RequiresDerivedRefresh || !HaveSameFingerprints(oldGroups, currentGroups) || _derivedData.Find(report.NodeId) is null)
+                {
+                    dirty.Add(report.NodeId);
+                }
+            }
+
+            if (dirty.Count > 0)
+            {
+                await RefreshDerivedDataAsync(
+                    dirty.Select(id => id.Value.ToString("N")),
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            await store.SaveAsync(new PatchFileGroupFingerprintManifest(2, DateTimeOffset.UtcNow, current), cancellationToken).ConfigureAwait(false);
+            return dirty.Count;
         }
 
         public void Save()
@@ -173,7 +230,7 @@ namespace HD2ModManager.Services
         {
             if (buildDerivedData)
             {
-                _derivedData = _derivedDataService.BuildAsync(_snapshot, _paths.ModsDirectory, SettingsService.GetGameDataFolder()).AsTask().GetAwaiter().GetResult();
+                _derivedData = _derivedDataService.BuildAsync(_snapshot, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), null).AsTask().GetAwaiter().GetResult();
             }
 
             RebuildEntityIndex();
@@ -220,6 +277,21 @@ namespace HD2ModManager.Services
             if (!Guid.TryParse(value, out var guid)) return false;
             nodeId = new ModNodeId(guid);
             return true;
+        }
+
+        private static ModNodeId? ParseNodeId(string? value)
+            => TryParseNodeId(value, out var nodeId) ? nodeId : null;
+
+        private static bool HaveSameFingerprints(
+            IReadOnlyList<PatchFileGroupFingerprint> left,
+            IReadOnlyList<PatchFileGroupFingerprint> right)
+        {
+            if (left.Count != right.Count) return false;
+            return left
+                .OrderBy(group => group.GroupName, StringComparer.OrdinalIgnoreCase)
+                .Zip(right.OrderBy(group => group.GroupName, StringComparer.OrdinalIgnoreCase))
+                .All(pair => string.Equals(pair.First.GroupName, pair.Second.GroupName, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(pair.First.ContentHash, pair.Second.ContentHash, StringComparison.OrdinalIgnoreCase));
         }
 
         private static LibrarySnapshot EmptySnapshot() => new(

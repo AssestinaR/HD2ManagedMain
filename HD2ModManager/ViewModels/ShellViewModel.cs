@@ -15,6 +15,7 @@ namespace HD2ModManager.ViewModels
         private readonly ProfileService _profileService;
         private readonly ModLibraryService _libraryService;
         private readonly ImportQueueService _importQueue;
+        private readonly BackgroundTaskService _backgroundTasks;
         private readonly ApplyStatusService _applyStatus;
         private readonly NotificationService _notificationService;
         private readonly TagCatalogService _tagCatalog = TagCatalogService.Instance;
@@ -79,6 +80,7 @@ namespace HD2ModManager.ViewModels
         public ModLibraryService LibraryService => _libraryService;
         public ProfileService ProfileService => _profileService;
         public ImportQueueService ImportQueue => _importQueue;
+        public BackgroundTaskService BackgroundTasks => _backgroundTasks;
         public SelectionCoordinator Selection => _selection;
         public bool HasSelection => _selection.HasSelection;
         public string SelectionSummary => _selection.Summary;
@@ -98,6 +100,7 @@ namespace HD2ModManager.ViewModels
             _libraryService = new ModLibraryService(System.IO.Path.Combine(configDir, "library.json"));
             _libraryService.Load(buildDerivedData: false);
             _importQueue = new ImportQueueService();
+            _backgroundTasks = new BackgroundTaskService();
             _applyStatus = new ApplyStatusService();
             _notificationService = new NotificationService();
             Notifications = _notificationService.Items;
@@ -126,13 +129,18 @@ namespace HD2ModManager.ViewModels
 
         private async Task RefreshLibraryDerivedDataAfterStartupAsync()
         {
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.RefreshLibrary, "刷新模组派生数据", "启动缓存");
             try
             {
-                await Task.Run(() => _libraryService.RefreshDerivedDataAsync());
+                task.MarkRunning("正在扫描模组文件");
+                var dirtyCount = await _libraryService.RefreshDirtyDerivedDataAsync();
+                task.UpdateStage($"已识别 {dirtyCount} 个需要刷新的 Mod");
+                task.MarkCompleted();
                 await System.Windows.Application.Current.Dispatcher.InvokeAsync(RefreshCurrentPage);
             }
             catch (Exception ex)
             {
+                task.MarkFailed(ex.Message);
                 await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => _notificationService.Show($"资产派生数据刷新失败：{ex.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(6)));
             }
         }
@@ -264,13 +272,17 @@ namespace HD2ModManager.ViewModels
                 ImportTaskItem? item;
                 while ((item = _importQueue.DequeueNextQueued()) != null)
                 {
+                    var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Import, $"导入 {System.IO.Path.GetFileName(item.Path)}", item.Path);
                     var import = new ImportService(_libraryService, onInfo: null, onError: err => _importQueue.MarkFailed(item, err));
                     try
                     {
-                        var created = await import.ImportPathAsync(item.Path, new System.Threading.CancellationToken());
+                        task.MarkRunning("正在解压缩");
+                        var created = await import.ImportPathAsync(item.Path, task.CancellationToken);
+                        task.UpdateStage("正在保存模组库");
                         LogService.Info($"Import created {created.Count} mods from {item.Path}");
                         _libraryService.Save();
                         _importQueue.MarkDone(item);
+                        task.MarkCompleted();
                         foreach (var guid in created) _tagQueue.Add(guid);
                         RefreshCurrentPage();
                         _notificationService.Show(string.Format(HD2ModManager.Resources.Strings.Notification_ImportComplete, item.Path));
@@ -280,9 +292,16 @@ namespace HD2ModManager.ViewModels
                             OpenTagEdit(created);
                         }
                     }
+                    catch (OperationCanceledException)
+                    {
+                        _importQueue.MarkFailed(item, "任务已取消");
+                        task.MarkCanceled();
+                        _notificationService.Show($"导入已取消：{item.Path}", NotificationLevel.Info);
+                    }
                     catch (Exception ex)
                     {
                         _importQueue.MarkFailed(item, ex.Message);
+                        task.MarkFailed(ex.Message);
                         System.Windows.MessageBox.Show($"导入失败: {item.Path}\n{ex.Message}", "Import", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
                         _notificationService.Show(string.Format(HD2ModManager.Resources.Strings.Notification_ImportFailed, item.Path), NotificationLevel.Error);
                     }
@@ -344,22 +363,27 @@ namespace HD2ModManager.ViewModels
 
         private async Task UpdateAssetMetadataOnStartupAsync()
         {
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.UpdateAssetMetadata, "更新资产元数据", "启动检查");
             try
             {
+                task.MarkRunning("正在同步资产元数据");
                 var paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
                 var sync = CoreServices.CreateAssetMetadataSyncService(paths);
                 var result = await sync.SyncAsync(SettingsService.GetAssetMetadataRepository()).ConfigureAwait(false);
                 if (result.Success)
                 {
+                    task.MarkCompleted();
                     System.Windows.Application.Current.Dispatcher.Invoke(() => _notificationService.Show("资产信息已自动更新", NotificationLevel.Info, TimeSpan.FromSeconds(4)));
                 }
                 else
                 {
+                    task.MarkFailed(result.ErrorMessage ?? "未知错误");
                     System.Windows.Application.Current.Dispatcher.Invoke(() => _notificationService.Show($"资产信息自动更新失败：{result.ErrorMessage}", NotificationLevel.Warning, TimeSpan.FromSeconds(6)));
                 }
             }
             catch (Exception ex)
             {
+                task.MarkFailed(ex.Message);
                 System.Windows.Application.Current.Dispatcher.Invoke(() => _notificationService.Show($"资产信息自动更新失败：{ex.Message}", NotificationLevel.Warning, TimeSpan.FromSeconds(6)));
             }
         }
@@ -532,7 +556,7 @@ namespace HD2ModManager.ViewModels
             return pageType switch
             {
                 WorkspacePageType.Home => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
-                WorkspacePageType.Status => new StatusPageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
+                WorkspacePageType.Status => new StatusPageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
                 WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _selection),
                 WorkspacePageType.Library => CreateLibraryPage(),
                 WorkspacePageType.Settings => new SettingsPageViewModel(),
