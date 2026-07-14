@@ -37,7 +37,7 @@ public sealed class ModUserStatusServiceTests
 	}
 
 	private static ModNode CreateNode(ModNodeId id, string name)
-		=> new(id, name, new ModNodeMetadata(name, null, [], DateTimeOffset.UtcNow, null), [], []);
+		=> new(id, name, new ModNodeMetadata(name, null, DateTimeOffset.UtcNow, null), [], []);
 
 	private static ModContentFacts Facts(ModNode node)
 		=> new(node.Id, node.RelativePath, "content", DateTimeOffset.UtcNow, [], []);

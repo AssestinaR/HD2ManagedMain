@@ -33,8 +33,6 @@ namespace HD2ModManager.Views
                     OnEditDescriptionClick(cm!, new RoutedEventArgs()); e.Handled = true; break;
                 case System.Windows.Input.Key.I:
                     OnEditImageClick(cm!, new RoutedEventArgs()); e.Handled = true; break;
-                case System.Windows.Input.Key.T:
-                    OnEditTagsPageClick(cm!, new RoutedEventArgs()); e.Handled = true; break;
                 case System.Windows.Input.Key.D:
                     VM?.RemoveCommand.Execute(card); e.Handled = true; break;
             }
@@ -60,16 +58,6 @@ namespace HD2ModManager.Views
                 if (shell == null) return;
                 VM = new LibraryPageViewModel(shell.LibraryService, shell.Selection, shell.ProfileService);
                 DataContext = VM;
-            }
-        }
-
-        private void OnSearch(object sender, RoutedEventArgs e)
-        {
-            EnsureVM();
-            // Get QueryBox via name lookup
-            if (this.FindName("QueryBox") is TextBox tb)
-            {
-                VM!.Query = tb.Text;
             }
         }
 
@@ -106,15 +94,6 @@ namespace HD2ModManager.Views
             {
                 VM?.UpdateIcon(card, ofd.FileName);
             }
-        }
-
-        private void OnEditTagsPageClick(object sender, RoutedEventArgs e)
-        {
-            var card = GetCard(sender);
-            if (card == null) return;
-            var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as HD2ModManager.ViewModels.ShellViewModel;
-            if (shell == null) return;
-            shell.OpenTagEdit(new[] { card.Mod.Guid });
         }
 
         private void OnOpenDetailsClick(object sender, RoutedEventArgs e)

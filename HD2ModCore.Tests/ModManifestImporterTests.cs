@@ -5,12 +5,12 @@ using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
 
-// 作用：验证导出 zip（含 manifest.json）可以被导入，并且自定义标签会写入节点元数据。
-// Purpose: Verifies an exported zip (with manifest.json) can be imported and user tags are applied to node metadata.
+// 作用：验证旧 manifest 的标签字段可被兼容忽略，名称和备注仍能导入。
+// Purpose: Verifies legacy manifest tags are ignored while name and notes remain importable.
 public sealed class ModManifestImporterTests
 {
 	[Fact]
-	public async Task ImportExportZipAsync_AppliesManifestTags()
+	public async Task ImportExportZipAsync_IgnoresLegacyManifestTags()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
 		var appRoot = Path.Combine(root, "app");
@@ -52,11 +52,10 @@ public sealed class ModManifestImporterTests
 			var result = await importer.ImportExportZipAsync(zipPath);
 			Assert.True(result.Snapshot.Nodes.Count > 0);
 
-			// Find the 'pack' node and verify its tag from manifest.
+			// Find the 'pack' node and verify portable metadata from the manifest.
 			var pack = result.Snapshot.Nodes.Values.FirstOrDefault(n => n.Metadata.Name == "pack");
 			Assert.NotNull(pack);
-			Assert.Contains("chiffon", pack!.Metadata.UserTags);
-			Assert.Equal("n", pack.Metadata.Notes);
+			Assert.Equal("n", pack!.Metadata.Notes);
 		}
 		finally
 		{
@@ -110,7 +109,7 @@ public sealed class ModManifestImporterTests
 			var result = await importer.ImportExportZipAsync(zipPath);
 			var pack = result.Snapshot.Nodes.Values.FirstOrDefault(n => n.Metadata.Name == "pack");
 			Assert.NotNull(pack);
-			Assert.Contains("chiffon", pack!.Metadata.UserTags);
+			Assert.Equal("n", pack!.Metadata.Notes);
 		}
 		finally
 		{

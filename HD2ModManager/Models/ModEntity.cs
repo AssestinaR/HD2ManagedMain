@@ -12,7 +12,6 @@ namespace HD2ModManager.Models
         public string? ThumbImage { get; set; }
         public string? IconPath { get; set; }
         public string? Url { get; set; }
-        public List<string> Tags { get; set; } = new();
         public List<FileGroup> FileGroups { get; set; } = new();
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;

@@ -180,36 +180,5 @@ namespace HD2ModManager.Resources {
             get { return ResourceManager.GetString("Notification_ImportQueueSummary", resourceCulture); }
         }
 
-        public static string TagEdit_Available {
-            get { return ResourceManager.GetString("TagEdit_Available", resourceCulture); }
-        }
-
-        public static string TagEdit_Mod {
-            get { return ResourceManager.GetString("TagEdit_Mod", resourceCulture); }
-        }
-
-        public static string TagEdit_RemoveSelected {
-            get { return ResourceManager.GetString("TagEdit_RemoveSelected", resourceCulture); }
-        }
-
-        public static string TagEdit_Save {
-            get { return ResourceManager.GetString("TagEdit_Save", resourceCulture); }
-        }
-
-        public static string TagEdit_Selected {
-            get { return ResourceManager.GetString("TagEdit_Selected", resourceCulture); }
-        }
-
-        public static string TagEdit_Skip {
-            get { return ResourceManager.GetString("TagEdit_Skip", resourceCulture); }
-        }
-
-        public static string TagEdit_Title {
-            get { return ResourceManager.GetString("TagEdit_Title", resourceCulture); }
-        }
-
-        public static string TagEdit_Add {
-            get { return ResourceManager.GetString("TagEdit_Add", resourceCulture); }
-        }
     }
 }

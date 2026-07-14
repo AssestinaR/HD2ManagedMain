@@ -36,8 +36,8 @@ public sealed class ConflictDetectorTests
 
 			var idA = ModNodeId.New();
 			var idB = ModNodeId.New();
-			var nodeA = new ModNode(idA, "a", new ModNodeMetadata("a", null, Array.Empty<string>(), DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
-			var nodeB = new ModNode(idB, "b", new ModNodeMetadata("b", null, Array.Empty<string>(), DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
+			var nodeA = new ModNode(idA, "a", new ModNodeMetadata("a", null, DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
+			var nodeB = new ModNode(idB, "b", new ModNodeMetadata("b", null, DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
 			var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [idA] = nodeA, [idB] = nodeB }, Array.Empty<Profile>());
 
 			var keyProvider = new AssetKeySetProvider(new PatchFileNameParser(), new PatchTocScanner());

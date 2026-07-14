@@ -127,7 +127,7 @@ public sealed class ModContentFactsServiceTests
 	}
 
 	private static ModNode CreateNode(string relativePath, string name)
-		=> new(ModNodeId.New(), relativePath, new ModNodeMetadata(name, null, Array.Empty<string>(), DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
+		=> new(ModNodeId.New(), relativePath, new ModNodeMetadata(name, null, DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
 
 	private static void DeleteQuietly(string root)
 	{

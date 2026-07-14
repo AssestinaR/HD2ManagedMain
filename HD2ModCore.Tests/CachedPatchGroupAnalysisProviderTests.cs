@@ -17,7 +17,7 @@ public sealed class CachedPatchGroupAnalysisProviderTests
             var node = new ModNode(
                 new ModNodeId(Guid.NewGuid()),
                 "sample",
-                new ModNodeMetadata("Sample", null, Array.Empty<string>(), DateTimeOffset.UtcNow, null),
+                new ModNodeMetadata("Sample", null, DateTimeOffset.UtcNow, null),
                 Array.Empty<PatchGroupKey>(),
                 Array.Empty<ModNodeId>());
             var nodeDirectory = Path.Combine(root, node.RelativePath);

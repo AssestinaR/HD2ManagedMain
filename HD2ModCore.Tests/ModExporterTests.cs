@@ -32,7 +32,7 @@ public sealed class ModExporterTests
 			var node = new ModNode(
 				Id: rootId,
 				RelativePath: importId,
-				Metadata: new ModNodeMetadata("MyRoot", "n", new[] { "chiffon" }, DateTimeOffset.UtcNow, null),
+				Metadata: new ModNodeMetadata("MyRoot", "n", DateTimeOffset.UtcNow, null),
 				PatchGroups: Array.Empty<PatchGroupKey>(),
 				Children: Array.Empty<ModNodeId>());
 
@@ -55,6 +55,7 @@ public sealed class ModExporterTests
 			Assert.True(doc.RootElement.TryGetProperty("nodes", out _));
 			Assert.True(doc.RootElement.TryGetProperty("rootName", out var rn));
 			Assert.Equal("MyRoot", rn.GetString());
+			Assert.DoesNotContain("tags", json, StringComparison.OrdinalIgnoreCase);
 		}
 		finally
 		{

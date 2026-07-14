@@ -62,7 +62,7 @@ public sealed class LibraryDerivedDataServiceTests
 		=> new(
 			ModNodeId.New(),
 			relativePath,
-			new ModNodeMetadata(name, null, Array.Empty<string>(), DateTimeOffset.UtcNow, null),
+			new ModNodeMetadata(name, null, DateTimeOffset.UtcNow, null),
 			Array.Empty<PatchGroupKey>(),
 			Array.Empty<ModNodeId>());
 

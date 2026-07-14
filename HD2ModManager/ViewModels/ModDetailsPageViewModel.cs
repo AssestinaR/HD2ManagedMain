@@ -21,7 +21,6 @@ namespace HD2ModManager.ViewModels
         public ModEntity? Mod { get; private set; }
         public string Name => Mod?.Name ?? "未找到 Mod";
         public string Description => string.IsNullOrWhiteSpace(Mod?.Description) ? "暂无备注" : Mod!.Description!;
-        public string TagsString => Mod?.Tags == null || Mod.Tags.Count == 0 ? "无标签" : string.Join("，", Mod.Tags);
         public string SourcePath => Mod?.SourcePath ?? string.Empty;
         public string Image => Mod?.Image ?? string.Empty;
         public int FileGroupCount => Mod?.FileGroups?.Count ?? 0;
@@ -40,7 +39,6 @@ namespace HD2ModManager.ViewModels
         public RelayCommand RefreshCommand { get; }
         public RelayCommand OpenFolderCommand { get; }
         public RelayCommand AddToProfileCommand { get; }
-        public RelayCommand EditTagsCommand { get; }
         public RelayCommand DeleteCommand { get; }
         public RelayCommand OpenAdvancedDetailsCommand { get; }
 
@@ -55,7 +53,6 @@ namespace HD2ModManager.ViewModels
             RefreshCommand = new RelayCommand(Refresh);
             OpenFolderCommand = new RelayCommand(OpenFolder);
             AddToProfileCommand = new RelayCommand(AddToProfile);
-            EditTagsCommand = new RelayCommand(EditTags);
             DeleteCommand = new RelayCommand(Delete);
             OpenAdvancedDetailsCommand = new RelayCommand(OpenAdvancedDetails);
             _derivedState.SnapshotChanged += (_, _) => RunOnUiThread(Refresh);
@@ -68,7 +65,6 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(Mod));
             OnPropertyChanged(nameof(Name));
             OnPropertyChanged(nameof(Description));
-            OnPropertyChanged(nameof(TagsString));
             OnPropertyChanged(nameof(SourcePath));
             OnPropertyChanged(nameof(Image));
             OnPropertyChanged(nameof(FileGroupCount));
@@ -233,14 +229,6 @@ namespace HD2ModManager.ViewModels
             {
                 _notifications?.Show("无法加入配置，可能尚未选择配置或该 Mod 已存在。", NotificationLevel.Info);
             }
-        }
-
-        private void EditTags()
-        {
-            if (Mod == null) return;
-            var shell = System.Windows.Application.Current?.MainWindow as HD2ModManager.MainWindow;
-            var vm = shell?.DataContext as ShellViewModel;
-            vm?.OpenTagEdit(new[] { Mod.Guid });
         }
 
         private void Delete()

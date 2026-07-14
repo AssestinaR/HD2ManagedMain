@@ -22,7 +22,7 @@ public sealed class JsonModLibraryStoreTests
 			var node = new ModNode(
 				Id: nodeId,
 				RelativePath: "obj",
-				Metadata: new ModNodeMetadata("obj", "n", new[] { "tag1" }, DateTimeOffset.UtcNow, null),
+				Metadata: new ModNodeMetadata("obj", "n", DateTimeOffset.UtcNow, null),
 				PatchGroups: new[] { new PatchGroupKey("9ba626afa44a3aa3", 0) },
 				Children: Array.Empty<ModNodeId>());
 
@@ -70,7 +70,7 @@ public sealed class JsonModLibraryStoreTests
 					[nodeId] = new ModNode(
 						nodeId,
 						Path.Combine("中文包", "护甲"),
-						new ModNodeMetadata("中文模组", null, Array.Empty<string>(), DateTimeOffset.UtcNow, null),
+						new ModNodeMetadata("中文模组", null, DateTimeOffset.UtcNow, null),
 						Array.Empty<PatchGroupKey>(),
 						Array.Empty<ModNodeId>()),
 				},

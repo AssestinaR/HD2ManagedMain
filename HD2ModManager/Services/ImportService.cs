@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using HD2ModCore.Domain;
@@ -58,7 +57,7 @@ namespace HD2ModManager.Services
                     throw new FileNotFoundException("Import source not found.", path);
                 }
 
-                await EnrichImportedMetadataAsync(result, path, ct).ConfigureAwait(false);
+                _library.ReplaceSnapshot(result.Snapshot, buildDerivedData: false);
                 var importedGuids = _library.Snapshot.Nodes.Values
                     .Where(node => !before.Contains(node.Id))
                     .Select(node => node.Id.Value.ToString("N"))
@@ -74,67 +73,5 @@ namespace HD2ModManager.Services
             }
         }
 
-        private async Task EnrichImportedMetadataAsync(ImportResult result, string sourcePath, CancellationToken ct)
-        {
-            var manager = CoreServices.CreateModLibraryManager(_paths);
-            var snapshot = result.Snapshot;
-
-            foreach (var node in result.Snapshot.Nodes.Values)
-            {
-                ct.ThrowIfCancellationRequested();
-                var tags = ResolveTagsFromName(node.Metadata.Name);
-
-                if (tags.Count == 0) continue;
-
-                var metadata = node.Metadata with
-                {
-                    UserTags = tags,
-                    ModifiedUtc = DateTimeOffset.UtcNow,
-                };
-                snapshot = await manager.UpdateNodeMetadataAsync(node.Id, metadata, ct).ConfigureAwait(false);
-            }
-
-            _library.ReplaceSnapshot(snapshot, buildDerivedData: false);
-        }
-
-        private static List<string> ResolveTagsFromName(string name)
-        {
-            var result = new List<string>();
-            if (string.IsNullOrWhiteSpace(name)) return result;
-            try
-            {
-                var src = NormalizeForLooseMatch(name);
-                foreach (var item in TagCatalogService.Instance.GetAll())
-                {
-                    var hit = false;
-                    if (!string.IsNullOrWhiteSpace(item.Code)) hit |= src.Contains(item.Code.ToLowerInvariant());
-                    if (!string.IsNullOrWhiteSpace(item.EnglishName)) hit |= src.Contains(item.EnglishName.ToLowerInvariant());
-                    if (!string.IsNullOrWhiteSpace(item.ChineseName)) hit |= src.Contains(NormalizeForLooseMatch(item.ChineseName));
-                    if (!string.IsNullOrWhiteSpace(item.Name)) hit |= src.Contains(item.Name.ToLowerInvariant());
-                    if (hit && !result.Contains(item.Name)) result.Add(item.Name);
-                }
-
-                foreach (Match match in Regex.Matches(name, @"\b([A-Z]{1,3}(?:/[A-Z]{1,3})?-\d{1,4})\b", RegexOptions.IgnoreCase))
-                {
-                    var code = match.Groups[1].Value.ToUpperInvariant();
-                    var tag = TagCatalogService.Instance.GetAll().FirstOrDefault(t => string.Equals(t.Code, code, StringComparison.OrdinalIgnoreCase));
-                    if (tag != null && !result.Contains(tag.Name)) result.Add(tag.Name);
-                }
-            }
-            catch { }
-            return result;
-        }
-
-        private static string NormalizeForLooseMatch(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return string.Empty;
-            return s.ToLowerInvariant()
-                .Replace('（', ' ')
-                .Replace('）', ' ')
-                .Replace('【', ' ')
-                .Replace('】', ' ')
-                .Replace('[', ' ')
-                .Replace(']', ' ');
-        }
     }
 }

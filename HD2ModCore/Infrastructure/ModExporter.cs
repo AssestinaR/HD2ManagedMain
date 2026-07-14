@@ -7,8 +7,8 @@ using HD2ModCore.Domain.Manifest;
 
 namespace HD2ModCore.Infrastructure;
 
-// 作用：将库中指定根对象导出为 zip，并内置 manifest.json（仅保存自定义标签/备注等，不保存资产标签）。
-// Purpose: Exports a specified root object from the library as a zip with embedded manifest.json (stores user tags/notes only, not derived asset tags).
+// 作用：将库中指定根对象导出为 zip，并内置仅含可移植名称和备注的 manifest.json。
+// Purpose: Exports a library root as a zip with manifest.json containing portable names and notes.
 public sealed class ModExporter : IModExporter
 {
 	private const int ManifestVersion = 1;
@@ -130,8 +130,7 @@ public sealed class ModExporter : IModExporter
 			.Select(n => new ExportManifestNode(
 				RelativePath: n.RelativePath.Replace('\\', '/'),
 				Name: n.Metadata.Name,
-				Notes: n.Metadata.Notes,
-             Tags: n.Metadata.UserTags.ToList()))
+				Notes: n.Metadata.Notes))
 			.OrderBy(n => n.RelativePath, StringComparer.OrdinalIgnoreCase)
 			.ToList();
 

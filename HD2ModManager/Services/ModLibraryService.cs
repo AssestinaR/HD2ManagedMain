@@ -138,7 +138,6 @@ namespace HD2ModManager.Services
             {
                 Name = string.IsNullOrWhiteSpace(mod.Name) ? node.Metadata.Name : mod.Name,
                 Notes = mod.Description,
-                UserTags = mod.Tags?.ToList() ?? new List<string>(),
                 ModifiedUtc = DateTimeOffset.UtcNow,
             };
 
@@ -259,7 +258,6 @@ namespace HD2ModManager.Services
                 Name = node.Metadata.Name,
                 Description = node.Metadata.Notes,
                 Image = derived?.IconPath,
-                Tags = node.Metadata.UserTags?.ToList() ?? new List<string>(),
                 SourcePath = node.RelativePath,
                 CreatedAt = node.Metadata.CreatedUtc.UtcDateTime,
                 UpdatedAt = (node.Metadata.ModifiedUtc ?? node.Metadata.CreatedUtc).UtcDateTime,

@@ -47,7 +47,6 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 			var metadata = new ModNodeMetadata(
 				Name: BuildFlatName(rootDir.Name, rel),
 				Notes: null,
-				UserTags: Array.Empty<string>(),
 				CreatedUtc: DateTimeOffset.UtcNow,
 				ModifiedUtc: null);
 

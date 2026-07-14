@@ -23,11 +23,8 @@ namespace HD2ModManager.ViewModels
         private readonly NotificationService _notificationService;
         private readonly IProfileDeploymentCoordinator _deploymentCoordinator;
         private BackgroundTaskItem? _deploymentTask;
-        private readonly TagCatalogService _tagCatalog = TagCatalogService.Instance;
         private readonly SelectionCoordinator _selection = new();
-        private readonly ObservableCollection<string> _tagQueue = new();
         private readonly SemaphoreSlim _importProcessGate = new(1, 1);
-        private System.Collections.Generic.List<string> _pendingTagEdit = new();
 
         private PageViewModel? _leftPage;
         private PageViewModel? _rightPage;
@@ -71,7 +68,6 @@ namespace HD2ModManager.ViewModels
         public WorkspacePageType RightPageType { get => _rightPageType; private set { if (SetField(ref _rightPageType, value)) RaiseSlotFlags(); } }
         public string? SelectedModId { get => _selectedModId; private set => SetField(ref _selectedModId, value); }
         public ReadOnlyObservableCollection<NotificationItem> Notifications { get; }
-        public ReadOnlyObservableCollection<string> TagQueue => new(_tagQueue);
 
         public RelayCommand ShowHomeCommand { get; }
         public RelayCommand ShowStatusCommand { get; }
@@ -84,7 +80,6 @@ namespace HD2ModManager.ViewModels
         public RelayCommand RefreshCommand { get; }
         public RelayCommand CancelSelectionCommand { get; }
         public RelayCommand SelectionPrimaryCommand { get; }
-        public RelayCommand SelectionSecondaryCommand { get; }
         public RelayCommand SelectionDeleteCommand { get; }
 
         public bool IsHomeActive => CurrentMode == WorkspaceMode.Home;
@@ -117,7 +112,6 @@ namespace HD2ModManager.ViewModels
         public bool HasSelection => _selection.HasSelection;
         public string SelectionSummary => _selection.Summary;
         public string SelectionPrimaryText => string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase) ? "移除" : "加入配置";
-        public string SelectionSecondaryText => string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase) ? string.Empty : "编辑标签";
         public string SelectionDeleteText => string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase) ? "移除" : "删除";
 
         public ShellViewModel()
@@ -150,7 +144,6 @@ namespace HD2ModManager.ViewModels
             _profileService.Changed += (_, _) => RefreshCurrentPage();
             _derivedState.SnapshotChanged += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
 
-            InitializeTagCatalog(baseDir, configDir);
             RunStartupChecks(configDir);
 
             ShowHomeCommand = new RelayCommand(() => Navigate(WorkspaceMode.Home));
@@ -164,7 +157,6 @@ namespace HD2ModManager.ViewModels
             RefreshCommand = new RelayCommand(RefreshCurrentPage);
             CancelSelectionCommand = new RelayCommand(_selection.Clear);
             SelectionPrimaryCommand = new RelayCommand(ExecuteSelectionPrimary);
-            SelectionSecondaryCommand = new RelayCommand(ExecuteSelectionSecondary);
             SelectionDeleteCommand = new RelayCommand(ExecuteSelectionDelete);
             _selection.SelectionChanged += (_, _) => RaiseSelectionFlags();
 
@@ -212,9 +204,6 @@ namespace HD2ModManager.ViewModels
                     break;
                 case WorkspaceMode.Settings:
                     OpenSinglePage(WorkspacePageType.Settings);
-                    break;
-                case WorkspaceMode.TagEdit:
-                    OpenSinglePage(WorkspacePageType.TagEdit);
                     break;
                 case WorkspaceMode.Home:
                 default:
@@ -293,20 +282,6 @@ namespace HD2ModManager.ViewModels
             RaiseSlotFlags();
         }
 
-        public void OpenTagEdit(System.Collections.Generic.IEnumerable<string> guids)
-        {
-            _pendingTagEdit = guids.Where(g => !string.IsNullOrWhiteSpace(g)).ToList();
-            var firstGuid = _pendingTagEdit.FirstOrDefault();
-            var first = string.IsNullOrWhiteSpace(firstGuid) ? null : _libraryService.Get(firstGuid);
-            if (first == null) return;
-            CurrentMode = WorkspaceMode.TagEdit;
-            LeftPageType = WorkspacePageType.TagEdit;
-            RightPageType = WorkspacePageType.TagEdit;
-            LeftPage = new TagEditPageViewModel(_libraryService, first, _pendingTagEdit.Skip(1), returnKey: "library");
-            RightPage = null;
-            RaiseSlotFlags();
-        }
-
         public async System.Threading.Tasks.Task ProcessImportQueueAsync(string[] paths)
         {
             _importQueue.Enqueue(paths);
@@ -329,14 +304,8 @@ namespace HD2ModManager.ViewModels
                         _libraryService.Save();
                         _importQueue.MarkDone(item);
                         task.MarkCompleted();
-                        foreach (var guid in created) _tagQueue.Add(guid);
                         RefreshCurrentPage();
                         _notificationService.Show(string.Format(HD2ModManager.Resources.Strings.Notification_ImportComplete, item.Path));
-
-                        if (created.Count > 0 && SettingsService.GetAutoOpenTagEdit())
-                        {
-                            OpenTagEdit(created);
-                        }
                     }
                     catch (OperationCanceledException)
                     {
@@ -356,28 +325,6 @@ namespace HD2ModManager.ViewModels
             finally
             {
                 _importProcessGate.Release();
-            }
-        }
-
-        private void InitializeTagCatalog(string baseDir, string configDir)
-        {
-            _ = new TagCsvSuggestionService(baseDir);
-            _tagCatalog.Load(configDir);
-            if (_tagCatalog.GetAll().Count == 0)
-            {
-                _tagCatalog.RebuildFromCsv(baseDir);
-                var ok = _tagCatalog.Save();
-                _tagCatalog.Load(configDir);
-                _notificationService.Show(ok ? $"Tags rebuilt: {_tagCatalog.GetAll().Count}" : "Failed to write tags.json", ok ? NotificationLevel.Info : NotificationLevel.Error);
-            }
-            else
-            {
-                var tagsPath = System.IO.Path.Combine(configDir, "tags.json");
-                if (!System.IO.File.Exists(tagsPath))
-                {
-                    var ok = _tagCatalog.Save();
-                    _notificationService.Show(ok ? $"Tags saved: {_tagCatalog.GetAll().Count}" : "Failed to write tags.json", ok ? NotificationLevel.Info : NotificationLevel.Error);
-                }
             }
         }
 
@@ -576,15 +523,6 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        private void ExecuteSelectionSecondary(object? _)
-        {
-            if (!_selection.HasSelection) return;
-            if (string.Equals(_selection.Scope, "Library", StringComparison.OrdinalIgnoreCase))
-            {
-                OpenTagEdit(_selection.SelectedIds);
-            }
-        }
-
         private void ExecuteSelectionDelete(object? _)
         {
             if (!_selection.HasSelection) return;
@@ -613,7 +551,6 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(HasSelection));
             OnPropertyChanged(nameof(SelectionSummary));
             OnPropertyChanged(nameof(SelectionPrimaryText));
-            OnPropertyChanged(nameof(SelectionSecondaryText));
             OnPropertyChanged(nameof(SelectionDeleteText));
         }
 
@@ -638,14 +575,14 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.Library => CreateLibraryPage(),
                 WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService),
                 WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),
-                WorkspacePageType.TagEdit => LeftPage ?? new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
             };
         }
 
         private LibraryPageViewModel CreateLibraryPage()
         {
-            var page = new LibraryPageViewModel(_libraryService, _derivedState, _selection, _profileService, _notificationService);
+            var hideSelectedProfileMembers = LeftPageType == WorkspacePageType.Profile || RightPageType == WorkspacePageType.Profile;
+            var page = new LibraryPageViewModel(_libraryService, _derivedState, _selection, _profileService, _notificationService, hideSelectedProfileMembers);
             RegisterLibraryActions(page);
             return page;
         }
@@ -667,7 +604,6 @@ namespace HD2ModManager.ViewModels
                 (WorkspacePageType.Library, WorkspacePageType.Library, false) => WorkspaceMode.LibraryOnly,
                 (WorkspacePageType.Profile, WorkspacePageType.Library, true) => WorkspaceMode.ProfileLibrarySplit,
                 (WorkspacePageType.Settings, WorkspacePageType.Settings, false) => WorkspaceMode.Settings,
-                (WorkspacePageType.TagEdit, WorkspacePageType.TagEdit, false) => WorkspaceMode.TagEdit,
                 _ => CurrentMode,
             };
         }
@@ -679,13 +615,13 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.Profile => "配置页",
             WorkspacePageType.Library => "模组库",
             WorkspacePageType.Settings => "设置",
-            WorkspacePageType.TagEdit => "标签编辑",
             WorkspacePageType.ModDetails => "Mod 详情",
             _ => "页面",
         };
 
         private void RaiseSlotFlags()
         {
+            UpdateLibraryCompanionContext();
             OnPropertyChanged(nameof(IsSplitView));
             OnPropertyChanged(nameof(ShowRightSlot));
             OnPropertyChanged(nameof(IsLeftSlotLibrary));
@@ -695,6 +631,14 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(LeftSlotTitle));
             OnPropertyChanged(nameof(RightSlotTitle));
             RaiseActionFlags();
+        }
+
+        private void UpdateLibraryCompanionContext()
+        {
+            if (LeftPage is LibraryPageViewModel leftLibrary)
+                leftLibrary.SetProfileCompanionVisible(IsSplitView && RightPageType == WorkspacePageType.Profile);
+            if (RightPage is LibraryPageViewModel rightLibrary)
+                rightLibrary.SetProfileCompanionVisible(IsSplitView && LeftPageType == WorkspacePageType.Profile);
         }
 
         private void RaiseActionFlags()

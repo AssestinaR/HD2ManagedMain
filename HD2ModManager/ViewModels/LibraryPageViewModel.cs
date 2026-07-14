@@ -17,26 +17,22 @@ namespace HD2ModManager.ViewModels
         private readonly DerivedStateCoordinator? _derivedState;
         private readonly ProfileService? _profiles;
         private readonly NotificationService? _notifications;
-        private readonly TagCatalogService _tags;
-        private readonly LibrarySectionBuilder _sectionBuilder;
         private readonly SelectionCoordinator? _selection;
+        private bool _hideSelectedProfileMembers;
         private readonly ObservableCollection<string> _selectedGuids = new();
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private string? _selectionAnchorGuid;
 
         public ObservableCollection<ModCardViewModel> Items { get; } = new();
-        public ObservableCollection<SectionViewModel> Sections { get; } = new();
 
         private string _query = string.Empty;
         public string Query { get => _query; set { _query = value; Refresh(); } }
-        public bool IsProfileEditing => _profiles?.SelectedProfile is not null;
-        public string EmptyMessage => IsProfileEditing ? "所有 Mod 都已加入此配置。" : "模组库中没有可显示的 Mod。";
+        public string EmptyMessage => _hideSelectedProfileMembers && _profiles?.SelectedProfile is not null ? "所有 Mod 都已加入此配置。" : "模组库中没有可显示的 Mod。";
 
         public RelayCommand RefreshCommand { get; }
         public RelayCommand RemoveModCommand { get; }
         public RelayCommand ToggleSelectionCommand { get; }
         public RelayCommand AddToProfileCommand { get; }
-        public RelayCommand EditTagsCommand { get; }
         public RelayCommand OpenFolderCommand { get; }
         public RelayCommand RepairModCommand { get; }
         public RelayCommand RepairAllOutdatedCommand { get; }
@@ -47,16 +43,15 @@ namespace HD2ModManager.ViewModels
         private bool _isCompact = true;
         public bool IsCompact { get => _isCompact; set { _isCompact = value; OnPropertyChanged(nameof(IsCompact)); } }
 
-        public LibraryPageViewModel(ModLibraryService library, DerivedStateCoordinator? derivedState = null, SelectionCoordinator? selection = null, ProfileService? profiles = null, NotificationService? notifications = null)
+        public LibraryPageViewModel(ModLibraryService library, DerivedStateCoordinator? derivedState = null, SelectionCoordinator? selection = null, ProfileService? profiles = null, NotificationService? notifications = null, bool hideSelectedProfileMembers = false)
         {
             Title = "Library";
             _library = library;
             _derivedState = derivedState;
             _profiles = profiles;
             _notifications = notifications;
-            _tags = TagCatalogService.Instance;
-            _sectionBuilder = new LibrarySectionBuilder(_tags, IsSelected);
             _selection = selection;
+            _hideSelectedProfileMembers = hideSelectedProfileMembers;
             if (_selection != null) _selection.SelectionChanged += (_, _) => SyncSelectionFromCoordinator();
             if (_profiles != null) _profiles.Changed += (_, _) => QueueStatusRefresh();
             if (_derivedState != null) _derivedState.SnapshotChanged += (_, _) => RunOnUiThread(QueueStatusRefresh);
@@ -64,7 +59,6 @@ namespace HD2ModManager.ViewModels
             RemoveModCommand = new RelayCommand(() => { /* parameter passed via CommandParameter not used here */ });
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
             AddToProfileCommand = new RelayCommand(parameter => AddToProfile(parameter as ModCardViewModel));
-            EditTagsCommand = new RelayCommand(_ => { });
             OpenFolderCommand = new RelayCommand(parameter => OpenFolder(parameter as ModCardViewModel));
             RepairModCommand = new RelayCommand(parameter => RepairMod(parameter as ModCardViewModel), parameter => (parameter as ModCardViewModel)?.CanRepair == true);
             RepairAllOutdatedCommand = new RelayCommand(_ => RepairAllOutdated(), _ => Items.Any(i => i.CanRepair));
@@ -79,6 +73,13 @@ namespace HD2ModManager.ViewModels
         public LibraryPageViewModel(ModLibraryService library, SelectionCoordinator? selection, ProfileService? profiles, NotificationService? notifications = null)
             : this(library, null, selection, profiles, notifications)
         {
+        }
+
+        public void SetProfileCompanionVisible(bool visible)
+        {
+            if (_hideSelectedProfileMembers == visible) return;
+            _hideSelectedProfileMembers = visible;
+            Refresh();
         }
 
         public void SelectRow(ModCardViewModel card, ModifierKeys modifiers)
@@ -147,7 +148,7 @@ namespace HD2ModManager.ViewModels
         public void Refresh()
         {
             var all = _library.All().ToList();
-            if (IsProfileEditing)
+            if (_hideSelectedProfileMembers && _profiles?.SelectedProfile is not null)
             {
                 var selectedIds = _profiles!.SelectedProfile!.Entries.Select(entry => entry.NodeId.Value.ToString("N")).ToHashSet(StringComparer.OrdinalIgnoreCase);
                 all = all.Where(mod => !selectedIds.Contains(mod.Guid)).ToList();
@@ -155,12 +156,8 @@ namespace HD2ModManager.ViewModels
             var q = (_query ?? string.Empty).Trim();
             if (!string.IsNullOrWhiteSpace(q))
             {
-                all = all.Where(m =>
-                    (m.Name?.IndexOf(q, System.StringComparison.OrdinalIgnoreCase) ?? -1) >= 0 ||
-                    (m.Description?.IndexOf(q, System.StringComparison.OrdinalIgnoreCase) ?? -1) >= 0 ||
-                    (m.Tags?.Any(t => t.IndexOf(q, System.StringComparison.OrdinalIgnoreCase) >= 0) ?? false)).ToList();
+                all = all.Where(mod => ModSearchMatcher.IsMatch(mod.Name, mod.Description, _library.GetDerivedData(mod.Guid)?.AssetSummary, q)).ToList();
             }
-            _sectionBuilder.Rebuild(Sections, all);
             Items.Clear();
             foreach (var mod in all.OrderBy(m => m.Name, System.StringComparer.CurrentCultureIgnoreCase))
             {
@@ -169,7 +166,6 @@ namespace HD2ModManager.ViewModels
                 Items.Add(new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, derived?.UnitCompatibility, status));
             }
             RepairAllOutdatedCommand.RaiseCanExecuteChanged();
-            OnPropertyChanged(nameof(IsProfileEditing));
             OnPropertyChanged(nameof(EmptyMessage));
         }
 
@@ -302,24 +298,6 @@ namespace HD2ModManager.ViewModels
                 card.IsSelected = IsSelected(card.Mod.Guid);
             }
         }
-
-        // Helpers removed: now driven by TagCatalogService
-    }
-
-    public class SectionViewModel
-    {
-        public string Title { get; }
-        public ObservableCollection<SubsectionViewModel> Subsections { get; } = new();
-        public bool HasContent { get; set; }
-        public SectionViewModel(string title) { Title = title; }
-    }
-
-    public class SubsectionViewModel
-    {
-        public string Title { get; }
-        public ObservableCollection<ModCardViewModel> Mods { get; } = new();
-        public bool HasContent { get; set; }
-        public SubsectionViewModel(string title) { Title = title; }
     }
 
     public class ModCardViewModel : BaseViewModel
@@ -328,10 +306,9 @@ namespace HD2ModManager.ViewModels
         public ModAssetSummary? AssetSummary { get; }
         public ModUnitCompatibilityReport? UnitCompatibility { get; }
         public string Name => Mod.Name;
-        public string TagsString => string.Join(", ", Mod.Tags ?? new System.Collections.Generic.List<string>());
+        public string AssetSummaryText => ModAssetSummaryFormatter.Format(AssetSummary);
         public string? ImagePath => Mod.Image;
         public string? Description => Mod.Description;
-        public string ArmorInfo { get; }
         public bool HasCompatibilityBadge => UnitCompatibility?.HasHighConfidenceOutdated == true;
         public bool CanRepair => UnitCompatibility?.CanRepair == true;
         public string CompatibilityBadgeText => UnitCompatibility?.BadgeText ?? string.Empty;
@@ -357,35 +334,8 @@ namespace HD2ModManager.ViewModels
             UnitCompatibility = unitCompatibility;
             UserStatus = userStatus;
             _isSelected = isSelected;
-            ArmorInfo = BuildArmorInfo(mod);
         }
 
-        private static string BuildArmorInfo(HD2ModManager.Models.ModEntity mod)
-        {
-            var tags = mod.Tags ?? new System.Collections.Generic.List<string>();
-            var catalog = HD2ModManager.Services.TagCatalogService.Instance;
-            foreach (var t in tags)
-            {
-                var ti = catalog.GetAll().FirstOrDefault(x => x.Name == t || x.Code == t);
-                if (ti != null && ti.Category == "护甲")
-                {
-                    var name = ti.Name;
-                    var passive = string.Empty;
-                    if (!string.IsNullOrWhiteSpace(ti.PassiveEnglish) || !string.IsNullOrWhiteSpace(ti.PassiveChinese))
-                    {
-                        passive = $"{ti.PassiveEnglish} {ti.PassiveChinese}".Trim();
-                    }
-                    var desc = string.Empty;
-                    if (!string.IsNullOrWhiteSpace(ti.PassiveDescEnglish) || !string.IsNullOrWhiteSpace(ti.PassiveDescChinese))
-                    {
-                        desc = $"{ti.PassiveDescEnglish}\n{ti.PassiveDescChinese}".Trim();
-                    }
-                    var stats = $"Armor: {ti.Armor?.ToString() ?? "-"}  Speed: {ti.Speed?.ToString() ?? "-"}  Stamina: {ti.Stamina?.ToString() ?? "-"}";
-                    return string.Join("\n", new[] { name, passive, desc, stats }.Where(s => !string.IsNullOrWhiteSpace(s)));
-                }
-            }
-            return string.Empty;
-        }
     }
 
 }

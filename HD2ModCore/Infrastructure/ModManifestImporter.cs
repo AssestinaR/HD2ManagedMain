@@ -7,8 +7,8 @@ using HD2ModCore.Domain.Manifest;
 
 namespace HD2ModCore.Infrastructure;
 
-// 作用：导入包含 manifest.json 的导出 zip：解压到 mods/<guid>/，应用 manifest 中的自定义标签/备注，并写入库快照。
-// Purpose: Imports an exported zip containing manifest.json: extracts into mods/<guid>/, applies manifest user tags/notes, and persists into the library snapshot.
+// 作用：导入包含 manifest.json 的导出 zip：解压到 mods/<guid>/，应用名称/备注，并写入库快照。
+// Purpose: Imports an exported zip, applies manifest names and notes, and persists the library snapshot.
 public sealed class ModManifestImporter : IModManifestImporter
 {
 	private readonly StoragePaths _paths;
@@ -132,29 +132,7 @@ public sealed class ModManifestImporter : IModManifestImporter
 					var rel = item?["relativePath"]?.GetValue<string>() ?? string.Empty;
 					var name = item?["name"]?.GetValue<string>() ?? string.Empty;
 					var notes = item?["notes"]?.GetValue<string>();
-					var tags = new List<string>();
-					var tagNode = item?["tags"];
-					if (tagNode is JsonArray tagArr)
-					{
-						foreach (var t in tagArr)
-						{
-							var s = t?.GetValue<string>();
-							if (!string.IsNullOrWhiteSpace(s))
-							{
-								tags.Add(s);
-							}
-						}
-					}
-					else if (tagNode is not null)
-					{
-						var s = tagNode.GetValue<string>();
-						if (!string.IsNullOrWhiteSpace(s))
-						{
-							tags.Add(s);
-						}
-					}
-
-					nodes.Add(new ExportManifestNode(rel, name, notes, tags));
+					nodes.Add(new ExportManifestNode(rel, name, notes));
 				}
 			}
 
@@ -198,7 +176,6 @@ public sealed class ModManifestImporter : IModManifestImporter
 				{
 					Name = string.IsNullOrWhiteSpace(manifestNode.Name) ? node.Metadata.Name : manifestNode.Name,
 					Notes = manifestNode.Notes,
-                 UserTags = manifestNode.Tags is not null ? manifestNode.Tags.ToList() : Array.Empty<string>(),
 				};
 				nodes[kvp.Key] = node with { RelativePath = newRel, Metadata = md };
 			}

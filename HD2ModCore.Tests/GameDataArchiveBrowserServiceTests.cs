@@ -13,7 +13,7 @@ public sealed class GameDataArchiveBrowserServiceTests
 		var key = new AssetKey(10, 20);
 		var nodeId = ModNodeId.New();
 		var profile = new Profile(ProfileId.New(), "Active", DateTimeOffset.UtcNow, null, [new ProfileEntry(nodeId, 0)]);
-		var node = new ModNode(nodeId, "mod", new ModNodeMetadata("Mod A", null, [], DateTimeOffset.UtcNow, null), [], []);
+		var node = new ModNode(nodeId, "mod", new ModNodeMetadata("Mod A", null, DateTimeOffset.UtcNow, null), [], []);
 		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, [profile], profile.Id);
 		var content = new ModContentFacts(nodeId, "mod", "generation", DateTimeOffset.UtcNow,
 		[

@@ -64,7 +64,7 @@ public sealed class ModLibraryManagerTests
 			var node = new ModNode(
 				Id: nodeId,
 				RelativePath: Path.Combine("import1", "obj"),
-				Metadata: new ModNodeMetadata("obj", null, Array.Empty<string>(), DateTimeOffset.UtcNow, null),
+				Metadata: new ModNodeMetadata("obj", null, DateTimeOffset.UtcNow, null),
 				PatchGroups: Array.Empty<PatchGroupKey>(),
 				Children: Array.Empty<ModNodeId>());
 
@@ -117,7 +117,7 @@ public sealed class ModLibraryManagerTests
 		return new ModNode(
 			Id: id,
 			RelativePath: Path.Combine("import1", name),
-			Metadata: new ModNodeMetadata(name, null, Array.Empty<string>(), DateTimeOffset.UtcNow, null),
+			Metadata: new ModNodeMetadata(name, null, DateTimeOffset.UtcNow, null),
 			PatchGroups: Array.Empty<PatchGroupKey>(),
 			Children: Array.Empty<ModNodeId>());
 	}

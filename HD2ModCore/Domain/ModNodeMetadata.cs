@@ -5,6 +5,5 @@
 public sealed record ModNodeMetadata(
 	string Name,
 	string? Notes,
-	IReadOnlyList<string> UserTags,
 	DateTimeOffset CreatedUtc,
 	DateTimeOffset? ModifiedUtc);

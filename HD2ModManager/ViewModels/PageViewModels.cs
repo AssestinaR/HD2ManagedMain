@@ -529,9 +529,11 @@ namespace HD2ModManager.ViewModels
         private readonly ObservableCollection<string> _selectedGuids = new();
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private string? _selectionAnchorGuid;
+        private string _query = string.Empty;
 
         public ObservableCollection<ProfileListItemViewModel> Items { get; } = new();
         public ObservableCollection<string> Profiles { get; } = new();
+        public string Query { get => _query; set { if (SetField(ref _query, value)) Refresh(); } }
 
         private string? _selectedProfileKey;
         private string _renameText = string.Empty;
@@ -715,8 +717,10 @@ namespace HD2ModManager.ViewModels
             {
                 var guid = entry.NodeId.Value.ToString("N");
                 var mod = _library.Get(guid);
+                var assetSummary = _library.GetDerivedData(guid)?.AssetSummary;
+                if (!ModSearchMatcher.IsMatch(mod?.Name, mod?.Description, assetSummary, Query)) continue;
                 _userStatuses.TryGetValue(guid, out var status);
-                Items.Add(new ProfileListItemViewModel(guid, mod?.Name ?? guid, mod?.Description, mod?.Image, string.Join(", ", mod?.Tags ?? new List<string>()), entry.LoadOrder, entry.AddedUtc, IsSelected(guid), status));
+                Items.Add(new ProfileListItemViewModel(guid, mod?.Name ?? guid, mod?.Description, mod?.Image, ModAssetSummaryFormatter.Format(assetSummary), entry.LoadOrder, entry.AddedUtc, IsSelected(guid), status));
             }
         }
 
@@ -776,22 +780,22 @@ namespace HD2ModManager.ViewModels
         public string Name { get; }
         public string? Description { get; }
         public string? ImagePath { get; }
-        public string TagsString { get; }
+        public string AssetSummary { get; }
         public int LoadOrder { get; }
         public DateTimeOffset AddedUtc { get; }
         public ModUserStatus? UserStatus { get; }
         public string StatusText => UserStatus is null ? $"配置成员 · 顺序 {LoadOrder}" : $"{UserStatus.Title} · 顺序 {LoadOrder}";
-        public string SecondaryText => string.IsNullOrWhiteSpace(Description) ? StatusText : $"{StatusText} · {Description}";
+        public string SecondaryDetailText => string.Join(" · ", new[] { Description, AssetSummary }.Where(value => !string.IsNullOrWhiteSpace(value)));
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
 
-        public ProfileListItemViewModel(string guid, string name, string? description, string? imagePath, string tagsString, int loadOrder, DateTimeOffset addedUtc, bool isSelected = false, ModUserStatus? userStatus = null)
+        public ProfileListItemViewModel(string guid, string name, string? description, string? imagePath, string assetSummary, int loadOrder, DateTimeOffset addedUtc, bool isSelected = false, ModUserStatus? userStatus = null)
         {
             Guid = guid;
             Name = name;
             Description = description;
             ImagePath = imagePath;
-            TagsString = tagsString;
+            AssetSummary = assetSummary;
             LoadOrder = loadOrder;
             AddedUtc = addedUtc;
             _isSelected = isSelected;
@@ -820,16 +824,6 @@ namespace HD2ModManager.ViewModels
             {
                 SettingsService.SetAutoCleanup(value);
                 OnPropertyChanged(nameof(AutoCleanup));
-            }
-        }
-
-        public bool AutoOpenTagEdit
-        {
-            get => SettingsService.GetAutoOpenTagEdit();
-            set
-            {
-                SettingsService.SetAutoOpenTagEdit(value);
-                OnPropertyChanged(nameof(AutoOpenTagEdit));
             }
         }
 
@@ -890,7 +884,6 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        public RelayCommand ReloadTagsCommand { get; }
         public RelayCommand OpenModFolderCommand { get; }
         public RelayCommand ResetModFolderCommand { get; }
         public RelayCommand OpenGameDataFolderCommand { get; }
@@ -905,7 +898,6 @@ namespace HD2ModManager.ViewModels
             Title = "设置";
 			_profiles = profiles;
 			_library = library;
-            ReloadTagsCommand = new RelayCommand(ReloadTags);
             OpenModFolderCommand = new RelayCommand(() => OpenFolder(ModLibraryFolder));
             ResetModFolderCommand = new RelayCommand(() => ModLibraryFolder = SettingsService.GetDefaultModLibraryFolder());
             OpenGameDataFolderCommand = new RelayCommand(OpenGameDataFolder);
@@ -918,7 +910,6 @@ namespace HD2ModManager.ViewModels
         {
             OnPropertyChanged(nameof(Language));
             OnPropertyChanged(nameof(AutoCleanup));
-            OnPropertyChanged(nameof(AutoOpenTagEdit));
             OnPropertyChanged(nameof(EnableLibraryImages));
             OnPropertyChanged(nameof(AutoUpdateAssetMetadata));
             OnPropertyChanged(nameof(AssetMetadataRepository));
@@ -1008,24 +999,6 @@ namespace HD2ModManager.ViewModels
         private void DetectGameDataFolder()
         {
             GameDataFolder = SettingsService.TryDetectAndSetGameDataFolder();
-        }
-
-        private static void ReloadTags()
-        {
-            try
-            {
-                var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                var configDir = System.IO.Path.Combine(baseDir, "config");
-                var catalog = TagCatalogService.Instance;
-                catalog.RebuildFromCsv(baseDir);
-                catalog.Save();
-                catalog.Load(configDir);
-                System.Windows.MessageBox.Show("Tags reloaded from CSV.", "Tags", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
-            }
-            catch (Exception ex)
-            {
-                System.Windows.MessageBox.Show($"Failed to reload tags: {ex.Message}", "Tags", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
-            }
         }
 
         private async void UpdateAssetMetadata()

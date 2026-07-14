@@ -107,7 +107,7 @@ public sealed class ProfileOverrideGraphServiceTests
 	}
 
 	private static ModNode CreateNode(ModNodeId id, string name)
-		=> new(id, name, new ModNodeMetadata(name, null, Array.Empty<string>(), DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
+		=> new(id, name, new ModNodeMetadata(name, null, DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
 
 	private static ModContentFacts CreateFacts(ModNode node, string archive, AssetKey assetKey, string generation)
 	{

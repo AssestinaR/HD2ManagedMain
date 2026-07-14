@@ -182,28 +182,4 @@
   <data name="Integrity_LogGenerated" xml:space="preserve">
     <value>Library integrity: removed {0} missing files; log generated.</value>
   </data>
-  <data name="TagEdit_Title" xml:space="preserve">
-    <value>Edit Tags</value>
-  </data>
-  <data name="TagEdit_Mod" xml:space="preserve">
-    <value>Mod:</value>
-  </data>
-  <data name="TagEdit_Add" xml:space="preserve">
-    <value>Add</value>
-  </data>
-  <data name="TagEdit_RemoveSelected" xml:space="preserve">
-    <value>Remove Selected</value>
-  </data>
-  <data name="TagEdit_Save" xml:space="preserve">
-    <value>Save</value>
-  </data>
-  <data name="TagEdit_Skip" xml:space="preserve">
-    <value>Skip</value>
-  </data>
-  <data name="TagEdit_Selected" xml:space="preserve">
-    <value>Selected</value>
-  </data>
-  <data name="TagEdit_Available" xml:space="preserve">
-    <value>Available</value>
-  </data>
 </root>

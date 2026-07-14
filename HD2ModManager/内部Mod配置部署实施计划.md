@@ -348,7 +348,7 @@ ModNodeId + SourceArchiveHex + SourcePatchIndex
 
 ### 普通详情
 
-仅显示名称、图像、备注、用户标签、资产标签卡、当前状态卡和高级详情入口。状态由统一投影服务生成，不展示 AssetKey、archive hash 或 Patch 序号。
+仅显示名称、图像、备注、资产标签卡、当前状态卡和高级详情入口。状态由统一投影服务生成，不展示 AssetKey、archive hash 或 Patch 序号。
 
 ### 高级详情
 

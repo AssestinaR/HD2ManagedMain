@@ -8,7 +8,6 @@ namespace HD2ModManager.Enums
         Profile,
         Library,
         Settings,
-        TagEdit,
         ModDetails,
     }
 }

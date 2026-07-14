@@ -59,5 +59,5 @@ public sealed class ModUserStatusProjectorTests
     }
 
     private static ModNode CreateNode(ModNodeId id)
-        => new(id, "test", new ModNodeMetadata("Test", null, [], DateTimeOffset.UtcNow, null), [], []);
+        => new(id, "test", new ModNodeMetadata("Test", null, DateTimeOffset.UtcNow, null), [], []);
 }

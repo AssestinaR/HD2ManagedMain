@@ -18,7 +18,6 @@
                     </Border>
                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                         <TextBlock Text="{Binding Name}" FontSize="22" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                        <TextBlock Text="{Binding TagsString}" Foreground="#1E63D6" Margin="0,6,0,0" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -57,7 +56,6 @@
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
                 <Button Content="加入配置" Command="{Binding AddToProfileCommand}" Padding="14,6"/>
                 <Button Content="查看高级详情" ToolTip="查看 Patch、AssetKey 与诊断信息" Command="{Binding OpenAdvancedDetailsCommand}" Padding="14,6" Margin="8,0,0,0"/>
-                <Button Content="编辑标签" Command="{Binding EditTagsCommand}" Padding="14,6" Margin="8,0,0,0"/>
                 <Button Content="删除" Command="{Binding DeleteCommand}" Padding="14,6" Margin="8,0,0,0" Foreground="#B3261E"/>
                 <Button Content="打开文件夹" Command="{Binding OpenFolderCommand}" Padding="14,6"/>
                 <Button Content="刷新" Command="{Binding RefreshCommand}" Padding="14,6" Margin="8,0,0,0"/>

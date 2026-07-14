@@ -18,7 +18,6 @@ namespace HD2ModManager.Services
             public string? ModLibraryFolder { get; set; }
             public string? GameDataFolder { get; set; }
             public bool AutoCleanup { get; set; } = false;
-            public bool AutoOpenTagEdit { get; set; } = false;
             public bool EnableLibraryImages { get; set; } = true;
             public bool AutoUpdateAssetMetadata { get; set; } = false;
             public string? AssetMetadataRepository { get; set; }
@@ -104,31 +103,6 @@ namespace HD2ModManager.Services
             {
                 var model = LoadAll() ?? new SettingsModel();
                 model.AssetMetadataRepository = string.IsNullOrWhiteSpace(repository) ? DefaultAssetMetadataRepository : repository;
-                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(SettingsPath, json);
-                return true;
-            }
-            catch { return false; }
-        }
-
-        public static bool GetAutoOpenTagEdit()
-        {
-            try
-            {
-                if (!File.Exists(SettingsPath)) return false;
-                var json = File.ReadAllText(SettingsPath);
-                var model = JsonSerializer.Deserialize<SettingsModel>(json);
-                return model?.AutoOpenTagEdit ?? false;
-            }
-            catch { return false; }
-        }
-
-        public static bool SetAutoOpenTagEdit(bool enabled)
-        {
-            try
-            {
-                var model = LoadAll() ?? new SettingsModel();
-                model.AutoOpenTagEdit = enabled;
                 var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(SettingsPath, json);
                 return true;

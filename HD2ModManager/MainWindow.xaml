@@ -31,9 +31,6 @@
         <DataTemplate DataType="{x:Type localVM:SettingsPageViewModel}">
             <views:SettingsPageView/>
         </DataTemplate>
-        <DataTemplate DataType="{x:Type localVM:TagEditPageViewModel}">
-            <views:TagEditPageView/>
-        </DataTemplate>
         <DataTemplate DataType="{x:Type localVM:ModDetailsPageViewModel}">
             <views:ModDetailsPageView/>
         </DataTemplate>
@@ -214,7 +211,6 @@
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="{Binding SelectionSummary}" VerticalAlignment="Center" Foreground="#1E63D6" FontWeight="SemiBold" Margin="2,0,14,0"/>
                     <Button Content="{Binding SelectionPrimaryText}" Command="{Binding SelectionPrimaryCommand}" Padding="12,5" Margin="0,0,8,0"/>
-                    <Button Content="{Binding SelectionSecondaryText}" Command="{Binding SelectionSecondaryCommand}" Padding="12,5" Margin="0,0,8,0"/>
                     <Button Content="{Binding SelectionDeleteText}" Command="{Binding SelectionDeleteCommand}" Padding="12,5" Margin="0,0,8,0" Foreground="#B3261E"/>
                     <Button Content="取消选择" Command="{Binding CancelSelectionCommand}" Padding="12,5"/>
                 </StackPanel>
