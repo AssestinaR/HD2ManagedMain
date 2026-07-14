@@ -2,6 +2,7 @@
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Input;
+using HD2ModCore.Infrastructure;
 using HD2ModCore.Domain;
 using HD2ModManager.Models;
 using HD2ModManager.Services;
@@ -13,12 +14,14 @@ namespace HD2ModManager.ViewModels
     {
         private const string SelectionScope = "Library";
         private readonly ModLibraryService _library;
+        private readonly DerivedStateCoordinator? _derivedState;
         private readonly ProfileService? _profiles;
         private readonly NotificationService? _notifications;
         private readonly TagCatalogService _tags;
         private readonly LibrarySectionBuilder _sectionBuilder;
         private readonly SelectionCoordinator? _selection;
         private readonly ObservableCollection<string> _selectedGuids = new();
+        private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private string? _selectionAnchorGuid;
 
         public ObservableCollection<ModCardViewModel> Items { get; } = new();
@@ -26,6 +29,8 @@ namespace HD2ModManager.ViewModels
 
         private string _query = string.Empty;
         public string Query { get => _query; set { _query = value; Refresh(); } }
+        public bool IsProfileEditing => _profiles?.SelectedProfile is not null;
+        public string EmptyMessage => IsProfileEditing ? "所有 Mod 都已加入此配置。" : "模组库中没有可显示的 Mod。";
 
         public RelayCommand RefreshCommand { get; }
         public RelayCommand RemoveModCommand { get; }
@@ -42,16 +47,19 @@ namespace HD2ModManager.ViewModels
         private bool _isCompact = true;
         public bool IsCompact { get => _isCompact; set { _isCompact = value; OnPropertyChanged(nameof(IsCompact)); } }
 
-        public LibraryPageViewModel(ModLibraryService library, SelectionCoordinator? selection = null, ProfileService? profiles = null, NotificationService? notifications = null)
+        public LibraryPageViewModel(ModLibraryService library, DerivedStateCoordinator? derivedState = null, SelectionCoordinator? selection = null, ProfileService? profiles = null, NotificationService? notifications = null)
         {
             Title = "Library";
             _library = library;
+            _derivedState = derivedState;
             _profiles = profiles;
             _notifications = notifications;
             _tags = TagCatalogService.Instance;
             _sectionBuilder = new LibrarySectionBuilder(_tags, IsSelected);
             _selection = selection;
             if (_selection != null) _selection.SelectionChanged += (_, _) => SyncSelectionFromCoordinator();
+            if (_profiles != null) _profiles.Changed += (_, _) => QueueStatusRefresh();
+            if (_derivedState != null) _derivedState.SnapshotChanged += (_, _) => RunOnUiThread(QueueStatusRefresh);
             RefreshCommand = new RelayCommand(Refresh);
             RemoveModCommand = new RelayCommand(() => { /* parameter passed via CommandParameter not used here */ });
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
@@ -65,6 +73,12 @@ namespace HD2ModManager.ViewModels
             EditImageCommand = new RelayCommand(_ => { });
             RemoveCommand = new RelayCommand(parameter => RemoveMod(parameter as ModCardViewModel));
             Refresh();
+            QueueStatusRefresh();
+        }
+
+        public LibraryPageViewModel(ModLibraryService library, SelectionCoordinator? selection, ProfileService? profiles, NotificationService? notifications = null)
+            : this(library, null, selection, profiles, notifications)
+        {
         }
 
         public void SelectRow(ModCardViewModel card, ModifierKeys modifiers)
@@ -133,6 +147,11 @@ namespace HD2ModManager.ViewModels
         public void Refresh()
         {
             var all = _library.All().ToList();
+            if (IsProfileEditing)
+            {
+                var selectedIds = _profiles!.SelectedProfile!.Entries.Select(entry => entry.NodeId.Value.ToString("N")).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                all = all.Where(mod => !selectedIds.Contains(mod.Guid)).ToList();
+            }
             var q = (_query ?? string.Empty).Trim();
             if (!string.IsNullOrWhiteSpace(q))
             {
@@ -146,9 +165,35 @@ namespace HD2ModManager.ViewModels
             foreach (var mod in all.OrderBy(m => m.Name, System.StringComparer.CurrentCultureIgnoreCase))
             {
                 var derived = _library.GetDerivedData(mod.Guid);
-                Items.Add(new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, derived?.UnitCompatibility));
+                _userStatuses.TryGetValue(mod.Guid, out var status);
+                Items.Add(new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, derived?.UnitCompatibility, status));
             }
             RepairAllOutdatedCommand.RaiseCanExecuteChanged();
+            OnPropertyChanged(nameof(IsProfileEditing));
+            OnPropertyChanged(nameof(EmptyMessage));
+        }
+
+        private async Task RefreshUserStatusesAsync()
+        {
+            if (_profiles is null || _derivedState is null) return;
+            await Task.Yield();
+            var statuses = _derivedState.ProjectStatuses(_profiles.SelectedProfileId);
+            _userStatuses.Clear();
+            foreach (var pair in statuses) _userStatuses[pair.Key.Value.ToString("N")] = pair.Value;
+            Refresh();
+        }
+
+        private void QueueStatusRefresh()
+        {
+            Refresh();
+            _ = RefreshUserStatusesAsync();
+        }
+
+        private static void RunOnUiThread(Action action)
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess()) action();
+            else _ = dispatcher.InvokeAsync(action);
         }
 
         private async void RepairMod(ModCardViewModel? card)
@@ -207,13 +252,13 @@ namespace HD2ModManager.ViewModels
         private void AddToProfile(ModCardViewModel? card)
         {
             if (card == null || _profiles == null) return;
-            if (_profiles.AddModToActive(card.Mod.Guid))
+            if (_profiles.AddModToSelected(card.Mod.Guid))
             {
-                _notifications?.Show($"已加入当前配置：{card.Mod.Name}");
+                _notifications?.Show($"已加入正在编辑的配置：{card.Mod.Name}");
             }
             else
             {
-                _notifications?.Show("无法加入当前配置，可能未创建活动配置或该 Mod 已存在。", NotificationLevel.Info);
+                _notifications?.Show("无法加入配置，可能尚未选择配置或该 Mod 已存在。", NotificationLevel.Info);
             }
         }
 
@@ -300,11 +345,17 @@ namespace HD2ModManager.ViewModels
             }.Where(s => !string.IsNullOrWhiteSpace(s)));
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
-        public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUnitCompatibilityReport? unitCompatibility = null)
+        public ModUserStatus? UserStatus { get; }
+        public string UserStatusTitle => UserStatus?.Title ?? "状态未知";
+        public string UserStatusSummary => UserStatus?.Summary ?? "正在读取状态。";
+        public bool HasUserStatus => UserStatus is not null;
+
+        public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null)
         {
             Mod = mod;
             AssetSummary = assetSummary;
             UnitCompatibility = unitCompatibility;
+            UserStatus = userStatus;
             _isSelected = isSelected;
             ArmorInfo = BuildArmorInfo(mod);
         }

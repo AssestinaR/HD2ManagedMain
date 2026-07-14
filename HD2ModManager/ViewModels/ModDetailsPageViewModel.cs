@@ -14,6 +14,7 @@ namespace HD2ModManager.ViewModels
     {
         private readonly ModLibraryService _library;
         private readonly ProfileService _profiles;
+        private readonly DerivedStateCoordinator _derivedState;
         private readonly NotificationService? _notifications;
 
         public string ModId { get; }
@@ -30,6 +31,8 @@ namespace HD2ModManager.ViewModels
         public string AssetTagsString { get; private set; } = "未解析";
         public string AssetListSummary { get; private set; } = "未解析";
         public string AssetOverrideSummary { get; private set; } = "未检查";
+        public string UserStatusTitle { get; private set; } = "状态未知";
+        public string UserStatusSummary { get; private set; } = "正在读取状态。";
         public string PatchSummary => Mod?.FileGroups == null || Mod.FileGroups.Count == 0
             ? "没有 patch 文件组"
             : string.Join(Environment.NewLine, Mod.FileGroups.Select(g => $"{g.HexPrefix}.patch_{g.PatchN}"));
@@ -39,12 +42,14 @@ namespace HD2ModManager.ViewModels
         public RelayCommand AddToProfileCommand { get; }
         public RelayCommand EditTagsCommand { get; }
         public RelayCommand DeleteCommand { get; }
+        public RelayCommand OpenAdvancedDetailsCommand { get; }
 
-        public ModDetailsPageViewModel(ModLibraryService library, ProfileService profiles, string modId, NotificationService? notifications = null)
+        public ModDetailsPageViewModel(ModLibraryService library, ProfileService profiles, DerivedStateCoordinator derivedState, string modId, NotificationService? notifications = null)
         {
             Title = "Mod 详情";
             _library = library;
             _profiles = profiles;
+            _derivedState = derivedState;
             _notifications = notifications;
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
@@ -52,6 +57,8 @@ namespace HD2ModManager.ViewModels
             AddToProfileCommand = new RelayCommand(AddToProfile);
             EditTagsCommand = new RelayCommand(EditTags);
             DeleteCommand = new RelayCommand(Delete);
+            OpenAdvancedDetailsCommand = new RelayCommand(OpenAdvancedDetails);
+            _derivedState.SnapshotChanged += (_, _) => RunOnUiThread(Refresh);
             Refresh();
         }
 
@@ -73,6 +80,8 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(AssetTagsString));
             OnPropertyChanged(nameof(AssetListSummary));
             OnPropertyChanged(nameof(AssetOverrideSummary));
+            OnPropertyChanged(nameof(UserStatusTitle));
+            OnPropertyChanged(nameof(UserStatusSummary));
         }
 
         private void RefreshDerivedStatus()
@@ -104,35 +113,27 @@ namespace HD2ModManager.ViewModels
                 return;
             }
 
-            try
+            var statuses = _derivedState.ProjectStatuses(_profiles.SelectedProfileId);
+            if (statuses.TryGetValue(nodeId, out var userStatus))
             {
-                var paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
-                var derived = _library.GetDerivedData(Mod.Guid);
-                var summary = derived?.AssetSummary;
-                if (summary == null)
-                {
-                    AssetTagsString = "资产未解析";
-                    AssetListSummary = "资产未解析";
-                    AssetOverrideSummary = BuildAssetOverrideSummary(paths, nodeId);
-                    return;
-                }
-                AssetTagsString = BuildAssetTagTreeText(summary);
-                AssetListSummary = summary.Assets.Count == 0
-                    ? "未发现可解析资产"
-                    : string.Join(Environment.NewLine, summary.Assets.Take(80).Select(a => a.DisplayName));
-                if (summary.Assets.Count > 80)
-                {
-                    AssetListSummary += Environment.NewLine + $"... 另有 {summary.Assets.Count - 80} 个资产";
-                }
-
-                AssetOverrideSummary = BuildAssetOverrideSummary(paths, nodeId);
+                UserStatusTitle = userStatus.Title;
+                UserStatusSummary = userStatus.Summary;
             }
-            catch (Exception ex)
+            var derived = _library.GetDerivedData(Mod.Guid);
+            var summary = derived?.AssetSummary;
+            if (summary == null)
             {
-                AssetTagsString = "资产解析失败";
-                AssetListSummary = $"资产解析失败：{ex.Message}";
-                AssetOverrideSummary = "资产覆盖检测不可用";
+                AssetTagsString = "资产未解析";
+                AssetListSummary = "资产派生数据正在后台更新。";
+                AssetOverrideSummary = BuildCachedAssetOverrideSummary(nodeId);
+                return;
             }
+            AssetTagsString = BuildAssetTagTreeText(summary);
+            AssetListSummary = summary.Assets.Count == 0
+                ? "未发现可解析资产"
+                : string.Join(Environment.NewLine, summary.Assets.Take(80).Select(a => a.DisplayName));
+            if (summary.Assets.Count > 80) AssetListSummary += Environment.NewLine + $"... 另有 {summary.Assets.Count - 80} 个资产";
+            AssetOverrideSummary = BuildCachedAssetOverrideSummary(nodeId);
         }
 
         private static string BuildAssetTagTreeText(ModAssetSummary summary)
@@ -163,36 +164,36 @@ namespace HD2ModManager.ViewModels
             return builder.ToString().TrimEnd();
         }
 
-        private string BuildAssetOverrideSummary(StoragePaths paths, ModNodeId nodeId)
+        private string BuildCachedAssetOverrideSummary(ModNodeId nodeId)
         {
             var active = _profiles.ActiveProfile;
             if (active == null) return "当前没有活动配置";
-            if (!active.Entries.Any(e => e.Enabled && e.NodeId == nodeId)) return "当前 Mod 未启用在活动配置中";
-
-            var overrideAnalyzer = CoreServices.CreateModAssetOverrideAnalyzer(paths);
-            var analysis = overrideAnalyzer.AnalyzeAsync(_profiles.GetSortedEntries(active), _library.Snapshot, _library.ModsRootDirectory).AsTask().GetAwaiter().GetResult();
-            var coverage = analysis.Coverages.FirstOrDefault(c => c.NodeId == nodeId);
-            var relatedChains = analysis.OverrideChains.Where(c => c.Entries.Any(e => e.NodeId == nodeId)).ToList();
+            if (!active.Entries.Any(e => e.NodeId == nodeId)) return "当前 Mod 未加入活动配置";
+            var graph = _derivedState.Snapshot.ExpectedGraph;
+            if (graph is null || graph.ProfileId != active.Id || graph.ProfileRevision != active.Revision) return "预计覆盖数据正在后台更新。";
+            var coverage = graph.Coverages.FirstOrDefault(c => c.NodeId == nodeId);
+            var relatedChains = graph.AssetChains.Where(c => c.Entries.Any(e => e.NodeId == nodeId)).ToList();
             if (relatedChains.Count == 0)
             {
-                return coverage == null ? "未发现资产级覆盖" : $"未发现资产级覆盖；共 {coverage.TotalAssets} 个资产";
+                return coverage == null ? "未发现资产级覆盖" : $"未发现资产级覆盖；共 {coverage.TotalAssetKeys} 个 AssetKey";
             }
 
             var lost = relatedChains.Count(c => c.Winner.NodeId != nodeId);
             var won = relatedChains.Count(c => c.Winner.NodeId == nodeId);
             var status = coverage is { FullyOverridden: true }
-                ? "当前 Mod 的资产已全部被后加载 Mod 覆盖"
+                ? "当前 Mod 的 AssetKey 已全部被后加载 Mod 覆盖"
                 : coverage is { PartiallyOverridden: true }
-                    ? $"当前 Mod 有 {coverage.OverriddenAssets}/{coverage.TotalAssets} 个资产被覆盖"
+                    ? $"当前 Mod 有 {coverage.OverriddenAssetKeys}/{coverage.TotalAssetKeys} 个 AssetKey 被覆盖"
                     : "当前 Mod 覆盖了其他 Mod 的资产";
 
             var lines = new List<string> { $"{status}；胜出 {won}，失效 {lost}" };
             lines.AddRange(relatedChains.Take(20).Select(chain =>
             {
                 var current = chain.Entries.First(e => e.NodeId == nodeId);
+                var displayName = $"{current.Mapping.FileDisplayName}（{current.Mapping.TypeDisplayName}）";
                 return current.IsWinner
-                    ? $"覆盖 {string.Join(" -> ", chain.Entries.Where(e => e.NodeId != nodeId).Select(e => e.ModName))}：{current.Asset.DisplayName}"
-                    : $"被 {chain.Winner.ModName} 覆盖：{current.Asset.DisplayName}";
+                    ? $"覆盖 {string.Join(" -> ", chain.Entries.Where(e => e.NodeId != nodeId).Select(e => e.ModName))}：{displayName}"
+                    : $"被 {chain.Winner.ModName} 覆盖：{displayName}";
             }));
             if (relatedChains.Count > 20)
             {
@@ -211,16 +212,26 @@ namespace HD2ModManager.ViewModels
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = abs, UseShellExecute = true });
         }
 
+        private void OpenAdvancedDetails()
+        {
+            var window = new HD2ModManager.Views.AdvancedModDetailsWindow
+            {
+                Owner = System.Windows.Application.Current?.MainWindow,
+                DataContext = this,
+            };
+            window.ShowDialog();
+        }
+
         private void AddToProfile()
         {
             if (Mod == null) return;
-            if (_profiles.AddModToActive(Mod.Guid))
+            if (_profiles.AddModToSelected(Mod.Guid))
             {
-                _notifications?.Show($"已加入当前配置：{Mod.Name}");
+                _notifications?.Show($"已加入正在编辑的配置：{Mod.Name}");
             }
             else
             {
-                _notifications?.Show("无法加入当前配置，可能未创建活动配置或该 Mod 已存在。", NotificationLevel.Info);
+                _notifications?.Show("无法加入配置，可能尚未选择配置或该 Mod 已存在。", NotificationLevel.Info);
             }
         }
 
@@ -256,8 +267,8 @@ namespace HD2ModManager.ViewModels
             if (!TryParseNodeId(Mod.Guid, out var nodeId)) return "无法识别 Mod ID";
             var entry = active.Entries.FirstOrDefault(e => e.NodeId == nodeId);
             return entry == null
-                ? $"未加入当前配置：{active.Name}"
-                : $"已加入当前配置：{active.Name}，顺序 {entry.LoadOrder}，{(entry.Enabled ? "启用" : "禁用")}";
+                ? $"未加入活动配置：{active.Name}"
+                : $"已启用在活动配置：{active.Name}，顺序 {entry.LoadOrder}";
         }
 
         private string BuildFileIntegritySummary()
@@ -287,28 +298,10 @@ namespace HD2ModManager.ViewModels
             var active = _profiles.ActiveProfile;
             if (active == null) return "当前没有活动配置，无法检测冲突";
             if (!TryParseNodeId(Mod.Guid, out var nodeId)) return "无法识别 Mod ID";
-
-            var ids = active.Entries.Select(e => e.NodeId).Append(nodeId).Distinct().ToList();
-            if (ids.Count < 2) return "当前配置中没有可比较的其他 Mod";
-
-            try
-            {
-                var detector = CoreServices.CreateConflictDetector(new StoragePaths(AppDomain.CurrentDomain.BaseDirectory));
-                var pairs = detector.DetectNodeConflictsAsync(ids, _library.Snapshot, _library.ModsRootDirectory).AsTask().GetAwaiter().GetResult();
-                var related = pairs.Where(p => p.A == nodeId || p.B == nodeId).ToList();
-                if (related.Count == 0) return "未发现与当前配置的资产冲突";
-
-                return string.Join(Environment.NewLine, related.Select(pair =>
-                {
-                    var otherId = pair.A == nodeId ? pair.B : pair.A;
-                    var otherName = _library.Get(otherId.Value.ToString("N"))?.Name ?? otherId.Value.ToString("N");
-                    return $"与 {otherName} 冲突：{pair.SharedKeys.Count} 个资产键";
-                }));
-            }
-            catch (Exception ex)
-            {
-                return $"冲突检测失败：{ex.Message}";
-            }
+            var graph = _derivedState.Snapshot.ExpectedGraph;
+            if (graph is null || graph.ProfileId != active.Id || graph.ProfileRevision != active.Revision) return "冲突数据正在后台更新。";
+            var overlaps = graph.ArchiveOverlaps.Where(overlap => overlap.NodeIds.Contains(nodeId)).ToList();
+            return overlaps.Count == 0 ? "未发现与当前配置的潜在重叠" : $"与 {overlaps.Sum(overlap => overlap.NodeIds.Count - 1)} 个 Mod 存在 {overlaps.Count} 个 archive 级潜在重叠";
         }
 
         private static bool TryParseNodeId(string value, out ModNodeId nodeId)
@@ -321,6 +314,13 @@ namespace HD2ModManager.ViewModels
 
             nodeId = default;
             return false;
+        }
+
+        private static void RunOnUiThread(Action action)
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess()) action();
+            else _ = dispatcher.InvokeAsync(action);
         }
     }
 

@@ -38,4 +38,33 @@ public sealed class PatchFileIndexBuilderTests
 			try { Directory.Delete(root, recursive: true); } catch { }
 		}
 	}
+
+	[Fact]
+	public async Task BuildAsync_ScansTopLevelOnly_AndIgnoresBakDirectory()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var modsRoot = Path.Combine(root, "mods");
+		var modDir = Path.Combine(modsRoot, "mod");
+		var backupDir = Path.Combine(modDir, "bak", "20260714");
+		Directory.CreateDirectory(backupDir);
+
+		try
+		{
+			File.WriteAllText(Path.Combine(modDir, "9ba626afa44a3aa3.patch_0"), "active");
+			File.WriteAllText(Path.Combine(backupDir, "9ba626afa44a3aa3.patch_1"), "backup");
+			var nodeId = ModNodeId.New();
+			var node = new ModNode(nodeId, "mod", new ModNodeMetadata("mod", null, Array.Empty<string>(), DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
+			var snapshot = new LibrarySnapshot(2, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, Array.Empty<Profile>());
+
+			var index = await new PatchFileIndexBuilder(new PatchFileNameParser()).BuildAsync(snapshot, modsRoot);
+
+			var file = Assert.Single(index.FilesByNode[nodeId]);
+			Assert.Equal(0, file.SourcePatchIndex);
+			Assert.Equal(Path.Combine(modDir, "9ba626afa44a3aa3.patch_0"), file.FilePath);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
 }

@@ -4,6 +4,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Media;
+using HD2ModCore.Application;
+using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2ModManager.Enums;
 using HD2ModManager.Services;
@@ -17,7 +19,10 @@ namespace HD2ModManager.ViewModels
         private readonly ImportQueueService _importQueue;
         private readonly BackgroundTaskService _backgroundTasks;
         private readonly ApplyStatusService _applyStatus;
+        private readonly DerivedStateCoordinator _derivedState;
         private readonly NotificationService _notificationService;
+        private readonly IProfileDeploymentCoordinator _deploymentCoordinator;
+        private BackgroundTaskItem? _deploymentTask;
         private readonly TagCatalogService _tagCatalog = TagCatalogService.Instance;
         private readonly SelectionCoordinator _selection = new();
         private readonly ObservableCollection<string> _tagQueue = new();
@@ -111,8 +116,8 @@ namespace HD2ModManager.ViewModels
         public SelectionCoordinator Selection => _selection;
         public bool HasSelection => _selection.HasSelection;
         public string SelectionSummary => _selection.Summary;
-        public string SelectionPrimaryText => string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase) ? "启用" : "加入配置";
-        public string SelectionSecondaryText => string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase) ? "禁用" : "编辑标签";
+        public string SelectionPrimaryText => string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase) ? "移除" : "加入配置";
+        public string SelectionSecondaryText => string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase) ? string.Empty : "编辑标签";
         public string SelectionDeleteText => string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase) ? "移除" : "删除";
 
         public ShellViewModel()
@@ -121,16 +126,29 @@ namespace HD2ModManager.ViewModels
             var configDir = System.IO.Path.Combine(baseDir, "config");
             System.IO.Directory.CreateDirectory(configDir);
 
+            if (string.IsNullOrWhiteSpace(SettingsService.GetGameDataFolder())) SettingsService.TryDetectAndSetGameDataFolder();
+            SettingsService.EnsureDefaultModLibraryFolder();
+
             _profileService = new ProfileService(configDir);
             _profileService.Load();
 
             _libraryService = new ModLibraryService(System.IO.Path.Combine(configDir, "library.json"));
             _libraryService.Load(buildDerivedData: false);
+            _derivedState = new DerivedStateCoordinator(_libraryService, _profileService);
             _importQueue = new ImportQueueService();
             _backgroundTasks = new BackgroundTaskService();
             _applyStatus = new ApplyStatusService();
             _notificationService = new NotificationService();
             Notifications = _notificationService.Items;
+            _deploymentCoordinator = CoreServices.CreateProfileDeploymentCoordinator(
+                SettingsService.CreateStoragePaths(),
+                SettingsService.GetGameDataFolder);
+            _deploymentCoordinator.StatusChanged += OnDeploymentStatusChanged;
+            _profileService.ActiveProfileDeploymentRequired += (_, _) => _deploymentCoordinator.NotifyActiveProfileChanged();
+            _profileService.ActiveProfileDeactivationRequired += (_, _) => _ = _deploymentCoordinator.DeactivateAsync();
+            _libraryService.ModContentFactsChanged += (_, _) => _profileService.NotifyActiveModContentChanged();
+            _profileService.Changed += (_, _) => RefreshCurrentPage();
+            _derivedState.SnapshotChanged += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
 
             InitializeTagCatalog(baseDir, configDir);
             RunStartupChecks(configDir);
@@ -141,7 +159,7 @@ namespace HD2ModManager.ViewModels
             ShowLibraryCommand = new RelayCommand(() => Navigate(WorkspaceMode.LibraryOnly));
             ShowSplitCommand = new RelayCommand(() => Navigate(WorkspaceMode.ProfileLibrarySplit));
             ShowSettingsCommand = new RelayCommand(() => Navigate(WorkspaceMode.Settings));
-            ApplyChangesCommand = new RelayCommand(ApplyActiveProfile);
+            ApplyChangesCommand = new RelayCommand(QueueActiveProfileDeployment);
             ImportCommand = new RelayCommand(BrowseAndImport);
             RefreshCommand = new RelayCommand(RefreshCurrentPage);
             CancelSelectionCommand = new RelayCommand(_selection.Clear);
@@ -152,6 +170,7 @@ namespace HD2ModManager.ViewModels
 
             Navigate(WorkspaceMode.Home);
             _ = RefreshLibraryDerivedDataAfterStartupAsync();
+            _ = _derivedState.RefreshAsync();
         }
 
         private async Task RefreshLibraryDerivedDataAfterStartupAsync()
@@ -394,7 +413,7 @@ namespace HD2ModManager.ViewModels
             try
             {
                 task.MarkRunning("正在同步资产元数据");
-                var paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
+                var paths = SettingsService.CreateStoragePaths();
                 var sync = CoreServices.CreateAssetMetadataSyncService(paths);
                 var result = await sync.SyncAsync(SettingsService.GetAssetMetadataRepository()).ConfigureAwait(false);
                 if (result.Success)
@@ -415,27 +434,53 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        private void ApplyActiveProfile()
+        private void QueueActiveProfileDeployment()
         {
-            try
+            if (_profileService.ActiveProfile is null)
             {
-                var activation = new ActivationService(_libraryService, _profileService, _notificationService);
-                var result = activation.ApplyActiveProfileDetailed();
-                _applyStatus.Record(result);
-                RefreshCurrentPage();
-                if (!result.Success && result.CoreResult != null)
-                {
-                    var details = string.Join(Environment.NewLine, result.CoreResult.Issues.Take(8).Select(i => $"[{i.Severity}] {i.Code}: {i.Message}"));
-                    if (!string.IsNullOrWhiteSpace(details))
-                    {
-                        System.Windows.MessageBox.Show(details, "Apply Issues", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
-                    }
-                }
+                _notificationService.Show("当前没有活动配置。", NotificationLevel.Info, TimeSpan.FromSeconds(4));
+                return;
             }
-            catch (Exception ex)
+            _deploymentCoordinator.NotifyActiveProfileChanged();
+            _notificationService.Show("已请求立即部署最新活动配置。", NotificationLevel.Info, TimeSpan.FromSeconds(4));
+        }
+
+        private void OnDeploymentStatusChanged(object? sender, ProfileDeploymentStatus status)
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is not null && !dispatcher.CheckAccess())
             {
-                _notificationService.Show($"应用配置失败：{ex.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(6));
-                System.Windows.MessageBox.Show(ex.Message, "Apply", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                _ = dispatcher.InvokeAsync(() => OnDeploymentStatusChanged(sender, status));
+                return;
+            }
+
+            switch (status.Stage)
+            {
+                case ProfileDeploymentStage.Deploying:
+                    if (_deploymentTask?.IsActive != true)
+                        _deploymentTask = _backgroundTasks.Enqueue(BackgroundTaskKind.Deployment, "部署活动配置", status.Message);
+                    _deploymentTask.MarkRunning(status.Message ?? "正在部署");
+                    break;
+                case ProfileDeploymentStage.Deactivating:
+                    if (_deploymentTask?.IsActive == true) _deploymentTask.Cancel();
+                    _deploymentTask = _backgroundTasks.Enqueue(BackgroundTaskKind.DeactivateProfile, "停用活动配置", status.Message);
+                    _deploymentTask.MarkRunning(status.Message ?? "正在清理 Patch");
+                    break;
+                case ProfileDeploymentStage.Completed:
+                    _deploymentTask?.MarkCompleted();
+                    if (status.ApplyResult is { } success) _applyStatus.Record(new ApplyExecutionStatus(success.Success, status.Message ?? "部署完成", success));
+                    _derivedState.MarkDeploymentDirty();
+                    RefreshCurrentPage();
+                    break;
+                case ProfileDeploymentStage.Failed:
+                    _deploymentTask?.MarkFailed(status.Message ?? "部署失败");
+                    if (status.ApplyResult is { } failure) _applyStatus.Record(new ApplyExecutionStatus(false, status.Message ?? "部署失败", failure));
+                    _notificationService.Show(status.Message ?? "活动配置部署失败。", NotificationLevel.Error, TimeSpan.FromSeconds(6));
+                    RefreshCurrentPage();
+                    break;
+                case ProfileDeploymentStage.Canceled:
+                    _deploymentTask?.MarkCanceled();
+                    break;
             }
         }
 
@@ -516,15 +561,16 @@ namespace HD2ModManager.ViewModels
             if (!_selection.HasSelection) return;
             if (string.Equals(_selection.Scope, "Library", StringComparison.OrdinalIgnoreCase))
             {
-                foreach (var guid in _selection.SelectedIds.ToList()) _profileService.AddModToActive(guid);
-                _notificationService.Show($"已加入当前配置：{_selection.SelectedIds.Count} 个 Mod");
+                foreach (var guid in _selection.SelectedIds.ToList()) _profileService.AddModToSelected(guid);
+                _notificationService.Show($"已加入正在编辑的配置：{_selection.SelectedIds.Count} 个 Mod");
                 _selection.Clear();
                 RefreshCurrentPage();
             }
             else if (string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase))
             {
-                var count = _profileService.SetModsEnabledInActive(_selection.SelectedIds.ToList(), enabled: true);
-                _notificationService.Show($"已启用：{count} 个 Mod");
+                var ids = _selection.SelectedIds.ToList();
+                foreach (var guid in ids) _profileService.RemoveModFromSelected(guid);
+                _notificationService.Show($"已从配置移除：{ids.Count} 个 Mod");
                 _selection.Clear();
                 RefreshCurrentPage();
             }
@@ -536,13 +582,6 @@ namespace HD2ModManager.ViewModels
             if (string.Equals(_selection.Scope, "Library", StringComparison.OrdinalIgnoreCase))
             {
                 OpenTagEdit(_selection.SelectedIds);
-            }
-            else if (string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase))
-            {
-                var count = _profileService.SetModsEnabledInActive(_selection.SelectedIds.ToList(), enabled: false);
-                _notificationService.Show($"已禁用：{count} 个 Mod");
-                _selection.Clear();
-                RefreshCurrentPage();
             }
         }
 
@@ -561,7 +600,7 @@ namespace HD2ModManager.ViewModels
             }
             else if (string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase))
             {
-                foreach (var guid in ids) _profileService.RemoveModFromActive(guid);
+                foreach (var guid in ids) _profileService.RemoveModFromSelected(guid);
                 _notificationService.Show($"已从配置移除：{ids.Count} 个 Mod");
             }
 
@@ -578,16 +617,27 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(SelectionDeleteText));
         }
 
+        private static void RefreshOnUiThread(Action refresh)
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess())
+            {
+                refresh();
+                return;
+            }
+            _ = dispatcher.InvokeAsync(refresh);
+        }
+
         private PageViewModel CreatePage(WorkspacePageType pageType)
         {
             return pageType switch
             {
                 WorkspacePageType.Home => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
                 WorkspacePageType.Status => new StatusPageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
-                WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _selection),
+                WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection),
                 WorkspacePageType.Library => CreateLibraryPage(),
                 WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService),
-                WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, SelectedModId ?? string.Empty, _notificationService),
+                WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),
                 WorkspacePageType.TagEdit => LeftPage ?? new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
             };
@@ -595,7 +645,7 @@ namespace HD2ModManager.ViewModels
 
         private LibraryPageViewModel CreateLibraryPage()
         {
-            var page = new LibraryPageViewModel(_libraryService, _selection, _profileService, _notificationService);
+            var page = new LibraryPageViewModel(_libraryService, _derivedState, _selection, _profileService, _notificationService);
             RegisterLibraryActions(page);
             return page;
         }
@@ -604,7 +654,7 @@ namespace HD2ModManager.ViewModels
         {
             page.PageActions.Add(new PageActionViewModel("⟳", "刷新当前页", RefreshCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 10, kind: "Refresh"));
             page.PageActions.Add(new PageActionViewModel("＋", "导入 Mod", ImportCommand, order: 20, kind: "Import"));
-            page.PageActions.Add(new PageActionViewModel("✓", "应用当前配置", ApplyChangesCommand, background: new SolidColorBrush(Color.FromRgb(46, 125, 50)), order: 30, kind: "Apply"));
+            page.PageActions.Add(new PageActionViewModel("▶", "立即重新部署", ApplyChangesCommand, background: new SolidColorBrush(Color.FromRgb(46, 125, 50)), order: 30, kind: "ScheduleDeployment"));
         }
 
         private void UpdateModeFromSlots()

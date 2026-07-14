@@ -67,7 +67,7 @@ public sealed class CachedModAssetAnalyzer : IModAssetAnalyzer
 		foreach (var path in Directory.EnumerateFiles(nodeDir, "*", SearchOption.TopDirectoryOnly))
 		{
 			var fileName = Path.GetFileName(path);
-			if (!_fileNameParser.TryParse(fileName, out var info) || info is null || info.SidecarKind != PatchSidecarKind.Base)
+			if (!_fileNameParser.TryParse(fileName, out var info) || info is null)
 			{
 				continue;
 			}

@@ -2,6 +2,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
@@ -28,6 +29,7 @@ namespace HD2ModManager.ViewModels
         private readonly ModLibraryService _library;
         private readonly ImportQueueService _queue;
         private readonly ApplyStatusService _applyStatus;
+        private DeploymentCapability _deploymentCapability = DeploymentCapability.Unavailable("尚未检测。");
 
         public string ActiveProfile => _profiles.ActiveKey ?? "未启用";
         public int ModCount => _library.All().Count();
@@ -35,6 +37,14 @@ namespace HD2ModManager.ViewModels
         public string ActiveProfileModSummary => BuildActiveProfileModSummary(_profiles.ActiveProfile);
         public string QueueSummary => $"总计 {_queue.Tasks.Count}，完成 {_queue.CountDone}，待处理 {_queue.CountQueued + _queue.CountRunning}";
         public string ApplySummary => _applyStatus.Summary;
+        public DeploymentCapability DeploymentCapability => _deploymentCapability;
+        public bool IsDeploymentBlocked => !DeploymentCapability.IsAvailable;
+        public string DeploymentCapabilityText => DeploymentCapability.IsAvailable
+            ? $"当前部署方式：{(DeploymentCapability.Method == DeploymentMethod.HardLink ? "硬链接" : "符号链接")}。{DeploymentCapability.Summary}"
+            : $"当前无法部署 Mod：{DeploymentCapability.Error}";
+        public RelayCommand MoveLibraryToRecommendedCommand { get; }
+        public RelayCommand OpenDeveloperSettingsCommand { get; }
+        public RelayCommand RestartAsAdministratorCommand { get; }
 
         public HomePageViewModel(ProfileService profiles, ModLibraryService library, ImportQueueService queue, ApplyStatusService applyStatus)
         {
@@ -43,6 +53,10 @@ namespace HD2ModManager.ViewModels
             _library = library;
             _queue = queue;
             _applyStatus = applyStatus;
+            RefreshDeploymentCapability();
+            MoveLibraryToRecommendedCommand = new RelayCommand(MoveLibraryToRecommended);
+            OpenDeveloperSettingsCommand = new RelayCommand(() => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:developers") { UseShellExecute = true }));
+            RestartAsAdministratorCommand = new RelayCommand(RestartAsAdministrator);
         }
 
         public void Refresh()
@@ -53,14 +67,73 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ActiveProfileModSummary));
             OnPropertyChanged(nameof(QueueSummary));
             OnPropertyChanged(nameof(ApplySummary));
+            RefreshDeploymentCapability();
+            OnPropertyChanged(nameof(DeploymentCapability));
+            OnPropertyChanged(nameof(IsDeploymentBlocked));
+            OnPropertyChanged(nameof(DeploymentCapabilityText));
         }
 
         private static string BuildActiveProfileModSummary(Profile? profile)
         {
             if (profile == null) return "无活动配置";
-            var enabled = profile.Entries.Count(e => e.Enabled);
-            var disabled = profile.Entries.Count - enabled;
-            return $"启用 {enabled}，禁用 {disabled}";
+            return $"已启用 {profile.Entries.Count} 个 Mod";
+        }
+
+        private async void MoveLibraryToRecommended()
+        {
+            var source = SettingsService.GetModLibraryFolder();
+            var target = SettingsService.GetRecommendedModLibraryFolder();
+            if (string.Equals(Path.GetFullPath(source), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase)) return;
+            try
+            {
+                Directory.CreateDirectory(target);
+                if (Directory.Exists(source))
+                {
+                    foreach (var sourceFile in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+                    {
+                        var relative = Path.GetRelativePath(source, sourceFile);
+                        var targetFile = Path.Combine(target, relative);
+                        Directory.CreateDirectory(Path.GetDirectoryName(targetFile)!);
+                        await Task.Run(() => File.Copy(sourceFile, targetFile, overwrite: true));
+                        var sourceHash = await HashFileAsync(sourceFile);
+                        var targetHash = await HashFileAsync(targetFile);
+                        if (!sourceHash.SequenceEqual(targetHash)) throw new IOException($"迁移校验失败：{relative}");
+                    }
+                }
+                SettingsService.SetModLibraryFolder(target);
+                System.Windows.MessageBox.Show("Mod 库已复制并校验到推荐目录，旧库被保留。应用将重新启动以载入新路径。", "移动 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                RestartCurrentProcess(elevated: false);
+            }
+            catch (Exception exception)
+            {
+                System.Windows.MessageBox.Show($"迁移失败，当前 Mod 库未切换：{exception.Message}", "移动 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+            }
+        }
+
+        private static void RestartAsAdministrator()
+            => RestartCurrentProcess(elevated: true);
+
+        private static void RestartCurrentProcess(bool elevated)
+        {
+            var executable = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(executable)) return;
+            try
+            {
+                var startInfo = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = true };
+                if (elevated) startInfo.Verb = "runas";
+                System.Diagnostics.Process.Start(startInfo);
+                System.Windows.Application.Current.Shutdown();
+            }
+            catch (System.ComponentModel.Win32Exception) { }
+        }
+
+        private void RefreshDeploymentCapability()
+            => _deploymentCapability = CoreServices.CreateDeploymentCapabilityService().Probe(_library.ModsRootDirectory, SettingsService.GetGameDataFolder());
+
+        private static async Task<byte[]> HashFileAsync(string path)
+        {
+            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            return await SHA256.HashDataAsync(stream);
         }
     }
 
@@ -129,7 +202,7 @@ namespace HD2ModManager.ViewModels
             _queue = queue;
             _backgroundTasks = backgroundTasks;
             _applyStatus = applyStatus;
-            _paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
+            _paths = SettingsService.CreateStoragePaths();
             RefreshCommand = new RelayCommand(_ => _ = RefreshAsync(), _ => !IsRefreshingAssetIndex);
             BuildAssetIndexCommand = new RelayCommand(_ => BuildAssetIndex(), _ => !IsBuildingAssetIndex);
             ShowAllTasksCommand = new RelayCommand(_ => ShowAllTasks());
@@ -421,9 +494,7 @@ namespace HD2ModManager.ViewModels
         {
             var profile = _profiles.ActiveProfile;
             if (profile == null) return "无活动配置";
-            var enabled = profile.Entries.Count(e => e.Enabled);
-            var disabled = profile.Entries.Count - enabled;
-            return $"总计 {profile.Entries.Count}，启用 {enabled}，禁用 {disabled}";
+            return $"已启用 {profile.Entries.Count} 个 Mod";
         }
 
         private string BuildConflictSummary()
@@ -432,7 +503,7 @@ namespace HD2ModManager.ViewModels
             {
                 var profile = _profiles.ActiveProfile;
                 if (profile == null) return "无活动配置，未检测冲突";
-                var ids = profile.Entries.Where(e => e.Enabled).Select(e => e.NodeId).Distinct().ToList();
+                var ids = profile.Entries.Select(e => e.NodeId).Distinct().ToList();
                 if (ids.Count < 2) return "启用 Mod 少于 2 个，无需检测";
 
                 var detector = CoreServices.CreateConflictDetector(_paths);
@@ -453,27 +524,31 @@ namespace HD2ModManager.ViewModels
         private const string SelectionScope = "Profile";
         private readonly ProfileService _profiles;
         private readonly ModLibraryService _library;
+        private readonly DerivedStateCoordinator _derivedState;
         private readonly SelectionCoordinator? _selection;
         private readonly ObservableCollection<string> _selectedGuids = new();
+        private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private string? _selectionAnchorGuid;
 
         public ObservableCollection<ProfileListItemViewModel> Items { get; } = new();
         public ObservableCollection<string> Profiles { get; } = new();
 
-        private string? _activeProfileKey;
+        private string? _selectedProfileKey;
         private string _renameText = string.Empty;
-        public string? ActiveProfileKey
+        public string? SelectedProfileKey
         {
-            get => _activeProfileKey;
+            get => _selectedProfileKey;
             set
             {
-                if (SetField(ref _activeProfileKey, value) && !string.IsNullOrWhiteSpace(value))
+                if (SetField(ref _selectedProfileKey, value) && !string.IsNullOrWhiteSpace(value))
                 {
-                    _profiles.SetActive(value);
+                    _profiles.Select(value);
                     Refresh();
                 }
             }
         }
+        public string ActiveProfileText => _profiles.ActiveKey is { } name ? $"活动配置：{name}" : "当前没有活动配置";
+        public string SelectedProfileState => _profiles.SelectedProfileId is { } selected && selected == _profiles.ActiveProfileId ? "正在编辑活动配置" : "正在编辑非活动配置";
 
         public string RenameText
         {
@@ -484,46 +559,52 @@ namespace HD2ModManager.ViewModels
         public RelayCommand CreateProfileCommand { get; }
         public RelayCommand RemoveSelectedProfileCommand { get; }
         public RelayCommand RenameProfileCommand { get; }
+        public RelayCommand ActivateProfileCommand { get; }
+        public RelayCommand DeactivateProfileCommand { get; }
         public RelayCommand RefreshCommand { get; }
         public RelayCommand RemoveModCommand { get; }
-        public RelayCommand EnableModCommand { get; }
-        public RelayCommand DisableModCommand { get; }
         public RelayCommand MoveUpCommand { get; }
         public RelayCommand MoveDownCommand { get; }
         public RelayCommand ToggleSelectionCommand { get; }
 
-        public ProfilePageViewModel(ProfileService profiles, ModLibraryService library, SelectionCoordinator? selection = null)
+        public ProfilePageViewModel(ProfileService profiles, ModLibraryService library, DerivedStateCoordinator derivedState, SelectionCoordinator? selection = null)
         {
             Title = "配置页";
             _profiles = profiles;
             _library = library;
+            _derivedState = derivedState;
             _selection = selection;
             if (_selection != null) _selection.SelectionChanged += (_, _) => SyncSelectionFromCoordinator();
+            _profiles.Changed += (_, _) => QueueStatusRefresh();
+            _derivedState.SnapshotChanged += (_, _) => RunOnUiThread(QueueStatusRefresh);
             CreateProfileCommand = new RelayCommand(CreateProfile);
             RemoveSelectedProfileCommand = new RelayCommand(RemoveSelectedProfile);
             RenameProfileCommand = new RelayCommand(RenameProfile);
+            ActivateProfileCommand = new RelayCommand(ActivateProfile);
+            DeactivateProfileCommand = new RelayCommand(DeactivateProfile);
             RefreshCommand = new RelayCommand(Refresh);
             RemoveModCommand = new RelayCommand(RemoveMod);
-            EnableModCommand = new RelayCommand(parameter => SetModEnabled(parameter, true));
-            DisableModCommand = new RelayCommand(parameter => SetModEnabled(parameter, false));
             MoveUpCommand = new RelayCommand(parameter => MoveMod(parameter, -1));
             MoveDownCommand = new RelayCommand(parameter => MoveMod(parameter, 1));
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
             PageActions.Add(new PageActionViewModel("＋", "新建配置", CreateProfileCommand, order: 10, kind: "CreateProfile"));
+            PageActions.Add(new PageActionViewModel("▶", "设为活动配置", ActivateProfileCommand, background: new SolidColorBrush(Color.FromRgb(26, 127, 75)), order: 15, kind: "ActivateProfile"));
+            PageActions.Add(new PageActionViewModel("■", "停用活动配置", DeactivateProfileCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 16, kind: "DeactivateProfile"));
             PageActions.Add(new PageActionViewModel("✎", "重命名配置", RenameProfileCommand, background: new SolidColorBrush(Color.FromRgb(30, 99, 214)), order: 20, kind: "RenameProfile"));
             PageActions.Add(new PageActionViewModel("🗑", "删除当前配置", RemoveSelectedProfileCommand, background: new SolidColorBrush(Color.FromRgb(179, 38, 30)), order: 30, kind: "RemoveProfile"));
             PageActions.Add(new PageActionViewModel("⟳", "刷新配置", RefreshCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 40, kind: "RefreshProfile"));
             Refresh();
+            QueueStatusRefresh();
         }
 
         public void AddMod(string guid)
         {
-            if (_profiles.ActiveProfile == null)
+            if (_profiles.SelectedProfile == null)
             {
-                _profiles.SetActive(_profiles.CreateNew());
+                _profiles.CreateNew();
             }
 
-            _profiles.AddModToActive(guid);
+            _profiles.AddModToSelected(guid);
             Refresh();
         }
 
@@ -562,14 +643,25 @@ namespace HD2ModManager.ViewModels
 
         private void CreateProfile()
         {
-            var key = _profiles.CreateNew();
-            _profiles.SetActive(key);
+            _profiles.CreateNew();
+            Refresh();
+        }
+
+        private void ActivateProfile()
+        {
+            _profiles.ActivateSelected();
+            Refresh();
+        }
+
+        private void DeactivateProfile()
+        {
+            _profiles.DisableActive();
             Refresh();
         }
 
         private void RemoveSelectedProfile()
         {
-            var key = _profiles.ActiveKey;
+            var key = _profiles.SelectedKey;
             if (string.IsNullOrWhiteSpace(key)) return;
             var confirm = System.Windows.MessageBox.Show($"确定删除当前配置“{key}”？\n这只会移除配置，不会删除库中的 Mod 文件。", "删除配置", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
             if (confirm != System.Windows.MessageBoxResult.Yes) return;
@@ -579,7 +671,7 @@ namespace HD2ModManager.ViewModels
 
         private void RenameProfile()
         {
-            var key = _profiles.ActiveKey;
+            var key = _profiles.SelectedKey;
             if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(RenameText)) return;
             var newName = RenameText.Trim();
             if (string.Equals(key, newName, StringComparison.OrdinalIgnoreCase)) return;
@@ -593,7 +685,7 @@ namespace HD2ModManager.ViewModels
         {
             var guid = parameter as string;
             if (string.IsNullOrWhiteSpace(guid)) return;
-            _profiles.RemoveModFromActive(guid);
+            _profiles.RemoveModFromSelected(guid);
             Refresh();
         }
 
@@ -601,15 +693,7 @@ namespace HD2ModManager.ViewModels
         {
             var guid = parameter as string;
             if (string.IsNullOrWhiteSpace(guid)) return;
-            _profiles.MoveModInActive(guid, direction);
-            Refresh();
-        }
-
-        private void SetModEnabled(object? parameter, bool enabled)
-        {
-            var guid = parameter as string;
-            if (string.IsNullOrWhiteSpace(guid)) return;
-            _profiles.SetModEnabledInActive(guid, enabled);
+            _profiles.MoveModInSelected(guid, direction);
             Refresh();
         }
 
@@ -617,20 +701,45 @@ namespace HD2ModManager.ViewModels
         {
             Profiles.Clear();
             foreach (var profileItem in _profiles.All()) Profiles.Add(profileItem.Name);
-            _activeProfileKey = _profiles.ActiveKey;
-            _renameText = _activeProfileKey ?? string.Empty;
-            OnPropertyChanged(nameof(ActiveProfileKey));
+            _selectedProfileKey = _profiles.SelectedKey;
+            _renameText = _selectedProfileKey ?? string.Empty;
+            OnPropertyChanged(nameof(SelectedProfileKey));
             OnPropertyChanged(nameof(RenameText));
+            OnPropertyChanged(nameof(ActiveProfileText));
+            OnPropertyChanged(nameof(SelectedProfileState));
 
             Items.Clear();
-            var profile = _profiles.ActiveProfile;
+            var profile = _profiles.SelectedProfile;
             if (profile == null) return;
             foreach (var entry in _profiles.GetSortedEntries(profile))
             {
                 var guid = entry.NodeId.Value.ToString("N");
                 var mod = _library.Get(guid);
-                Items.Add(new ProfileListItemViewModel(guid, mod?.Name ?? guid, mod?.Description, mod?.Image, string.Join(", ", mod?.Tags ?? new List<string>()), entry.LoadOrder, entry.Enabled, entry.AddedUtc, IsSelected(guid)));
+                _userStatuses.TryGetValue(guid, out var status);
+                Items.Add(new ProfileListItemViewModel(guid, mod?.Name ?? guid, mod?.Description, mod?.Image, string.Join(", ", mod?.Tags ?? new List<string>()), entry.LoadOrder, entry.AddedUtc, IsSelected(guid), status));
             }
+        }
+
+        private async Task RefreshUserStatusesAsync()
+        {
+            await Task.Yield();
+            var statuses = _derivedState.ProjectStatuses(_profiles.SelectedProfileId);
+            _userStatuses.Clear();
+            foreach (var pair in statuses) _userStatuses[pair.Key.Value.ToString("N")] = pair.Value;
+            Refresh();
+        }
+
+        private void QueueStatusRefresh()
+        {
+            Refresh();
+            _ = RefreshUserStatusesAsync();
+        }
+
+        private static void RunOnUiThread(Action action)
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess()) action();
+            else _ = dispatcher.InvokeAsync(action);
         }
 
         private void ToggleSelection(object? parameter)
@@ -669,14 +778,14 @@ namespace HD2ModManager.ViewModels
         public string? ImagePath { get; }
         public string TagsString { get; }
         public int LoadOrder { get; }
-        public bool Enabled { get; }
         public DateTimeOffset AddedUtc { get; }
-        public string StatusText => Enabled ? $"启用 · 顺序 {LoadOrder}" : $"禁用 · 顺序 {LoadOrder}";
+        public ModUserStatus? UserStatus { get; }
+        public string StatusText => UserStatus is null ? $"配置成员 · 顺序 {LoadOrder}" : $"{UserStatus.Title} · 顺序 {LoadOrder}";
         public string SecondaryText => string.IsNullOrWhiteSpace(Description) ? StatusText : $"{StatusText} · {Description}";
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
 
-        public ProfileListItemViewModel(string guid, string name, string? description, string? imagePath, string tagsString, int loadOrder, bool enabled, DateTimeOffset addedUtc, bool isSelected = false)
+        public ProfileListItemViewModel(string guid, string name, string? description, string? imagePath, string tagsString, int loadOrder, DateTimeOffset addedUtc, bool isSelected = false, ModUserStatus? userStatus = null)
         {
             Guid = guid;
             Name = name;
@@ -684,9 +793,9 @@ namespace HD2ModManager.ViewModels
             ImagePath = imagePath;
             TagsString = tagsString;
             LoadOrder = loadOrder;
-            Enabled = enabled;
             AddedUtc = addedUtc;
             _isSelected = isSelected;
+            UserStatus = userStatus;
         }
     }
 
@@ -832,17 +941,17 @@ namespace HD2ModManager.ViewModels
             ViewGameDataIndexCommand.RaiseCanExecuteChanged();
             try
             {
-                var paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
+                var paths = SettingsService.CreateStoragePaths();
                 var index = CoreServices.CreateAssetArchiveIndexService(paths);
-                var fingerprint = await index.GetFingerprintAsync().ConfigureAwait(true);
-                if (fingerprint is null)
+                var browser = CoreServices.CreateGameDataArchiveBrowserService(paths);
+                var snapshot = await browser.BuildAsync(_library.Snapshot, _library.ModsRootDirectory, gameData).ConfigureAwait(true);
+                if (snapshot is null)
                 {
                     System.Windows.MessageBox.Show("当前 GameData 资产索引不可用。请先在状态页建立资产索引。", "GameData 资产索引", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
                     return;
                 }
 
-                var archives = await index.GetArchiveSummariesAsync().ConfigureAwait(true);
-                if (archives.Count == 0)
+                if (snapshot.Archives.Count == 0)
                 {
                     System.Windows.MessageBox.Show("资产索引数据库中没有可显示的 archive。请重新建立资产索引。", "GameData 资产索引", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
                     return;
@@ -851,7 +960,7 @@ namespace HD2ModManager.ViewModels
                 var window = new HD2ModManager.Views.GameDataIndexWindow
                 {
                     Owner = System.Windows.Application.Current?.MainWindow,
-                    DataContext = new HD2ModManager.Views.GameDataIndexWindowViewModel(archives, fingerprint, _library, _profiles, gameData, index),
+                    DataContext = new HD2ModManager.Views.GameDataIndexWindowViewModel(snapshot, _profiles.ActiveKey, index),
                 };
                 window.ShowDialog();
             }
@@ -924,7 +1033,7 @@ namespace HD2ModManager.ViewModels
             AssetMetadataStatus = "正在更新资产信息...";
             try
             {
-                var paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
+                var paths = SettingsService.CreateStoragePaths();
                 var sync = CoreServices.CreateAssetMetadataSyncService(paths);
                 var result = await sync.SyncAsync(AssetMetadataRepository);
                 if (!result.Success)
@@ -946,7 +1055,7 @@ namespace HD2ModManager.ViewModels
 
         private static string BuildInitialAssetMetadataStatus()
         {
-            var paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
+            var paths = SettingsService.CreateStoragePaths();
             if (!File.Exists(paths.AssetMetadataManifestPath)) return "尚未更新资产信息";
             try
             {

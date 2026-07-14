@@ -25,12 +25,13 @@ public sealed class ModLibraryManagerTests
 			var secondNode = CreateNode(secondId, "second");
 			var profileId = ProfileId.New();
 			var profile = new Profile(profileId, "p", DateTimeOffset.UtcNow, null, Array.Empty<ProfileEntry>());
-			var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [firstId] = firstNode, [secondId] = secondNode }, new[] { profile });
+			var snapshot = new LibrarySnapshot(2, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [firstId] = firstNode, [secondId] = secondNode }, new[] { profile });
 			await store.SaveAsync(snapshot);
 
 			var updated = await mgr.AddProfileEntryAsync(profileId, firstId);
 			updated = await mgr.AddProfileEntryAsync(profileId, secondId);
 			Assert.Equal(new[] { firstId, secondId }, updated.Profiles[0].Entries.Select(e => e.NodeId));
+			Assert.Equal(2, updated.Profiles[0].Revision);
 
 			updated = await mgr.MoveProfileEntryAsync(profileId, secondId, -1);
 			Assert.Equal(new[] { secondId, firstId }, updated.Profiles[0].Entries.OrderBy(e => e.LoadOrder).Select(e => e.NodeId));
@@ -67,13 +68,43 @@ public sealed class ModLibraryManagerTests
 				PatchGroups: Array.Empty<PatchGroupKey>(),
 				Children: Array.Empty<ModNodeId>());
 
-			var profile = new Profile(ProfileId.New(), "p", DateTimeOffset.UtcNow, null, new[] { new ProfileEntry(nodeId, 0, true) });
-			var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, new[] { profile });
+			var profile = new Profile(ProfileId.New(), "p", DateTimeOffset.UtcNow, null, new[] { new ProfileEntry(nodeId, 0) });
+			var snapshot = new LibrarySnapshot(2, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, new[] { profile });
 			await store.SaveAsync(snapshot);
 
 			var updated = await mgr.DeleteNodeAsync(nodeId, deleteStoredFiles: false);
 			Assert.False(updated.Nodes.ContainsKey(nodeId));
 			Assert.Empty(updated.Profiles[0].Entries);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task ActiveProfile_IsUniquePersisted_AndClearedWhenDeleted()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+
+		try
+		{
+			var paths = new StoragePaths(root);
+			var store = new JsonModLibraryStore(paths);
+			var mgr = new ModLibraryManager(paths, store);
+			var first = new Profile(ProfileId.New(), "first", DateTimeOffset.UtcNow, null, Array.Empty<ProfileEntry>());
+			var second = new Profile(ProfileId.New(), "second", DateTimeOffset.UtcNow, null, Array.Empty<ProfileEntry>());
+			await store.SaveAsync(new LibrarySnapshot(2, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode>(), new[] { first, second }));
+
+			var updated = await mgr.SetActiveProfileAsync(first.Id);
+			Assert.Equal(first.Id, updated.ActiveProfileId);
+			updated = await mgr.SetActiveProfileAsync(second.Id);
+			Assert.Equal(second.Id, updated.ActiveProfileId);
+			Assert.Equal(second.Id, (await store.TryLoadAsync())!.ActiveProfileId);
+
+			updated = await mgr.DeleteProfileAsync(second.Id);
+			Assert.Null(updated.ActiveProfileId);
 		}
 		finally
 		{

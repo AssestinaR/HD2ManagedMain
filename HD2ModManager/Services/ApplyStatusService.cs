@@ -6,10 +6,10 @@ namespace HD2ModManager.Services
     public sealed class ApplyStatusService
     {
         public DateTimeOffset? LastAppliedUtc { get; private set; }
-        public ActivationResult? LastActivation { get; private set; }
+        public ApplyExecutionStatus? LastActivation { get; private set; }
         public ApplyResult? LastCoreResult => LastActivation?.CoreResult;
 
-        public void Record(ActivationResult result)
+        public void Record(ApplyExecutionStatus result)
         {
             LastAppliedUtc = DateTimeOffset.UtcNow;
             LastActivation = result;

@@ -5,12 +5,14 @@
 public sealed record ApplyPlan(
 	string GameDataDirectory,
 	ProfileId? ProfileId,
+	long ProfileRevision,
 	DateTimeOffset CreatedUtc,
 	IReadOnlyList<ApplyOperation> Operations,
-	IReadOnlyList<CoreIssue> Issues)
+	IReadOnlyList<CoreIssue> Issues,
+	DeploymentMethod DeploymentMethod = DeploymentMethod.HardLink)
 {
 	public ApplyPlan(string gameDataDirectory, IReadOnlyList<ApplyOperation> operations)
-		: this(gameDataDirectory, null, DateTimeOffset.UtcNow, operations, Array.Empty<CoreIssue>())
+		: this(gameDataDirectory, null, 0, DateTimeOffset.UtcNow, operations, Array.Empty<CoreIssue>())
 	{
 	}
 }

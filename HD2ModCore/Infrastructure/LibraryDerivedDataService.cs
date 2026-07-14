@@ -6,13 +6,13 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Centralizes file-system-derived library facts such as directories, icons, patch indexes and asset summaries.
 public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 {
-	private readonly IPatchFileIndexBuilder _patchIndexBuilder;
+	private readonly IModContentFactsService _contentFactsService;
 	private readonly IModAssetAnalyzer _assetAnalyzer;
 	private readonly IModUnitCompatibilityAnalyzer? _unitCompatibilityAnalyzer;
 
-	public LibraryDerivedDataService(IPatchFileIndexBuilder patchIndexBuilder, IModAssetAnalyzer assetAnalyzer, IModUnitCompatibilityAnalyzer? unitCompatibilityAnalyzer = null)
+	public LibraryDerivedDataService(IModContentFactsService contentFactsService, IModAssetAnalyzer assetAnalyzer, IModUnitCompatibilityAnalyzer? unitCompatibilityAnalyzer = null)
 	{
-		_patchIndexBuilder = patchIndexBuilder ?? throw new ArgumentNullException(nameof(patchIndexBuilder));
+		_contentFactsService = contentFactsService ?? throw new ArgumentNullException(nameof(contentFactsService));
 		_assetAnalyzer = assetAnalyzer ?? throw new ArgumentNullException(nameof(assetAnalyzer));
 		_unitCompatibilityAnalyzer = unitCompatibilityAnalyzer;
 	}
@@ -25,8 +25,8 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 			throw new ArgumentException("Value cannot be null or whitespace.", nameof(modsRootDirectory));
 		}
 
-		var patchIndex = await _patchIndexBuilder.BuildAsync(snapshot, modsRootDirectory, cancellationToken);
-		var issues = new List<CoreIssue>(patchIndex.Issues);
+		var contentFacts = await _contentFactsService.GetLibraryFactsAsync(snapshot, modsRootDirectory, nodeIds, cancellationToken).ConfigureAwait(false);
+		var issues = new List<CoreIssue>(contentFacts.Values.SelectMany(facts => facts.Issues));
 		var nodes = new Dictionary<ModNodeId, DerivedModNodeData>();
 
 		foreach (var node in snapshot.Nodes.Values)
@@ -38,7 +38,11 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 			}
 			var directory = ResolveNodeDirectory(modsRootDirectory, node.RelativePath);
 			var directoryExists = Directory.Exists(directory);
-			patchIndex.FilesByNode.TryGetValue(node.Id, out var patchFiles);
+			if (!contentFacts.TryGetValue(node.Id, out var nodeContentFacts))
+			{
+				continue;
+			}
+			var patchFiles = nodeContentFacts.ToPatchFileIndex();
 
 			ModAssetSummary? assetSummary = null;
 			try
@@ -70,7 +74,8 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 				AbsoluteDirectory: directory,
 				DirectoryExists: directoryExists,
 				IconPath: ModIconLocator.TryResolve(directory),
-				PatchFiles: patchFiles ?? Array.Empty<IndexedPatchFile>(),
+				PatchFiles: patchFiles,
+				ContentFacts: nodeContentFacts,
 				AssetSummary: assetSummary,
 				UnitCompatibility: unitCompatibility,
 				Issues: nodeIssues);

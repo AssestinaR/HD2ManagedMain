@@ -25,6 +25,8 @@ namespace HD2ModManager.Services
         RefreshLibrary,
         UpdateAssetMetadata,
         BuildAssetIndex,
+        Deployment,
+        DeactivateProfile,
         Other,
     }
 
@@ -64,6 +66,8 @@ namespace HD2ModManager.Services
             BackgroundTaskKind.RefreshLibrary => "⟳",
             BackgroundTaskKind.UpdateAssetMetadata => "◇",
             BackgroundTaskKind.BuildAssetIndex => "⌕",
+            BackgroundTaskKind.Deployment => "⇄",
+            BackgroundTaskKind.DeactivateProfile => "■",
             _ => "•",
         };
 

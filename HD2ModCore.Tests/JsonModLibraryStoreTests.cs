@@ -26,8 +26,8 @@ public sealed class JsonModLibraryStoreTests
 				PatchGroups: new[] { new PatchGroupKey("9ba626afa44a3aa3", 0) },
 				Children: Array.Empty<ModNodeId>());
 
-			var profile = new Profile(ProfileId.New(), "p", DateTimeOffset.UtcNow, null, new[] { new ProfileEntry(nodeId, 0, true) });
-			var snapshot = new LibrarySnapshot(Version: 1, SavedUtc: DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, new[] { profile });
+			var profile = new Profile(ProfileId.New(), "p", DateTimeOffset.UtcNow, null, new[] { new ProfileEntry(nodeId, 0) });
+			var snapshot = new LibrarySnapshot(Version: 2, SavedUtc: DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, new[] { profile }, profile.Id);
 
 			await store.SaveAsync(snapshot);
 			var loaded = await store.TryLoadAsync();
@@ -37,6 +37,7 @@ public sealed class JsonModLibraryStoreTests
 			Assert.NotNull(loaded);
 			Assert.Single(loaded!.Nodes);
 			Assert.Single(loaded.Profiles);
+			Assert.Equal(profile.Id, loaded.ActiveProfileId);
 			Assert.True(loaded.Nodes.ContainsKey(nodeId));
 			Assert.Equal("p", loaded.Profiles[0].Name);
 			Assert.Equal("obj", loaded.Nodes[nodeId].Metadata.Name);
@@ -62,7 +63,7 @@ public sealed class JsonModLibraryStoreTests
 			var store = new JsonModLibraryStore(paths);
 			var nodeId = ModNodeId.New();
 			var snapshot = new LibrarySnapshot(
-				Version: 1,
+				Version: 2,
 				SavedUtc: DateTimeOffset.UtcNow,
 				Nodes: new Dictionary<ModNodeId, ModNode>
 				{
@@ -87,6 +88,70 @@ public sealed class JsonModLibraryStoreTests
 			Assert.Contains("中文包", libraryJson);
 			Assert.DoesNotContain("\\u4e2d", libraryJson, StringComparison.OrdinalIgnoreCase);
 			Assert.Contains("中文配置", profilesJson);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task TryLoadAsync_UpgradesLegacyProfileListWithoutStartupFailure()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var paths = new StoragePaths(root);
+			Directory.CreateDirectory(paths.DataDirectory);
+			var profileId = ProfileId.New();
+			await File.WriteAllTextAsync(paths.ProfilesPath, $$"""
+			[
+			  {
+			    "id": "{{profileId.Value:N}}",
+			    "name": "旧配置",
+			    "createdUtc": "2026-07-14T00:00:00+00:00",
+			    "modifiedUtc": null,
+			    "entries": []
+			  }
+			]
+			""");
+			var store = new JsonProfileStore(paths);
+
+			var loaded = await store.TryLoadAsync();
+			var rewritten = await File.ReadAllTextAsync(paths.ProfilesPath);
+
+			Assert.Equal("旧配置", Assert.Single(loaded.Profiles).Name);
+			Assert.Null(loaded.ActiveProfileId);
+			Assert.Contains("\"version\": 2", rewritten);
+			Assert.Contains("\"profiles\"", rewritten);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task TryLoadAsync_BacksUpInvalidProfileFileAndRecreatesEmptyState()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var paths = new StoragePaths(root);
+			Directory.CreateDirectory(paths.DataDirectory);
+			const string invalidJson = "{ invalid";
+			await File.WriteAllTextAsync(paths.ProfilesPath, invalidJson);
+			var store = new JsonProfileStore(paths);
+
+			var loaded = await store.TryLoadAsync();
+			var backups = Directory.EnumerateFiles(paths.DataDirectory, "profiles.json.invalid-*.bak").ToList();
+
+			Assert.Empty(loaded.Profiles);
+			var backup = Assert.Single(backups);
+			Assert.Equal(invalidJson, await File.ReadAllTextAsync(backup));
+			Assert.Contains("\"version\": 2", await File.ReadAllTextAsync(paths.ProfilesPath));
 		}
 		finally
 		{

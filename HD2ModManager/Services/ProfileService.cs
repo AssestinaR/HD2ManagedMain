@@ -9,21 +9,27 @@ namespace HD2ModManager.Services
         private readonly HD2ModCore.Application.IModLibraryManager _manager;
         private LibrarySnapshot _snapshot;
         private readonly Dictionary<string, ProfileId> _profileIds = new(StringComparer.OrdinalIgnoreCase);
-        private string? _activeProfileName;
+        private string? _selectedProfileName;
 
         public ProfileService(string profilesPath)
         {
-            var paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
+            var paths = SettingsService.CreateStoragePaths();
             _manager = CoreServices.CreateModLibraryManager(paths);
             _snapshot = EmptySnapshot();
         }
 
         public LibrarySnapshot Snapshot => _snapshot;
         public IReadOnlyList<Profile> Profiles => _snapshot.Profiles.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        public string? ActiveKey => _activeProfileName;
-        public Profile? ActiveProfile => ActiveProfileId is ProfileId id ? _snapshot.Profiles.FirstOrDefault(p => p.Id == id) : null;
+        public string? SelectedKey => _selectedProfileName;
+        public Profile? SelectedProfile => SelectedProfileId is ProfileId id ? _snapshot.Profiles.FirstOrDefault(p => p.Id == id) : null;
+        public ProfileId? SelectedProfileId => !string.IsNullOrWhiteSpace(_selectedProfileName) && _profileIds.TryGetValue(_selectedProfileName, out var id) ? id : null;
+        public string? ActiveKey => ActiveProfile?.Name;
+        public Profile? ActiveProfile => _snapshot.ActiveProfileId is ProfileId id ? _snapshot.Profiles.FirstOrDefault(p => p.Id == id) : null;
         public Profile? ActiveCoreProfile => ActiveProfile;
-        public ProfileId? ActiveProfileId => !string.IsNullOrWhiteSpace(_activeProfileName) && _profileIds.TryGetValue(_activeProfileName, out var id) ? id : null;
+        public ProfileId? ActiveProfileId => _snapshot.ActiveProfileId;
+        public event EventHandler? ActiveProfileDeploymentRequired;
+        public event EventHandler? ActiveProfileDeactivationRequired;
+        public event EventHandler? Changed;
 
         public void Load()
         {
@@ -38,9 +44,10 @@ namespace HD2ModManager.Services
             var name = CreateUniqueName(requestedName);
             var profile = new Profile(ProfileId.New(), name, DateTimeOffset.UtcNow, null, Array.Empty<ProfileEntry>());
             _snapshot = _manager.UpsertProfileAsync(profile).AsTask().GetAwaiter().GetResult();
-            _activeProfileName = name;
-            SettingsService.SetActiveProfileKey(_activeProfileName);
+            _selectedProfileName = name;
+            SettingsService.SetSelectedProfileKey(_selectedProfileName);
             RebuildIndex();
+            Changed?.Invoke(this, EventArgs.Empty);
             return name;
         }
 
@@ -48,29 +55,41 @@ namespace HD2ModManager.Services
         {
             if (!_profileIds.TryGetValue(name, out var id)) return false;
             _snapshot = _manager.DeleteProfileAsync(id).AsTask().GetAwaiter().GetResult();
-            if (string.Equals(_activeProfileName, name, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(_selectedProfileName, name, StringComparison.OrdinalIgnoreCase))
             {
-                _activeProfileName = _snapshot.Profiles.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault()?.Name;
-                SettingsService.SetActiveProfileKey(_activeProfileName);
+                _selectedProfileName = _snapshot.Profiles.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault()?.Name;
+                SettingsService.SetSelectedProfileKey(_selectedProfileName);
             }
             RebuildIndex();
+            Changed?.Invoke(this, EventArgs.Empty);
             return true;
         }
 
-        public void SetActive(string name)
+        public void Select(string name)
         {
             if (_profileIds.ContainsKey(name))
             {
-                _activeProfileName = name;
-                SettingsService.SetActiveProfileKey(name);
+                _selectedProfileName = name;
+                SettingsService.SetSelectedProfileKey(name);
+                Changed?.Invoke(this, EventArgs.Empty);
             }
+        }
+
+        public bool ActivateSelected()
+        {
+            if (SelectedProfileId is not ProfileId profileId) return false;
+            _snapshot = _manager.SetActiveProfileAsync(profileId).AsTask().GetAwaiter().GetResult();
+            ActiveProfileDeploymentRequired?.Invoke(this, EventArgs.Empty);
+            Changed?.Invoke(this, EventArgs.Empty);
+            return true;
         }
 
         public bool DisableActive()
         {
-            if (_activeProfileName == null) return false;
-            _activeProfileName = null;
-            SettingsService.SetActiveProfileKey(null);
+            if (_snapshot.ActiveProfileId is null) return false;
+            _snapshot = _manager.SetActiveProfileAsync(null).AsTask().GetAwaiter().GetResult();
+            ActiveProfileDeactivationRequired?.Invoke(this, EventArgs.Empty);
+            Changed?.Invoke(this, EventArgs.Empty);
             return true;
         }
 
@@ -89,55 +108,44 @@ namespace HD2ModManager.Services
             }
 
             var normalized = newName.Trim();
-            if (string.Equals(_activeProfileName, oldName, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(_selectedProfileName, oldName, StringComparison.OrdinalIgnoreCase))
             {
-                _activeProfileName = normalized;
-                SettingsService.SetActiveProfileKey(normalized);
+                _selectedProfileName = normalized;
+                SettingsService.SetSelectedProfileKey(normalized);
             }
             RebuildIndex();
+            Changed?.Invoke(this, EventArgs.Empty);
             return true;
         }
 
-        public bool AddModToActive(string nodeGuid)
+        public bool AddModToSelected(string nodeGuid)
         {
-            if (ActiveProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+            if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
             _snapshot = _manager.AddProfileEntryAsync(profileId, nodeId).AsTask().GetAwaiter().GetResult();
             RebuildIndex();
+            NotifyIfActive(profileId);
+            Changed?.Invoke(this, EventArgs.Empty);
             return true;
         }
 
-        public bool RemoveModFromActive(string nodeGuid)
+        public bool RemoveModFromSelected(string nodeGuid)
         {
-            if (ActiveProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+            if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
             _snapshot = _manager.RemoveProfileEntryAsync(profileId, nodeId).AsTask().GetAwaiter().GetResult();
             RebuildIndex();
+            NotifyIfActive(profileId);
+            Changed?.Invoke(this, EventArgs.Empty);
             return true;
         }
 
-        public bool MoveModInActive(string nodeGuid, int direction)
+        public bool MoveModInSelected(string nodeGuid, int direction)
         {
-            if (ActiveProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+            if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
             _snapshot = _manager.MoveProfileEntryAsync(profileId, nodeId, direction).AsTask().GetAwaiter().GetResult();
             RebuildIndex();
+            NotifyIfActive(profileId);
+            Changed?.Invoke(this, EventArgs.Empty);
             return true;
-        }
-
-        public bool SetModEnabledInActive(string nodeGuid, bool enabled)
-        {
-            if (ActiveProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
-            _snapshot = _manager.SetProfileEntryEnabledAsync(profileId, nodeId, enabled).AsTask().GetAwaiter().GetResult();
-            RebuildIndex();
-            return true;
-        }
-
-        public int SetModsEnabledInActive(IEnumerable<string> nodeGuids, bool enabled)
-        {
-            var changed = 0;
-            foreach (var guid in nodeGuids)
-            {
-                if (SetModEnabledInActive(guid, enabled)) changed++;
-            }
-            return changed;
         }
 
         public IReadOnlyList<ProfileEntry> GetSortedEntries(Profile profile)
@@ -153,15 +161,31 @@ namespace HD2ModManager.Services
                 _profileIds[profile.Name] = profile.Id;
             }
 
-            var persisted = SettingsService.GetActiveProfileKey();
+            var persisted = SettingsService.GetSelectedProfileKey();
             if (!string.IsNullOrWhiteSpace(persisted) && _profileIds.ContainsKey(persisted))
             {
-                _activeProfileName = persisted;
+                _selectedProfileName = persisted;
             }
-            else if (_activeProfileName == null || !_profileIds.ContainsKey(_activeProfileName))
+            else if (_selectedProfileName == null || !_profileIds.ContainsKey(_selectedProfileName))
             {
-                _activeProfileName = _profileIds.Keys.FirstOrDefault();
-                SettingsService.SetActiveProfileKey(_activeProfileName);
+                _selectedProfileName = _profileIds.Keys.FirstOrDefault();
+                SettingsService.SetSelectedProfileKey(_selectedProfileName);
+            }
+        }
+
+        public void NotifyActiveModContentChanged()
+        {
+            if (_snapshot.ActiveProfileId is not null)
+            {
+                ActiveProfileDeploymentRequired?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        private void NotifyIfActive(ProfileId profileId)
+        {
+            if (_snapshot.ActiveProfileId == profileId)
+            {
+                ActiveProfileDeploymentRequired?.Invoke(this, EventArgs.Empty);
             }
         }
 

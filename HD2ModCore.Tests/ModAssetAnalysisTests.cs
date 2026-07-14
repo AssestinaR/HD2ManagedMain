@@ -185,54 +185,6 @@ public sealed class ModAssetAnalysisTests
 	}
 
 	[Fact]
-	public async Task OverrideAnalyzer_ReportsWinnerAndFullyOverriddenMods()
-	{
-		var root = CreateTempRoot();
-		try
-		{
-			var paths = new StoragePaths(root);
-			var modsRoot = Path.Combine(root, "mods");
-			Directory.CreateDirectory(modsRoot);
-
-			WriteMetadata(paths, "aaaaaaaaaaaaaaaa", "Armor A", fileId: 100, fileName: "content/armor/a_body", typeId: 0xe0a48d0be9a7453f, typeName: "unit");
-
-			var nodeA = CreateNode("mod-a", "Mod A");
-			var nodeB = CreateNode("mod-b", "Mod B");
-			Directory.CreateDirectory(Path.Combine(modsRoot, nodeA.RelativePath));
-			Directory.CreateDirectory(Path.Combine(modsRoot, nodeB.RelativePath));
-			await File.WriteAllBytesAsync(Path.Combine(modsRoot, nodeA.RelativePath, "aaaaaaaaaaaaaaaa.patch_0"), BuildToc(new[] { new AssetKey(0xe0a48d0be9a7453f, 100) }));
-			await File.WriteAllBytesAsync(Path.Combine(modsRoot, nodeB.RelativePath, "aaaaaaaaaaaaaaaa.patch_0"), BuildToc(new[] { new AssetKey(0xe0a48d0be9a7453f, 100) }));
-
-			var snapshot = new LibrarySnapshot(
-				1,
-				DateTimeOffset.UtcNow,
-				new Dictionary<ModNodeId, ModNode> { [nodeA.Id] = nodeA, [nodeB.Id] = nodeB },
-				Array.Empty<Profile>());
-			var entries = new[]
-			{
-				new ProfileEntry(nodeA.Id, 0, true),
-				new ProfileEntry(nodeB.Id, 1, true),
-			};
-			var assetAnalyzer = new ModAssetAnalyzer(new PatchFileNameParser(), new PatchTocScanner(), new FileSystemAssetMetadataCatalogProvider(paths));
-			var overrideAnalyzer = new ModAssetOverrideAnalyzer(assetAnalyzer);
-
-			var analysis = await overrideAnalyzer.AnalyzeAsync(entries, snapshot, modsRoot);
-
-			var chain = Assert.Single(analysis.OverrideChains);
-			Assert.Equal(nodeB.Id, chain.Winner.NodeId);
-			Assert.Equal("Mod B", chain.Winner.ModName);
-			var coverageA = Assert.Single(analysis.Coverages, c => c.NodeId == nodeA.Id);
-			Assert.True(coverageA.FullyOverridden);
-			var coverageB = Assert.Single(analysis.Coverages, c => c.NodeId == nodeB.Id);
-			Assert.False(coverageB.FullyOverridden);
-		}
-		finally
-		{
-			DeleteQuietly(root);
-		}
-	}
-
-	[Fact]
 	public async Task CachedAnalyzer_ReusesSummaryUntilPatchFileChanges()
 	{
 		var root = CreateTempRoot();

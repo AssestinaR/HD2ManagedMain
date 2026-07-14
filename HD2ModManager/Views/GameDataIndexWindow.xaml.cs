@@ -52,21 +52,19 @@ public sealed class GameDataIndexWindowViewModel : INotifyPropertyChanged
     public string CategoryFilter { get => categoryFilter; set { if (categoryFilter == value) return; categoryFilter = value; OnChanged(nameof(CategoryFilter)); ArchivesView.Refresh(); } }
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public GameDataIndexWindowViewModel(IReadOnlyList<GameDataArchiveSummary> archives, GameDataIndexFingerprint fingerprint, ModLibraryService library, ProfileService profiles, string gameDataDirectory, IAssetArchiveIndexService index)
+    public GameDataIndexWindowViewModel(GameDataArchiveBrowserSnapshot snapshot, string? activeProfileName, IAssetArchiveIndexService index)
     {
         this.index = index;
-		var deployed = new DeployedPatchOverlayResolver().ResolveAsync(gameDataDirectory).AsTask().GetAwaiter().GetResult();
-        var overlays = BuildOverlays(archives.Select(item => item.PackageName), library, profiles, deployed);
-        Archives = new(archives.Select(archive => new GameDataArchiveRowViewModel(archive, overlays.GetValueOrDefault(archive.PackageName, ArchiveOverlay.None))));
+        Archives = new(snapshot.Archives.Select(item => new GameDataArchiveRowViewModel(item, snapshot.ModNames)));
         ArchivesView = CollectionViewSource.GetDefaultView(Archives);
         ArchivesView.Filter = FilterArchive;
         ArchivesView.SortDescriptions.Add(new(nameof(GameDataArchiveRowViewModel.Category), ListSortDirection.Ascending));
         ArchivesView.SortDescriptions.Add(new(nameof(GameDataArchiveRowViewModel.DisplayName), ListSortDirection.Ascending));
         CategoryFilters = new[] { "全部" }.Concat(Archives.Select(row => row.Category).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase)).ToArray();
-        Summary = $"Archive {fingerprint.ArchivesIndexed}/{fingerprint.ArchivesTotal}，AssetKey {fingerprint.AssetKeysTotal} · 已生效 {Archives.Count(row => row.ReplacementStatus == "已生效")} · 竞争 {Archives.Count(row => row.ReplacementStatus == "竞争生效")} · 异常 {Archives.Count(row => row.ReplacementStatus == "异常")}";
-        BuiltText = $"构建时间：{fingerprint.BuiltUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
-        SourceText = $"来源：{fingerprint.GameDataDirectory}";
-        ProfileText = $"当前配置：{profiles.ActiveKey ?? "未启用"}";
+        Summary = $"Archive {snapshot.Fingerprint.ArchivesIndexed}/{snapshot.Fingerprint.ArchivesTotal}，AssetKey {snapshot.Fingerprint.AssetKeysTotal} · 已生效 {Archives.Count(row => row.ReplacementStatus == "已生效")} · 竞争 {Archives.Count(row => row.ReplacementStatus == "竞争生效")} · 异常 {Archives.Count(row => row.ReplacementStatus == "异常")}";
+        BuiltText = $"构建时间：{snapshot.Fingerprint.BuiltUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
+        SourceText = $"来源：{snapshot.Fingerprint.GameDataDirectory}";
+        ProfileText = $"当前配置：{activeProfileName ?? "未启用"}";
     }
 
     public async void OpenDetails(GameDataArchiveRowViewModel row, Window owner)
@@ -92,42 +90,6 @@ public sealed class GameDataIndexWindowViewModel : INotifyPropertyChanged
         return string.IsNullOrWhiteSpace(SearchText) || row.DisplayName.Contains(SearchText, StringComparison.OrdinalIgnoreCase) || row.PackageName.Contains(SearchText, StringComparison.OrdinalIgnoreCase) || row.Category.Contains(SearchText, StringComparison.OrdinalIgnoreCase) || row.EffectiveMod.Contains(SearchText, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static Dictionary<string, ArchiveOverlay> BuildOverlays(IEnumerable<string> packageNames, ModLibraryService library, ProfileService profiles, DeployedPatchOverlay deployed)
-    {
-        var result = packageNames.Distinct(StringComparer.OrdinalIgnoreCase).ToDictionary(name => name, _ => new ArchiveOverlay(), StringComparer.OrdinalIgnoreCase);
-        var activeEntries = profiles.ActiveProfile is { } active ? profiles.GetSortedEntries(active).Where(entry => entry.Enabled).ToDictionary(entry => entry.NodeId) : new();
-        foreach (var pair in library.DerivedData.Nodes)
-        {
-            if (pair.Value.AssetSummary is not { } summary) continue;
-            foreach (var asset in summary.Assets)
-            {
-                var targets = asset.SemanticTargetArchiveIds.Count > 0 ? asset.SemanticTargetArchiveIds : new[] { asset.Key.ArchiveId };
-                foreach (var target in targets)
-                {
-                    if (!result.TryGetValue(target, out var overlay)) continue;
-                    overlay.LibraryMods.Add(summary.Name);
-                    if (activeEntries.ContainsKey(pair.Key)) overlay.EnabledMods.Add(summary.Name);
-                    overlay.AssetCandidates.Add(new ModAssetCandidate(pair.Key, summary.Name, asset.Key.AssetKey));
-                }
-            }
-        }
-
-        foreach (var overlay in result.Values)
-        {
-            foreach (var candidate in overlay.AssetCandidates)
-            {
-                var winners = deployed.Groups.Where(group => group.IsValid && group.AssetKeys.Contains(candidate.AssetKey)).OrderBy(group => group.TargetPatchIndex).ToArray();
-                if (winners.Length == 0) continue;
-                var winner = winners[^1];
-                var winnerName = winner.NodeId is { } nodeId && library.DerivedData.Find(nodeId)?.AssetSummary is { } winnerSummary ? winnerSummary.Name : "未知 Mod";
-                overlay.Effective.Add(new(winnerName, winner.PatchGroupName, winner.TargetPatchIndex, candidate.AssetKey, winners.Select(group => group.NodeId).Distinct().Count() > 1));
-            }
-            if (deployed.Issues.Any(issue => overlay.AssetCandidates.Any(candidate => candidate.NodeId == issue.NodeId))) overlay.HasError = true;
-        }
-        foreach (var overlay in result.Values) overlay.FinalizeStatus();
-        return result;
-    }
-
     private void OnChanged(string name) => PropertyChanged?.Invoke(this, new(name));
 }
 
@@ -144,48 +106,39 @@ public sealed class GameDataArchiveRowViewModel
 	public Brush AssetCountForeground { get; }
     public Brush ReplacementBackground { get; }
     public Brush ReplacementForeground { get; }
-	internal IReadOnlyDictionary<AssetKey, EffectivePatch> EffectiveByAsset { get; }
+    internal IReadOnlyDictionary<AssetKey, EffectivePatch> EffectiveByAsset { get; }
 
-    internal GameDataArchiveRowViewModel(GameDataArchiveSummary archive, ArchiveOverlay overlay)
+    internal GameDataArchiveRowViewModel(GameDataArchiveBrowserItem item, IReadOnlyDictionary<ModNodeId, string> modNames)
     {
+        var archive = item.Archive;
+        var overlay = item.Overlay;
         PackageName = archive.PackageName; DisplayName = archive.DisplayName; Category = archive.Category; EntryCount = archive.EntryCount;
-        ReplacementStatus = archive.Status == "存在问题" ? "异常" : overlay.Status;
-        EffectivePatchGroup = archive.Status == "存在问题" ? "—" : overlay.EffectivePatchGroup;
-        EffectiveMod = archive.Status == "存在问题" ? "—" : overlay.EffectiveMod;
+        ReplacementStatus = archive.Status == "存在问题" || overlay.Issues.Any(issue => issue.Severity == CoreIssueSeverity.Error) ? "异常"
+            : overlay.HasEffectiveReplacement ? overlay.HasCompetition ? "竞争生效" : "已生效"
+            : overlay.HasActiveReplacement ? "当前配置启用"
+            : overlay.HasLibraryReplacement ? "Mod 库中存在" : "未替换";
+        EffectivePatchGroup = overlay.EffectiveTargetPatchIndexes.Count == 0 ? "—" : overlay.EffectiveTargetPatchIndexes.Count == 1 ? $"目标 patch_{overlay.EffectiveTargetPatchIndexes[0]}" : $"{overlay.EffectiveTargetPatchIndexes.Count} 个 patch 组";
+        var effectiveNames = overlay.EffectiveModIds.Select(id => modNames.GetValueOrDefault(id) ?? "未知 Mod").Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var activeNames = overlay.ActiveModIds.Select(id => modNames.GetValueOrDefault(id) ?? "未知 Mod").Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var libraryNames = overlay.LibraryModIds.Select(id => modNames.GetValueOrDefault(id) ?? "未知 Mod").Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var names = effectiveNames.Count > 0 ? effectiveNames : activeNames.Count > 0 ? activeNames : libraryNames;
+        EffectiveMod = names.Count == 0 ? "—" : names.Count == 1 ? names[0] : $"{names.Count} 个 Mod";
         AssetCountBackground = Brushes.Transparent;
         AssetCountForeground = archive.Status == "存在问题" ? Color("#DC2626") : Color("#1F2937");
         ReplacementBackground = Brushes.Transparent;
         ReplacementForeground = ReplacementStatus switch { "Mod 库中存在" => Color("#2563EB"), "当前配置启用" => Color("#CA8A04"), "已生效" => Color("#166534"), "竞争生效" => Color("#4D7C0F"), "异常" => Color("#DC2626"), _ => Color("#6B7280") };
-        EffectiveByAsset = overlay.Effective.GroupBy(item => item.AssetKey).ToDictionary(group => group.Key, group => group.OrderBy(item => item.LoadOrder).Last());
+        EffectiveByAsset = overlay.EffectiveAssets
+            .GroupBy(asset => asset.AssetKey)
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var winner = group.OrderBy(asset => asset.TargetPatchIndex).Last();
+                    var modName = winner.WinnerNodeId is { } nodeId ? modNames.GetValueOrDefault(nodeId) ?? "未知 Mod" : "未知 Mod";
+                    return new EffectivePatch(modName, $"目标 patch_{winner.TargetPatchIndex}", winner.TargetPatchIndex, winner.AssetKey, winner.HasCompetition);
+                });
     }
     private static Brush Color(string value) => (Brush)new BrushConverter().ConvertFromString(value)!;
 }
 
-internal sealed class ArchiveOverlay
-{
-    public static ArchiveOverlay None => new();
-    public HashSet<string> LibraryMods { get; } = new(StringComparer.OrdinalIgnoreCase);
-    public HashSet<string> EnabledMods { get; } = new(StringComparer.OrdinalIgnoreCase);
-    public List<EffectivePatch> Effective { get; } = new();
-	public List<ModAssetCandidate> AssetCandidates { get; } = new();
-	public bool HasError { get; set; }
-    public string Status { get; private set; } = "未替换";
-    public string EffectivePatchGroup { get; private set; } = "—";
-    public string EffectiveMod { get; private set; } = "—";
-    public void FinalizeStatus()
-    {
-		if (HasError) { Status = "异常"; return; }
-        if (Effective.Count > 0)
-        {
-            var winner = Effective.OrderBy(item => item.LoadOrder).Last();
-            Status = Effective.Any(item => item.HasCompetition) ? "竞争生效" : "已生效";
-            EffectivePatchGroup = Effective.Select(item => item.PatchGroup).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1 ? winner.PatchGroup : $"{Effective.Select(item => item.PatchGroup).Distinct(StringComparer.OrdinalIgnoreCase).Count()} 个 patch 组";
-            EffectiveMod = Effective.Select(item => item.ModName).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1 ? winner.ModName : $"{Effective.Select(item => item.ModName).Distinct(StringComparer.OrdinalIgnoreCase).Count()} 个 Mod";
-        }
-        else if (EnabledMods.Count > 0) { Status = "当前配置启用"; EffectiveMod = EnabledMods.Count == 1 ? EnabledMods.Single() : $"{EnabledMods.Count} 个 Mod"; }
-        else if (LibraryMods.Count > 0) { Status = "Mod 库中存在"; EffectiveMod = LibraryMods.Count == 1 ? LibraryMods.Single() : $"{LibraryMods.Count} 个 Mod"; }
-    }
-}
-
 internal sealed record EffectivePatch(string ModName, string PatchGroup, int LoadOrder, AssetKey AssetKey, bool HasCompetition);
-internal sealed record ModAssetCandidate(ModNodeId NodeId, string ModName, AssetKey AssetKey);

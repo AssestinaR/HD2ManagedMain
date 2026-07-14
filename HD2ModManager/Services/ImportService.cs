@@ -25,7 +25,7 @@ namespace HD2ModManager.Services
             _library = library;
             _onInfo = onInfo;
             _onError = onError;
-            _paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
+            _paths = SettingsService.CreateStoragePaths();
         }
 
         public Task EnqueueImportsAsync(IEnumerable<string> paths, CancellationToken ct = default)

@@ -30,7 +30,8 @@ public sealed class ModLibraryManager : IModLibraryManager
 			Version: 1,
 			SavedUtc: DateTimeOffset.UtcNow,
 			Nodes: new Dictionary<ModNodeId, ModNode>(),
-			Profiles: new List<Profile>());
+			Profiles: new List<Profile>(),
+			ActiveProfileId: null);
 
 		await _store.SaveAsync(empty, cancellationToken).ConfigureAwait(false);
 		return empty;
@@ -61,7 +62,13 @@ public sealed class ModLibraryManager : IModLibraryManager
 
 		// Remove from profiles.
 		var profiles = snapshot.Profiles
-			.Select(p => p with { Entries = p.Entries.Where(e => e.NodeId != nodeId).ToList() })
+			.Select(p =>
+			{
+				var entries = NormalizeEntryOrder(p.Entries.Where(e => e.NodeId != nodeId).ToList());
+				return entries.SequenceEqual(p.Entries)
+					? p
+					: p with { Entries = entries, ModifiedUtc = DateTimeOffset.UtcNow, Revision = checked(p.Revision + 1) };
+			})
 			.ToList();
 
 		if (deleteStoredFiles)
@@ -119,7 +126,8 @@ public sealed class ModLibraryManager : IModLibraryManager
 	{
 		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
 		var profiles = snapshot.Profiles.Where(p => p.Id != profileId).ToList();
-		var updated = snapshot with { Profiles = profiles, SavedUtc = DateTimeOffset.UtcNow };
+		var activeProfileId = snapshot.ActiveProfileId == profileId ? null : snapshot.ActiveProfileId;
+		var updated = snapshot with { Profiles = profiles, ActiveProfileId = activeProfileId, SavedUtc = DateTimeOffset.UtcNow };
 		await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
 		return updated;
 	}
@@ -151,6 +159,24 @@ public sealed class ModLibraryManager : IModLibraryManager
 		return updated;
 	}
 
+	public async ValueTask<LibrarySnapshot> SetActiveProfileAsync(ProfileId? profileId, CancellationToken cancellationToken = default)
+	{
+		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+		if (profileId is not null && snapshot.Profiles.All(profile => profile.Id != profileId.Value))
+		{
+			throw new InvalidOperationException($"Profile does not exist: {profileId.Value.Value:N}");
+		}
+
+		if (snapshot.ActiveProfileId == profileId)
+		{
+			return snapshot;
+		}
+
+		var updated = snapshot with { ActiveProfileId = profileId, SavedUtc = DateTimeOffset.UtcNow };
+		await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
+		return updated;
+	}
+
 	public async ValueTask<LibrarySnapshot> AddProfileEntryAsync(ProfileId profileId, ModNodeId nodeId, CancellationToken cancellationToken = default)
 	{
 		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
@@ -169,7 +195,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 				}
 
 				var nextOrder = entries.Count == 0 ? 0 : entries.Max(e => e.LoadOrder) + 1;
-				entries.Add(new ProfileEntry(nodeId, nextOrder, true));
+				entries.Add(new ProfileEntry(nodeId, nextOrder));
 				return NormalizeEntryOrder(entries);
 			},
 			cancellationToken).ConfigureAwait(false);
@@ -213,14 +239,6 @@ public sealed class ModLibraryManager : IModLibraryManager
 			cancellationToken).ConfigureAwait(false);
 	}
 
-	public async ValueTask<LibrarySnapshot> SetProfileEntryEnabledAsync(ProfileId profileId, ModNodeId nodeId, bool enabled, CancellationToken cancellationToken = default)
-	{
-		return await UpdateProfileEntriesAsync(
-			profileId,
-			entries => NormalizeEntryOrder(entries.Select(e => e.NodeId == nodeId ? e with { Enabled = enabled } : e).ToList()),
-			cancellationToken).ConfigureAwait(false);
-	}
-
 	public async ValueTask<LibrarySnapshot> UpdateNodeMetadataAsync(ModNodeId nodeId, ModNodeMetadata metadata, CancellationToken cancellationToken = default)
 	{
 		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
@@ -248,10 +266,17 @@ public sealed class ModLibraryManager : IModLibraryManager
 
 		var profile = profiles[index];
 		var entries = profile.Entries.OrderBy(e => e.LoadOrder).ThenBy(e => e.AddedUtc).ToList();
+		var updatedEntries = update(entries);
+		if (updatedEntries.SequenceEqual(profile.Entries))
+		{
+			return snapshot;
+		}
+
 		profiles[index] = profile with
 		{
-			Entries = update(entries),
+			Entries = updatedEntries,
 			ModifiedUtc = DateTimeOffset.UtcNow,
+			Revision = checked(profile.Revision + 1),
 		};
 
 		var updated = snapshot with { Profiles = profiles, SavedUtc = DateTimeOffset.UtcNow };

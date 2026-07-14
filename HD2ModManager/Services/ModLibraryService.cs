@@ -27,10 +27,11 @@ namespace HD2ModManager.Services
         public LibrarySnapshot Snapshot => _snapshot;
         public DerivedLibraryData DerivedData => _derivedData;
         public string ModsRootDirectory => _paths.ModsDirectory;
+        public event EventHandler? ModContentFactsChanged;
 
         public ModLibraryService(string libraryPath)
         {
-            _paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
+            _paths = SettingsService.CreateStoragePaths();
             _manager = CoreServices.CreateModLibraryManager(_paths);
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths);
             _unitRepairService = CoreServices.CreateModUnitRepairService();
@@ -70,6 +71,10 @@ namespace HD2ModManager.Services
                     _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues);
                 }
                 RebuildEntityIndex();
+                if (nodeIds is null || nodeIds.Count > 0)
+                {
+                    ModContentFactsChanged?.Invoke(this, EventArgs.Empty);
+                }
             }
             finally
             {

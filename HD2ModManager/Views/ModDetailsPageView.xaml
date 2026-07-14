@@ -19,7 +19,6 @@
                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                         <TextBlock Text="{Binding Name}" FontSize="22" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                         <TextBlock Text="{Binding TagsString}" Foreground="#1E63D6" Margin="0,6,0,0" TextWrapping="Wrap"/>
-                        <TextBlock Text="{Binding SourcePath}" Foreground="#777" FontSize="12" Margin="0,6,0,0" TextTrimming="CharacterEllipsis"/>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -34,10 +33,10 @@
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
                 <StackPanel>
                     <DockPanel>
-                        <TextBlock Text="Patch 文件组" Style="{StaticResource SectionTitle}" DockPanel.Dock="Left"/>
-                        <TextBlock Text="{Binding FileGroupCount, StringFormat=共 {0} 组}" Foreground="#777" HorizontalAlignment="Right"/>
+                        <TextBlock Text="当前状态" Style="{StaticResource SectionTitle}" DockPanel.Dock="Left"/>
                     </DockPanel>
-                    <TextBlock Text="{Binding PatchSummary}" FontFamily="Consolas" Foreground="#444" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                        <TextBlock Text="{Binding UserStatusTitle}" Foreground="#1E63D6" FontWeight="SemiBold" FontSize="16" Margin="0,8,0,0"/>
+                        <TextBlock Text="{Binding UserStatusSummary}" Foreground="#555" TextWrapping="Wrap" Margin="0,4,0,0"/>
                 </StackPanel>
             </Border>
 
@@ -55,36 +54,9 @@
                 </StackPanel>
             </Border>
 
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
-                <StackPanel>
-                    <TextBlock Text="替换资产" Style="{StaticResource SectionTitle}"/>
-                    <TextBlock Text="{Binding AssetListSummary}" FontFamily="Consolas" Foreground="#444" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                </StackPanel>
-            </Border>
-
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
-                <StackPanel>
-                    <TextBlock Text="资产覆盖" Style="{StaticResource SectionTitle}"/>
-                    <TextBlock Text="{Binding AssetOverrideSummary}" Foreground="#444" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                </StackPanel>
-            </Border>
-
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
-                <StackPanel>
-                    <TextBlock Text="文件完整性" Style="{StaticResource SectionTitle}"/>
-                    <TextBlock Text="{Binding FileIntegritySummary}" FontFamily="Consolas" Foreground="#444" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                </StackPanel>
-            </Border>
-
-            <Border Style="{StaticResource CardContainer}">
-                <StackPanel>
-                    <TextBlock Text="当前配置冲突" Style="{StaticResource SectionTitle}"/>
-                    <TextBlock Text="{Binding ConflictSummary}" Foreground="#444" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                </StackPanel>
-            </Border>
-
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
                 <Button Content="加入配置" Command="{Binding AddToProfileCommand}" Padding="14,6"/>
+                <Button Content="查看高级详情" ToolTip="查看 Patch、AssetKey 与诊断信息" Command="{Binding OpenAdvancedDetailsCommand}" Padding="14,6" Margin="8,0,0,0"/>
                 <Button Content="编辑标签" Command="{Binding EditTagsCommand}" Padding="14,6" Margin="8,0,0,0"/>
                 <Button Content="删除" Command="{Binding DeleteCommand}" Padding="14,6" Margin="8,0,0,0" Foreground="#B3261E"/>
                 <Button Content="打开文件夹" Command="{Binding OpenFolderCommand}" Padding="14,6"/>

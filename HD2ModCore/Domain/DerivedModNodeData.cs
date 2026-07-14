@@ -8,6 +8,7 @@ public sealed record DerivedModNodeData(
 	bool DirectoryExists,
 	string? IconPath,
 	IReadOnlyList<IndexedPatchFile> PatchFiles,
+	ModContentFacts ContentFacts,
 	ModAssetSummary? AssetSummary,
 	ModUnitCompatibilityReport? UnitCompatibility,
 	IReadOnlyList<CoreIssue> Issues);

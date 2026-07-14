@@ -7,15 +7,17 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Connects real indexing, planning and execution as a one-stop profile apply entry point.
 public sealed class ProfileApplyService : IProfileApplyService
 {
-	private readonly IPatchFileIndexBuilder _indexBuilder;
+	private readonly IModContentFactsService _contentFactsService;
 	private readonly IApplyPlanner _planner;
 	private readonly IApplyExecutor _executor;
+	private readonly DeploymentCapabilityService _capabilityService;
 
-	public ProfileApplyService(IPatchFileIndexBuilder indexBuilder, IApplyPlanner planner, IApplyExecutor executor)
+	public ProfileApplyService(IModContentFactsService contentFactsService, IApplyPlanner planner, IApplyExecutor executor, DeploymentCapabilityService? capabilityService = null)
 	{
-		_indexBuilder = indexBuilder ?? throw new ArgumentNullException(nameof(indexBuilder));
+		_contentFactsService = contentFactsService ?? throw new ArgumentNullException(nameof(contentFactsService));
 		_planner = planner ?? throw new ArgumentNullException(nameof(planner));
 		_executor = executor ?? throw new ArgumentNullException(nameof(executor));
+		_capabilityService = capabilityService ?? new DeploymentCapabilityService();
 	}
 
 	public async ValueTask<ApplyResult> ApplyAsync(
@@ -25,8 +27,18 @@ public sealed class ProfileApplyService : IProfileApplyService
 		string gameDataDirectory,
 		CancellationToken cancellationToken = default)
 	{
-		var index = await _indexBuilder.BuildAsync(snapshot, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+		var capability = _capabilityService.Probe(modsRootDirectory, gameDataDirectory);
+		if (!capability.IsAvailable || capability.Method is null)
+		{
+			return new ApplyResult(false, [], null, [new CoreIssue(CoreIssueSeverity.Error, "DeploymentUnavailable", capability.Error ?? capability.Summary, gameDataDirectory)]);
+		}
+		var facts = await _contentFactsService.GetLibraryFactsAsync(snapshot, modsRootDirectory, null, cancellationToken).ConfigureAwait(false);
+		var index = new PatchFileIndex(
+			DateTimeOffset.UtcNow,
+			facts.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<IndexedPatchFile>)pair.Value.ToPatchFileIndex()),
+			facts.Values.SelectMany(value => value.Issues).ToList());
 		var plan = await _planner.BuildPlanAsync(profile, snapshot, index, gameDataDirectory, cancellationToken).ConfigureAwait(false);
+		plan = plan with { DeploymentMethod = capability.Method.Value };
 		return await _executor.ExecuteAsync(plan, cancellationToken).ConfigureAwait(false);
 	}
 }

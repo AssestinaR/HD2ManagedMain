@@ -2,6 +2,7 @@
 using System.IO;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using HD2ModCore.Infrastructure;
 using Microsoft.Win32;
 
 namespace HD2ModManager.Services
@@ -13,7 +14,7 @@ namespace HD2ModManager.Services
         private class SettingsModel
         {
             public string? Language { get; set; }
-            public string? ActiveProfileKey { get; set; }
+            public string? SelectedProfileKey { get; set; }
             public string? ModLibraryFolder { get; set; }
             public string? GameDataFolder { get; set; }
             public bool AutoCleanup { get; set; } = false;
@@ -173,24 +174,24 @@ namespace HD2ModManager.Services
             catch { return false; }
         }
 
-        public static string? GetActiveProfileKey()
+        public static string? GetSelectedProfileKey()
         {
             try
             {
                 if (!File.Exists(SettingsPath)) return null;
                 var json = File.ReadAllText(SettingsPath);
                 var model = JsonSerializer.Deserialize<SettingsModel>(json);
-                return model?.ActiveProfileKey;
+                return model?.SelectedProfileKey;
             }
             catch { return null; }
         }
 
-        public static bool SetActiveProfileKey(string? key)
+        public static bool SetSelectedProfileKey(string? key)
         {
             try
             {
                 var model = LoadAll() ?? new SettingsModel();
-                model.ActiveProfileKey = key;
+                model.SelectedProfileKey = key;
                 var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(SettingsPath, json);
                 return true;
@@ -211,8 +212,36 @@ namespace HD2ModManager.Services
 
         public static string GetDefaultModLibraryFolder()
         {
-            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mods");
+            var recommended = GetRecommendedModLibraryFolder();
+            return CanUseDirectory(recommended) ? recommended : GetPortableModLibraryFolder();
         }
+
+        public static string GetPortableModLibraryFolder() => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mods");
+
+        public static string GetRecommendedModLibraryFolder()
+        {
+            var data = GetGameDataFolder();
+            if (string.IsNullOrWhiteSpace(data)) return GetPortableModLibraryFolder();
+            var gameDirectory = Directory.GetParent(data)?.FullName;
+            var commonDirectory = gameDirectory is null ? null : Directory.GetParent(gameDirectory)?.FullName;
+            return string.IsNullOrWhiteSpace(commonDirectory)
+                ? GetPortableModLibraryFolder()
+                : Path.Combine(commonDirectory, "HD2ModManager", "mods");
+        }
+
+        public static void EnsureDefaultModLibraryFolder()
+        {
+            var model = LoadAll() ?? new SettingsModel();
+            if (!string.IsNullOrWhiteSpace(model.ModLibraryFolder)) return;
+            var portable = GetPortableModLibraryFolder();
+            model.ModLibraryFolder = Directory.Exists(portable) && Directory.EnumerateFileSystemEntries(portable).Any()
+                ? portable
+                : GetDefaultModLibraryFolder();
+            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true }));
+        }
+
+        public static StoragePaths CreateStoragePaths()
+            => new(AppDomain.CurrentDomain.BaseDirectory, GetModLibraryFolder());
 
         public static string GetModLibraryFolder()
         {
@@ -237,6 +266,20 @@ namespace HD2ModManager.Services
                 return true;
             }
             catch { return false; }
+        }
+
+        private static bool CanUseDirectory(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            var probe = Path.Combine(path, $".hd2-write-probe-{Guid.NewGuid():N}.tmp");
+            try
+            {
+                Directory.CreateDirectory(path);
+                File.WriteAllText(probe, "probe");
+                return true;
+            }
+            catch { return false; }
+            finally { try { if (File.Exists(probe)) File.Delete(probe); } catch { } }
         }
 
         public static string GetGameDataFolder()

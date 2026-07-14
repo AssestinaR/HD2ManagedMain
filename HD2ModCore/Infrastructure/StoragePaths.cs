@@ -1,12 +1,12 @@
 ﻿namespace HD2ModCore.Infrastructure;
 
-public sealed record StoragePaths(string AppRootDirectory)
+public sealed record StoragePaths(string AppRootDirectory, string? ModsRootDirectory = null)
 {
-  // 作用：程序根目录下的统一数据目录结构，便于便携与打包。
-	// Purpose: Standard portable directory layout under app root for portability and packaging.
+	// 作用：配置与缓存保留在程序根目录，同时允许 Mod 库使用独立的权威路径。
+	// Purpose: Keeps configuration/cache under the app root while allowing an authoritative external Mod library.
 	public string DataDirectory => Path.Combine(AppRootDirectory, "data");
 	public string LibraryDirectory => ModsDirectory;
-	public string ModsDirectory => Path.Combine(AppRootDirectory, "mods");
+	public string ModsDirectory => string.IsNullOrWhiteSpace(ModsRootDirectory) ? Path.Combine(AppRootDirectory, "mods") : Path.GetFullPath(ModsRootDirectory);
 	public string LibraryPath => Path.Combine(ModsDirectory, "library.json");
 	public string ProfilesPath => Path.Combine(DataDirectory, "profiles.json");
 	public string SettingsPath => Path.Combine(DataDirectory, "settings.json");

@@ -68,16 +68,21 @@ public static class CoreServices
 			CreateAssetMetadataCatalogProvider(paths),
 			CreateAssetArchiveIndexService(paths),
 			adaptationAnalyzer: null,
-			patchGroupAnalysisProvider: CreatePatchGroupAnalysisProvider(paths));
+			patchGroupAnalysisProvider: null,
+			contentFactsService: CreateModContentFactsService(paths));
 	public static IPatchGroupAnalysisProvider CreatePatchGroupAnalysisProvider(StoragePaths paths)
 		=> new CachedPatchGroupAnalysisProvider(
 			new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer()),
 			new FileSystemPatchGroupAnalysisCacheStore(paths),
 			CreatePatchFileNameParser());
+	public static IModContentFactsService CreateModContentFactsService(StoragePaths paths)
+		=> new ModContentFactsService(CreatePatchFileNameParser(), CreatePatchGroupAnalysisProvider(paths));
+	public static IGameDataMappingFactsService CreateGameDataMappingFactsService(StoragePaths paths)
+		=> new GameDataMappingFactsService(CreateAssetArchiveIndexService(paths), CreateAssetMetadataCatalogProvider(paths), paths);
+	public static IProfileOverrideGraphService CreateProfileOverrideGraphService(StoragePaths paths)
+		=> new ProfileOverrideGraphService(CreateModContentFactsService(paths), CreateGameDataMappingFactsService(paths));
 	public static IModAssetAnalysisCacheStore CreateModAssetAnalysisCacheStore(StoragePaths paths)
 		=> new FileSystemModAssetAnalysisCacheStore(paths);
-	public static IModAssetOverrideAnalyzer CreateModAssetOverrideAnalyzer(StoragePaths paths)
-		=> new ModAssetOverrideAnalyzer(CreateModAssetAnalyzer(paths));
 	public static IModUnitCompatibilityAnalyzer CreateModUnitCompatibilityAnalyzer()
 		=> new ModUnitCompatibilityAnalyzer(CreatePatchFileNameParser());
 	public static IUnitMeshReader CreateUnitMeshReader()
@@ -98,7 +103,7 @@ public static class CoreServices
 		=> new ModUnitRepairService(CreatePatchFileNameParser(), CreateModUnitCompatibilityAnalyzer());
 	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths)
 		// Compatibility analysis is deliberately opt-in until its Adaptation implementation is ready.
-		=> new LibraryDerivedDataService(CreatePatchFileIndexBuilder(), CreateModAssetAnalyzer(paths), unitCompatibilityAnalyzer: null);
+		=> new LibraryDerivedDataService(CreateModContentFactsService(paths), CreateModAssetAnalyzer(paths), unitCompatibilityAnalyzer: null);
    public static IReplacementTargetDeriver CreateReplacementTargetDeriver(StoragePaths paths)
 		=> new ReplacementTargetDeriver(paths, CreateAssetArchiveIndexService(paths));
    public static IModCompatibilityAnalyzer CreateModCompatibilityAnalyzer(StoragePaths paths)
@@ -111,10 +116,28 @@ public static class CoreServices
 		=> new ModFileResolver(CreatePatchFileNameParser());
 	public static IApplyPlanner CreateApplyPlanner()
 		=> new ApplyPlanner(CreatePatchFileNameParser());
+	public static IActivationStateStore CreateActivationStateStore()
+		=> new JsonActivationStateStore();
+	public static IDeployedOverrideGraphService CreateDeployedOverrideGraphService()
+		=> new DeployedOverrideGraphService(CreateActivationStateStore(), CreatePatchFileNameParser());
+	public static IModUserStatusService CreateModUserStatusService(StoragePaths paths)
+		=> new ModUserStatusService(CreateModContentFactsService(paths), CreateProfileOverrideGraphService(paths), CreateDeployedOverrideGraphService());
+	public static IGameDataArchiveBrowserService CreateGameDataArchiveBrowserService(StoragePaths paths)
+		=> new GameDataArchiveBrowserService(CreateAssetArchiveIndexService(paths), CreateModContentFactsService(paths), CreateGameDataMappingFactsService(paths), CreateDeployedOverrideGraphService());
 	public static IApplyExecutor CreateApplyExecutor()
-		=> new ApplyExecutor(CreatePatchStateScanner());
-	public static IProfileApplyService CreateProfileApplyService()
-		=> new ProfileApplyService(CreatePatchFileIndexBuilder(), CreateApplyPlanner(), CreateApplyExecutor());
+		=> new ApplyExecutor(CreatePatchStateScanner(), CreatePatchFileNameParser(), CreateActivationStateStore());
+	public static DeploymentCapabilityService CreateDeploymentCapabilityService() => new();
+	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths)
+		=> new ProfileApplyService(CreateModContentFactsService(paths), CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService());
+	public static IProfileDeploymentCoordinator CreateProfileDeploymentCoordinator(StoragePaths paths, Func<string?> gameDataDirectoryProvider, IDeploymentDelay? delay = null, TimeSpan? bufferDuration = null)
+		=> new ProfileDeploymentCoordinator(
+			CreateModLibraryManager(paths),
+			CreateProfileApplyService(paths),
+			CreateApplyExecutor(),
+			paths,
+			gameDataDirectoryProvider,
+			delay,
+			bufferDuration);
 	public static IAssetKeySetProvider CreateAssetKeySetProvider(StoragePaths paths)
 		=> new AssetKeySetProvider(CreatePatchGroupAnalysisProvider(paths));
 	public static IConflictDetector CreateConflictDetector(StoragePaths paths)

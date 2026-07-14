@@ -63,12 +63,17 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 				return null;
 			}
 
-			var profiles = await LoadProfilesAsync(Array.Empty<Profile>(), cancellationToken).ConfigureAwait(false);
-			return new LibrarySnapshot(fileSnapshot.Version, fileSnapshot.SavedUtc, fileSnapshot.Nodes, profiles);
+			if (fileSnapshot.Version != CurrentVersion)
+			{
+				throw new InvalidDataException($"Unsupported library data version. Expected {CurrentVersion}.");
+			}
+
+			var profileState = await LoadProfilesAsync(Array.Empty<Profile>(), cancellationToken).ConfigureAwait(false);
+			return new LibrarySnapshot(fileSnapshot.Version, fileSnapshot.SavedUtc, fileSnapshot.Nodes, profileState.Profiles, profileState.ActiveProfileId);
 		}
-		catch
+		catch (JsonException exception)
 		{
-			return null;
+			throw new InvalidDataException("Library data is invalid JSON.", exception);
 		}
 	}
 
@@ -83,12 +88,12 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 
 		var normalized = snapshot with
 		{
-			Version = snapshot.Version <= 0 ? CurrentVersion : snapshot.Version,
+			Version = CurrentVersion,
 			SavedUtc = snapshot.SavedUtc == default ? DateTimeOffset.UtcNow : snapshot.SavedUtc,
 			Profiles = Array.Empty<Profile>(),
 		};
 
-		await _profileStore.SaveAsync(snapshot.Profiles, cancellationToken).ConfigureAwait(false);
+		await _profileStore.SaveAsync(snapshot.Profiles, snapshot.ActiveProfileId, cancellationToken).ConfigureAwait(false);
 
 		var fileSnapshot = new LibraryFileSnapshot(normalized.Version, normalized.SavedUtc, normalized.Nodes);
 		var json = JsonSerializer.Serialize(fileSnapshot, SerializerOptions);
@@ -98,21 +103,21 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 		File.Delete(tmp);
 	}
 
-	private async ValueTask<IReadOnlyList<Profile>> LoadProfilesAsync(IReadOnlyList<Profile> legacyProfiles, CancellationToken cancellationToken)
+	private async ValueTask<(IReadOnlyList<Profile> Profiles, ProfileId? ActiveProfileId)> LoadProfilesAsync(IReadOnlyList<Profile> legacyProfiles, CancellationToken cancellationToken)
 	{
-		var profiles = await _profileStore.TryLoadAsync(cancellationToken).ConfigureAwait(false);
-		if (profiles.Count > 0)
+		var state = await _profileStore.TryLoadAsync(cancellationToken).ConfigureAwait(false);
+		if (state.Profiles.Count > 0)
 		{
-			return profiles;
+			return state;
 		}
 
 		if (legacyProfiles.Count > 0)
 		{
-			await _profileStore.SaveAsync(legacyProfiles, cancellationToken).ConfigureAwait(false);
-			return legacyProfiles;
+			await _profileStore.SaveAsync(legacyProfiles, null, cancellationToken).ConfigureAwait(false);
+			return (legacyProfiles, null);
 		}
 
-		return Array.Empty<Profile>();
+		return (Array.Empty<Profile>(), null);
 	}
 
 	private async ValueTask<LibrarySnapshot?> TryLoadLegacyAsync(CancellationToken cancellationToken)
@@ -132,8 +137,8 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 				return null;
 			}
 
-			var profiles = await LoadProfilesAsync(snapshot.Profiles, cancellationToken).ConfigureAwait(false);
-			return snapshot with { Profiles = profiles };
+			var profileState = await LoadProfilesAsync(snapshot.Profiles, cancellationToken).ConfigureAwait(false);
+			return snapshot with { Version = CurrentVersion, Profiles = profileState.Profiles, ActiveProfileId = profileState.ActiveProfileId };
 		}
 		catch
 		{

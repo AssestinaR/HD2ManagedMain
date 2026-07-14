@@ -18,6 +18,7 @@ public sealed class ModAssetAnalyzer : IModAssetAnalyzer
 	private readonly IAssetArchiveIndexService? _archiveIndexService;
 	private readonly IPatchGroupAnalysisProvider? _patchGroupAnalysisProvider;
 	private readonly IPatchGroupAnalyzer? _adaptationAnalyzer;
+	private readonly IModContentFactsService? _contentFactsService;
 
 	public ModAssetAnalyzer(
 		IPatchFileNameParser fileNameParser,
@@ -25,7 +26,8 @@ public sealed class ModAssetAnalyzer : IModAssetAnalyzer
 		IAssetMetadataCatalogProvider catalogProvider,
 		IAssetArchiveIndexService? archiveIndexService = null,
 		IPatchGroupAnalyzer? adaptationAnalyzer = null,
-		IPatchGroupAnalysisProvider? patchGroupAnalysisProvider = null)
+		IPatchGroupAnalysisProvider? patchGroupAnalysisProvider = null,
+		IModContentFactsService? contentFactsService = null)
 	{
 		_fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
 		_tocScanner = tocScanner ?? throw new ArgumentNullException(nameof(tocScanner));
@@ -33,6 +35,7 @@ public sealed class ModAssetAnalyzer : IModAssetAnalyzer
 		_archiveIndexService = archiveIndexService;
 		_adaptationAnalyzer = adaptationAnalyzer;
 		_patchGroupAnalysisProvider = patchGroupAnalysisProvider;
+		_contentFactsService = contentFactsService;
 	}
 
 	public async ValueTask<ModAssetSummary> AnalyzeNodeAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
@@ -51,7 +54,21 @@ public sealed class ModAssetAnalyzer : IModAssetAnalyzer
 		var nodeDir = Path.Combine(modsRootDirectory, node.RelativePath);
 		if (Directory.Exists(nodeDir))
 		{
-			if (_patchGroupAnalysisProvider is not null)
+			if (_contentFactsService is not null)
+			{
+				var contentFacts = await _contentFactsService.GetNodeFactsAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+				foreach (var group in contentFacts.PatchGroups)
+				{
+					var sourceFile = group.Files.FirstOrDefault(file => file.SidecarKind == PatchSidecarKind.Base)?.FileName
+						?? group.Files.FirstOrDefault()?.FileName
+						?? $"{group.Id.SourceArchiveHex}.patch_{group.Id.SourcePatchIndex}";
+					foreach (var assetKey in group.AssetKeys)
+					{
+						AddRawEntry(rawEntries, group.Id.SourceArchiveHex, assetKey.TypeId, assetKey.FileId, sourceFile);
+					}
+				}
+			}
+			else if (_patchGroupAnalysisProvider is not null)
 			{
 				var analyses = await _patchGroupAnalysisProvider.AnalyzeNodeAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 				foreach (var analysis in analyses)

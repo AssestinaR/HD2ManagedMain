@@ -58,7 +58,6 @@ public sealed class ApplyPlanner : IApplyPlanner
 
 		var nextIndexByHex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 		var orderedEntries = profile.Entries
-			.Where(e => e.Enabled)
 			.OrderBy(e => e.LoadOrder)
 			.ThenBy(e => e.AddedUtc)
 			.ThenBy(e => e.NodeId.Value)
@@ -75,7 +74,7 @@ public sealed class ApplyPlanner : IApplyPlanner
 
 			if (!patchIndex.FilesByNode.TryGetValue(entry.NodeId, out var files) || files.Count == 0)
 			{
-				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "EnabledModHasNoPatchFiles", $"Enabled mod has no patch files: {entry.NodeId}", NodeId: entry.NodeId));
+				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "ProfileModHasNoPatchFiles", $"Profile mod has no patch files: {entry.NodeId}", NodeId: entry.NodeId));
 				continue;
 			}
 
@@ -111,7 +110,7 @@ public sealed class ApplyPlanner : IApplyPlanner
 			}
 		}
 
-		return ValueTask.FromResult(new ApplyPlan(gameData, profile.Id, DateTimeOffset.UtcNow, ops, issues));
+		return ValueTask.FromResult(new ApplyPlan(gameData, profile.Id, profile.Revision, DateTimeOffset.UtcNow, ops, issues));
 	}
 
 	private IEnumerable<string> EnumerateExistingPatchFiles(string gameData)

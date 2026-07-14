@@ -7,4 +7,5 @@ namespace HD2ModCore.Application;
 public interface IApplyExecutor
 {
 	ValueTask<ApplyResult> ExecuteAsync(ApplyPlan plan, CancellationToken cancellationToken = default);
+	ValueTask<ApplyResult> DeactivateAsync(string gameDataDirectory, CancellationToken cancellationToken = default);
 }

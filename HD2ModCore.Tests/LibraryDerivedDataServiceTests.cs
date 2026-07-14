@@ -38,6 +38,9 @@ public sealed class LibraryDerivedDataServiceTests
 			Assert.True(nodeData.DirectoryExists);
 			Assert.Equal(Path.Combine(modDir, "icon.png"), nodeData.IconPath);
 			Assert.Single(nodeData.PatchFiles, f => f.SidecarKind == PatchSidecarKind.Base);
+			Assert.Single(nodeData.ContentFacts.PatchGroups);
+			Assert.Equal(node.Id, nodeData.ContentFacts.PatchGroups[0].Id.NodeId);
+			Assert.False(string.IsNullOrWhiteSpace(nodeData.ContentFacts.ContentGeneration));
 			Assert.NotNull(nodeData.AssetSummary);
 			Assert.Contains("armor", nodeData.AssetSummary!.DerivedTags);
 			Assert.Contains("model", nodeData.AssetSummary.DerivedTags);

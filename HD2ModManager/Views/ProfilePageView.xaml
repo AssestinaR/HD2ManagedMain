@@ -10,8 +10,10 @@
             <DockPanel>
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
                     <TextBlock Text="配置页" FontSize="20" FontWeight="SemiBold" Margin="0,0,14,0"/>
-                    <ComboBox Width="180" ItemsSource="{Binding Profiles}" SelectedItem="{Binding ActiveProfileKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                    <ComboBox Width="180" ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfileKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                     <TextBox Width="180" Text="{Binding RenameText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="8,0,0,0"/>
+                    <TextBlock Text="{Binding ActiveProfileText}" Foreground="#1E63D6" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding SelectedProfileState}" Foreground="#6C7280" Margin="8,0,0,0" VerticalAlignment="Center"/>
                 </StackPanel>
             </DockPanel>
         </Border>
@@ -51,8 +53,6 @@
                                 </Border>
                                 <StackPanel x:Name="ActionPanel" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right" Opacity="0" IsHitTestVisible="False">
                                     <Button Content="ⓘ" ToolTip="查看详情" Click="OnOpenDetailsClick" Style="{StaticResource RowIconButton}"/>
-                                    <Button Content="✓" ToolTip="启用" Command="{Binding DataContext.EnableModCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}"/>
-                                    <Button Content="⏸" ToolTip="禁用" Command="{Binding DataContext.DisableModCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}"/>
                                     <Button Content="↑" ToolTip="上移" Command="{Binding DataContext.MoveUpCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}"/>
                                     <Button Content="↓" ToolTip="下移" Command="{Binding DataContext.MoveDownCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}"/>
                                     <Button Content="−" ToolTip="从配置移除" Command="{Binding DataContext.RemoveModCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}" Foreground="#B3261E"/>
@@ -81,7 +81,7 @@
                                 <Setter Property="Template">
                                     <Setter.Value>
                                         <ControlTemplate TargetType="ListBox">
-                                            <TextBlock Text="当前配置中没有启用的模组。可从模组库右键添加。" Foreground="#888" Margin="16"/>
+                                            <TextBlock Text="当前配置中没有 Mod。可从模组库添加；若右侧为空，则所有 Mod 都已加入此配置。" Foreground="#888" Margin="16"/>
                                         </ControlTemplate>
                                     </Setter.Value>
                                 </Setter>

@@ -37,12 +37,12 @@ public sealed class ApplyPlannerTests
 				Children: Array.Empty<ModNodeId>());
 			var second = first with { Id = secondId, RelativePath = "second", Metadata = first.Metadata with { Name = "second" } };
 
-			var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [firstId] = first, [secondId] = second }, Array.Empty<Profile>());
+			var snapshot = new LibrarySnapshot(2, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [firstId] = first, [secondId] = second }, Array.Empty<Profile>());
 			var index = await new PatchFileIndexBuilder(new PatchFileNameParser()).BuildAsync(snapshot, modsRoot);
 			var profile = new Profile(ProfileId.New(), "p", DateTimeOffset.UtcNow, null, new[]
 			{
-				new ProfileEntry(secondId, LoadOrder: -1, Enabled: true, AddedUtc: DateTimeOffset.UtcNow),
-				new ProfileEntry(firstId, LoadOrder: 0, Enabled: true, AddedUtc: DateTimeOffset.UtcNow.AddSeconds(1)),
+				new ProfileEntry(secondId, LoadOrder: -1, AddedUtc: DateTimeOffset.UtcNow),
+				new ProfileEntry(firstId, LoadOrder: 0, AddedUtc: DateTimeOffset.UtcNow.AddSeconds(1)),
 			});
 
 			var planner = new ApplyPlanner(new PatchFileNameParser());
