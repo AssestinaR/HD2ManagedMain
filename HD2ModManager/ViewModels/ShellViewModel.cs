@@ -32,8 +32,35 @@ namespace HD2ModManager.ViewModels
         private string? _selectedModId;
 
         public PageViewModel? CurrentPage => LeftPage;
-        public PageViewModel? LeftPage { get => _leftPage; private set { if (SetField(ref _leftPage, value)) { OnPropertyChanged(nameof(CurrentPage)); RaiseActionFlags(); } } }
-        public PageViewModel? RightPage { get => _rightPage; private set { if (SetField(ref _rightPage, value)) RaiseActionFlags(); } }
+        public PageViewModel? LeftPage
+        {
+            get => _leftPage;
+            private set
+            {
+                if (ReferenceEquals(_leftPage, value)) return;
+                var previous = _leftPage;
+                if (SetField(ref _leftPage, value))
+                {
+                    if (!ReferenceEquals(previous, _rightPage)) (previous as IDisposable)?.Dispose();
+                    OnPropertyChanged(nameof(CurrentPage));
+                    RaiseActionFlags();
+                }
+            }
+        }
+        public PageViewModel? RightPage
+        {
+            get => _rightPage;
+            private set
+            {
+                if (ReferenceEquals(_rightPage, value)) return;
+                var previous = _rightPage;
+                if (SetField(ref _rightPage, value))
+                {
+                    if (!ReferenceEquals(previous, _leftPage)) (previous as IDisposable)?.Dispose();
+                    RaiseActionFlags();
+                }
+            }
+        }
         public WorkspaceMode CurrentMode { get => _currentMode; private set { if (SetField(ref _currentMode, value)) RaiseModeFlags(); } }
         public WorkspacePageType LeftPageType { get => _leftPageType; private set { if (SetField(ref _leftPageType, value)) RaiseSlotFlags(); } }
         public WorkspacePageType RightPageType { get => _rightPageType; private set { if (SetField(ref _rightPageType, value)) RaiseSlotFlags(); } }
@@ -559,7 +586,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.Status => new StatusPageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
                 WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _selection),
                 WorkspacePageType.Library => CreateLibraryPage(),
-                WorkspacePageType.Settings => new SettingsPageViewModel(),
+                WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService),
                 WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, SelectedModId ?? string.Empty, _notificationService),
                 WorkspacePageType.TagEdit => LeftPage ?? new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),

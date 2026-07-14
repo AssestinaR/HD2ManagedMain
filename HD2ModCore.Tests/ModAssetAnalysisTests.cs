@@ -396,6 +396,12 @@ public sealed class ModAssetAnalysisTests
 		public ValueTask<GameDataIndexFingerprint?> GetFingerprintAsync(CancellationToken cancellationToken = default)
 			=> ValueTask.FromResult<GameDataIndexFingerprint?>(null);
 
+		public ValueTask<IReadOnlyList<GameDataArchiveSummary>> GetArchiveSummariesAsync(CancellationToken cancellationToken = default)
+			=> ValueTask.FromResult<IReadOnlyList<GameDataArchiveSummary>>(Array.Empty<GameDataArchiveSummary>());
+
+		public ValueTask<GameDataArchiveDetails?> GetArchiveDetailsAsync(string packageName, CancellationToken cancellationToken = default)
+			=> ValueTask.FromResult<GameDataArchiveDetails?>(null);
+
 		public ValueTask<GameDataIndexStatus> GetIndexStatusAsync(string gameDataDirectory, string archiveHashesJson, CancellationToken cancellationToken = default)
 			=> ValueTask.FromResult(new GameDataIndexStatus(GameDataIndexState.Current, null, gameDataDirectory, "stub"));
 

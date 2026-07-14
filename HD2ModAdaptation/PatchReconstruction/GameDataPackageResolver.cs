@@ -31,10 +31,47 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 		{
 			StorageType.Legacy => await ReadLegacyTocAsync(path, cancellationToken).ConfigureAwait(false),
 			StorageType.Dsar => await ReadDsarResourceAsync(path, 0, cancellationToken).ConfigureAwait(false),
-			StorageType.Bundled => await ReconstructPackageAsync(Path.GetFileName(packageName), cancellationToken).ConfigureAwait(false),
+			StorageType.Bundled => await ReadBundledTocAsync(Path.GetFileName(packageName), cancellationToken).ConfigureAwait(false),
 			_ => null
 		};
 		return data is { Length: > 0 } ? new GameDataPackageToc(data, type is StorageType.Dsar or StorageType.Bundled) : null;
+	}
+
+	private async ValueTask<byte[]?> ReadBundledTocAsync(string packageName, CancellationToken cancellationToken)
+	{
+		var header = await ReadBundledPrefixAsync(packageName, 12, cancellationToken).ConfigureAwait(false);
+		if (header is null || header.Length < 12 || ReadUInt32(header, 0) != TocMagic) return null;
+		var typeCount = ReadUInt32(header, 4);
+		var fileCount = ReadUInt32(header, 8);
+		var legacyLength = checked(60 + checked((int)typeCount * 32) + checked((int)fileCount * 80));
+		var slimLength = checked(72 + checked((int)typeCount * 32) + checked((int)fileCount * 80));
+		return await ReadBundledPrefixAsync(packageName, Math.Max(legacyLength, slimLength), cancellationToken).ConfigureAwait(false);
+	}
+
+	private async ValueTask<byte[]?> ReadBundledPrefixAsync(string packageName, int requestedLength, CancellationToken cancellationToken)
+	{
+		await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+		if (!packages.TryGetValue(packageName, out var package) || package.Entries.Count == 0) return null;
+		var length = checked((int)Math.Min(package.Size, requestedLength));
+		var data = new byte[length];
+		var entries = package.Entries.OrderBy(entry => entry.ArchiveOffset).ToArray();
+		for (var index = 0; index < entries.Length; index++)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var entry = entries[index];
+			if (entry.ArchiveOffset >= length) break;
+			var nextOffset = index + 1 < entries.Length ? entries[index + 1].ArchiveOffset : package.Size;
+			var available = checked((int)Math.Min(nextOffset - entry.ArchiveOffset, length - entry.ArchiveOffset));
+			if (available <= 0) continue;
+			var resources = await ReadBundledResourcesAsync(
+				Path.Combine(gameDataDirectory, $"bundles.{entry.BundleIndex:00}.nxa"),
+				entry.BundleOffset,
+				available,
+				cancellationToken).ConfigureAwait(false);
+			var combined = Combine(resources);
+			Buffer.BlockCopy(combined, 0, data, checked((int)entry.ArchiveOffset), Math.Min(combined.Length, available));
+		}
+		return data;
 	}
 
 	public async ValueTask<byte[]?> GetPackageResourceAsync(string packageName, ulong resourceOffset, uint resourceSize, CancellationToken cancellationToken = default)
@@ -56,10 +93,18 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 
 	public async ValueTask<IReadOnlyList<string>> GetPackageNamesAsync(CancellationToken cancellationToken = default)
 	{
-		await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-		if (packages.Count > 0) return packages.Keys.Order(StringComparer.OrdinalIgnoreCase).ToArray();
 		if (!Directory.Exists(gameDataDirectory)) return Array.Empty<string>();
-		return Directory.EnumerateFiles(gameDataDirectory).Select(Path.GetFileName).Where(name => name is not null && !name.Contains(".patch", StringComparison.OrdinalIgnoreCase) && (Path.GetExtension(name) is "" or ".stream" or ".gpu_resources")).Cast<string>().Order(StringComparer.OrdinalIgnoreCase).ToArray();
+
+		var directPackages = Directory.EnumerateFiles(gameDataDirectory)
+			.Select(Path.GetFileName)
+			.Where(name => name is not null && !name.Contains(".patch", StringComparison.OrdinalIgnoreCase) && (Path.GetExtension(name) is "" or ".stream" or ".gpu_resources"))
+			.Cast<string>()
+			.Order(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+		if (directPackages.Length > 0) return directPackages;
+
+		await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+		return packages.Keys.Order(StringComparer.OrdinalIgnoreCase).ToArray();
 	}
 
 	private async ValueTask<byte[]?> ReconstructPackageAsync(string packageName, CancellationToken cancellationToken)

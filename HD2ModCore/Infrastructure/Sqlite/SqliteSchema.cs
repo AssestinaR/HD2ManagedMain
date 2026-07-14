@@ -2,11 +2,11 @@
 
 namespace HD2ModCore.Infrastructure.Sqlite;
 
-// 作用：定义并创建用于“资产键 -> 原版 archive”反向索引的 SQLite 数据库结构。
-// Purpose: Defines and applies the SQLite schema used for the asset->archive reverse index.
+// 作用：定义并创建 GameData facts 与“资产键 -> 原版 archive”反向索引的 SQLite 数据库结构。
+// Purpose: Defines and applies the persisted GameData facts and asset->archive reverse index schema.
 internal static class SqliteSchema
 {
-	public const int SchemaVersion = 1;
+	public const int SchemaVersion = 2;
 
 	public static async Task EnsureCreatedAsync(SqliteConnection connection, CancellationToken cancellationToken)
 	{
@@ -24,8 +24,42 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS archives (
 	archive_id TEXT PRIMARY KEY,
 	category TEXT NOT NULL,
-	display_name TEXT NOT NULL
+	display_name TEXT NOT NULL,
+	archive_hex TEXT NULL,
+	uses_slim_entry_offset INTEGER NOT NULL DEFAULT 0,
+	status TEXT NOT NULL DEFAULT 'Indexed'
 );
+
+CREATE TABLE IF NOT EXISTS archive_entries (
+	archive_id TEXT NOT NULL,
+	entry_index INTEGER NOT NULL,
+	type_id INTEGER NOT NULL,
+	file_id INTEGER NOT NULL,
+	df INTEGER NOT NULL,
+	toc_data_offset INTEGER NOT NULL,
+	stream_offset INTEGER NOT NULL,
+	gpu_resource_offset INTEGER NOT NULL,
+	toc_data_size INTEGER NOT NULL,
+	stream_size INTEGER NOT NULL,
+	gpu_resource_size INTEGER NOT NULL,
+	unknown1 INTEGER NOT NULL,
+	unknown2 INTEGER NOT NULL,
+	unknown3 INTEGER NOT NULL,
+	unknown4 INTEGER NOT NULL,
+	PRIMARY KEY(archive_id, entry_index),
+	FOREIGN KEY(archive_id) REFERENCES archives(archive_id)
+);
+
+CREATE TABLE IF NOT EXISTS archive_issues (
+	issue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+	archive_id TEXT NULL,
+	code TEXT NOT NULL,
+	message TEXT NOT NULL,
+	FOREIGN KEY(archive_id) REFERENCES archives(archive_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_archive_entries_asset ON archive_entries(type_id, file_id);
+CREATE INDEX IF NOT EXISTS ix_archive_issues_archive ON archive_issues(archive_id);
 
 CREATE TABLE IF NOT EXISTS assets (
 	type_id INTEGER NOT NULL,
@@ -47,7 +81,31 @@ CREATE INDEX IF NOT EXISTS ix_asset_archives_archive ON asset_archives(archive_i
 			await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 		}
 
+		await AddColumnIfMissingAsync(connection, "archives", "archive_hex", "TEXT NULL", cancellationToken).ConfigureAwait(false);
+		await AddColumnIfMissingAsync(connection, "archives", "uses_slim_entry_offset", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
+		await AddColumnIfMissingAsync(connection, "archives", "status", "TEXT NOT NULL DEFAULT 'Indexed'", cancellationToken).ConfigureAwait(false);
+
 		await SetMetaAsync(connection, "schema_version", SchemaVersion.ToString(), cancellationToken).ConfigureAwait(false);
+	}
+
+	private static async Task AddColumnIfMissingAsync(
+		SqliteConnection connection,
+		string tableName,
+		string columnName,
+		string columnDefinition,
+		CancellationToken cancellationToken)
+	{
+		await using var check = connection.CreateCommand();
+		check.CommandText = $"SELECT 1 FROM pragma_table_info('{tableName}') WHERE name=$name LIMIT 1";
+		check.Parameters.AddWithValue("$name", columnName);
+		if (await check.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null)
+		{
+			return;
+		}
+
+		await using var alter = connection.CreateCommand();
+		alter.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnDefinition}";
+		await alter.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
 
 	public static async Task SetMetaAsync(SqliteConnection connection, string key, string value, CancellationToken cancellationToken)
@@ -75,6 +133,8 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value;";
 		cmd.CommandText = @"
 DELETE FROM asset_archives;
 DELETE FROM assets;
+DELETE FROM archive_issues;
+DELETE FROM archive_entries;
 DELETE FROM archives;
 ";
 		await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

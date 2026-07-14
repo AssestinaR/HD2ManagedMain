@@ -293,7 +293,7 @@ namespace HD2ModManager.ViewModels
 
             try
             {
-                var detector = CoreServices.CreateConflictDetector();
+                var detector = CoreServices.CreateConflictDetector(new StoragePaths(AppDomain.CurrentDomain.BaseDirectory));
                 var pairs = detector.DetectNodeConflictsAsync(ids, _library.Snapshot, _library.ModsRootDirectory).AsTask().GetAwaiter().GetResult();
                 var related = pairs.Where(p => p.A == nodeId || p.B == nodeId).ToList();
                 if (related.Count == 0) return "未发现与当前配置的资产冲突";

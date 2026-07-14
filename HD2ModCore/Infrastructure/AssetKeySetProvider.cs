@@ -1,4 +1,5 @@
 ﻿using HD2ModCore.Application;
+using HD2ModAdaptation.Analysis;
 using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure;
@@ -9,12 +10,20 @@ public sealed class AssetKeySetProvider : IAssetKeySetProvider
 {
 	private readonly IPatchFileNameParser _parser;
 	private readonly IPatchTocScanner _scanner;
+	private readonly IPatchGroupAnalysisProvider? _analysisProvider;
 	private readonly Dictionary<string, HashSet<AssetKey>> _cache = new(StringComparer.OrdinalIgnoreCase);
 
 	public AssetKeySetProvider(IPatchFileNameParser parser, IPatchTocScanner scanner)
 	{
 		_parser = parser ?? throw new ArgumentNullException(nameof(parser));
 		_scanner = scanner ?? throw new ArgumentNullException(nameof(scanner));
+	}
+
+	public AssetKeySetProvider(IPatchGroupAnalysisProvider analysisProvider)
+	{
+		_analysisProvider = analysisProvider ?? throw new ArgumentNullException(nameof(analysisProvider));
+		_parser = null!;
+		_scanner = null!;
 	}
 
 	public async ValueTask<IReadOnlySet<AssetKey>> GetAssetKeysAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
@@ -40,6 +49,17 @@ public sealed class AssetKeySetProvider : IAssetKeySetProvider
 		}
 
 		var result = new HashSet<AssetKey>();
+		if (_analysisProvider is not null)
+		{
+			var analyses = await _analysisProvider.AnalyzeNodeAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+			foreach (var asset in analyses.SelectMany(analysis => analysis.Assets))
+			{
+				result.Add(new AssetKey(asset.AssetKey.TypeId, asset.AssetKey.FileId));
+			}
+			Cache(key, result);
+			return result;
+		}
+
 		if (!Directory.Exists(nodeDir))
 		{
 			Cache(key, result);

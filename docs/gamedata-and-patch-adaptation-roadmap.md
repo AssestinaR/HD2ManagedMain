@@ -10,6 +10,19 @@
 
 本文记录 Game Data 资源索引、Item 资源关系、部件复用检测，以及 patch 内部分析迁移到 `HD2ModAdaptation` 的统一落地方案。
 
+### 当前阶段性目标（只读优先）
+
+当前阶段的实际目标是先建立可靠的“读取和展示”能力，不要求 Adaptation 立即具备写出或自动修复能力：
+
+1. 能读取 GameData 目录中的 archive、TOC、AssetKey 和可确认的资源结构；
+2. 能利用 `archivehashes.json` 将已存在的 archive hash 映射到显示名称/分类，并明确列出未映射 hash；
+3. 在 Manager 设置页的“游戏 data 文件夹”卡片内提供一个“查看游戏资产状态”入口；
+4. 点击入口后打开一个复用状态页任务窗口外壳的新窗口，内部使用可复制文本的只读信息卡片，展示 GameData 扫描结果，例如 Armor、Helmet 等已识别分类、archive 数量、已映射 hash、未映射 hash 和扫描问题；
+5. Patch 读取主要服务于 Mod 详情页，只展示从该 patch 实际提取出的内容，不凭 GameData 或命名规则猜测未确认的资源关系；
+6. 暂不要求 Manager 调用 patch writer、重建器或自动修复流程。
+
+这里的“资产状态”是扫描和索引状态，不等同于“游戏兼容性验证”，也不等同于“所有 Item 业务关系已经建立”。
+
 核心目标：
 
 1. 将 patch 内部语义读取逐步迁移到 `HD2ModAdaptation`；
@@ -17,7 +30,11 @@
 3. 建立 Item → Unit/Material/Texture 的资源关系表；
 4. 检测多个 Item 之间的 Unit、Composite、Mesh、Material 和 Texture 复用；
 5. 让 Core/Manager 消费已经生成的事实和关系，避免重复扫描 patch 或 Game Data；
-6. 在新链路成熟前保留 Core 的旧 patch 实现作为 fallback，之后再清理重复代码。
+6. 严格依赖 Adaptation 的新功能不得调用 Core 旧 patch reader；Core 旧实现只能作为待迁移的兼容路径，不能作为新功能的数据源。
+
+本阶段不重建 Core 已有的 Mod 资产业务功能。Mod 详情中的 patch/资产展示、资产标签、配置内覆盖检测以及派生缓存仍由 Core 负责；迁移内容是这些功能所依赖的 patch 文件事实读取实现和 facts 缓存来源。Core 继续负责缓存生命周期、业务投影和元数据补充，Adaptation 负责给出可持久化的 patch/GameData 事实。
+
+当前 patch facts 缓存已按节点持久化，并以 patch 本体、`.stream`、`.gpu_resources` 的长度和修改时间进行失效判断，同时校验 Adaptation analyzer version。冲突检测工厂也必须接收实际的 `StoragePaths`，确保 Mod 详情和状态页使用同一数据根目录下的 facts 缓存。
 
 ---
 
@@ -72,6 +89,21 @@ HD2ModManager
 - `MaterialDependencyResolver` 用于依赖闭包和缺失诊断，不保证所有真实样本都能闭合；
 - `UnitMeshWriter`、重建器、transfer pipeline 只用于修复/重建，不在普通资产分析中调用；
 - “能够读取”不等于“当前游戏能够接受”；旧 Unit/Composite 不能原样输出。
+
+### 3.3 读取链路与写出链路的边界
+
+必须区分以下两类验证：
+
+| 验证 | 目的 | 是否影响当前只读目标 |
+| --- | --- | --- |
+| GameData archive/TOC smoke | 验证 GameData 能否扫描、索引和记录问题 | 直接相关 |
+| Patch TOC/Unit/Material 读取 | 验证 Mod 详情所需的 patch 内容能否提取 | 直接相关 |
+| Mesh transfer/reconstruction smoke | 验证旧 patch 模型能否按目标 Unit 重建并写出 | 不直接相关 |
+| 游戏内加载/版本兼容验证 | 验证写出的新 patch 是否能被当前游戏接受 | 不属于当前只读目标 |
+
+因此，真实 patch smoke 中出现的 `source and target stream layouts differ`，说明当前直接 MeshTransfer/重建路径不能处理该真实样本的 source/target stream layout 差异。它不会否定已完成的 GameData 索引、patch TOC 扫描、AssetKey 提取或 Mod 详情只读展示；它只会阻止后续把该样本直接送入模型 transfer、自动修复或 patch 写出流程。
+
+同理，SDK-style smoke 中的 material slot 无法唯一解析和已有输出文件冲突，属于重建/写出测试的问题，不影响只读扫描。它们应作为后续重建专项 issue 保留，不能被误报为 GameData 资产缓存失效。
 
 ---
 
@@ -342,12 +374,12 @@ PatchGroupInput
         ↓ 验证通过
 Manager 改用新链路
         ↓
-Core 旧 analyzer 仅作为 fallback
+Core 旧 analyzer 仅保留兼容调用
         ↓
 删除 Core 重复 patch 操作
 ```
 
-在新链路完成真实样本验证之前，不删除 Core 的旧实现。
+兼容调用不得被新功能依赖；后续应将 Core 旧 `PatchTocScanner`、`PatchEntryPayloadReader`、`AssetKeySetProvider` 以及直接读取 patch payload 的 analyzer/服务逐步替换为 Adaptation contract，再删除重复实现。
 
 ---
 
@@ -431,10 +463,37 @@ Core 旧 analyzer 仅作为 fallback
 - 展示脏状态、构建进度和问题；
 - 使用 group summary 和 reuse group 提示；
 - 不让 UI 直接依赖 Adaptation 内部模型。
+- 可使用 debug 版 Mod 目录进行临时工具验证或 Manager 人工冒烟测试：
+        `E:\Data\source\repos\WpfApp1\HD2ModManager\bin\Debug\net10.0-windows\mods`；
+- 首轮只接入只读分析、缓存状态和问题展示，不接入自动修复或批量重建。
+
+#### P5-a：游戏资产状态查看（当前优先级）
+
+Manager 设置页的“游戏 data 文件夹”卡片可增加只读入口，建议流程如下：
+
+```text
+设置页：游戏 data 文件夹
+        ↓ 点击“查看游戏资产状态”
+只读任务窗口（复用状态页任务窗口外壳）
+        ↓
+可复制文本的信息卡片
+        ├─ GameData 路径和扫描时间
+        ├─ archive/TOC 总数与扫描成功/失败数量
+        ├─ archivehashes.json 已映射 hash
+        ├─ 未映射 hash
+        ├─ 已识别的 Armor/Helmet 等分类或名称
+        └─ 解析问题和缺失项
+```
+
+该窗口只消费 Core 投影后的 DTO/文本模型，不能让 XAML 直接依赖 Adaptation 内部解析类型。扫描结果应支持复制；刷新、取消、失败和使用缓存结果等状态应沿用现有任务窗口语义。
+
+#### P5-b：Mod 详情中的 Patch 内容
+
+Mod 详情只展示 patch 实际扫描到的内容，例如 patch 文件组、AssetKey、资源类型计数、Unit/Material/Texture 读取结果、缺失依赖和结构化 issue。没有可靠关系来源时显示“未能确认映射”，不得根据 archive 名称或文件名静默推导 Item。
 
 ### P6：清理重复实现
 
-仅当满足以下条件后执行：
+该阶段暂缓，待本轮分析、Manager 接入和真实样本验证完成后再重新评估。仅当满足以下条件后执行：
 
 - 新链路通过 Adaptation 单元测试；
 - 真实 Game Data 验证通过；
@@ -444,6 +503,25 @@ Core 旧 analyzer 仅作为 fallback
 - 已确认没有其他 Core 服务依赖旧 patch 实现。
 
 然后再删除 Core 中重复的 patch scanner、payload reader、Unit/Material 操作，并保留必要的 Core 适配器和文件级索引能力。
+
+### 当前落地进展补充
+
+- 本阶段 Manager 的目标是委托 Adaptation 生成并缓存两类只读事实：GameData 资产索引，以及单个 Mod 的 patch 资产信息；
+- GameData 资产索引服务于设置页查看原版 GameData 的 archive、Item、Unit、Material、Texture 等关系，也服务于后续派生缓存和 patch 资产对比，避免重复解析 GameData；
+- Mod patch 资产缓存服务于 Mod 详情页展示实际包含的 patch 和 AssetKey，并与 GameData 索引对比生成可确认的资产标签；同一配置文件内的 Mod 也可基于这些事实检测覆盖关系；
+- Manager 不再提供全库 `Adaptation` aggregate 分析按钮；该入口属于偏离当前目标的额外功能，已移除。底层 Adaptation/Core 解析、索引和缓存工具保留，供上述流程复用；
+- 现有 `LibraryDerivedDataService` 和 Core 的资产分析/索引能力继续保留，直到新的单 Mod patch 事实缓存完成替换并经过验证；
+- Core 测试已通过 `157/157`，Adaptation 测试已通过 `59/59`；
+- 当前服务输入仍要求上层提供已经确认的 `PatchGroupInput` 和 `GameItemInput`，真实目录到语义输入的精确映射及 Manager 接入留在下一步；
+- Patch group 路径映射已前移到 Core `PatchGroupInputFactory`：根据 fingerprint scanner 返回的文件名自动组装 `.patch`、`.stream` 和 `.gpu_resources` 路径；
+- 节点分析服务现在只要求上层提供 `GameItemInput`，不再要求手工传入 patch 路径；
+- GameData archive 到 Item 的业务语义映射仍不自动猜测，必须由已确认的 metadata/关系来源提供；
+- 已新增 Core `IGameDataArchiveIndexProvider`/`GameDataArchiveIndexProvider`：通过 `IGameDataLocator` 定位当前 GameData，读取 metadata catalog，使用 Adaptation `GameDataArchiveIndexer` 构造只读 archive TOC index，并将其注入 `AdaptationAnalysisInput.GameDataIndex`；
+- provider 在 GameData 目录不存在时返回 null，在存在时以 resolver 实际枚举到的 package names 为准，不从 `archivehashes.json` 盲目制造包路径；
+- 已对 Manager debug mods 目录做只读样本扫描：3 个 mod 目录均包含同一组完整文件 `9ba626afa44a3aa3.patch_0`、`.stream`、`.gpu_resources`；
+- 已确认 debug 版 Manager `settings.json` 配置的真实 GameData 路径为 `D:\SteamLibrary\steamapps\common\Helldivers 2\data`；目录统计为 312 个文件、52 个 package-like 文件和 78 个 patch base；
+- 已完成真实 GameData archive TOC smoke：直接读取目录中的 30 个基础 archive，得到 30 个 archive、20,700 个 TOC entries、0 个 issues；样本均为 slim entry offset。为避免普通 TOC 索引无意义地提前解压完整 bundled 数据库，resolver 现优先枚举目录中的直接 archive，仅在没有直接 archive 时才初始化 bundled database fallback；
+- 当前构建仍有既有的 `SharpCompress` 安全警告和 Windows Registry 平台兼容性警告，不属于本次改动引入的问题。
 
 ---
 
@@ -483,13 +561,17 @@ Core 旧 analyzer 仅作为 fallback
 
 ## 14. 当前下一步
 
-下一步先实现 P0，不直接修改 Manager 派生链路：
+当前已完成 P0-P4 第一版、Core 快照投影、独立 Adaptation 缓存基础设施、确定性 Patch/GameData fingerprint 请求构造，以及 Core-owned Mod 级聚合；旧 Core analyzer 仍保留为 fallback，Core 冗余暂不清理，Manager 只读接入已排入后续队列。缓存协调器已经具备命中、失效重建和 best-effort 持久化行为。
 
-1. 在 `HD2ModAdaptation` 中定义 Game Data 基础索引的中立 DTO 和接口；
-2. 复用现有 `GameDataPackageResolver`、`PatchTocScanner`、`PatchEntryPayloadReader`；
-3. 为 archive/AssetKey 索引编写合成测试；
-4. 再以 `CW-22 Kodiak` 所在 archive 做一次真实读取验证；
-5. 确认索引输出后，再实现 Item 关系表；
-6. 最后接入 Core 的 fingerprint、缓存和 Manager UI。
+下一阶段继续完善 Core 边界，并优先落实 Manager 资产状态和 Mod 详情只读展示，不立即进入 patch 写出链路：
+
+1. 将 Patch fingerprint 与 GameData index fingerprint 接入协调器调用方；
+2. 增加 Mod 级 Adaptation summary 聚合，不让 UI 依赖 Adaptation 内部 DTO；
+3. 继续补充真实 archive/patch 样本验证并修正临时 archive 映射；
+4. 为设置页游戏 data 文件夹卡片规划并实现只读资产状态入口和任务窗口；
+5. 将 Mod 详情的 patch 提取结果接入展示，严格区分已提取事实和未确认映射；
+6. 使用上述 debug 版 Mod 目录进行临时工具验证，必要时协调 Manager 人工冒烟测试；
+7. 将 Mesh transfer、material closure、target-shell 重建和游戏内兼容性作为独立后续阶段；
+8. 在新链路稳定、真实样本和 Manager 验证完成后，再评估是否具备清理 Core fallback 和冗余实现的条件。
 
 在 P0/P1 验证完成前，不进行大范围 domain 重构，也不删除 Core 旧 patch 实现。

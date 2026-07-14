@@ -11,7 +11,9 @@ public sealed record PatchAssetEntry(
 	string TypeDisplayName,
 	AssetTypeCategory TypeCategory,
 	IReadOnlyList<string> DerivedTags,
-	IReadOnlyList<string> SourceFiles)
+	IReadOnlyList<string> SourceFiles,
+	IReadOnlyList<string>? TargetArchiveIds = null)
 {
 	public string DisplayName => $"{ArchiveDisplayName} / {FileDisplayName} ({TypeDisplayName})";
+	public IReadOnlyList<string> SemanticTargetArchiveIds => TargetArchiveIds ?? Array.Empty<string>();
 }

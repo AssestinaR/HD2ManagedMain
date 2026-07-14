@@ -39,7 +39,7 @@ public sealed class ReplacementTargetDeriverTests
 			var json = JsonSerializer.Serialize(archiveHashes);
 
 			var paths = new StoragePaths(appRoot);
-			var indexService = new AssetArchiveIndexService(paths, new PatchTocScanner());
+			var indexService = new AssetArchiveIndexService(paths);
 			await indexService.BuildOrRebuildAsync(gameData, json);
 
 			var deriver = new ReplacementTargetDeriver(paths, indexService);

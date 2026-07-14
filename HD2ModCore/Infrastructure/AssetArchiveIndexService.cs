@@ -2,11 +2,14 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using HD2ModAdaptation.Analysis;
+using HD2ModAdaptation.PatchReconstruction;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure.ArchiveHashes;
 using HD2ModCore.Infrastructure.Sqlite;
 using Microsoft.Data.Sqlite;
+using CoreAssetKey = HD2ModCore.Domain.AssetKey;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -15,12 +18,12 @@ namespace HD2ModCore.Infrastructure;
 public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 {
 	private readonly StoragePaths _paths;
-	private readonly IPatchTocScanner _tocScanner;
+	private readonly IGameDataArchiveIndexer _archiveIndexer;
 
-	public AssetArchiveIndexService(StoragePaths paths, IPatchTocScanner tocScanner)
+	public AssetArchiveIndexService(StoragePaths paths, IGameDataArchiveIndexer? archiveIndexer = null)
 	{
 		_paths = paths ?? throw new ArgumentNullException(nameof(paths));
-		_tocScanner = tocScanner ?? throw new ArgumentNullException(nameof(tocScanner));
+		_archiveIndexer = archiveIndexer ?? new GameDataArchiveIndexer();
 	}
 
 	public ValueTask<bool> IndexExistsAsync(CancellationToken cancellationToken = default)
@@ -34,6 +37,12 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 		if (string.IsNullOrWhiteSpace(gameDataDirectory))
 		{
 			throw new ArgumentException("Value cannot be null or whitespace.", nameof(gameDataDirectory));
+		}
+
+		var normalizedGameDataDirectory = Path.GetFullPath(gameDataDirectory);
+		if (!Directory.Exists(normalizedGameDataDirectory))
+		{
+			throw new DirectoryNotFoundException($"GameData directory does not exist: {normalizedGameDataDirectory}");
 		}
 
 		var stored = await GetFingerprintAsync(cancellationToken).ConfigureAwait(false);
@@ -52,8 +61,10 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 			return new GameDataIndexStatus(GameDataIndexState.Invalid, stored, Path.GetFullPath(gameDataDirectory), string.Empty);
 		}
 
-		var archives = FlattenArchives(root);
-		var currentFingerprint = await ComputeGameDataFingerprintAsync(gameDataDirectory, archives, cancellationToken).ConfigureAwait(false);
+		var currentFingerprint = await ComputeSourceFingerprintAsync(
+			normalizedGameDataDirectory,
+			archiveHashesJson,
+			cancellationToken).ConfigureAwait(false);
 		var state = string.Equals(stored.SourceFingerprint, currentFingerprint, StringComparison.OrdinalIgnoreCase)
 			? GameDataIndexState.Current
 			: GameDataIndexState.Stale;
@@ -86,6 +97,109 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 			await SqliteSchema.GetMetaAsync(connection, "source_fingerprint", cancellationToken).ConfigureAwait(false) ?? string.Empty);
 	}
 
+	public async ValueTask<IReadOnlyList<GameDataArchiveSummary>> GetArchiveSummariesAsync(CancellationToken cancellationToken = default)
+	{
+		if (!File.Exists(_paths.DbPath))
+		{
+			return Array.Empty<GameDataArchiveSummary>();
+		}
+
+		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Mode=ReadOnly;Cache=Shared");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		await using var command = connection.CreateCommand();
+		command.CommandText = @"
+SELECT a.archive_id, a.display_name, a.category, COUNT(e.entry_index) AS entry_count,
+	   CASE WHEN EXISTS (SELECT 1 FROM archive_issues i WHERE i.archive_id = a.archive_id)
+			THEN '存在问题' ELSE '已索引' END AS status
+FROM archives a
+LEFT JOIN archive_entries e ON e.archive_id = a.archive_id
+GROUP BY a.archive_id, a.display_name, a.category
+ORDER BY a.archive_id;";
+
+		var result = new List<GameDataArchiveSummary>();
+		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+		{
+			result.Add(new GameDataArchiveSummary(
+				reader.GetString(0),
+				reader.GetString(1),
+				reader.GetString(2),
+				Convert.ToInt32(reader.GetInt64(3), CultureInfo.InvariantCulture),
+				reader.GetString(4)));
+		}
+
+		return result;
+	}
+
+	public async ValueTask<GameDataArchiveDetails?> GetArchiveDetailsAsync(string packageName, CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(packageName);
+		if (!File.Exists(_paths.DbPath)) return null;
+
+		var catalog = await new FileSystemAssetMetadataCatalogProvider(_paths).LoadAsync(cancellationToken).ConfigureAwait(false);
+		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Mode=ReadOnly;Cache=Shared");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+		await using var summaryCommand = connection.CreateCommand();
+		summaryCommand.CommandText = @"
+SELECT a.archive_id, a.display_name, a.category, COUNT(e.entry_index),
+       CASE WHEN EXISTS (SELECT 1 FROM archive_issues i WHERE i.archive_id = a.archive_id)
+            THEN '存在问题' ELSE '已索引' END
+FROM archives a
+LEFT JOIN archive_entries e ON e.archive_id = a.archive_id
+WHERE a.archive_id = $package
+GROUP BY a.archive_id, a.display_name, a.category;";
+		summaryCommand.Parameters.AddWithValue("$package", packageName);
+		await using var summaryReader = await summaryCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+		if (!await summaryReader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+		var summary = new GameDataArchiveSummary(
+			summaryReader.GetString(0), summaryReader.GetString(1), summaryReader.GetString(2),
+			Convert.ToInt32(summaryReader.GetInt64(3), CultureInfo.InvariantCulture), summaryReader.GetString(4));
+		await summaryReader.DisposeAsync().ConfigureAwait(false);
+
+		var keys = new List<CoreAssetKey>();
+		await using var entriesCommand = connection.CreateCommand();
+		entriesCommand.CommandText = @"
+SELECT type_id, file_id
+FROM archive_entries
+WHERE archive_id = $package
+ORDER BY type_id, file_id;";
+		entriesCommand.Parameters.AddWithValue("$package", packageName);
+		await using var entriesReader = await entriesCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+		while (await entriesReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+		{
+			keys.Add(new CoreAssetKey(unchecked((ulong)entriesReader.GetInt64(0)), unchecked((ulong)entriesReader.GetInt64(1))));
+		}
+		await entriesReader.DisposeAsync().ConfigureAwait(false);
+
+		var assets = new List<GameDataArchiveAssetEntry>(keys.Count);
+		foreach (var key in keys)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var shared = await GetSharedArchivesAsync(connection, summary.PackageName, key.TypeId, key.FileId, cancellationToken).ConfigureAwait(false);
+			var typeName = catalog.Types.TryGetValue(key.TypeId, out var type) ? type.Name : $"unknown ({key.TypeId:x16})";
+			var friendlyName = catalog.Files.TryGetValue(key.FileId, out var file) ? file.FriendlyName : "—";
+			assets.Add(new GameDataArchiveAssetEntry(
+				key,
+				typeName,
+				friendlyName,
+				shared.Select(x => x.PackageName).ToArray(),
+				shared.Select(x => x.DisplayName).ToArray()));
+		}
+
+		var issues = new List<CoreIssue>();
+		await using var issuesCommand = connection.CreateCommand();
+		issuesCommand.CommandText = "SELECT code, message FROM archive_issues WHERE archive_id = $package ORDER BY issue_id";
+		issuesCommand.Parameters.AddWithValue("$package", packageName);
+		await using var issuesReader = await issuesCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+		while (await issuesReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+		{
+			issues.Add(new CoreIssue(CoreIssueSeverity.Warning, issuesReader.GetString(0), issuesReader.GetString(1)));
+		}
+
+		return new GameDataArchiveDetails(summary, assets, issues);
+	}
+
 	public async ValueTask BuildOrRebuildAsync(
 		string gameDataDirectory,
 		string archiveHashesJson,
@@ -95,6 +209,12 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 		if (string.IsNullOrWhiteSpace(gameDataDirectory))
 		{
 			throw new ArgumentException("Value cannot be null or whitespace.", nameof(gameDataDirectory));
+		}
+
+		var normalizedGameDataDirectory = Path.GetFullPath(gameDataDirectory);
+		if (!Directory.Exists(normalizedGameDataDirectory))
+		{
+			throw new DirectoryNotFoundException($"GameData directory does not exist: {normalizedGameDataDirectory}");
 		}
 
 		Directory.CreateDirectory(_paths.IndexDirectory);
@@ -114,6 +234,18 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 		NormalizeExistingIndexFileAttributes();
 
 		var archives = FlattenArchives(root);
+		var metadataByPackage = BuildMetadataByPackage(archives);
+		var sourceFingerprint = await ComputeSourceFingerprintAsync(
+			normalizedGameDataDirectory,
+			archiveHashesJson,
+			cancellationToken).ConfigureAwait(false);
+		var facts = await _archiveIndexer.BuildAsync(
+			new GameDataArchiveInput(normalizedGameDataDirectory, metadataByPackage.Keys.ToArray(), metadataByPackage),
+			cancellationToken).ConfigureAwait(false);
+		if (facts.Archives.Count == 0)
+		{
+			throw new InvalidDataException($"No GameData archives were discovered in: {normalizedGameDataDirectory}");
+		}
 
 		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Pooling=False");
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -122,43 +254,30 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 		await using var tx = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.ClearIndexDataAsync(connection, cancellationToken).ConfigureAwait(false);
 
-		var resolver = new GameDataPackageResolver(gameDataDirectory);
-		var total = archives.Count;
+		var total = facts.Archives.Count;
 		var current = 0;
-		var indexed = 0;
-		var sourceFingerprint = await ComputeGameDataFingerprintAsync(gameDataDirectory, archives, cancellationToken).ConfigureAwait(false);
+		var indexed = facts.Archives.Count(a => a.IsIndexed);
 
-		var df = new Dictionary<AssetKey, int>();
-		var assetArchives = new Dictionary<AssetKey, HashSet<string>>();
+		var df = new Dictionary<CoreAssetKey, int>();
+		var assetArchives = new Dictionary<CoreAssetKey, HashSet<string>>();
+		await using var archiveCommand = CreateArchiveInsertCommand(connection);
+		await using var issueCommand = CreateArchiveIssueInsertCommand(connection);
+		await using var entryCommand = CreateArchiveEntryInsertCommand(connection);
 
-		foreach (var (archiveId, category, displayName) in archives)
+		foreach (var archive in facts.Archives)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			current++;
-			progress?.Report(new IndexBuildProgress(current, total, archiveId));
+			progress?.Report(new IndexBuildProgress(current, total, archive.PackageName));
 
-			await InsertArchiveAsync(connection, archiveId, category, displayName, cancellationToken).ConfigureAwait(false);
+			await InsertArchiveAsync(archiveCommand, archive, cancellationToken).ConfigureAwait(false);
+			foreach (var issue in archive.Issues)
+				await InsertArchiveIssueAsync(issueCommand, archive.PackageName, issue, cancellationToken).ConfigureAwait(false);
 
-			IReadOnlySet<AssetKey> keys;
-			try
+			foreach (var entry in archive.Entries)
 			{
-				var toc = await resolver.GetPackageTocAsync(archiveId, cancellationToken).ConfigureAwait(false);
-				if (toc is null)
-				{
-					continue;
-				}
-
-				keys = _tocScanner.ScanAssetKeys(toc.Data, toc.UsesSlimEntryOffset);
-			}
-			catch
-			{
-				continue;
-			}
-
-			indexed++;
-
-			foreach (var key in keys)
-			{
+				await InsertArchiveEntryAsync(entryCommand, entry, cancellationToken).ConfigureAwait(false);
+				var key = new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId);
 				if (df.TryGetValue(key, out var count))
 				{
 					df[key] = count + 1;
@@ -173,7 +292,7 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 					set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 					assetArchives[key] = set;
 				}
-				set.Add(archiveId);
+				set.Add(archive.PackageName);
 			}
 		}
 
@@ -196,12 +315,14 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 		await SqliteSchema.SetMetaAsync(connection, "archives_total", total.ToString(), cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "archives_indexed", indexed.ToString(), cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "asset_keys_total", df.Count.ToString(), cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "game_data_directory", Path.GetFullPath(gameDataDirectory), cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, "game_data_directory", normalizedGameDataDirectory, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "source_fingerprint", sourceFingerprint, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, "parser_version", facts.ParserVersion, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, "index_schema_version", facts.SchemaVersion, cancellationToken).ConfigureAwait(false);
 	}
 
 	public async ValueTask<IReadOnlyList<AssetArchiveMatch>> FindAssetArchivesAsync(
-		IReadOnlySet<AssetKey> assetKeys,
+		IReadOnlySet<CoreAssetKey> assetKeys,
 		CancellationToken cancellationToken = default)
 	{
 		if (assetKeys is null)
@@ -228,7 +349,7 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 	}
 
 	public async ValueTask<IReadOnlyDictionary<string, int>> VoteArchivesAsync(
-		IReadOnlySet<AssetKey> assetKeys,
+		IReadOnlySet<CoreAssetKey> assetKeys,
 		IndexFilterSettings filterSettings,
 		CancellationToken cancellationToken = default)
 	{
@@ -320,35 +441,155 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 		return archives;
 	}
 
-	private static async ValueTask<string> ComputeGameDataFingerprintAsync(string gameDataDirectory, IReadOnlyList<(string ArchiveId, string Category, string DisplayName)> archives, CancellationToken cancellationToken)
+	private static async ValueTask<string> ComputeSourceFingerprintAsync(
+		string gameDataDirectory,
+		string archiveHashesJson,
+		CancellationToken cancellationToken)
 	{
-		var resolver = new GameDataPackageResolver(gameDataDirectory);
-		var builder = new StringBuilder();
-		builder.Append(Path.GetFullPath(gameDataDirectory)).AppendLine();
-		foreach (var archive in archives.OrderBy(x => x.ArchiveId, StringComparer.OrdinalIgnoreCase))
+		using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+		AppendFingerprintValue(hash, Path.GetFullPath(gameDataDirectory));
+		AppendFingerprintValue(hash, SqliteSchema.SchemaVersion.ToString(CultureInfo.InvariantCulture));
+		AppendFingerprintValue(hash, "package-toc-v1");
+		AppendFingerprintValue(hash, archiveHashesJson);
+
+		foreach (var path in Directory.EnumerateFiles(gameDataDirectory, "*", SearchOption.TopDirectoryOnly)
+			.Where(IsGameDataSourceFile)
+			.OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
 		{
-			builder.Append(archive.ArchiveId).Append('|').Append(archive.Category).Append('|').Append(archive.DisplayName).Append('|');
-			builder.Append(await resolver.GetPackageFingerprintAsync(archive.ArchiveId, cancellationToken).ConfigureAwait(false));
-			builder.AppendLine();
+			cancellationToken.ThrowIfCancellationRequested();
+			var info = new FileInfo(path);
+			AppendFingerprintValue(hash, info.Name);
+			AppendFingerprintValue(hash, info.Length.ToString(CultureInfo.InvariantCulture));
+			AppendFingerprintValue(hash, info.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture));
+			await Task.Yield();
 		}
 
-		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
+		return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+	}
+
+	private static bool IsGameDataSourceFile(string path)
+	{
+		var name = Path.GetFileName(path);
+		if (string.Equals(name, "activation-state.json", StringComparison.OrdinalIgnoreCase)) return false;
+		if (name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".bak", StringComparison.OrdinalIgnoreCase)) return false;
+		return !new PatchFileNameParser().TryParse(name, out _);
+	}
+
+	private static void AppendFingerprintValue(IncrementalHash hash, string value)
+	{
+		var bytes = Encoding.UTF8.GetBytes(value);
+		hash.AppendData(bytes);
+		hash.AppendData(new byte[] { 0 });
 	}
 
 	private static int ParseInt(string? value)
 		=> int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result) ? result : 0;
 
-	private static async Task InsertArchiveAsync(SqliteConnection connection, string archiveId, string category, string displayName, CancellationToken cancellationToken)
+	private static IReadOnlyDictionary<string, GameDataArchiveMetadata> BuildMetadataByPackage(
+		IEnumerable<(string ArchiveId, string Category, string DisplayName)> archives)
 	{
-		await using var cmd = connection.CreateCommand();
-		cmd.CommandText = "INSERT OR REPLACE INTO archives(archive_id,category,display_name) VALUES($a,$c,$n)";
-		cmd.Parameters.AddWithValue("$a", archiveId);
-		cmd.Parameters.AddWithValue("$c", category);
-		cmd.Parameters.AddWithValue("$n", displayName);
+		var result = new Dictionary<string, GameDataArchiveMetadata>(StringComparer.OrdinalIgnoreCase);
+		foreach (var archive in archives)
+		{
+			if (!result.TryGetValue(archive.ArchiveId, out var existing))
+			{
+				result[archive.ArchiveId] = new GameDataArchiveMetadata(
+					archive.ArchiveId,
+					archive.DisplayName,
+					archive.Category);
+				continue;
+			}
+
+			var categories = string.Join(", ", new[] { existing.Category, archive.Category }
+				.Where(value => !string.IsNullOrWhiteSpace(value))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+			result[archive.ArchiveId] = existing with
+			{
+				Category = categories,
+				DisplayName = string.IsNullOrWhiteSpace(existing.DisplayName) ? archive.DisplayName : existing.DisplayName
+			};
+		}
+
+		return result;
+	}
+
+	private static SqliteCommand CreateArchiveInsertCommand(SqliteConnection connection)
+	{
+		var cmd = connection.CreateCommand();
+		cmd.CommandText = "INSERT OR REPLACE INTO archives(archive_id,category,display_name,archive_hex,uses_slim_entry_offset,status) VALUES($a,$c,$n,$h,$s,$status)";
+		cmd.Parameters.Add("$a", SqliteType.Text);
+		cmd.Parameters.Add("$c", SqliteType.Text);
+		cmd.Parameters.Add("$n", SqliteType.Text);
+		cmd.Parameters.Add("$h", SqliteType.Text);
+		cmd.Parameters.Add("$s", SqliteType.Integer);
+		cmd.Parameters.Add("$status", SqliteType.Text);
+		cmd.Prepare();
+		return cmd;
+	}
+
+	private static async Task InsertArchiveAsync(SqliteCommand cmd, GameDataArchiveFact archive, CancellationToken cancellationToken)
+	{
+		cmd.Parameters["$a"].Value = archive.PackageName;
+		cmd.Parameters["$c"].Value = archive.Category ?? string.Empty;
+		cmd.Parameters["$n"].Value = archive.DisplayName ?? archive.PackageName;
+		cmd.Parameters["$h"].Value = (object?)archive.ArchiveHex ?? DBNull.Value;
+		cmd.Parameters["$s"].Value = archive.UsesSlimEntryOffset ? 1 : 0;
+		cmd.Parameters["$status"].Value = archive.IsIndexed ? "Indexed" : "Issues";
 		await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	private static async Task InsertAssetAsync(SqliteConnection connection, AssetKey key, int df, CancellationToken cancellationToken)
+	private static SqliteCommand CreateArchiveEntryInsertCommand(SqliteConnection connection)
+	{
+		var cmd = connection.CreateCommand();
+		cmd.CommandText = @"INSERT OR REPLACE INTO archive_entries
+(archive_id,entry_index,type_id,file_id,df,toc_data_offset,stream_offset,gpu_resource_offset,toc_data_size,stream_size,gpu_resource_size,unknown1,unknown2,unknown3,unknown4)
+VALUES($a,$i,$t,$f,1,$td,$so,$go,$ts,$ss,$gs,$u1,$u2,$u3,$u4)";
+		foreach (var name in new[] { "$a" }) cmd.Parameters.Add(name, SqliteType.Text);
+		foreach (var name in new[] { "$i", "$t", "$f", "$td", "$so", "$go", "$ts", "$ss", "$gs", "$u1", "$u2", "$u3", "$u4" }) cmd.Parameters.Add(name, SqliteType.Integer);
+		cmd.Prepare();
+		return cmd;
+	}
+
+	private static async Task InsertArchiveEntryAsync(SqliteCommand cmd, GameDataArchiveEntryFact entry, CancellationToken cancellationToken)
+	{
+		cmd.Parameters["$a"].Value = entry.PackageName;
+		cmd.Parameters["$i"].Value = entry.EntryIndex;
+		cmd.Parameters["$t"].Value = unchecked((long)entry.AssetKey.TypeId);
+		cmd.Parameters["$f"].Value = unchecked((long)entry.AssetKey.FileId);
+		cmd.Parameters["$td"].Value = unchecked((long)entry.TocDataOffset);
+		cmd.Parameters["$so"].Value = unchecked((long)entry.StreamOffset);
+		cmd.Parameters["$go"].Value = unchecked((long)entry.GpuResourceOffset);
+		cmd.Parameters["$ts"].Value = entry.TocDataSize;
+		cmd.Parameters["$ss"].Value = entry.StreamSize;
+		cmd.Parameters["$gs"].Value = entry.GpuResourceSize;
+		cmd.Parameters["$u1"].Value = unchecked((long)entry.Unknown1);
+		cmd.Parameters["$u2"].Value = unchecked((long)entry.Unknown2);
+		cmd.Parameters["$u3"].Value = entry.Unknown3;
+		cmd.Parameters["$u4"].Value = entry.Unknown4;
+		await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	private static SqliteCommand CreateArchiveIssueInsertCommand(SqliteConnection connection)
+	{
+		var cmd = connection.CreateCommand();
+		cmd.CommandText = "INSERT INTO archive_issues(archive_id,code,message) VALUES($a,$c,$m)";
+		cmd.Parameters.Add("$a", SqliteType.Text);
+		cmd.Parameters.Add("$c", SqliteType.Text);
+		cmd.Parameters.Add("$m", SqliteType.Text);
+		cmd.Prepare();
+		return cmd;
+	}
+
+	private static async Task InsertArchiveIssueAsync(SqliteCommand cmd, string archiveId, PatchAnalysisIssue issue, CancellationToken cancellationToken)
+	{
+		cmd.Parameters["$a"].Value = archiveId;
+		cmd.Parameters["$c"].Value = issue.Code;
+		cmd.Parameters["$m"].Value = issue.Message;
+		await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	private static async Task InsertAssetAsync(SqliteConnection connection, CoreAssetKey key, int df, CancellationToken cancellationToken)
 	{
 		await using var cmd = connection.CreateCommand();
 		cmd.CommandText = "INSERT OR REPLACE INTO assets(type_id,file_id,df) VALUES($t,$f,$d)";
@@ -358,7 +599,7 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 		await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	private static async Task InsertAssetArchiveAsync(SqliteConnection connection, AssetKey key, string archiveId, CancellationToken cancellationToken)
+	private static async Task InsertAssetArchiveAsync(SqliteConnection connection, CoreAssetKey key, string archiveId, CancellationToken cancellationToken)
 	{
 		await using var cmd = connection.CreateCommand();
 		cmd.CommandText = "INSERT OR IGNORE INTO asset_archives(type_id,file_id,archive_id) VALUES($t,$f,$a)";
@@ -368,7 +609,7 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 		await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	private static async Task<int> GetDfAsync(SqliteConnection connection, AssetKey key, CancellationToken cancellationToken)
+	private static async Task<int> GetDfAsync(SqliteConnection connection, CoreAssetKey key, CancellationToken cancellationToken)
 	{
 		await using var cmd = connection.CreateCommand();
 		cmd.CommandText = "SELECT df FROM assets WHERE type_id=$t AND file_id=$f";
@@ -379,7 +620,7 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 		return obj is null ? 0 : Convert.ToInt32(obj);
 	}
 
-	private static async Task<IReadOnlyList<ArchiveMetadata>> GetArchiveMetadataForAssetAsync(SqliteConnection connection, AssetKey key, CancellationToken cancellationToken)
+	private static async Task<IReadOnlyList<ArchiveMetadata>> GetArchiveMetadataForAssetAsync(SqliteConnection connection, CoreAssetKey key, CancellationToken cancellationToken)
 	{
 		await using var cmd = connection.CreateCommand();
 		cmd.CommandText = @"
@@ -401,7 +642,33 @@ ORDER BY a.category, a.display_name, a.archive_id";
 		return archives;
 	}
 
-	private static async IAsyncEnumerable<string> GetArchivesForAssetAsync(SqliteConnection connection, AssetKey key, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+	private static async Task<IReadOnlyList<(string PackageName, string DisplayName)>> GetSharedArchivesAsync(
+		SqliteConnection connection,
+		string packageName,
+		ulong typeId,
+		ulong fileId,
+		CancellationToken cancellationToken)
+	{
+		await using var command = connection.CreateCommand();
+		command.CommandText = @"
+SELECT DISTINCT a.archive_id, a.display_name
+FROM archive_entries e
+JOIN archives a ON a.archive_id = e.archive_id
+WHERE e.type_id = $typeId AND e.file_id = $fileId AND e.archive_id <> $package
+ORDER BY a.display_name, a.archive_id;";
+		command.Parameters.AddWithValue("$typeId", unchecked((long)typeId));
+		command.Parameters.AddWithValue("$fileId", unchecked((long)fileId));
+		command.Parameters.AddWithValue("$package", packageName);
+		var result = new List<(string PackageName, string DisplayName)>();
+		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+		{
+			result.Add((reader.GetString(0), reader.GetString(1)));
+		}
+		return result;
+	}
+
+	private static async IAsyncEnumerable<string> GetArchivesForAssetAsync(SqliteConnection connection, CoreAssetKey key, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
 	{
 		await using var cmd = connection.CreateCommand();
 		cmd.CommandText = "SELECT archive_id FROM asset_archives WHERE type_id=$t AND file_id=$f";

@@ -2,6 +2,8 @@ using System;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Input;
 using System.Windows.Media;
 using HD2ModCore.Application;
@@ -11,6 +13,7 @@ using HD2ModManager.Services;
 
 namespace HD2ModManager.ViewModels
 {
+    // Purpose: Provides bindable state and commands for Manager pages.
     public abstract class PageViewModel : BaseViewModel, IPageActionProvider
     {
         private string _title = string.Empty;
@@ -61,7 +64,7 @@ namespace HD2ModManager.ViewModels
         }
     }
 
-    public sealed class StatusPageViewModel : PageViewModel
+    public sealed class StatusPageViewModel : PageViewModel, IDisposable
     {
         private readonly ProfileService _profiles;
         private readonly ModLibraryService _library;
@@ -78,6 +81,10 @@ namespace HD2ModManager.ViewModels
         private string _assetIndexHint = "刷新状态后显示索引诊断。";
         private string _assetMetadataStatus = "未知";
         private bool _isBuildingAssetIndex;
+        private bool _isRefreshingAssetIndex;
+        private readonly EventHandler _backgroundTasksChangedHandler;
+        private CancellationTokenSource? _statusRefreshCancellation;
+        private bool _disposed;
 
         public string ActiveProfile => _profiles.ActiveKey ?? "未启用";
         public string GameDataFolder => SettingsService.GetGameDataFolder();
@@ -97,6 +104,7 @@ namespace HD2ModManager.ViewModels
         public string AssetIndexHint { get => _assetIndexHint; private set => SetField(ref _assetIndexHint, value); }
         public string AssetMetadataStatus { get => _assetMetadataStatus; private set => SetField(ref _assetMetadataStatus, value); }
         public bool IsBuildingAssetIndex { get => _isBuildingAssetIndex; private set => SetField(ref _isBuildingAssetIndex, value); }
+        public bool IsRefreshingAssetIndex { get => _isRefreshingAssetIndex; private set => SetField(ref _isRefreshingAssetIndex, value); }
         public ObservableCollection<string> ApplyDetails { get; } = new();
         public ReadOnlyObservableCollection<BackgroundTaskItem> BackgroundTasks => _backgroundTasks.Tasks;
         public IEnumerable<BackgroundTaskItem> RunningTasks => BackgroundTasks.Where(t => t.Status == BackgroundTaskStatus.Running);
@@ -122,14 +130,18 @@ namespace HD2ModManager.ViewModels
             _backgroundTasks = backgroundTasks;
             _applyStatus = applyStatus;
             _paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
-            RefreshCommand = new RelayCommand(Refresh);
+            RefreshCommand = new RelayCommand(_ => _ = RefreshAsync(), _ => !IsRefreshingAssetIndex);
             BuildAssetIndexCommand = new RelayCommand(_ => BuildAssetIndex(), _ => !IsBuildingAssetIndex);
             ShowAllTasksCommand = new RelayCommand(_ => ShowAllTasks());
-            _backgroundTasks.Changed += (_, _) => RefreshBackgroundTaskProperties();
-            Refresh();
+            _backgroundTasksChangedHandler = (_, _) => RefreshBackgroundTaskProperties();
+            _backgroundTasks.Changed += _backgroundTasksChangedHandler;
+            RefreshDisplayProperties();
+            _ = RefreshAsync();
         }
 
-        public void Refresh()
+        public void Refresh() => _ = RefreshAsync();
+
+        private void RefreshDisplayProperties()
         {
             OnPropertyChanged(nameof(ActiveProfile));
             OnPropertyChanged(nameof(GameDataFolder));
@@ -142,9 +154,55 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(LastAppliedUtc));
             OnPropertyChanged(nameof(ProfileEntrySummary));
             OnPropertyChanged(nameof(ConflictSummary));
-            RefreshAssetIndexStatus();
             ApplyDetails.Clear();
             foreach (var detail in _applyStatus.Details) ApplyDetails.Add(detail);
+        }
+
+        private async Task RefreshAsync()
+        {
+            if (_disposed || IsRefreshingAssetIndex) return;
+
+            RefreshDisplayProperties();
+            _statusRefreshCancellation?.Cancel();
+            _statusRefreshCancellation?.Dispose();
+            _statusRefreshCancellation = new CancellationTokenSource();
+            IsRefreshingAssetIndex = true;
+            RefreshCommand.RaiseCanExecuteChanged();
+            AssetIndexState = "检查中";
+            AssetIndexSummary = "正在读取索引状态。";
+
+            try
+            {
+                await RefreshAssetIndexStatusAsync(_statusRefreshCancellation.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                if (!_disposed)
+                {
+                    AssetIndexState = "已取消";
+                    AssetIndexSummary = "索引状态检查已取消。";
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!_disposed)
+                {
+                    AssetIndexState = "检查失败";
+                    AssetIndexSummary = ex.Message;
+                    AssetIndexBuiltUtc = "未知";
+                    AssetIndexGameData = SettingsService.GetGameDataFolder();
+                    AssetIndexCounts = "未知";
+                    AssetIndexHint = "请检查 Game Data 路径、资产元数据和索引数据库是否可访问。";
+                }
+            }
+            finally
+            {
+                if (!_disposed)
+                {
+                    IsRefreshingAssetIndex = false;
+                    RefreshCommand.RaiseCanExecuteChanged();
+                }
+            }
         }
 
         private void RefreshBackgroundTaskProperties()
@@ -175,75 +233,63 @@ namespace HD2ModManager.ViewModels
             window.ShowDialog();
         }
 
-        private void RefreshAssetIndexStatus()
+        private async Task RefreshAssetIndexStatusAsync(CancellationToken cancellationToken)
         {
-            try
+            AssetMetadataStatus = File.Exists(_paths.ArchiveHashesPath)
+                ? $"已找到 archivehashes.json：{_paths.ArchiveHashesPath}"
+                : $"缺少 archivehashes.json：{_paths.ArchiveHashesPath}";
+
+            var gameData = SettingsService.GetGameDataFolder();
+            if (string.IsNullOrWhiteSpace(gameData))
             {
-                AssetMetadataStatus = File.Exists(_paths.ArchiveHashesPath)
-                    ? $"已找到 archivehashes.json：{_paths.ArchiveHashesPath}"
-                    : $"缺少 archivehashes.json：{_paths.ArchiveHashesPath}";
-
-                var gameData = SettingsService.GetGameDataFolder();
-                if (string.IsNullOrWhiteSpace(gameData))
-                {
-                    AssetIndexState = "未设置游戏目录";
-                    AssetIndexSummary = "无法判断索引状态，因为 Game Data 目录尚未设置。";
-                    AssetIndexBuiltUtc = "无";
-                    AssetIndexGameData = "未设置";
-                    AssetIndexCounts = "无";
-                    AssetIndexHint = "请先在设置页配置 Game Data 目录，再建立资产索引。";
-                    return;
-                }
-
-                var index = CoreServices.CreateAssetArchiveIndexService(_paths);
-                var fingerprint = index.GetFingerprintAsync().AsTask().GetAwaiter().GetResult();
-                if (fingerprint is null)
-                {
-                    AssetIndexState = "缺失";
-                    AssetIndexSummary = "未找到资产反向索引数据库，无法从 patch 资产反查真实装备/分类。";
-                    AssetIndexBuiltUtc = "无";
-                    AssetIndexGameData = gameData;
-                    AssetIndexCounts = "无";
-                    AssetIndexHint = "这是当前无语义资产标签的最可能原因。需要先基于当前 Game Data 建立索引。";
-                    return;
-                }
-
-                AssetIndexBuiltUtc = fingerprint.BuiltUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
-                AssetIndexGameData = string.IsNullOrWhiteSpace(fingerprint.GameDataDirectory) ? gameData : fingerprint.GameDataDirectory;
-                AssetIndexCounts = $"Archive {fingerprint.ArchivesIndexed}/{fingerprint.ArchivesTotal}，AssetKey {fingerprint.AssetKeysTotal}";
-
-                if (!File.Exists(_paths.ArchiveHashesPath))
-                {
-                    AssetIndexState = "无法校验";
-                    AssetIndexSummary = "索引数据库存在，但缺少 archivehashes.json，无法判断是否与当前游戏文件匹配。";
-                    AssetIndexHint = "请先在设置页更新资产元数据，然后刷新状态。";
-                    return;
-                }
-
-                var archiveHashesJson = File.ReadAllText(_paths.ArchiveHashesPath);
-                var status = index.GetIndexStatusAsync(gameData, archiveHashesJson).AsTask().GetAwaiter().GetResult();
-                AssetIndexState = ToDisplayState(status.State);
-                AssetIndexSummary = status.State switch
-                {
-                    GameDataIndexState.Current => "索引与当前 Game Data 匹配，资产标签可以使用真实 archive 语义。",
-                    GameDataIndexState.Stale => "索引存在但已过期，当前游戏文件或 archive metadata 已变化。",
-                    GameDataIndexState.Invalid => "索引状态无法验证，资产元数据格式可能无效。",
-                    GameDataIndexState.Missing => "未找到资产反向索引数据库。",
-                    _ => "索引状态未知。"
-                };
-                AssetIndexHint = status.State == GameDataIndexState.Current
-                    ? "如果仍无标签，可能是该 mod 的 TypeID/FileID 未命中当前游戏索引，或旧资产分析缓存尚未刷新。"
-                    : "语义资产标签依赖当前索引；请重建索引后刷新模组库资产摘要。";
+                AssetIndexState = "未设置游戏目录";
+                AssetIndexSummary = "无法判断索引状态，因为 Game Data 目录尚未设置。";
+                AssetIndexBuiltUtc = "无";
+                AssetIndexGameData = "未设置";
+                AssetIndexCounts = "无";
+                AssetIndexHint = "请先在设置页配置 Game Data 目录，再建立资产索引。";
+                return;
             }
-            catch (Exception ex)
+
+            var index = CoreServices.CreateAssetArchiveIndexService(_paths);
+            var fingerprint = await index.GetFingerprintAsync(cancellationToken);
+            if (fingerprint is null)
             {
-                AssetIndexState = "检查失败";
-                AssetIndexSummary = ex.Message;
-                AssetIndexBuiltUtc = "未知";
-                AssetIndexGameData = SettingsService.GetGameDataFolder();
-                AssetIndexCounts = "未知";
-                AssetIndexHint = "请检查 Game Data 路径、资产元数据和索引数据库是否可访问。";
+                AssetIndexState = "缺失";
+                AssetIndexSummary = "未找到资产反向索引数据库，无法从 patch 资产反查真实装备/分类。";
+                AssetIndexBuiltUtc = "无";
+                AssetIndexGameData = gameData;
+                AssetIndexCounts = "无";
+                AssetIndexHint = "这是当前无语义资产标签的最可能原因。需要先基于当前 Game Data 建立索引。";
+                return;
             }
+
+            AssetIndexBuiltUtc = fingerprint.BuiltUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+            AssetIndexGameData = string.IsNullOrWhiteSpace(fingerprint.GameDataDirectory) ? gameData : fingerprint.GameDataDirectory;
+            AssetIndexCounts = $"Archive {fingerprint.ArchivesIndexed}/{fingerprint.ArchivesTotal}，AssetKey {fingerprint.AssetKeysTotal}";
+
+            if (!File.Exists(_paths.ArchiveHashesPath))
+            {
+                AssetIndexState = "无法校验";
+                AssetIndexSummary = "索引数据库存在，但缺少 archivehashes.json，无法判断是否与当前游戏文件匹配。";
+                AssetIndexHint = "请先在设置页更新资产信息，然后刷新状态。";
+                return;
+            }
+
+            var archiveHashesJson = await File.ReadAllTextAsync(_paths.ArchiveHashesPath, cancellationToken);
+            var status = await index.GetIndexStatusAsync(gameData, archiveHashesJson, cancellationToken);
+            AssetIndexState = ToDisplayState(status.State);
+            AssetIndexSummary = status.State switch
+            {
+                GameDataIndexState.Current => "索引与当前 Game Data 匹配，资产标签可以使用真实 archive 语义。",
+                GameDataIndexState.Stale => "索引存在但已过期，当前游戏文件或 archive metadata 已变化。",
+                GameDataIndexState.Invalid => "索引状态无法验证，资产元数据格式可能无效。",
+                GameDataIndexState.Missing => "未找到资产反向索引数据库。",
+                _ => "索引状态未知。"
+            };
+            AssetIndexHint = status.State == GameDataIndexState.Current
+                ? "如果仍无标签，可能是该 mod 的 TypeID/FileID 未命中当前游戏索引，或旧资产分析缓存尚未刷新。"
+                : "语义资产标签依赖当前索引；请重建索引后刷新模组库资产摘要。";
         }
 
         private async void BuildAssetIndex()
@@ -292,9 +338,11 @@ namespace HD2ModManager.ViewModels
                     }
                 });
 
-                await index.BuildOrRebuildAsync(gameData, archiveHashesJson, progress, backgroundTask.CancellationToken).ConfigureAwait(true);
+                await Task.Run(
+                    () => index.BuildOrRebuildAsync(gameData, archiveHashesJson, progress, backgroundTask.CancellationToken).AsTask(),
+                    backgroundTask.CancellationToken).ConfigureAwait(true);
                 ClearAssetAnalysisCache();
-                RefreshAssetIndexStatus();
+                await RefreshAsync();
                 AssetIndexHint = "索引已重建，并已清理旧资产分析缓存；请刷新模组库以重新生成语义资产标签。";
                 backgroundTask.MarkCompleted();
             }
@@ -306,10 +354,11 @@ namespace HD2ModManager.ViewModels
             }
             catch (Exception ex)
             {
-                backgroundTask.MarkFailed(ex.Message);
+                var detail = FormatAssetIndexException(ex);
+                backgroundTask.MarkFailed(detail);
                 AssetIndexState = "建立失败";
-                AssetIndexSummary = ex.Message;
-                AssetIndexHint = "请检查 Game Data 路径是否指向 Helldivers 2 的 data 目录，以及 bundles.nxa / bundles.xx.nxa 是否可访问。";
+                AssetIndexSummary = detail;
+                AssetIndexHint = $"索引失败。路径包含空格或中文通常不会导致此问题。GameData：{gameData}";
             }
             finally
             {
@@ -334,6 +383,20 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        private static string FormatAssetIndexException(Exception exception)
+        {
+            var messages = new List<string>();
+            for (var current = exception; current is not null; current = current.InnerException)
+            {
+                if (!string.IsNullOrWhiteSpace(current.Message) && !messages.Contains(current.Message, StringComparer.Ordinal))
+                {
+                    messages.Add(current.Message);
+                }
+            }
+
+            return $"{exception.GetType().Name}: {string.Join(" | ", messages)}";
+        }
+
         private static string ToDisplayState(GameDataIndexState state)
             => state switch
             {
@@ -343,6 +406,16 @@ namespace HD2ModManager.ViewModels
                 GameDataIndexState.Invalid => "无效",
                 _ => "未知"
             };
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _backgroundTasks.Changed -= _backgroundTasksChangedHandler;
+            _statusRefreshCancellation?.Cancel();
+            _statusRefreshCancellation?.Dispose();
+            _statusRefreshCancellation = null;
+        }
 
         private string BuildProfileEntrySummary()
         {
@@ -362,7 +435,7 @@ namespace HD2ModManager.ViewModels
                 var ids = profile.Entries.Where(e => e.Enabled).Select(e => e.NodeId).Distinct().ToList();
                 if (ids.Count < 2) return "启用 Mod 少于 2 个，无需检测";
 
-                var detector = CoreServices.CreateConflictDetector();
+                var detector = CoreServices.CreateConflictDetector(_paths);
                 var conflicts = detector.DetectNodeConflictsAsync(ids, _library.Snapshot, _library.ModsRootDirectory).AsTask().GetAwaiter().GetResult();
                 if (conflicts.Count == 0) return "未发现启用 Mod 资产冲突";
                 var sharedKeyCount = conflicts.Sum(c => c.SharedKeys.Count);
@@ -619,6 +692,8 @@ namespace HD2ModManager.ViewModels
 
     public class SettingsPageViewModel : PageViewModel
     {
+		private readonly ProfileService _profiles;
+		private readonly ModLibraryService _library;
         public string Language
         {
             get => SettingsService.GetLanguage() ?? "";
@@ -711,16 +786,22 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ResetModFolderCommand { get; }
         public RelayCommand OpenGameDataFolderCommand { get; }
         public RelayCommand DetectGameDataFolderCommand { get; }
+        public RelayCommand ViewGameDataIndexCommand { get; }
         public RelayCommand UpdateAssetMetadataCommand { get; }
+        private bool _isLoadingGameDataIndex;
+        public bool IsLoadingGameDataIndex { get => _isLoadingGameDataIndex; private set => SetField(ref _isLoadingGameDataIndex, value); }
 
-        public SettingsPageViewModel()
+        public SettingsPageViewModel(ProfileService profiles, ModLibraryService library)
         {
             Title = "设置";
+			_profiles = profiles;
+			_library = library;
             ReloadTagsCommand = new RelayCommand(ReloadTags);
             OpenModFolderCommand = new RelayCommand(() => OpenFolder(ModLibraryFolder));
             ResetModFolderCommand = new RelayCommand(() => ModLibraryFolder = SettingsService.GetDefaultModLibraryFolder());
             OpenGameDataFolderCommand = new RelayCommand(OpenGameDataFolder);
             DetectGameDataFolderCommand = new RelayCommand(DetectGameDataFolder);
+            ViewGameDataIndexCommand = new RelayCommand(_ => ViewGameDataIndex(), _ => !IsLoadingGameDataIndex);
             UpdateAssetMetadataCommand = new RelayCommand(UpdateAssetMetadata);
         }
 
@@ -735,6 +816,54 @@ namespace HD2ModManager.ViewModels
             AssetMetadataStatus = BuildInitialAssetMetadataStatus();
             OnPropertyChanged(nameof(ModLibraryFolder));
             OnPropertyChanged(nameof(GameDataFolder));
+        }
+
+        private async void ViewGameDataIndex()
+        {
+            if (IsLoadingGameDataIndex) return;
+            var gameData = SettingsService.GetGameDataFolder();
+            if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
+            {
+                System.Windows.MessageBox.Show("请先配置有效的 Game Data 文件夹。", "GameData 资产索引", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                return;
+            }
+
+            IsLoadingGameDataIndex = true;
+            ViewGameDataIndexCommand.RaiseCanExecuteChanged();
+            try
+            {
+                var paths = new StoragePaths(AppDomain.CurrentDomain.BaseDirectory);
+                var index = CoreServices.CreateAssetArchiveIndexService(paths);
+                var fingerprint = await index.GetFingerprintAsync().ConfigureAwait(true);
+                if (fingerprint is null)
+                {
+                    System.Windows.MessageBox.Show("当前 GameData 资产索引不可用。请先在状态页建立资产索引。", "GameData 资产索引", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                    return;
+                }
+
+                var archives = await index.GetArchiveSummariesAsync().ConfigureAwait(true);
+                if (archives.Count == 0)
+                {
+                    System.Windows.MessageBox.Show("资产索引数据库中没有可显示的 archive。请重新建立资产索引。", "GameData 资产索引", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                    return;
+                }
+
+                var window = new HD2ModManager.Views.GameDataIndexWindow
+                {
+                    Owner = System.Windows.Application.Current?.MainWindow,
+                    DataContext = new HD2ModManager.Views.GameDataIndexWindowViewModel(archives, fingerprint, _library, _profiles, gameData, index),
+                };
+                window.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                System.Windows.MessageBox.Show($"读取 GameData 资产索引失败：{ex.Message}", "GameData 资产索引", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+            }
+            finally
+            {
+                IsLoadingGameDataIndex = false;
+                ViewGameDataIndexCommand.RaiseCanExecuteChanged();
+            }
         }
 
         public void PromptLanguageIfMissing()

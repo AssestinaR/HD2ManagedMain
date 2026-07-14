@@ -1,5 +1,6 @@
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
+using HD2ModAdaptation.Analysis;
 using System.Text.RegularExpressions;
 
 namespace HD2ModCore.Infrastructure;
@@ -15,17 +16,23 @@ public sealed class ModAssetAnalyzer : IModAssetAnalyzer
 	private readonly IPatchTocScanner _tocScanner;
 	private readonly IAssetMetadataCatalogProvider _catalogProvider;
 	private readonly IAssetArchiveIndexService? _archiveIndexService;
+	private readonly IPatchGroupAnalysisProvider? _patchGroupAnalysisProvider;
+	private readonly IPatchGroupAnalyzer? _adaptationAnalyzer;
 
 	public ModAssetAnalyzer(
 		IPatchFileNameParser fileNameParser,
 		IPatchTocScanner tocScanner,
 		IAssetMetadataCatalogProvider catalogProvider,
-		IAssetArchiveIndexService? archiveIndexService = null)
+		IAssetArchiveIndexService? archiveIndexService = null,
+		IPatchGroupAnalyzer? adaptationAnalyzer = null,
+		IPatchGroupAnalysisProvider? patchGroupAnalysisProvider = null)
 	{
 		_fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
 		_tocScanner = tocScanner ?? throw new ArgumentNullException(nameof(tocScanner));
 		_catalogProvider = catalogProvider ?? throw new ArgumentNullException(nameof(catalogProvider));
 		_archiveIndexService = archiveIndexService;
+		_adaptationAnalyzer = adaptationAnalyzer;
+		_patchGroupAnalysisProvider = patchGroupAnalysisProvider;
 	}
 
 	public async ValueTask<ModAssetSummary> AnalyzeNodeAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
@@ -44,12 +51,55 @@ public sealed class ModAssetAnalyzer : IModAssetAnalyzer
 		var nodeDir = Path.Combine(modsRootDirectory, node.RelativePath);
 		if (Directory.Exists(nodeDir))
 		{
+			if (_patchGroupAnalysisProvider is not null)
+			{
+				var analyses = await _patchGroupAnalysisProvider.AnalyzeNodeAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+				foreach (var analysis in analyses)
+				{
+					var patchFile = Path.GetFileName(analysis.Input.PatchTocFilePath);
+					if (!_fileNameParser.TryParse(patchFile, out var parsedInfo) || parsedInfo is null)
+					{
+						continue;
+					}
+
+					foreach (var entry in analysis.Assets)
+					{
+						AddRawEntry(rawEntries, parsedInfo.ArchiveHex16, entry.AssetKey.TypeId, entry.AssetKey.FileId, patchFile);
+					}
+				}
+			}
+			else
+			{
 			foreach (var patchFile in Directory.EnumerateFiles(nodeDir, "*", SearchOption.TopDirectoryOnly))
 			{
 				cancellationToken.ThrowIfCancellationRequested();
 				var fileName = Path.GetFileName(patchFile);
 				if (!_fileNameParser.TryParse(fileName, out var parsedInfo) || parsedInfo is null || parsedInfo.SidecarKind != PatchSidecarKind.Base)
 				{
+					continue;
+				}
+
+				if (_adaptationAnalyzer is not null)
+				{
+					PatchGroupAnalysis analysis;
+					try
+					{
+						analysis = await _adaptationAnalyzer.AnalyzeAsync(
+							new PatchGroupInput(
+								patchFile,
+								patchFile + ".stream",
+								patchFile + ".gpu_resources"),
+							cancellationToken).ConfigureAwait(false);
+					}
+					catch
+					{
+						continue;
+					}
+
+					foreach (var entry in analysis.Assets)
+					{
+						AddRawEntry(rawEntries, parsedInfo.ArchiveHex16, entry.AssetKey.TypeId, entry.AssetKey.FileId, Path.GetFileName(patchFile));
+					}
 					continue;
 				}
 
@@ -65,17 +115,9 @@ public sealed class ModAssetAnalyzer : IModAssetAnalyzer
 
 				foreach (var entry in entries)
 				{
-					var key = new PatchAssetKey(parsedInfo.ArchiveHex16.ToLowerInvariant(), entry.AssetKey.TypeId, entry.AssetKey.FileId);
-					if (!rawEntries.TryGetValue(key, out var sources))
-					{
-						sources = new List<string>();
-						rawEntries[key] = sources;
-					}
-					if (!sources.Contains(entry.SourceFileName, StringComparer.OrdinalIgnoreCase))
-					{
-						sources.Add(entry.SourceFileName);
-					}
+					AddRawEntry(rawEntries, parsedInfo.ArchiveHex16, entry.AssetKey.TypeId, entry.AssetKey.FileId, entry.SourceFileName);
 				}
+			}
 			}
 		}
 
@@ -90,6 +132,25 @@ public sealed class ModAssetAnalyzer : IModAssetAnalyzer
 		var targetGroups = BuildTargetGroups(assets);
 
 		return new ModAssetSummary(node.Id, node.Metadata.Name, assets, tags, targetGroups);
+	}
+
+	private static void AddRawEntry(
+		IDictionary<PatchAssetKey, List<string>> rawEntries,
+		string archiveId,
+		ulong typeId,
+		ulong fileId,
+		string sourceFile)
+	{
+		var key = new PatchAssetKey(archiveId.ToLowerInvariant(), typeId, fileId);
+		if (!rawEntries.TryGetValue(key, out var sources))
+		{
+			sources = new List<string>();
+			rawEntries[key] = sources;
+		}
+		if (!sources.Contains(sourceFile, StringComparer.OrdinalIgnoreCase))
+		{
+			sources.Add(sourceFile);
+		}
 	}
 
 	private async ValueTask<IReadOnlyDictionary<AssetKey, IReadOnlyList<ArchiveMetadata>>> LoadIndexedArchiveMatchesAsync(
@@ -150,7 +211,8 @@ public sealed class ModAssetAnalyzer : IModAssetAnalyzer
 			typeDisplayName,
 			typeCategory,
 			BuildEntryTags(archiveCategory, archiveDisplayName, fileDisplayName, typeDisplayName, typeCategory, semanticArchives),
-			sourceFiles.Order(StringComparer.OrdinalIgnoreCase).ToList());
+			sourceFiles.Order(StringComparer.OrdinalIgnoreCase).ToList(),
+			semanticArchives.Select(item => item.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToList());
 	}
 
 	private static ArchiveMetadata? PickSemanticArchive(ArchiveMetadata? patchArchive, IReadOnlyList<ArchiveMetadata>? replacementTargets)
@@ -224,7 +286,7 @@ public sealed class ModAssetAnalyzer : IModAssetAnalyzer
 			.Select(group => new ModAssetTargetItem(
 				group.Key.ArchiveDisplayName,
 				group.Key.ArchiveOrder,
-				group.Select(asset => asset.Key.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToList(),
+				group.SelectMany(asset => asset.SemanticTargetArchiveIds.Count > 0 ? asset.SemanticTargetArchiveIds : new[] { asset.Key.ArchiveId }).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToList(),
 				group.Select(asset => asset.TypeDisplayName).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToList(),
 				group.Count()))
 			.ToList();

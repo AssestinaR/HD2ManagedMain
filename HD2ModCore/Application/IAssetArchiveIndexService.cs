@@ -8,6 +8,13 @@ public interface IAssetArchiveIndexService
 
 	ValueTask<GameDataIndexFingerprint?> GetFingerprintAsync(CancellationToken cancellationToken = default);
 
+	ValueTask<IReadOnlyList<GameDataArchiveSummary>> GetArchiveSummariesAsync(
+		CancellationToken cancellationToken = default);
+
+	ValueTask<GameDataArchiveDetails?> GetArchiveDetailsAsync(
+		string packageName,
+		CancellationToken cancellationToken = default);
+
 	ValueTask<GameDataIndexStatus> GetIndexStatusAsync(
 		string gameDataDirectory,
 		string archiveHashesJson,

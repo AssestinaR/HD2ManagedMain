@@ -18,5 +18,6 @@ public sealed record StoragePaths(string AppRootDirectory)
 	public string FriendlyNamesPath => Path.Combine(ResourcesDirectory, "friendlynames.txt");
 	public string AssetMetadataManifestPath => Path.Combine(ResourcesDirectory, "asset-metadata-manifest.json");
 	public string AssetAnalysisCacheDirectory => Path.Combine(DataDirectory, "asset-cache");
+	public string PatchGroupAnalysisCacheDirectory => Path.Combine(DataDirectory, "patch-facts-cache");
 	public string PatchFileGroupFingerprintManifestPath => Path.Combine(DataDirectory, "patch-group-fingerprints.json");
 }

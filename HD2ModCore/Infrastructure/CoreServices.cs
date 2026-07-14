@@ -1,4 +1,5 @@
-﻿using HD2ModCore.Application;
+﻿using HD2ModAdaptation.Analysis;
+using HD2ModCore.Application;
 using System.Net.Http;
 
 namespace HD2ModCore.Infrastructure;
@@ -45,8 +46,8 @@ public static class CoreServices
 	public static IUnitMeshAdaptationPlanner CreateUnitMeshAdaptationPlanner()
 		=> new UnitMeshAdaptationPlanner(new UnitMeshReplacementStrategy(allowExperimentalFallback: true), CreateUnitMeshMinifier(), new UnitMeshRetargeter(allowExperimentalLayoutFallback: true, propagateSourceMaterials: true), CreateUnitMeshWriter());
    public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths)
-		=> new AssetArchiveIndexService(paths, CreatePatchTocScanner());
-   public static IGameDataLocator CreateGameDataLocator(IGameDataSettings settings)
+		=> new AssetArchiveIndexService(paths);
+	public static IGameDataLocator CreateGameDataLocator(IGameDataSettings settings)
 		=> new GameDataLocator(settings);
 	public static IArchiveHashesProvider CreateFileSystemArchiveHashesProvider(StoragePaths paths)
 		=> new FileSystemArchiveHashesProvider(paths);
@@ -61,7 +62,18 @@ public static class CoreServices
 			CreatePatchFileNameParser(),
 			paths);
 	public static IModAssetAnalyzer CreateUncachedModAssetAnalyzer(StoragePaths paths)
-		=> new ModAssetAnalyzer(CreatePatchFileNameParser(), CreatePatchTocScanner(), CreateAssetMetadataCatalogProvider(paths), CreateAssetArchiveIndexService(paths));
+		=> new ModAssetAnalyzer(
+			CreatePatchFileNameParser(),
+			CreatePatchTocScanner(),
+			CreateAssetMetadataCatalogProvider(paths),
+			CreateAssetArchiveIndexService(paths),
+			adaptationAnalyzer: null,
+			patchGroupAnalysisProvider: CreatePatchGroupAnalysisProvider(paths));
+	public static IPatchGroupAnalysisProvider CreatePatchGroupAnalysisProvider(StoragePaths paths)
+		=> new CachedPatchGroupAnalysisProvider(
+			new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer()),
+			new FileSystemPatchGroupAnalysisCacheStore(paths),
+			CreatePatchFileNameParser());
 	public static IModAssetAnalysisCacheStore CreateModAssetAnalysisCacheStore(StoragePaths paths)
 		=> new FileSystemModAssetAnalysisCacheStore(paths);
 	public static IModAssetOverrideAnalyzer CreateModAssetOverrideAnalyzer(StoragePaths paths)
@@ -103,10 +115,10 @@ public static class CoreServices
 		=> new ApplyExecutor(CreatePatchStateScanner());
 	public static IProfileApplyService CreateProfileApplyService()
 		=> new ProfileApplyService(CreatePatchFileIndexBuilder(), CreateApplyPlanner(), CreateApplyExecutor());
- public static IAssetKeySetProvider CreateAssetKeySetProvider()
-		=> new AssetKeySetProvider(CreatePatchFileNameParser(), CreatePatchTocScanner());
-	public static IConflictDetector CreateConflictDetector()
-		=> new ConflictDetector(CreateAssetKeySetProvider());
+	public static IAssetKeySetProvider CreateAssetKeySetProvider(StoragePaths paths)
+		=> new AssetKeySetProvider(CreatePatchGroupAnalysisProvider(paths));
+	public static IConflictDetector CreateConflictDetector(StoragePaths paths)
+		=> new ConflictDetector(CreateAssetKeySetProvider(paths));
    public static IModLibraryStore CreateModLibraryStore(StoragePaths paths)
 		=> new JsonModLibraryStore(paths);
    public static IModLibraryImporter CreateModLibraryImporter(StoragePaths paths)

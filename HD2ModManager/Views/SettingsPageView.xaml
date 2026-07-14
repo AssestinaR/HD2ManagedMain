@@ -62,6 +62,7 @@
                             <Button Content="Browse" Click="BrowseGameDataFolder_Click"/>
                             <Button Content="Open" Command="{Binding OpenGameDataFolderCommand}" Margin="8,0,0,0"/>
                             <Button Content="Detect" Command="{Binding DetectGameDataFolderCommand}" Margin="8,0,0,0"/>
+                            <Button Content="查看资产索引" Command="{Binding ViewGameDataIndexCommand}" Margin="8,0,0,0"/>
                         </StackPanel>
                         <TextBox Text="{Binding GameDataFolder, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                     </DockPanel>

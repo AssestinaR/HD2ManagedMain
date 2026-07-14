@@ -43,7 +43,7 @@ public sealed class AssetArchiveIndexServiceTests
 			var json = JsonSerializer.Serialize(archiveHashes);
 
 			var paths = new StoragePaths(appRoot);
-			var indexService = new AssetArchiveIndexService(paths, new PatchTocScanner());
+			var indexService = new AssetArchiveIndexService(paths);
 			await indexService.BuildOrRebuildAsync(gameData, json);
 
             var filter = new IndexFilterSettings(IndexFilterMode.Percentage, PercentageThreshold: 0.8, AbsoluteThreshold: null);
@@ -59,6 +59,43 @@ public sealed class AssetArchiveIndexServiceTests
 			Assert.Single(votes);
 			Assert.True(votes.ContainsKey(archiveA));
 			Assert.Equal(1, votes[archiveA]);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task Build_DuplicateArchiveHashAcrossCategories_IsIndexedOnce()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+
+		try
+		{
+			const string archiveId = "bf2250de0b17285c";
+			File.WriteAllBytes(Path.Combine(gameData, archiveId), BuildToc(new[] { new AssetKey(10, 100) }));
+			var archiveHashes = new Dictionary<string, Dictionary<string, string>>
+			{
+				["Pistol"] = new() { [archiveId] = "P-2 Peacemaker" },
+				["Mag"] = new() { [archiveId] = "P-2 Peacemaker" },
+			};
+
+			var service = new AssetArchiveIndexService(new StoragePaths(appRoot));
+			await service.BuildOrRebuildAsync(gameData, JsonSerializer.Serialize(archiveHashes));
+
+			var fingerprint = await service.GetFingerprintAsync();
+			Assert.NotNull(fingerprint);
+			Assert.Equal(1, fingerprint.ArchivesTotal);
+			Assert.Equal(1, fingerprint.ArchivesIndexed);
+			var matches = await service.FindAssetArchivesAsync(new HashSet<AssetKey> { new(10, 100) });
+			var match = Assert.Single(matches);
+			var archive = Assert.Single(match.Archives);
+			Assert.Equal("Mag, Pistol", archive.Category);
 		}
 		finally
 		{
@@ -100,7 +137,7 @@ public sealed class AssetArchiveIndexServiceTests
 			var json = JsonSerializer.Serialize(archiveHashes);
 
 			var paths = new StoragePaths(appRoot);
-			var indexService = new AssetArchiveIndexService(paths, new PatchTocScanner());
+			var indexService = new AssetArchiveIndexService(paths);
 			await indexService.BuildOrRebuildAsync(gameData, json);
 
 			var filter = new IndexFilterSettings(IndexFilterMode.AbsoluteCount, PercentageThreshold: null, AbsoluteThreshold: 1);
@@ -149,7 +186,7 @@ public sealed class AssetArchiveIndexServiceTests
 			var json = JsonSerializer.Serialize(archiveHashes);
 
 			var paths = new StoragePaths(appRoot);
-			var indexService = new AssetArchiveIndexService(paths, new PatchTocScanner());
+			var indexService = new AssetArchiveIndexService(paths);
 			await indexService.BuildOrRebuildAsync(gameData, json);
 
 			var fingerprint = await indexService.GetFingerprintAsync();
@@ -173,6 +210,42 @@ public sealed class AssetArchiveIndexServiceTests
 			Assert.Equal("Armor", archive.Category);
 			Assert.Equal("Armor A", archive.DisplayName);
 			Assert.Single(matches, x => !x.Found);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task GetArchiveDetailsAsync_ReturnsAssetsAndSharedArchives()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+		try
+		{
+			const string archiveA = "aaaaaaaaaaaaaaaa";
+			const string archiveB = "bbbbbbbbbbbbbbbb";
+			var shared = new AssetKey(20, 200);
+			File.WriteAllBytes(Path.Combine(gameData, archiveA), BuildToc(new[] { shared }));
+			File.WriteAllBytes(Path.Combine(gameData, archiveB), BuildToc(new[] { shared }));
+			var json = JsonSerializer.Serialize(new Dictionary<string, Dictionary<string, string>>
+			{
+				["Armor"] = new() { [archiveA] = "Armor A", [archiveB] = "Armor B" }
+			});
+			var service = new AssetArchiveIndexService(new StoragePaths(appRoot));
+			await service.BuildOrRebuildAsync(gameData, json);
+
+			var details = await service.GetArchiveDetailsAsync(archiveA);
+
+			Assert.NotNull(details);
+			var asset = Assert.Single(details.Assets);
+			Assert.Equal(shared, asset.AssetKey);
+			Assert.Equal(archiveB, Assert.Single(asset.SharedPackages));
+			Assert.Equal("Armor B", Assert.Single(asset.SharedDisplayNames));
 		}
 		finally
 		{
@@ -209,7 +282,7 @@ public sealed class AssetArchiveIndexServiceTests
 			};
 			var json = JsonSerializer.Serialize(archiveHashes);
 
-			var indexService = new AssetArchiveIndexService(new StoragePaths(appRoot), new PatchTocScanner());
+			var indexService = new AssetArchiveIndexService(new StoragePaths(appRoot));
 			await indexService.BuildOrRebuildAsync(gameData, json);
 
 			var current = await indexService.GetIndexStatusAsync(gameData, json);
@@ -227,7 +300,7 @@ public sealed class AssetArchiveIndexServiceTests
 			Assert.False(stale.IsCurrent);
 			Assert.NotEqual(current.CurrentSourceFingerprint, stale.CurrentSourceFingerprint);
 
-			var missingIndexService = new AssetArchiveIndexService(new StoragePaths(missingAppRoot), new PatchTocScanner());
+			var missingIndexService = new AssetArchiveIndexService(new StoragePaths(missingAppRoot));
 			var missing = await missingIndexService.GetIndexStatusAsync(gameData, json);
 			Assert.Equal(GameDataIndexState.Missing, missing.State);
 			Assert.Null(missing.StoredFingerprint);
@@ -236,6 +309,32 @@ public sealed class AssetArchiveIndexServiceTests
 		{
 			try { Directory.Delete(root, recursive: true); } catch { }
 		}
+	}
+
+	[Fact]
+	public async Task GetIndexStatusAsync_IgnoresDeployedPatchAndActivationStateFiles()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot); Directory.CreateDirectory(gameData);
+		try
+		{
+			const string archive = "aaaaaaaaaaaaaaaa";
+			File.WriteAllBytes(Path.Combine(gameData, archive), BuildToc(new[] { new AssetKey(20, 200) }));
+			var json = JsonSerializer.Serialize(new Dictionary<string, Dictionary<string, string>> { ["Armor"] = new() { [archive] = "Armor A" } });
+			var service = new AssetArchiveIndexService(new StoragePaths(appRoot));
+			await service.BuildOrRebuildAsync(gameData, json);
+
+			File.WriteAllBytes(Path.Combine(gameData, $"{archive}.patch_0"), BuildToc(new[] { new AssetKey(20, 200) }));
+			File.WriteAllText(Path.Combine(gameData, "activation-state.json"), "{}");
+			Assert.Equal(GameDataIndexState.Current, (await service.GetIndexStatusAsync(gameData, json)).State);
+
+			File.Delete(Path.Combine(gameData, $"{archive}.patch_0"));
+			File.Delete(Path.Combine(gameData, "activation-state.json"));
+			Assert.Equal(GameDataIndexState.Current, (await service.GetIndexStatusAsync(gameData, json)).State);
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
 	}
 
 	[Fact]
@@ -267,7 +366,7 @@ public sealed class AssetArchiveIndexServiceTests
 			var json = JsonSerializer.Serialize(archiveHashes);
 
 			var paths = new StoragePaths(appRoot);
-			var indexService = new AssetArchiveIndexService(paths, new PatchTocScanner());
+			var indexService = new AssetArchiveIndexService(paths);
 			await indexService.BuildOrRebuildAsync(gameData, json);
 
 			var fingerprint = await indexService.GetFingerprintAsync();
@@ -349,7 +448,7 @@ public sealed class AssetArchiveIndexServiceTests
 			var json = JsonSerializer.Serialize(archiveHashes);
 
 			var paths = new StoragePaths(appRoot);
-			var indexService = new AssetArchiveIndexService(paths, new PatchTocScanner());
+			var indexService = new AssetArchiveIndexService(paths);
 			await indexService.BuildOrRebuildAsync(gameData, json);
 
 			var summary = new ModAssetSummary(

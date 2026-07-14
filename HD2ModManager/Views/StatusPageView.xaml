@@ -130,17 +130,17 @@
                         <TextBlock Text="状态" Foreground="#666" Margin="0,0,12,10"/>
                         <TextBlock Text="{Binding AssetIndexState}" FontWeight="SemiBold" Foreground="#1E63D6" Margin="0,0,0,10"/>
                         <TextBlock Text="摘要" Foreground="#666" Margin="0,0,12,10"/>
-                        <TextBlock Text="{Binding AssetIndexSummary}" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                        <TextBox Text="{Binding AssetIndexSummary, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" FontWeight="SemiBold" Padding="0" Margin="0,0,0,10"/>
                         <TextBlock Text="构建时间" Foreground="#666" Margin="0,0,12,10"/>
                         <TextBlock Text="{Binding AssetIndexBuiltUtc}" Margin="0,0,0,10"/>
                         <TextBlock Text="索引目录" Foreground="#666" Margin="0,0,12,10"/>
-                        <TextBlock Text="{Binding AssetIndexGameData}" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                        <TextBox Text="{Binding AssetIndexGameData, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Padding="0" Margin="0,0,0,10"/>
                         <TextBlock Text="索引内容" Foreground="#666" Margin="0,0,12,10"/>
-                        <TextBlock Text="{Binding AssetIndexCounts}" Margin="0,0,0,10"/>
+                        <TextBox Text="{Binding AssetIndexCounts, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Padding="0" Margin="0,0,0,10"/>
                         <TextBlock Text="资产元数据" Foreground="#666" Margin="0,0,12,10"/>
-                        <TextBlock Text="{Binding AssetMetadataStatus}" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                        <TextBox Text="{Binding AssetMetadataStatus, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Padding="0" Margin="0,0,0,10"/>
                     </UniformGrid>
-                    <TextBlock Text="{Binding AssetIndexHint}" Foreground="#666" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                    <TextBox Text="{Binding AssetIndexHint, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" Foreground="#666" Padding="0" Margin="0,4,0,0"/>
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                         <Button Content="建立/重建资产索引" Command="{Binding BuildAssetIndexCommand}" Width="150" HorizontalAlignment="Left"/>
                         <Button Content="刷新状态" Command="{Binding RefreshCommand}" Width="100" HorizontalAlignment="Left" Margin="8,0,0,0"/>

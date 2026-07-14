@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\HD2ModCore\HD2ModCore.csproj" />
+    <ProjectReference Include="..\HD2ModAdaptation\HD2ModAdaptation.csproj" />
   </ItemGroup>
 
 </Project>
