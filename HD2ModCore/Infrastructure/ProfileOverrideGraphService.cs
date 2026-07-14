@@ -41,7 +41,9 @@ public sealed class ProfileOverrideGraphService : IProfileOverrideGraphService
 				.SelectMany(group => group.AssetKeys.Select(assetKey => (assetKey, group.Id, group.NormalizedOrder)))
 				.GroupBy(item => item.assetKey))
 			{
-				if (!mapping.Assets.TryGetValue(assetGroup.Key, out var mapped)) continue;
+				var mapped = mapping.Assets.TryGetValue(assetGroup.Key, out var gameMapped)
+					? gameMapped
+					: CreatePrivateAssetMapping(assetGroup.Key);
 				participants.Add(new Participant(entry, node.Metadata.Name, mapped, assetGroup.Select(item => item.Id).ToList(), assetGroup.Max(item => item.NormalizedOrder)));
 			}
 		}
@@ -99,6 +101,19 @@ public sealed class ProfileOverrideGraphService : IProfileOverrideGraphService
 			builder.Append(entry.NodeId.Value.ToString("N")).Append(':').Append(entry.LoadOrder).Append(':').Append(generation).AppendLine();
 		}
 		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
+	}
+
+	private static GameDataMappedAssetFact CreatePrivateAssetMapping(AssetKey assetKey)
+	{
+		var (typeName, category) = assetKey.TypeId switch
+		{
+			0xe0a48d0be9a7453f => ("Unit", AssetTypeCategory.Model),
+			0xc4f0f4be7fb0c8d6 => ("Composite Unit", AssetTypeCategory.Model),
+			0xeac0b497876adedf => ("Material", AssetTypeCategory.Material),
+			0xcd4238c6a0c69e32 => ("Texture", AssetTypeCategory.Texture),
+			_ => ("Mod 私有资源", AssetTypeCategory.Unknown)
+		};
+		return new GameDataMappedAssetFact(assetKey, $"0x{assetKey.FileId:x16}", typeName, category, Array.Empty<ArchiveMetadata>());
 	}
 
 	private sealed record Participant(ProfileEntry Entry, string ModName, GameDataMappedAssetFact Mapping, IReadOnlyList<ModPatchGroupId> PatchGroups, int MaxGroupOrder);

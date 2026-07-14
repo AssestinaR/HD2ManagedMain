@@ -85,6 +85,8 @@ public static class CoreServices
 		=> new FileSystemModAssetAnalysisCacheStore(paths);
 	public static IModUnitCompatibilityAnalyzer CreateModUnitCompatibilityAnalyzer()
 		=> new ModUnitCompatibilityAnalyzer(CreatePatchFileNameParser());
+	public static IMaterialPackagingApplicationService CreateMaterialPackagingApplicationService()
+		=> new MaterialPackagingApplicationService(CreatePatchFileNameParser());
 	public static IUnitMeshReader CreateUnitMeshReader()
 		=> new UnitMeshReader();
 	public static IUnitMeshWriter CreateUnitMeshWriter()

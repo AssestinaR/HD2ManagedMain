@@ -66,9 +66,10 @@ public sealed class CachedPatchGroupAnalysisProviderTests
                 new PatchGroupAnalysis(
                     new PatchGroupInput(Path.Combine(modsRootDirectory, node.RelativePath, "0123456789abcdef.patch_0")),
                     Array.Empty<PatchAssetFact>(),
+					Array.Empty<PatchAssetReference>(),
                     Array.Empty<PatchAnalysisIssue>(),
                     DateTimeOffset.UtcNow,
-                    "patch-group-v1")
+                    "patch-group-v2")
             ]);
         }
     }

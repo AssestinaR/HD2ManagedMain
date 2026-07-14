@@ -1,0 +1,21 @@
+<Window x:Class="HD2ModManager.Views.MaterialPackagingOutputWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="材质打包输出" Width="520" Height="300" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" Background="#F5F6F8">
+    <StackPanel Margin="20">
+        <TextBlock Text="输出方式" FontSize="18" FontWeight="SemiBold"/>
+        <RadioButton x:Name="FolderOption" Content="输出到指定文件夹" IsChecked="True" Margin="0,18,0,8"/>
+        <Grid Margin="22,0,0,12">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBox x:Name="OutputPathText" IsReadOnly="True" VerticalContentAlignment="Center" Padding="7"/>
+            <Button Grid.Column="1" Content="浏览..." Width="82" Margin="8,0,0,0" Click="Browse_Click"/>
+        </Grid>
+        <RadioButton x:Name="ImportOption" Content="写出并自动导入 Mod 库" Margin="0,4,0,0"/>
+        <TextBlock Text="写出前后均会验证 Payload hash 与最终资源图；不会修改源 Mod 或当前配置。" TextWrapping="Wrap" Foreground="#666" Margin="0,16,0,0"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+            <Button Content="取消" Width="88" Margin="0,0,8,0" IsCancel="True"/>
+            <Button Content="继续" Width="88" IsDefault="True" Click="Confirm_Click"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

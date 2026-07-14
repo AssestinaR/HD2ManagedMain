@@ -151,6 +151,7 @@ public sealed class ModContentFactsServiceTests
 				.Select(pair => new PatchGroupAnalysis(
 					new PatchGroupInput(pair.Key, File.Exists(pair.Key + ".stream") ? pair.Key + ".stream" : null, File.Exists(pair.Key + ".gpu_resources") ? pair.Key + ".gpu_resources" : null),
 					pair.Value.Select(key => new PatchAssetFact(key, pair.Key, 0, 0, 0, false, false, false, false)).ToList(),
+					Array.Empty<PatchAssetReference>(),
 					Array.Empty<PatchAnalysisIssue>(),
 					DateTimeOffset.UtcNow,
 					"test"))

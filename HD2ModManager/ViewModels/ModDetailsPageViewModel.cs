@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
+using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2ModManager.Models;
@@ -16,6 +18,9 @@ namespace HD2ModManager.ViewModels
         private readonly ProfileService _profiles;
         private readonly DerivedStateCoordinator _derivedState;
         private readonly NotificationService? _notifications;
+        private readonly IMaterialPackagingApplicationService _materialPackaging;
+        private ModMaterialPackagingState? _materialState;
+        private bool _materialOperationRunning;
 
         public string ModId { get; }
         public ModEntity? Mod { get; private set; }
@@ -32,6 +37,10 @@ namespace HD2ModManager.ViewModels
         public string AssetOverrideSummary { get; private set; } = "未检查";
         public string UserStatusTitle { get; private set; } = "状态未知";
         public string UserStatusSummary { get; private set; } = "正在读取状态。";
+        public string MaterialPackagingSummary { get; private set; } = "正在分析材质引用。";
+        public bool CanSplitEmbeddedMaterials => !_materialOperationRunning && _materialState?.CanSplit == true;
+        public bool CanReplaceEmbeddedMaterials => !_materialOperationRunning && _materialState?.HasEmbeddedMaterials == true;
+        public bool CanEmbedExternalMaterials => !_materialOperationRunning && _materialState?.HasExternalMaterials == true;
         public string PatchSummary => Mod?.FileGroups == null || Mod.FileGroups.Count == 0
             ? "没有 patch 文件组"
             : string.Join(Environment.NewLine, Mod.FileGroups.Select(g => $"{g.HexPrefix}.patch_{g.PatchN}"));
@@ -41,6 +50,9 @@ namespace HD2ModManager.ViewModels
         public RelayCommand AddToProfileCommand { get; }
         public RelayCommand DeleteCommand { get; }
         public RelayCommand OpenAdvancedDetailsCommand { get; }
+        public RelayCommand SplitEmbeddedMaterialsCommand { get; }
+        public RelayCommand ReplaceEmbeddedMaterialsCommand { get; }
+        public RelayCommand EmbedExternalMaterialsCommand { get; }
 
         public ModDetailsPageViewModel(ModLibraryService library, ProfileService profiles, DerivedStateCoordinator derivedState, string modId, NotificationService? notifications = null)
         {
@@ -49,14 +61,19 @@ namespace HD2ModManager.ViewModels
             _profiles = profiles;
             _derivedState = derivedState;
             _notifications = notifications;
+			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService();
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
             OpenFolderCommand = new RelayCommand(OpenFolder);
             AddToProfileCommand = new RelayCommand(AddToProfile);
             DeleteCommand = new RelayCommand(Delete);
             OpenAdvancedDetailsCommand = new RelayCommand(OpenAdvancedDetails);
+            SplitEmbeddedMaterialsCommand = new RelayCommand(async _ => await SplitEmbeddedMaterialsAsync(), _ => CanSplitEmbeddedMaterials);
+            ReplaceEmbeddedMaterialsCommand = new RelayCommand(async _ => await MergeMaterialCandidateAsync(requireAllExternalMaterials: false), _ => CanReplaceEmbeddedMaterials);
+            EmbedExternalMaterialsCommand = new RelayCommand(async _ => await MergeMaterialCandidateAsync(requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
             _derivedState.SnapshotChanged += (_, _) => RunOnUiThread(Refresh);
             Refresh();
+			_ = RefreshMaterialPackagingStateAsync();
         }
 
         public void Refresh()
@@ -78,6 +95,8 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(AssetOverrideSummary));
             OnPropertyChanged(nameof(UserStatusTitle));
             OnPropertyChanged(nameof(UserStatusSummary));
+            OnPropertyChanged(nameof(MaterialPackagingSummary));
+            RaiseMaterialCommandStates();
         }
 
         private void RefreshDerivedStatus()
@@ -217,6 +236,102 @@ namespace HD2ModManager.ViewModels
             };
             window.ShowDialog();
         }
+
+        private async Task RefreshMaterialPackagingStateAsync()
+        {
+            if (Mod == null || !TryParseNodeId(Mod.Guid, out var nodeId) || !_library.Snapshot.Nodes.TryGetValue(nodeId, out var node)) return;
+            try
+            {
+                _materialState = await _materialPackaging.InspectAsync(node, _library.ModsRootDirectory);
+                MaterialPackagingSummary = $"需要材质 {_materialState.RequiredMaterialCount}；内嵌 {_materialState.EmbeddedMaterialCount}；外部 {_materialState.ExternalMaterialCount}；内嵌贴图 {_materialState.EmbeddedTextureCount}";
+                if (_materialState.Blockers.Count != 0) MaterialPackagingSummary += Environment.NewLine + string.Join(Environment.NewLine, _materialState.Blockers);
+            }
+            catch (Exception exception)
+            {
+                _materialState = null;
+                MaterialPackagingSummary = $"材质分析失败：{exception.Message}";
+            }
+            RunOnUiThread(() => { OnPropertyChanged(nameof(MaterialPackagingSummary)); RaiseMaterialCommandStates(); });
+        }
+
+        private async Task SplitEmbeddedMaterialsAsync()
+        {
+            if (!TryGetCurrentNode(out var node) || !TryChooseOutput(out var output)) return;
+            await ExecuteMaterialOperationAsync(
+                () => _materialPackaging.SplitAsync(node, _library.ModsRootDirectory, output.OutputDirectory).AsTask(),
+                output.ImportToLibrary);
+        }
+
+        private async Task MergeMaterialCandidateAsync(bool requireAllExternalMaterials)
+        {
+            if (!TryGetCurrentNode(out var source)) return;
+            _materialOperationRunning = true; RaiseMaterialCommandStates();
+            try
+            {
+                var candidates = await _materialPackaging.FindCandidatesAsync(source, _library.Snapshot.Nodes.Values.ToArray(), _library.ModsRootDirectory, requireAllExternalMaterials);
+                var items = candidates.Select(candidate => new HD2ModManager.Views.MaterialCandidateItem(candidate)).ToArray();
+                if (items.Length == 0)
+                {
+                    _notifications?.Show("Mod 库中没有精确匹配此模型 Material AssetKey 的材质包。", NotificationLevel.Info);
+                    return;
+                }
+                var picker = new HD2ModManager.Views.MaterialCandidateWindow { Owner = System.Windows.Application.Current?.MainWindow, DataContext = items };
+                if (picker.ShowDialog() != true || picker.SelectedCandidate is null) return;
+                if (!_library.Snapshot.Nodes.TryGetValue(picker.SelectedCandidate.NodeId, out var candidate)) return;
+                if (!TryChooseOutput(out var output)) return;
+                var destination = System.IO.Path.Combine(output.OutputDirectory, SanitizeFileName($"{source.Metadata.Name}-{candidate.Metadata.Name}-内嵌版"));
+                await ExecuteMaterialOperationAsync(() => _materialPackaging.MergeAsync(source, candidate, _library.ModsRootDirectory, destination, requireAllExternalMaterials).AsTask(), output.ImportToLibrary, operationAlreadyRunning: true);
+            }
+            finally
+            {
+                _materialOperationRunning = false; RaiseMaterialCommandStates();
+            }
+        }
+
+        private async Task ExecuteMaterialOperationAsync(Func<Task<MaterialPackagingOperationResult>> operation, bool importToLibrary, bool operationAlreadyRunning = false)
+        {
+            if (!operationAlreadyRunning) { _materialOperationRunning = true; RaiseMaterialCommandStates(); }
+            try
+            {
+                var result = await operation();
+                if (!result.IsSuccessful)
+                {
+                    _notifications?.Show(string.Join("；", result.Issues.Select(issue => issue.Message)), NotificationLevel.Error, TimeSpan.FromSeconds(8));
+                    return;
+                }
+                if (importToLibrary)
+                {
+                    var importer = new ImportService(_library);
+                    foreach (var directory in result.OutputDirectories) await importer.ImportPathAsync(directory, default);
+                }
+                _notifications?.Show($"材质打包完成：{result.AssetCount} 个资源，{result.GraphEdgeCount} 条引用；{(importToLibrary ? "已导入 Mod 库" : "已写出到目标文件夹")}。", NotificationLevel.Info, TimeSpan.FromSeconds(6));
+                await RefreshMaterialPackagingStateAsync();
+            }
+            finally
+            {
+                if (!operationAlreadyRunning) { _materialOperationRunning = false; RaiseMaterialCommandStates(); }
+            }
+        }
+
+        private bool TryGetCurrentNode(out ModNode node)
+        {
+            node = default!;
+            return Mod != null && TryParseNodeId(Mod.Guid, out var nodeId) && _library.Snapshot.Nodes.TryGetValue(nodeId, out node!);
+        }
+
+        private static bool TryChooseOutput(out HD2ModManager.Views.MaterialPackagingOutputWindow output)
+        {
+            output = new HD2ModManager.Views.MaterialPackagingOutputWindow { Owner = System.Windows.Application.Current?.MainWindow };
+            return output.ShowDialog() == true;
+        }
+
+        private void RaiseMaterialCommandStates()
+        {
+            OnPropertyChanged(nameof(CanSplitEmbeddedMaterials)); OnPropertyChanged(nameof(CanReplaceEmbeddedMaterials)); OnPropertyChanged(nameof(CanEmbedExternalMaterials));
+            SplitEmbeddedMaterialsCommand.RaiseCanExecuteChanged(); ReplaceEmbeddedMaterialsCommand.RaiseCanExecuteChanged(); EmbedExternalMaterialsCommand.RaiseCanExecuteChanged();
+        }
+
+        private static string SanitizeFileName(string name) => string.Concat(name.Select(character => System.IO.Path.GetInvalidFileNameChars().Contains(character) ? '_' : character)).Trim();
 
         private void AddToProfile()
         {

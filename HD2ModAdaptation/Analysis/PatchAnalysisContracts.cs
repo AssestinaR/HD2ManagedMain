@@ -26,9 +26,24 @@ public sealed record PatchAnalysisIssue(
 	string? SourceFilePath = null,
 	AssetKey? AssetKey = null);
 
+public enum PatchReferenceKind
+{
+	UnitMaterial,
+	MaterialTexture
+}
+
+public sealed record PatchAssetReference(
+	AssetKey SourceAssetKey,
+	AssetKey TargetAssetKey,
+	PatchReferenceKind Kind,
+	uint PayloadRelativeOffset,
+	uint? SlotId = null,
+	int? ReferenceIndex = null);
+
 public sealed record PatchGroupAnalysis(
 	PatchGroupInput Input,
 	IReadOnlyList<PatchAssetFact> Assets,
+	IReadOnlyList<PatchAssetReference> References,
 	IReadOnlyList<PatchAnalysisIssue> Issues,
 	DateTimeOffset AnalyzedUtc,
 	string AnalyzerVersion)

@@ -79,6 +79,32 @@ public sealed class ProfileOverrideGraphServiceTests
 	}
 
 	[Fact]
+	public async Task BuildAsync_IncludesPrivateMaterialAssetWithoutGameDataMapping()
+	{
+		var firstId = ModNodeId.New();
+		var secondId = ModNodeId.New();
+		var material = new AssetKey(0xeac0b497876adedf, 0x1234);
+		var first = CreateNode(firstId, "Red");
+		var second = CreateNode(secondId, "Blue");
+		var profile = new Profile(ProfileId.New(), "Profile", DateTimeOffset.UtcNow, null, [new ProfileEntry(firstId, 0), new ProfileEntry(secondId, 1)]);
+		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [firstId] = first, [secondId] = second }, [profile]);
+		var content = new FakeContentFactsService(new Dictionary<ModNodeId, ModContentFacts>
+		{
+			[firstId] = CreateFacts(first, "aaaaaaaaaaaaaaaa", material, "red"),
+			[secondId] = CreateFacts(second, "bbbbbbbbbbbbbbbb", material, "blue"),
+		});
+		var service = new ProfileOverrideGraphService(content, new FakeMappingFactsService());
+
+		var graph = await service.BuildAsync(profile, snapshot, "unused");
+
+		var chain = Assert.Single(graph.AssetChains);
+		Assert.Equal(material, chain.AssetKey);
+		Assert.Equal(secondId, chain.Winner.NodeId);
+		Assert.Equal("Material", chain.Entries[0].Mapping.TypeDisplayName);
+		Assert.True(Assert.Single(graph.Coverages, coverage => coverage.NodeId == firstId).FullyOverridden);
+	}
+
+	[Fact]
 	public async Task BuildAsync_ChangesGenerationWithProfileContentOrMappingGeneration()
 	{
 		var nodeId = ModNodeId.New();
