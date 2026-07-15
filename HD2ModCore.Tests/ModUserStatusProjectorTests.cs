@@ -7,6 +7,21 @@ namespace HD2ModCore.Tests;
 public sealed class ModUserStatusProjectorTests
 {
     [Fact]
+    public void Project_CurrentMaterialMissingDiagnostic_TakesPriorityOverEnabledStatus()
+    {
+        var node = CreateNode(ModNodeId.New());
+        var profile = new Profile(ProfileId.New(), "Profile", DateTimeOffset.UtcNow, null, [new ProfileEntry(node.Id, 0)], Revision: 3);
+        var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [node.Id] = node }, [profile], profile.Id);
+        var diagnostic = new ProfileMaterialDiagnostic(node.Id, new AssetKey(0xeac0b497876adedf, 1), ProfileMaterialDiagnosticKind.MissingMaterial, "缺失材质", "测试");
+        var diagnostics = new ProfileMaterialDiagnostics(profile.Id, profile.Revision, DateTimeOffset.UtcNow, [diagnostic], []);
+
+        var statuses = ModUserStatusProjector.Project(snapshot, profile.Id, new Dictionary<ModNodeId, ModContentFacts>(), null, diagnostics, null);
+
+        Assert.Equal(ModUserStatusKind.MissingDependency, statuses[node.Id].Kind);
+        Assert.Equal("材质依赖缺失", statuses[node.Id].Title);
+    }
+
+    [Fact]
     public void Project_SelectedProfileOnly_ReturnsCurrentProfileWithoutTechnicalWork()
     {
         var nodeId = ModNodeId.New();
@@ -16,7 +31,7 @@ public sealed class ModUserStatusProjectorTests
             [selected],
             null);
 
-        var statuses = ModUserStatusProjector.Project(snapshot, selected.Id, new Dictionary<ModNodeId, ModContentFacts>(), null, null);
+        var statuses = ModUserStatusProjector.Project(snapshot, selected.Id, new Dictionary<ModNodeId, ModContentFacts>(), null, null, null);
 
         var status = Assert.Single(statuses).Value;
         Assert.Equal(ModUserStatusKind.CurrentProfile, status.Kind);
@@ -36,7 +51,7 @@ public sealed class ModUserStatusProjectorTests
         var graph = new ProfileOverrideGraph(profile.Id, 2, "graph", "mapping", DateTimeOffset.UtcNow,
             new Dictionary<ModNodeId, string>(), [], [], [new ProfileModCoverage(nodeId, "Test", 1, 0, 1)], []);
 
-        var statuses = ModUserStatusProjector.Project(snapshot, profile.Id, new Dictionary<ModNodeId, ModContentFacts>(), graph, null);
+        var statuses = ModUserStatusProjector.Project(snapshot, profile.Id, new Dictionary<ModNodeId, ModContentFacts>(), graph, null, null);
 
         Assert.Equal(ModUserStatusKind.FullyOverridden, Assert.Single(statuses).Value.Kind);
     }
@@ -53,7 +68,7 @@ public sealed class ModUserStatusProjectorTests
         var staleGraph = new ProfileOverrideGraph(profile.Id, 2, "old", "mapping", DateTimeOffset.UtcNow,
             new Dictionary<ModNodeId, string>(), [], [], [new ProfileModCoverage(nodeId, "Test", 1, 0, 1)], []);
 
-        var statuses = ModUserStatusProjector.Project(snapshot, profile.Id, new Dictionary<ModNodeId, ModContentFacts>(), staleGraph, null);
+        var statuses = ModUserStatusProjector.Project(snapshot, profile.Id, new Dictionary<ModNodeId, ModContentFacts>(), staleGraph, null, null);
 
         Assert.Equal(ModUserStatusKind.Enabled, Assert.Single(statuses).Value.Kind);
     }

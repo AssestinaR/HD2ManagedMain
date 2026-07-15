@@ -10,6 +10,7 @@ public static class ModUserStatusProjector
 		ProfileId? selectedProfileId,
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> content,
 		ProfileOverrideGraph? expected,
+		ProfileMaterialDiagnostics? materialDiagnostics,
 		DeployedOverrideGraph? actual)
 	{
 		ArgumentNullException.ThrowIfNull(snapshot);
@@ -21,6 +22,10 @@ public static class ModUserStatusProjector
 			&& expected is not null
 			&& expected.ProfileId == active.Id
 			&& expected.ProfileRevision == active.Revision;
+		var diagnosticsAreCurrent = active is not null
+			&& materialDiagnostics is not null
+			&& materialDiagnostics.ProfileId == active.Id
+			&& materialDiagnostics.ProfileRevision == active.Revision;
 		var actualBrokenNodeIds = actual?.Issues.Where(issue => issue.Severity == CoreIssueSeverity.Error && issue.NodeId is not null).Select(issue => issue.NodeId!.Value).ToHashSet() ?? [];
 		var statuses = new Dictionary<ModNodeId, ModUserStatus>();
 		foreach (var node in snapshot.Nodes.Values)
@@ -35,6 +40,19 @@ public static class ModUserStatusProjector
 			}
 			if (inActive)
 			{
+				var nodeDiagnostics = diagnosticsAreCurrent ? materialDiagnostics!.Items.Where(item => item.NodeId == node.Id).ToArray() : Array.Empty<ProfileMaterialDiagnostic>();
+				var missing = nodeDiagnostics.Where(item => item.Kind is ProfileMaterialDiagnosticKind.MissingMaterial or ProfileMaterialDiagnosticKind.MissingTexture).ToArray();
+				if (missing.Length != 0)
+				{
+					statuses[node.Id] = new ModUserStatus(node.Id, ModUserStatusKind.MissingDependency, "材质依赖缺失", string.Join("；", missing.Take(2).Select(item => item.Summary)) + (missing.Length > 2 ? $"；另有 {missing.Length - 2} 项" : string.Empty), inSelected, true);
+					continue;
+				}
+				var unreachable = nodeDiagnostics.Where(item => item.Kind is ProfileMaterialDiagnosticKind.NoEffectiveUnitConsumer or ProfileMaterialDiagnosticKind.UnreachableResource).ToArray();
+				if (unreachable.Length != 0)
+				{
+					statuses[node.Id] = new ModUserStatus(node.Id, ModUserStatusKind.NoEffectiveConsumer, "材质无有效调用方", string.Join("；", unreachable.Take(2).Select(item => item.Summary)) + (unreachable.Length > 2 ? $"；另有 {unreachable.Length - 2} 项" : string.Empty), inSelected, true);
+					continue;
+				}
 				var coverage = expectedIsCurrent ? expected!.Coverages.FirstOrDefault(item => item.NodeId == node.Id) : null;
 				statuses[node.Id] = coverage?.FullyOverridden == true
 					? new ModUserStatus(node.Id, ModUserStatusKind.FullyOverridden, "已启用但失效", "此 Mod 的影响已被后续 Mod 完全覆盖。", inSelected, true)

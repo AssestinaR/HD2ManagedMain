@@ -13,6 +13,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     private readonly StoragePaths _paths;
     private readonly IModContentFactsService _contentFacts;
     private readonly IProfileOverrideGraphService _profileGraph;
+	private readonly IProfileMaterialDiagnosticsService _profileMaterialDiagnostics;
     private readonly IDeployedOverrideGraphService _deployedGraph;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _sync = new();
@@ -33,6 +34,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
         _paths = SettingsService.CreateStoragePaths();
         _contentFacts = CoreServices.CreateModContentFactsService(_paths);
         _profileGraph = CoreServices.CreateProfileOverrideGraphService(_paths);
+        _profileMaterialDiagnostics = CoreServices.CreateProfileMaterialDiagnosticsService(_paths);
         _deployedGraph = CoreServices.CreateDeployedOverrideGraphService();
         _activeProfileSignature = GetActiveProfileSignature(_profiles.Snapshot);
         _profiles.Changed += OnProfilesChanged;
@@ -57,7 +59,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     public IReadOnlyDictionary<ModNodeId, ModUserStatus> ProjectStatuses(ProfileId? selectedProfileId)
     {
         var snapshot = Snapshot;
-        return ModUserStatusProjector.Project(_profiles.Snapshot, selectedProfileId, snapshot.ContentFacts, snapshot.ExpectedGraph, snapshot.DeployedGraph);
+        return ModUserStatusProjector.Project(_profiles.Snapshot, selectedProfileId, snapshot.ContentFacts, snapshot.ExpectedGraph, snapshot.MaterialDiagnostics, snapshot.DeployedGraph);
     }
 
     private async Task RefreshCoreAsync(CancellationToken cancellationToken)
@@ -69,6 +71,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
             var current = Snapshot;
             IReadOnlyDictionary<ModNodeId, ModContentFacts> content = current.ContentFacts;
             ProfileOverrideGraph? expected = current.ExpectedGraph;
+			ProfileMaterialDiagnostics? materialDiagnostics = current.MaterialDiagnostics;
             DeployedOverrideGraph? deployed = current.DeployedGraph;
             bool contentDirty;
             bool expectedDirty;
@@ -90,10 +93,12 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
             if (active is null)
             {
                 expected = null;
+				materialDiagnostics = null;
             }
             else if (expectedDirty || !IsExpectedCurrent(expected, active, content))
             {
                 expected = await _profileGraph.BuildAsync(active, profileSnapshot, _library.ModsRootDirectory, cancellationToken).ConfigureAwait(false);
+				materialDiagnostics = await _profileMaterialDiagnostics.BuildAsync(active, profileSnapshot, _library.ModsRootDirectory, cancellationToken).ConfigureAwait(false);
             }
 
             var gameData = SettingsService.GetGameDataFolder();
@@ -106,7 +111,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
                 deployed = await _deployedGraph.BuildAsync(gameData, cancellationToken).ConfigureAwait(false);
             }
 
-            var next = new DerivedStateSnapshot(content, expected, deployed, DateTimeOffset.UtcNow, null);
+            var next = new DerivedStateSnapshot(content, expected, materialDiagnostics, deployed, DateTimeOffset.UtcNow, null);
             lock (_sync)
             {
                 _contentDirty = false;
@@ -186,9 +191,10 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
 public sealed record DerivedStateSnapshot(
     IReadOnlyDictionary<ModNodeId, ModContentFacts> ContentFacts,
     ProfileOverrideGraph? ExpectedGraph,
+	ProfileMaterialDiagnostics? MaterialDiagnostics,
     DeployedOverrideGraph? DeployedGraph,
     DateTimeOffset BuiltUtc,
     string? LastError)
 {
-    public static DerivedStateSnapshot Empty { get; } = new(new Dictionary<ModNodeId, ModContentFacts>(), null, null, DateTimeOffset.MinValue, null);
+    public static DerivedStateSnapshot Empty { get; } = new(new Dictionary<ModNodeId, ModContentFacts>(), null, null, null, DateTimeOffset.MinValue, null);
 }

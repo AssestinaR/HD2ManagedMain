@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -21,6 +22,10 @@ namespace HD2ModManager.ViewModels
         private readonly IMaterialPackagingApplicationService _materialPackaging;
         private ModMaterialPackagingState? _materialState;
         private bool _materialOperationRunning;
+        private readonly IAdvancedModAssetQueryService _advancedAssetQueryService;
+        private IReadOnlyList<AdvancedModAssetRow> _allAdvancedAssets = Array.Empty<AdvancedModAssetRow>();
+        private string _advancedAssetQuery = string.Empty;
+        private bool _advancedOnlyIssues;
 
         public string ModId { get; }
         public ModEntity? Mod { get; private set; }
@@ -35,12 +40,17 @@ namespace HD2ModManager.ViewModels
         public string AssetTagsString { get; private set; } = "未解析";
         public string AssetListSummary { get; private set; } = "未解析";
         public string AssetOverrideSummary { get; private set; } = "未检查";
+		public string MaterialDiagnosticSummary { get; private set; } = "当前没有活动配置或材质诊断正在更新。";
         public string UserStatusTitle { get; private set; } = "状态未知";
         public string UserStatusSummary { get; private set; } = "正在读取状态。";
         public string MaterialPackagingSummary { get; private set; } = "正在分析材质引用。";
         public bool CanSplitEmbeddedMaterials => !_materialOperationRunning && _materialState?.CanSplit == true;
         public bool CanReplaceEmbeddedMaterials => !_materialOperationRunning && _materialState?.HasEmbeddedMaterials == true;
         public bool CanEmbedExternalMaterials => !_materialOperationRunning && _materialState?.HasExternalMaterials == true;
+        public ObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
+        public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
+        public bool AdvancedOnlyIssues { get => _advancedOnlyIssues; set { if (SetField(ref _advancedOnlyIssues, value)) ApplyAdvancedAssetFilter(); } }
+        public string AdvancedAssetState { get; private set; } = "正在加载稳定资产事实。";
         public string PatchSummary => Mod?.FileGroups == null || Mod.FileGroups.Count == 0
             ? "没有 patch 文件组"
             : string.Join(Environment.NewLine, Mod.FileGroups.Select(g => $"{g.HexPrefix}.patch_{g.PatchN}"));
@@ -62,6 +72,7 @@ namespace HD2ModManager.ViewModels
             _derivedState = derivedState;
             _notifications = notifications;
 			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService();
+            _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(SettingsService.CreateStoragePaths());
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
             OpenFolderCommand = new RelayCommand(OpenFolder);
@@ -71,9 +82,50 @@ namespace HD2ModManager.ViewModels
             SplitEmbeddedMaterialsCommand = new RelayCommand(async _ => await SplitEmbeddedMaterialsAsync(), _ => CanSplitEmbeddedMaterials);
             ReplaceEmbeddedMaterialsCommand = new RelayCommand(async _ => await MergeMaterialCandidateAsync(requireAllExternalMaterials: false), _ => CanReplaceEmbeddedMaterials);
             EmbedExternalMaterialsCommand = new RelayCommand(async _ => await MergeMaterialCandidateAsync(requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
-            _derivedState.SnapshotChanged += (_, _) => RunOnUiThread(Refresh);
+            _derivedState.SnapshotChanged += (_, _) => RunOnUiThread(() =>
+            {
+                Refresh();
+                _ = RefreshAdvancedAssetsAsync();
+            });
             Refresh();
 			_ = RefreshMaterialPackagingStateAsync();
+            _ = RefreshAdvancedAssetsAsync();
+        }
+
+        private async Task RefreshAdvancedAssetsAsync()
+        {
+            if (Mod is null || !TryParseNodeId(Mod.Guid, out var nodeId)) return;
+            try
+            {
+                var active = _profiles.ActiveProfile;
+                var graph = active is null ? null : _derivedState.Snapshot.ExpectedGraph;
+                var diagnostics = active is null ? null : _derivedState.Snapshot.MaterialDiagnostics;
+                _allAdvancedAssets = await _advancedAssetQueryService.QueryAsync(nodeId, _library.Snapshot, graph, diagnostics);
+                AdvancedAssetState = _allAdvancedAssets.Count == 0 ? "尚未生成稳定资产事实；请等待导入分析完成。" : $"共 {_allAdvancedAssets.Count} 个 AssetKey（稳定事实）";
+                ApplyAdvancedAssetFilter();
+            }
+            catch (Exception exception)
+            {
+                _allAdvancedAssets = Array.Empty<AdvancedModAssetRow>();
+                AdvancedAssetState = $"稳定资产事实读取失败：{exception.Message}";
+                ApplyAdvancedAssetFilter();
+            }
+        }
+
+        private void ApplyAdvancedAssetFilter()
+        {
+            var query = AdvancedAssetQuery.Trim();
+            var rows = _allAdvancedAssets
+                .Where(row => !AdvancedOnlyIssues || !string.IsNullOrWhiteSpace(row.DiagnosticSummary))
+                .Where(row => string.IsNullOrWhiteSpace(query)
+                    || row.TypeName.Contains(query, StringComparison.OrdinalIgnoreCase)
+                    || row.ResourceName.Contains(query, StringComparison.OrdinalIgnoreCase)
+                    || row.TargetSummary.Contains(query, StringComparison.OrdinalIgnoreCase)
+                    || row.AssetKey.ToString().Contains(query, StringComparison.OrdinalIgnoreCase))
+                .Select(row => new AdvancedModAssetRowViewModel(row));
+            AdvancedAssets.Clear();
+            foreach (var row in rows) AdvancedAssets.Add(row);
+            OnPropertyChanged(nameof(AdvancedAssetState));
         }
 
         public void Refresh()
@@ -93,6 +145,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(AssetTagsString));
             OnPropertyChanged(nameof(AssetListSummary));
             OnPropertyChanged(nameof(AssetOverrideSummary));
+			OnPropertyChanged(nameof(MaterialDiagnosticSummary));
             OnPropertyChanged(nameof(UserStatusTitle));
             OnPropertyChanged(nameof(UserStatusSummary));
             OnPropertyChanged(nameof(MaterialPackagingSummary));
@@ -138,8 +191,20 @@ namespace HD2ModManager.ViewModels
             var summary = derived?.AssetSummary;
             if (summary == null)
             {
-                AssetTagsString = "资产未解析";
-                AssetListSummary = "资产派生数据正在后台更新。";
+                var facts = derived?.ContentFacts ?? _derivedState.Snapshot.ContentFacts.GetValueOrDefault(nodeId);
+                if (facts is not null)
+                {
+                    var assets = facts.PatchGroups.SelectMany(group => group.AssetKeys).ToArray();
+                    AssetTagsString = "稳定 Patch 事实";
+                    AssetListSummary = assets.Length == 0
+                        ? "未发现可解析资产"
+                        : $"共 {assets.Length} 个 AssetKey：Unit {assets.Count(asset => asset.TypeId == 0xe0a48d0be9a7453f)}，Material {assets.Count(asset => asset.TypeId == 0xeac0b497876adedf)}，Texture {assets.Count(asset => asset.TypeId == 0xcd4238c6a0c69e32)}。高级详情可查看完整稳定资产表。";
+                }
+                else
+                {
+                    AssetTagsString = "资产未解析";
+                    AssetListSummary = "稳定资产事实正在导入分析。";
+                }
                 AssetOverrideSummary = BuildCachedAssetOverrideSummary(nodeId);
                 return;
             }
@@ -149,6 +214,19 @@ namespace HD2ModManager.ViewModels
                 : string.Join(Environment.NewLine, summary.Assets.Take(80).Select(a => a.DisplayName));
             if (summary.Assets.Count > 80) AssetListSummary += Environment.NewLine + $"... 另有 {summary.Assets.Count - 80} 个资产";
             AssetOverrideSummary = BuildCachedAssetOverrideSummary(nodeId);
+            MaterialDiagnosticSummary = BuildMaterialDiagnosticSummary(nodeId);
+        }
+
+        private string BuildMaterialDiagnosticSummary(ModNodeId nodeId)
+        {
+            var active = _profiles.ActiveProfile;
+            if (active is null) return "当前没有活动配置。";
+            var diagnostics = _derivedState.Snapshot.MaterialDiagnostics;
+            if (diagnostics is null || diagnostics.ProfileId != active.Id || diagnostics.ProfileRevision != active.Revision) return "材质诊断正在后台更新。";
+            var items = diagnostics.Items.Where(item => item.NodeId == nodeId).ToArray();
+            return items.Length == 0
+                ? "未发现当前有效资源图中的材质依赖异常。"
+                : string.Join(Environment.NewLine, items.Take(20).Select(item => $"{item.Summary}：{item.Detail}")) + (items.Length > 20 ? $"{Environment.NewLine}... 另有 {items.Length - 20} 项" : string.Empty);
         }
 
         private static string BuildAssetTagTreeText(ModAssetSummary summary)

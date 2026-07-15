@@ -35,6 +35,6 @@ public sealed class ModUserStatusService : IModUserStatusService
 			catch { }
 		}
 
-		return ModUserStatusProjector.Project(snapshot, selectedProfileId, content, expected, actual);
+		return ModUserStatusProjector.Project(snapshot, selectedProfileId, content, expected, null, actual);
 	}
 }

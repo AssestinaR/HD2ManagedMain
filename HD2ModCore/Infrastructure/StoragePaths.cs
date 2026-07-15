@@ -12,6 +12,7 @@ public sealed record StoragePaths(string AppRootDirectory, string? ModsRootDirec
 	public string SettingsPath => Path.Combine(DataDirectory, "settings.json");
 	public string IndexDirectory => Path.Combine(DataDirectory, "indexes");
 	public string DbPath => Path.Combine(IndexDirectory, "asset-index.sqlite");
+	public string ModFactsDbPath => Path.Combine(IndexDirectory, "mod-facts.sqlite");
 	public string ResourcesDirectory => Path.Combine(DataDirectory, "resources");
 	public string ArchiveHashesPath => Path.Combine(ResourcesDirectory, "archivehashes.json");
 	public string TypeHashesPath => Path.Combine(ResourcesDirectory, "typehash.txt");

@@ -7,13 +7,13 @@ namespace HD2ModCore.Infrastructure;
 public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 {
 	private readonly IModContentFactsService _contentFactsService;
-	private readonly IModAssetAnalyzer _assetAnalyzer;
+	private readonly ModAssetSummaryProjector _assetSummaryProjector;
 	private readonly IModUnitCompatibilityAnalyzer? _unitCompatibilityAnalyzer;
 
-	public LibraryDerivedDataService(IModContentFactsService contentFactsService, IModAssetAnalyzer assetAnalyzer, IModUnitCompatibilityAnalyzer? unitCompatibilityAnalyzer = null)
+	public LibraryDerivedDataService(IModContentFactsService contentFactsService, ModAssetSummaryProjector assetSummaryProjector, IModUnitCompatibilityAnalyzer? unitCompatibilityAnalyzer = null)
 	{
 		_contentFactsService = contentFactsService ?? throw new ArgumentNullException(nameof(contentFactsService));
-		_assetAnalyzer = assetAnalyzer ?? throw new ArgumentNullException(nameof(assetAnalyzer));
+		_assetSummaryProjector = assetSummaryProjector ?? throw new ArgumentNullException(nameof(assetSummaryProjector));
 		_unitCompatibilityAnalyzer = unitCompatibilityAnalyzer;
 	}
 
@@ -47,11 +47,11 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 			ModAssetSummary? assetSummary = null;
 			try
 			{
-				assetSummary = await _assetAnalyzer.AnalyzeNodeAsync(node, modsRootDirectory, cancellationToken);
+				assetSummary = await _assetSummaryProjector.ProjectAsync(node, nodeContentFacts, cancellationToken);
 			}
 			catch (Exception ex)
 			{
-				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "AssetSummaryFailed", $"Failed to analyze mod assets: {ex.Message}", directory, node.Id));
+				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "AssetSummaryProjectionFailed", $"Failed to project stable mod facts: {ex.Message}", directory, node.Id));
 			}
 
 			ModUnitCompatibilityReport? unitCompatibility = null;

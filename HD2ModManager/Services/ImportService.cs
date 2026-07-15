@@ -29,7 +29,16 @@ namespace HD2ModManager.Services
 
         public Task EnqueueImportsAsync(IEnumerable<string> paths, CancellationToken ct = default)
         {
-            return Task.WhenAll(paths.Select(p => ImportPathAsync(p, ct)));
+            return ImportSequentiallyAsync(paths, ct);
+        }
+
+        private async Task ImportSequentiallyAsync(IEnumerable<string> paths, CancellationToken ct)
+        {
+            foreach (var path in paths)
+            {
+                ct.ThrowIfCancellationRequested();
+                await ImportPathAsync(path, ct).ConfigureAwait(false);
+            }
         }
 
         public async Task<List<string>> ImportPathAsync(string path, CancellationToken ct)

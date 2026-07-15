@@ -55,34 +55,22 @@ public static class CoreServices
 		=> new FileSystemAssetMetadataCatalogProvider(paths);
 	public static IAssetMetadataSyncService CreateAssetMetadataSyncService(StoragePaths paths)
 		=> new GitHubAssetMetadataSyncService(new HttpClient(), paths);
-	public static IModAssetAnalyzer CreateModAssetAnalyzer(StoragePaths paths)
-		=> new CachedModAssetAnalyzer(
-			CreateUncachedModAssetAnalyzer(paths),
-			CreateModAssetAnalysisCacheStore(paths),
-			CreatePatchFileNameParser(),
-			paths);
-	public static IModAssetAnalyzer CreateUncachedModAssetAnalyzer(StoragePaths paths)
-		=> new ModAssetAnalyzer(
-			CreatePatchFileNameParser(),
-			CreatePatchTocScanner(),
-			CreateAssetMetadataCatalogProvider(paths),
-			CreateAssetArchiveIndexService(paths),
-			adaptationAnalyzer: null,
-			patchGroupAnalysisProvider: null,
-			contentFactsService: CreateModContentFactsService(paths));
 	public static IPatchGroupAnalysisProvider CreatePatchGroupAnalysisProvider(StoragePaths paths)
 		=> new CachedPatchGroupAnalysisProvider(
 			new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer()),
-			new FileSystemPatchGroupAnalysisCacheStore(paths),
+			CreateModFactsStore(paths),
 			CreatePatchFileNameParser());
+	public static IModFactsStore CreateModFactsStore(StoragePaths paths) => new SqliteModFactsStore(paths);
 	public static IModContentFactsService CreateModContentFactsService(StoragePaths paths)
 		=> new ModContentFactsService(CreatePatchFileNameParser(), CreatePatchGroupAnalysisProvider(paths));
 	public static IGameDataMappingFactsService CreateGameDataMappingFactsService(StoragePaths paths)
 		=> new GameDataMappingFactsService(CreateAssetArchiveIndexService(paths), CreateAssetMetadataCatalogProvider(paths), paths);
 	public static IProfileOverrideGraphService CreateProfileOverrideGraphService(StoragePaths paths)
 		=> new ProfileOverrideGraphService(CreateModContentFactsService(paths), CreateGameDataMappingFactsService(paths));
-	public static IModAssetAnalysisCacheStore CreateModAssetAnalysisCacheStore(StoragePaths paths)
-		=> new FileSystemModAssetAnalysisCacheStore(paths);
+	public static IProfileMaterialDiagnosticsService CreateProfileMaterialDiagnosticsService(StoragePaths paths)
+		=> new ProfileMaterialDiagnosticsService(CreateModFactsStore(paths), CreateGameDataMappingFactsService(paths));
+	public static IAdvancedModAssetQueryService CreateAdvancedModAssetQueryService(StoragePaths paths)
+		=> new AdvancedModAssetQueryService(CreateModFactsStore(paths), CreateGameDataMappingFactsService(paths));
 	public static IModUnitCompatibilityAnalyzer CreateModUnitCompatibilityAnalyzer()
 		=> new ModUnitCompatibilityAnalyzer(CreatePatchFileNameParser());
 	public static IMaterialPackagingApplicationService CreateMaterialPackagingApplicationService()
@@ -105,7 +93,7 @@ public static class CoreServices
 		=> new ModUnitRepairService(CreatePatchFileNameParser(), CreateModUnitCompatibilityAnalyzer());
 	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths)
 		// Compatibility analysis is deliberately opt-in until its Adaptation implementation is ready.
-		=> new LibraryDerivedDataService(CreateModContentFactsService(paths), CreateModAssetAnalyzer(paths), unitCompatibilityAnalyzer: null);
+		=> new LibraryDerivedDataService(CreateModContentFactsService(paths), new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths)), unitCompatibilityAnalyzer: null);
    public static IReplacementTargetDeriver CreateReplacementTargetDeriver(StoragePaths paths)
 		=> new ReplacementTargetDeriver(paths, CreateAssetArchiveIndexService(paths));
    public static IModCompatibilityAnalyzer CreateModCompatibilityAnalyzer(StoragePaths paths)
@@ -151,9 +139,11 @@ public static class CoreServices
 			paths,
 			CreateObjectTreeImporter(),
 			CreateArchiveObjectTreeImporter(),
-			CreateModLibraryStore(paths));
+			CreateModLibraryStore(paths),
+			CreatePatchGroupAnalysisProvider(paths),
+			CreateModFactsStore(paths));
    public static IModLibraryManager CreateModLibraryManager(StoragePaths paths)
-		=> new ModLibraryManager(paths, CreateModLibraryStore(paths), CreatePatchFileGroupFingerprintStore(paths));
+		=> new ModLibraryManager(paths, CreateModLibraryStore(paths), CreatePatchFileGroupFingerprintStore(paths), CreateModFactsStore(paths));
    public static IModExporter CreateModExporter(StoragePaths paths)
 		=> new ModExporter(paths);
    public static IModManifestImporter CreateModManifestImporter(StoragePaths paths)

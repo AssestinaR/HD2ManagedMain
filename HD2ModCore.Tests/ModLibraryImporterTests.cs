@@ -1,4 +1,7 @@
 ﻿using HD2ModCore.Infrastructure;
+using HD2ModAdaptation.Analysis;
+using HD2ModCore.Application;
+using HD2ModCore.Domain;
 
 namespace HD2ModCore.Tests;
 
@@ -49,5 +52,41 @@ public sealed class ModLibraryImporterTests
 		{
 			try { Directory.Delete(root, recursive: true); } catch { }
 		}
+	}
+
+	[Fact]
+	public async Task ImportFolderAsync_RollsBackStoredFiles_WhenStableFactsFail()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var source = Path.Combine(root, "source");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(source);
+		File.WriteAllText(Path.Combine(source, "9ba626afa44a3aa3.patch_0"), "patch");
+		try
+		{
+			var paths = new StoragePaths(appRoot);
+			var importer = new ModLibraryImporter(
+				paths,
+				new ObjectTreeImporter(new PatchFileNameParser()),
+				new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())),
+				new JsonModLibraryStore(paths),
+				new ThrowingFactsProvider());
+
+			await Assert.ThrowsAsync<InvalidDataException>(() => importer.ImportFolderAsync(source).AsTask());
+
+			Assert.False(File.Exists(paths.LibraryPath));
+			Assert.False(Directory.Exists(paths.ModsDirectory) && Directory.EnumerateFileSystemEntries(paths.ModsDirectory).Any());
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	private sealed class ThrowingFactsProvider : IPatchGroupAnalysisProvider
+	{
+		public ValueTask<IReadOnlyList<PatchGroupAnalysis>> AnalyzeNodeAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
+			=> ValueTask.FromException<IReadOnlyList<PatchGroupAnalysis>>(new InvalidDataException("stable facts failed"));
 	}
 }

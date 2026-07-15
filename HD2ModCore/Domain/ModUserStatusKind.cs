@@ -8,6 +8,8 @@ public enum ModUserStatusKind
 	Enabled,
 	PartiallyOverridden,
 	FullyOverridden,
+	MissingDependency,
+	NoEffectiveConsumer,
 	Broken,
 	Outdated,
 	Unknown,

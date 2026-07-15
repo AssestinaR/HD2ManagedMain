@@ -10,12 +10,14 @@ public sealed class ModLibraryManager : IModLibraryManager
 	private readonly StoragePaths _paths;
 	private readonly IModLibraryStore _store;
 	private readonly IPatchFileGroupFingerprintStore? _fingerprintStore;
+	private readonly IModFactsStore? _modFactsStore;
 
-	public ModLibraryManager(StoragePaths paths, IModLibraryStore store, IPatchFileGroupFingerprintStore? fingerprintStore = null)
+	public ModLibraryManager(StoragePaths paths, IModLibraryStore store, IPatchFileGroupFingerprintStore? fingerprintStore = null, IModFactsStore? modFactsStore = null)
 	{
 		_paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		_store = store ?? throw new ArgumentNullException(nameof(store));
 		_fingerprintStore = fingerprintStore;
+		_modFactsStore = modFactsStore;
 	}
 
 	public async ValueTask<LibrarySnapshot> LoadOrCreateAsync(CancellationToken cancellationToken = default)
@@ -75,6 +77,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 		{
 			TryDeleteStoredRoot(node.RelativePath);
 		}
+		if (_modFactsStore is not null) await _modFactsStore.DeleteAsync(nodeId, cancellationToken).ConfigureAwait(false);
 
 		var updated = snapshot with { Nodes = nodes, Profiles = profiles, SavedUtc = DateTimeOffset.UtcNow };
 		await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
@@ -310,12 +313,22 @@ public sealed class ModLibraryManager : IModLibraryManager
 
 			if (Directory.Exists(storedRoot))
 			{
+				SetReadOnlyRecursive(storedRoot, readOnly: false);
 				Directory.Delete(storedRoot, recursive: true);
 			}
 		}
 		catch
 		{
 			// ignore
+		}
+	}
+
+	private static void SetReadOnlyRecursive(string directory, bool readOnly)
+	{
+		foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+		{
+			var attributes = File.GetAttributes(path);
+			File.SetAttributes(path, readOnly ? attributes | FileAttributes.ReadOnly : attributes & ~FileAttributes.ReadOnly);
 		}
 	}
 }

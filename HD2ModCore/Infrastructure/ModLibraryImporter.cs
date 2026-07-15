@@ -15,18 +15,24 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	private readonly IObjectTreeImporter _folderImporter;
 	private readonly IArchiveObjectTreeImporter _archiveImporter;
 	private readonly IModLibraryStore _store;
+	private readonly IPatchGroupAnalysisProvider? _patchFactsProvider;
+	private readonly IModFactsStore? _modFactsStore;
 	private readonly PatchFileNormalizer _normalizer;
 
 	public ModLibraryImporter(
 		StoragePaths paths,
 		IObjectTreeImporter folderImporter,
 		IArchiveObjectTreeImporter archiveImporter,
-		IModLibraryStore store)
+		IModLibraryStore store,
+		IPatchGroupAnalysisProvider? patchFactsProvider = null,
+		IModFactsStore? modFactsStore = null)
 	{
 		_paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		_folderImporter = folderImporter ?? throw new ArgumentNullException(nameof(folderImporter));
 		_archiveImporter = archiveImporter ?? throw new ArgumentNullException(nameof(archiveImporter));
 		_store = store ?? throw new ArgumentNullException(nameof(store));
+		_patchFactsProvider = patchFactsProvider;
+		_modFactsStore = modFactsStore;
 		_normalizer = new PatchFileNormalizer(new PatchFileNameParser());
 	}
 
@@ -40,9 +46,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 
 		var sourceName = new DirectoryInfo(full).Name;
 		var tree = await _folderImporter.ImportFolderAsync(full, cancellationToken).ConfigureAwait(false);
-		var storedTree = PersistFlattenedTree(tree, full, sourceName, cancellationToken);
-		var snapshot = await MergeIntoSnapshotAsync(storedTree, cancellationToken).ConfigureAwait(false);
-		await _store.SaveAsync(snapshot, cancellationToken).ConfigureAwait(false);
+		var (storedTree, snapshot) = await CommitImportAsync(tree, full, sourceName, cancellationToken).ConfigureAwait(false);
 
 		return new ImportResult(snapshot, storedTree.RootId, sourceName);
 	}
@@ -60,21 +64,65 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		Directory.CreateDirectory(extractRoot);
 
 		ImportedObjectTree storedTree;
+		LibrarySnapshot snapshot;
 		try
 		{
 			await Task.Run(() => ExtractToDirectory(full, extractRoot, cancellationToken), cancellationToken).ConfigureAwait(false);
 			var tree = await _folderImporter.ImportFolderAsync(extractRoot, cancellationToken).ConfigureAwait(false);
-			storedTree = PersistFlattenedTree(tree, extractRoot, sourceName, cancellationToken);
+			(storedTree, snapshot) = await CommitImportAsync(tree, extractRoot, sourceName, cancellationToken).ConfigureAwait(false);
 		}
 		finally
 		{
 			try { Directory.Delete(extractRoot, recursive: true); } catch { }
 		}
 
-		var snapshot = await MergeIntoSnapshotAsync(storedTree, cancellationToken).ConfigureAwait(false);
-		await _store.SaveAsync(snapshot, cancellationToken).ConfigureAwait(false);
-
 		return new ImportResult(snapshot, storedTree.RootId, sourceName);
+	}
+
+	private async ValueTask<(ImportedObjectTree Tree, LibrarySnapshot Snapshot)> CommitImportAsync(ImportedObjectTree tree, string sourceRoot, string sourceName, CancellationToken cancellationToken)
+	{
+		ImportedObjectTree? storedTree = null;
+		try
+		{
+			storedTree = PersistFlattenedTree(tree, sourceRoot, sourceName, cancellationToken);
+			await PersistStableFactsAsync(storedTree, cancellationToken).ConfigureAwait(false);
+			var snapshot = await MergeIntoSnapshotAsync(storedTree, cancellationToken).ConfigureAwait(false);
+			await _store.SaveAsync(snapshot, cancellationToken).ConfigureAwait(false);
+			return (storedTree, snapshot);
+		}
+		catch
+		{
+			if (storedTree is not null) await RollbackStoredTreeAsync(storedTree).ConfigureAwait(false);
+			throw;
+		}
+	}
+
+	private async ValueTask PersistStableFactsAsync(ImportedObjectTree storedTree, CancellationToken cancellationToken)
+	{
+		if (_patchFactsProvider is null) return;
+		foreach (var node in storedTree.Nodes.Values)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			await _patchFactsProvider.AnalyzeNodeAsync(node, _paths.ModsDirectory, cancellationToken).ConfigureAwait(false);
+		}
+	}
+
+	private async ValueTask RollbackStoredTreeAsync(ImportedObjectTree storedTree)
+	{
+		foreach (var node in storedTree.Nodes.Values)
+		{
+			try
+			{
+				if (_modFactsStore is not null) await _modFactsStore.DeleteAsync(node.Id).ConfigureAwait(false);
+				var directory = Path.Combine(_paths.ModsDirectory, node.RelativePath);
+				if (Directory.Exists(directory))
+				{
+					SetReadOnlyRecursive(directory, readOnly: false);
+					Directory.Delete(directory, recursive: true);
+				}
+			}
+			catch { }
+		}
 	}
 
 	private void NormalizePatchDirectories(string rootDirectory, CancellationToken cancellationToken)
@@ -123,6 +171,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			var destDir = Path.Combine(_paths.ModsDirectory, flatDirName);
 			CopyTopLevelFiles(sourceNodeDir, destDir, cancellationToken);
 			NormalizePatchDirectories(destDir, cancellationToken);
+			SetReadOnlyRecursive(destDir);
 
 			nodes[kvp.Key] = node with
 			{
@@ -155,10 +204,11 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		var profiles = current?.Profiles?.ToList() ?? new List<Profile>();
 
 		return new LibrarySnapshot(
-			Version: SnapshotVersion,
+			Version: current?.Version ?? SnapshotVersion,
 			SavedUtc: DateTimeOffset.UtcNow,
 			Nodes: nodes,
-			Profiles: profiles);
+			Profiles: profiles,
+			ActiveProfileId: current?.ActiveProfileId);
 	}
 
 	private static void CopyTopLevelFiles(string sourceDir, string destDir, CancellationToken cancellationToken)
@@ -205,5 +255,14 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 
 		return string.IsNullOrWhiteSpace(sanitized) ? "ImportedMod" : sanitized;
+	}
+
+	private static void SetReadOnlyRecursive(string directory, bool readOnly = true)
+	{
+		foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+		{
+			var attributes = File.GetAttributes(path);
+			File.SetAttributes(path, readOnly ? attributes | FileAttributes.ReadOnly : attributes & ~FileAttributes.ReadOnly);
+		}
 	}
 }
