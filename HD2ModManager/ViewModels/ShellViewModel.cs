@@ -161,26 +161,7 @@ namespace HD2ModManager.ViewModels
             _selection.SelectionChanged += (_, _) => RaiseSelectionFlags();
 
             Navigate(WorkspaceMode.Home);
-            _ = RefreshLibraryDerivedDataAfterStartupAsync();
             _ = _derivedState.RefreshAsync();
-        }
-
-        private async Task RefreshLibraryDerivedDataAfterStartupAsync()
-        {
-            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.RefreshLibrary, "刷新模组派生数据", "启动缓存");
-            try
-            {
-                task.MarkRunning("正在扫描模组文件");
-                var dirtyCount = await _libraryService.RefreshDirtyDerivedDataAsync();
-                task.UpdateStage($"已识别 {dirtyCount} 个需要刷新的 Mod");
-                task.MarkCompleted();
-                await System.Windows.Application.Current.Dispatcher.InvokeAsync(RefreshCurrentPage);
-            }
-            catch (Exception ex)
-            {
-                task.MarkFailed(ex.Message);
-                await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => _notificationService.Show($"资产派生数据刷新失败：{ex.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(6)));
-            }
         }
 
         public void Navigate(WorkspaceMode mode)
@@ -533,7 +514,6 @@ namespace HD2ModManager.ViewModels
                 if (confirm != System.Windows.MessageBoxResult.Yes) return;
                 foreach (var guid in ids) _libraryService.Remove(guid);
                 _libraryService.Save();
-                _ = RefreshLibraryDerivedDataAfterStartupAsync();
                 _notificationService.Show($"已删除：{ids.Count} 个 Mod");
             }
             else if (string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase))

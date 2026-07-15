@@ -35,7 +35,8 @@ public sealed class UnitMeshReader : IUnitMeshReader
 		var bonesRef = ReadUInt64(tocData, 8);
 		var compositeRef = ReadUInt64(tocData, 16);
 		var version = ReadUInt32(tocData, 0x2c);
-		var customizationInfoOffset = ReadUInt32(tocData, 0x50);
+		// Matches HD2SDK StingrayMeshFile: CustomizationInfoOffset is at 0x4C.
+		var customizationInfoOffset = ReadUInt32(tocData, 0x4c);
 		var boneInfoOffset = ReadUInt32(tocData, 0x58);
 		var streamInfoOffset = ReadUInt32(tocData, 0x5c);
 		var endingOffset = ReadUInt32(tocData, 0x60);

@@ -15,10 +15,8 @@ public sealed record StoragePaths(string AppRootDirectory, string? ModsRootDirec
 	public string ModFactsDbPath => Path.Combine(IndexDirectory, "mod-facts.sqlite");
 	public string ResourcesDirectory => Path.Combine(DataDirectory, "resources");
 	public string ArchiveHashesPath => Path.Combine(ResourcesDirectory, "archivehashes.json");
+	public string BoneHashesPath => Path.Combine(ResourcesDirectory, "bonehash.txt");
 	public string TypeHashesPath => Path.Combine(ResourcesDirectory, "typehash.txt");
 	public string FriendlyNamesPath => Path.Combine(ResourcesDirectory, "friendlynames.txt");
 	public string AssetMetadataManifestPath => Path.Combine(ResourcesDirectory, "asset-metadata-manifest.json");
-	public string AssetAnalysisCacheDirectory => Path.Combine(DataDirectory, "asset-cache");
-	public string PatchGroupAnalysisCacheDirectory => Path.Combine(DataDirectory, "patch-facts-cache");
-	public string PatchFileGroupFingerprintManifestPath => Path.Combine(DataDirectory, "patch-group-fingerprints.json");
 }

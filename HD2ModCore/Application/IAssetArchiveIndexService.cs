@@ -15,6 +15,10 @@ public interface IAssetArchiveIndexService
 		string packageName,
 		CancellationToken cancellationToken = default);
 
+	ValueTask<IReadOnlyDictionary<AssetKey, IReadOnlyList<GameDataUnitPartFact>>> GetUnitPartFactsAsync(
+		IReadOnlySet<AssetKey> unitAssetKeys,
+		CancellationToken cancellationToken = default);
+
 	ValueTask<GameDataIndexStatus> GetIndexStatusAsync(
 		string gameDataDirectory,
 		string archiveHashesJson,

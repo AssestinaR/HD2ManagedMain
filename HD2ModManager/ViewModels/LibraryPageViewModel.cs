@@ -235,7 +235,6 @@ namespace HD2ModManager.ViewModels
                 ThumbnailService.CancelPendingGeneration();
                 _library.Remove(card.Mod.Guid);
                 _library.Save();
-                _ = _library.RefreshDerivedDataAsync();
                 _notifications?.Show($"已删除：{card.Mod.Name}");
             }
             catch (System.Exception ex)

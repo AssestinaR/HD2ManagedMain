@@ -9,7 +9,7 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Stores stable per-Mod patch assets, references and evidence in an independently versioned SQLite database.
 public sealed class SqliteModFactsStore : IModFactsStore
 {
-	private const int SchemaVersion = 1;
+	private const int SchemaVersion = 3;
 	private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 	private readonly StoragePaths paths;
 
@@ -103,6 +103,7 @@ public sealed class SqliteModFactsStore : IModFactsStore
 	private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
 	{
 		Directory.CreateDirectory(paths.IndexDirectory); var connection = new SqliteConnection($"Data Source={paths.ModFactsDbPath}"); await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		await using (var cleanup = connection.CreateCommand()) { cleanup.CommandText = "DROP TABLE IF EXISTS unit_mesh_parts;"; await cleanup.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
 		await using var command = connection.CreateCommand(); command.CommandText = $"PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS schema_info(version INTEGER NOT NULL); INSERT INTO schema_info(version) SELECT {SchemaVersion} WHERE NOT EXISTS(SELECT 1 FROM schema_info); CREATE TABLE IF NOT EXISTS mod_fact_snapshots(node_id TEXT PRIMARY KEY,relative_path TEXT NOT NULL,cache_json TEXT NOT NULL,built_utc TEXT NOT NULL); CREATE TABLE IF NOT EXISTS patch_groups(group_id TEXT PRIMARY KEY,node_id TEXT NOT NULL,patch_path TEXT NOT NULL,analyzer_version TEXT NOT NULL); CREATE TABLE IF NOT EXISTS mod_assets(node_id TEXT NOT NULL,group_id TEXT NOT NULL,type_id TEXT NOT NULL,file_id TEXT NOT NULL,toc_size INTEGER NOT NULL,stream_size INTEGER NOT NULL,gpu_size INTEGER NOT NULL,PRIMARY KEY(node_id,group_id,type_id,file_id)); CREATE INDEX IF NOT EXISTS ix_mod_assets_key ON mod_assets(type_id,file_id); CREATE TABLE IF NOT EXISTS asset_references(node_id TEXT NOT NULL,group_id TEXT NOT NULL,source_type_id TEXT NOT NULL,source_file_id TEXT NOT NULL,target_type_id TEXT NOT NULL,target_file_id TEXT NOT NULL,relation_kind INTEGER NOT NULL,payload_offset INTEGER NOT NULL,slot_id INTEGER NULL,reference_index INTEGER NULL); CREATE INDEX IF NOT EXISTS ix_asset_refs_source ON asset_references(source_type_id,source_file_id); CREATE INDEX IF NOT EXISTS ix_asset_refs_target ON asset_references(target_type_id,target_file_id);"; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); return connection;
 	}
 

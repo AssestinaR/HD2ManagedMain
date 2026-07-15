@@ -6,7 +6,7 @@ namespace HD2ModAdaptation.Analysis;
 // Purpose: Performs the first low-cost patch-group analysis using the canonical TOC scanner.
 public sealed class PatchGroupAnalyzer : IPatchGroupAnalyzer
 {
-	private const string AnalyzerVersion = "patch-group-v2";
+	private const string AnalyzerVersion = "patch-group-v3";
 	private readonly IPatchTocScanner tocScanner;
 	private readonly IPatchEntryPayloadReader payloadReader;
 	private readonly IUnitMaterialReferenceReader unitMaterialReader;

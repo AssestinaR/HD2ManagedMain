@@ -25,6 +25,7 @@
                     <GridViewColumn Header="类型" Width="120" DisplayMemberBinding="{Binding TypeName}"/>
                     <GridViewColumn Header="Hash" Width="285" DisplayMemberBinding="{Binding Hash}"/>
                     <GridViewColumn Header="Friendly name" Width="210" DisplayMemberBinding="{Binding FriendlyName}"/>
+					<GridViewColumn Header="部件" Width="210" DisplayMemberBinding="{Binding PartSummary}"/>
                     <GridViewColumn Header="覆盖生效的 patch 组" Width="190" DisplayMemberBinding="{Binding EffectivePatchGroup}"/>
                     <GridViewColumn Header="覆盖生效的 Mod" Width="170" DisplayMemberBinding="{Binding EffectiveMod}"/>
                     <GridViewColumn Header="同 AssetKey 的其他 Package" Width="190"><GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{Binding SharedPackagesText}" ToolTip="{Binding SharedPackagesTooltip}"/></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>

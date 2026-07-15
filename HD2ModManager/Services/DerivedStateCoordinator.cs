@@ -78,22 +78,29 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
             bool deployedDirty;
             lock (_sync)
             {
-                contentDirty = _contentDirty || !SameNodeSet(content.Keys, profileSnapshot.Nodes.Keys);
+                contentDirty = _contentDirty;
                 expectedDirty = _expectedDirty;
                 deployedDirty = _deployedDirty;
             }
 
+            var active = profileSnapshot.ActiveProfileId is { } activeId ? profileSnapshot.Profiles.FirstOrDefault(profile => profile.Id == activeId) : null;
+            var activeNodeIds = active?.Entries.Select(entry => entry.NodeId).Where(profileSnapshot.Nodes.ContainsKey).ToHashSet()
+                ?? new HashSet<ModNodeId>();
+            contentDirty |= !SameNodeSet(content.Keys, activeNodeIds);
+
             if (contentDirty)
             {
-                content = await _contentFacts.GetLibraryFactsAsync(profileSnapshot, _library.ModsRootDirectory, null, cancellationToken).ConfigureAwait(false);
+                content = activeNodeIds.Count == 0
+                    ? new Dictionary<ModNodeId, ModContentFacts>()
+                    : await _contentFacts.GetLibraryFactsAsync(profileSnapshot, _library.ModsRootDirectory, activeNodeIds, cancellationToken).ConfigureAwait(false);
                 expectedDirty = true;
             }
 
-            var active = profileSnapshot.ActiveProfileId is { } activeId ? profileSnapshot.Profiles.FirstOrDefault(profile => profile.Id == activeId) : null;
             if (active is null)
             {
                 expected = null;
 				materialDiagnostics = null;
+				deployed = null;
             }
             else if (expectedDirty || !IsExpectedCurrent(expected, active, content))
             {
@@ -102,7 +109,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
             }
 
             var gameData = SettingsService.GetGameDataFolder();
-            if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
+            if (active is null || string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
             {
                 deployed = null;
             }

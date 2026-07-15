@@ -16,6 +16,7 @@
   <ItemGroup>
     <Resource Include="Resources\helldivers2.ico" />
     <Resource Include="Resources\helldivers2.png" />
+    <Content Include="..\tools\ref\HD2SDK-CommunityEdition\hashlists\bonehash.txt" Link="data\resources\bonehash.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   
   <!-- Rely on implicit ApplicationDefinition for App.xaml -->

@@ -414,9 +414,8 @@ namespace HD2ModManager.ViewModels
                 await Task.Run(
                     () => index.BuildOrRebuildAsync(gameData, archiveHashesJson, progress, backgroundTask.CancellationToken).AsTask(),
                     backgroundTask.CancellationToken).ConfigureAwait(true);
-                ClearAssetAnalysisCache();
                 await RefreshAsync();
-                AssetIndexHint = "索引已重建，并已清理旧资产分析缓存；请刷新模组库以重新生成语义资产标签。";
+                AssetIndexHint = "索引已重建；稳定资产事实会在需要时直接投影到界面。";
                 backgroundTask.MarkCompleted();
             }
             catch (OperationCanceledException)
@@ -438,21 +437,6 @@ namespace HD2ModManager.ViewModels
                 IsBuildingAssetIndex = false;
                 BuildAssetIndexCommand.RaiseCanExecuteChanged();
                 RefreshCommand.RaiseCanExecuteChanged();
-            }
-        }
-
-        private void ClearAssetAnalysisCache()
-        {
-            try
-            {
-                if (Directory.Exists(_paths.AssetAnalysisCacheDirectory))
-                {
-                    Directory.Delete(_paths.AssetAnalysisCacheDirectory, recursive: true);
-                }
-            }
-            catch
-            {
-                // Cache cleanup is best-effort; stale entries are also invalidated by metadata/index fingerprints.
             }
         }
 

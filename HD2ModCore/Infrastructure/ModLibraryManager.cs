@@ -9,14 +9,12 @@ public sealed class ModLibraryManager : IModLibraryManager
 {
 	private readonly StoragePaths _paths;
 	private readonly IModLibraryStore _store;
-	private readonly IPatchFileGroupFingerprintStore? _fingerprintStore;
 	private readonly IModFactsStore? _modFactsStore;
 
-	public ModLibraryManager(StoragePaths paths, IModLibraryStore store, IPatchFileGroupFingerprintStore? fingerprintStore = null, IModFactsStore? modFactsStore = null)
+	public ModLibraryManager(StoragePaths paths, IModLibraryStore store, IModFactsStore? modFactsStore = null)
 	{
 		_paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		_store = store ?? throw new ArgumentNullException(nameof(store));
-		_fingerprintStore = fingerprintStore;
 		_modFactsStore = modFactsStore;
 	}
 
@@ -81,17 +79,6 @@ public sealed class ModLibraryManager : IModLibraryManager
 
 		var updated = snapshot with { Nodes = nodes, Profiles = profiles, SavedUtc = DateTimeOffset.UtcNow };
 		await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
-		if (_fingerprintStore is not null)
-		{
-			var manifest = await _fingerprintStore.TryLoadAsync(cancellationToken).ConfigureAwait(false);
-			if (manifest is not null && manifest.Nodes.ContainsKey(nodeId))
-			{
-				var remaining = manifest.Nodes
-					.Where(pair => pair.Key != nodeId)
-					.ToDictionary(pair => pair.Key, pair => pair.Value);
-				await _fingerprintStore.SaveAsync(manifest with { BuiltUtc = DateTimeOffset.UtcNow, Nodes = remaining }, cancellationToken).ConfigureAwait(false);
-			}
-		}
 		return updated;
 	}
 

@@ -5,6 +5,7 @@ public sealed record AdvancedModAssetRow(
 	AssetKey AssetKey,
 	string TypeName,
 	string ResourceName,
+	string PartSummary,
 	string TargetSummary,
 	string ReferenceSummary,
 	string ProviderSummary,

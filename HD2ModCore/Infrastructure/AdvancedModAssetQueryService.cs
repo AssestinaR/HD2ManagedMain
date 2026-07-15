@@ -1,4 +1,3 @@
-using System.Text.Json;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
@@ -10,11 +9,13 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 {
 	private readonly IModFactsStore factsStore;
 	private readonly IGameDataMappingFactsService mappingService;
+	private readonly IAssetArchiveIndexService indexService;
 
-	public AdvancedModAssetQueryService(IModFactsStore factsStore, IGameDataMappingFactsService mappingService)
+	public AdvancedModAssetQueryService(IModFactsStore factsStore, IGameDataMappingFactsService mappingService, IAssetArchiveIndexService indexService)
 	{
 		this.factsStore = factsStore ?? throw new ArgumentNullException(nameof(factsStore));
 		this.mappingService = mappingService ?? throw new ArgumentNullException(nameof(mappingService));
+		this.indexService = indexService ?? throw new ArgumentNullException(nameof(indexService));
 	}
 
 	public async ValueTask<IReadOnlyList<AdvancedModAssetRow>> QueryAsync(ModNodeId nodeId, LibrarySnapshot librarySnapshot, ProfileOverrideGraph? profileGraph, ProfileMaterialDiagnostics? diagnostics, CancellationToken cancellationToken = default)
@@ -25,10 +26,13 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 		var assets = snapshot.Analyses.SelectMany(analysis => analysis.Assets.Select(asset => (analysis, asset))).GroupBy(item => item.asset.AssetKey).ToArray();
 		var domainKeys = assets.Select(group => new AssetKey(group.Key.TypeId, group.Key.FileId)).ToHashSet();
 		var mapping = await mappingService.MapAsync(domainKeys, cancellationToken).ConfigureAwait(false);
+		var unitKeys = domainKeys.Where(key => key.TypeId == 0xe0a48d0be9a7453f).ToHashSet();
+		var partsByUnit = await indexService.GetUnitPartFactsAsync(unitKeys, cancellationToken).ConfigureAwait(false);
 		var rows = new List<AdvancedModAssetRow>(assets.Length);
 		foreach (var group in assets)
 		{
 			var key = new AssetKey(group.Key.TypeId, group.Key.FileId);
+			var partSummary = partsByUnit.TryGetValue(key, out var parts) ? DescribeParts(parts) : "—";
 			mapping.Assets.TryGetValue(key, out var mapped);
 			var outgoing = snapshot.Analyses.SelectMany(analysis => analysis.References).Where(reference => reference.SourceAssetKey == group.Key).ToArray();
 			var incoming = await factsStore.FindConsumerFactsAsync(group.Key, cancellationToken).ConfigureAwait(false);
@@ -41,6 +45,7 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 				key,
 				TypeName(key.TypeId),
 				mapped?.FileDisplayName ?? $"0x{key.FileId:x16}",
+				partSummary,
 				target,
 				$"引用 {outgoing.Length} / 被引用 {incoming.Count}",
 				chain is null ? "无 Profile provider 链" : string.Join(" → ", chain.Entries.Select(entry => entry.ModName)),
@@ -98,6 +103,50 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 				: $"已移除 Mod / Unit 0x{consumer.Reference.SourceAssetKey.FileId:x16}")
 			.Distinct(StringComparer.OrdinalIgnoreCase)
 			.ToArray();
+
+		private static string DescribeParts(IEnumerable<GameDataUnitPartFact> parts)
+		{
+			var visibleParts = parts
+				.Where(part => part.IsVisualMesh && !part.IsLod && part.PartKind != UnitMeshPartKind.Unknown)
+				.Select(part => $"{PartName(part.PartKind)}－{LayerName(part.Layer)}－{BodyVariantName(part.BodyVariant)}")
+				.Distinct(StringComparer.Ordinal)
+				.ToArray();
+			return visibleParts.Length == 0 ? "—" : string.Join("，", visibleParts);
+		}
+
+		private static string PartName(UnitMeshPartKind kind) => kind switch
+		{
+			UnitMeshPartKind.Head => "头部",
+			UnitMeshPartKind.Torso => "胸口",
+			UnitMeshPartKind.Pelvis => "胯部",
+			UnitMeshPartKind.LeftArm => "左臂",
+			UnitMeshPartKind.RightArm => "右臂",
+			UnitMeshPartKind.LeftLeg => "左腿",
+			UnitMeshPartKind.RightLeg => "右腿",
+			UnitMeshPartKind.LeftShoulder => "左肩甲",
+			UnitMeshPartKind.RightShoulder => "右肩甲",
+			UnitMeshPartKind.Accessory => "附件",
+			_ => "未知"
+		};
+
+		private static string LayerName(UnitMeshPartLayer layer) => layer switch
+		{
+			UnitMeshPartLayer.Undergarment => "内部",
+			UnitMeshPartLayer.Armor => "护甲",
+			UnitMeshPartLayer.Accessory => "附件",
+			UnitMeshPartLayer.Culling => "隐藏壳",
+			UnitMeshPartLayer.Static => "静态",
+			_ => "未分类"
+		};
+
+		private static string BodyVariantName(UnitMeshBodyVariant variant) => variant switch
+		{
+			UnitMeshBodyVariant.Slim => "纤细",
+			UnitMeshBodyVariant.Stocky => "健壮",
+			UnitMeshBodyVariant.Any => "通用",
+			UnitMeshBodyVariant.Other => "其他体型",
+			_ => "体型未知"
+		};
 
 	private static string TypeName(ulong typeId) => typeId switch
 	{

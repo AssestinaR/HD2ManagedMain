@@ -11,6 +11,7 @@ public sealed class AdvancedModAssetRowViewModel
 	public AssetKey AssetKey => row.AssetKey;
 	public string TypeName => row.TypeName;
 	public string ResourceName => row.ResourceName;
+	public string PartSummary => row.PartSummary;
 	public string TargetSummary => row.TargetSummary;
 	public string ReferenceSummary => row.ReferenceSummary;
 	public string ProviderSummary => row.ProviderSummary;

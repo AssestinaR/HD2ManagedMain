@@ -10,5 +10,6 @@ public sealed record GameDataArchiveAssetEntry(
 	AssetKey AssetKey,
 	string TypeName,
 	string FriendlyName,
+	string PartSummary,
 	IReadOnlyList<string> SharedPackages,
 	IReadOnlyList<string> SharedDisplayNames);

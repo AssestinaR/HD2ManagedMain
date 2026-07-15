@@ -22,6 +22,7 @@
                         <DataGridTextColumn Header="类型" Binding="{Binding TypeName}" Width="110"/>
                         <DataGridTextColumn Header="AssetKey" Binding="{Binding AssetKeyText}" Width="250"/>
                         <DataGridTextColumn Header="资源名称" Binding="{Binding ResourceName}" Width="180"/>
+						<DataGridTextColumn Header="部件" Binding="{Binding PartSummary}" Width="210"/>
                         <DataGridTextColumn Header="目标" Binding="{Binding TargetSummary}" Width="220"/>
                         <DataGridTextColumn Header="引用关系" Binding="{Binding ReferenceSummary}" Width="150"/>
                         <DataGridTextColumn Header="Profile 状态" Binding="{Binding ProfileStatus}" Width="170"/>

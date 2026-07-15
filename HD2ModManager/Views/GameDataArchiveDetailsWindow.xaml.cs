@@ -70,7 +70,7 @@ public sealed class GameDataArchiveDetailsWindowViewModel : INotifyPropertyChang
 
     public void CopyAsset(GameDataArchiveAssetRowViewModel row)
     {
-        Clipboard.SetText($"Type={row.TypeName}\nTypeID={row.TypeId}\nFileID={row.FileId}\nPackage={PackageName}\nDisplayName={DisplayName}\nEffectivePatchGroup={row.EffectivePatchGroup}\nEffectiveMod={row.EffectiveMod}\nSharedPackages={string.Join(", ", row.SharedPackages)}\nSharedObjects={string.Join(", ", row.SharedObjects)}");
+        Clipboard.SetText($"Type={row.TypeName}\nTypeID={row.TypeId}\nFileID={row.FileId}\nPart={row.PartSummary}\nPackage={PackageName}\nDisplayName={DisplayName}\nEffectivePatchGroup={row.EffectivePatchGroup}\nEffectiveMod={row.EffectiveMod}\nSharedPackages={string.Join(", ", row.SharedPackages)}\nSharedObjects={string.Join(", ", row.SharedObjects)}");
         ShowCopied("已复制 AssetKey 信息");
     }
 
@@ -86,6 +86,7 @@ public sealed class GameDataArchiveAssetRowViewModel
     public string FileId { get; }
     public string Hash => $"{TypeId} / {FileId}";
     public string FriendlyName { get; }
+    public string PartSummary { get; }
     public string EffectivePatchGroup { get; }
     public string EffectiveMod { get; }
     public IReadOnlyList<string> SharedPackages { get; }
@@ -97,7 +98,7 @@ public sealed class GameDataArchiveAssetRowViewModel
 
     public GameDataArchiveAssetRowViewModel(GameDataArchiveAssetEntry asset, GameDataArchiveRowViewModel archive)
     {
-        TypeName = asset.TypeName; TypeId = asset.AssetKey.TypeId.ToString("x16"); FileId = asset.AssetKey.FileId.ToString("x16"); FriendlyName = asset.FriendlyName;
+        TypeName = asset.TypeName; TypeId = asset.AssetKey.TypeId.ToString("x16"); FileId = asset.AssetKey.FileId.ToString("x16"); FriendlyName = asset.FriendlyName; PartSummary = asset.PartSummary;
         if (archive.EffectiveByAsset.TryGetValue(asset.AssetKey, out var effective)) { EffectivePatchGroup = effective.PatchGroup; EffectiveMod = effective.ModName; }
         else { EffectivePatchGroup = "—"; EffectiveMod = "—"; }
         SharedPackages = asset.SharedPackages; SharedObjects = asset.SharedDisplayNames;

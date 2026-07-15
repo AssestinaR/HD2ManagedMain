@@ -6,6 +6,7 @@ public sealed class GameDataUnitMeshReader
 	private readonly IGameDataPackageResolver resolver;
 	private readonly IPatchTocScanner tocScanner;
 	private readonly UnitMeshReader unitMeshReader;
+	private readonly Dictionary<string, IReadOnlyList<PatchTocEntry>> entriesByArchive = new(StringComparer.OrdinalIgnoreCase);
 
 	public GameDataUnitMeshReader(
 		IGameDataPackageResolver resolver,
@@ -21,6 +22,7 @@ public sealed class GameDataUnitMeshReader
 		string archiveName,
 		AssetKey unitAssetKey,
 		IReadOnlyCollection<string>? dependencyArchiveNames = null,
+		bool allowGlobalDependencySearch = false,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(archiveName);
@@ -30,37 +32,51 @@ public sealed class GameDataUnitMeshReader
 		}
 
 		var archives = CreateArchiveScope(archiveName, dependencyArchiveNames);
-		var entriesByArchive = new Dictionary<string, IReadOnlyList<PatchTocEntry>>(StringComparer.OrdinalIgnoreCase);
+		var scopedEntries = new Dictionary<string, IReadOnlyList<PatchTocEntry>>(StringComparer.OrdinalIgnoreCase);
 		foreach (var scopedArchiveName in archives)
 		{
-			var toc = await resolver.GetPackageTocAsync(scopedArchiveName, cancellationToken).ConfigureAwait(false)
-				?? throw new FileNotFoundException($"Could not resolve archive TOC '{scopedArchiveName}'.", scopedArchiveName);
-			entriesByArchive[scopedArchiveName] = tocScanner.ScanEntries(toc.Data, scopedArchiveName, toc.UsesSlimEntryOffset);
+			scopedEntries[scopedArchiveName] = await GetEntriesAsync(scopedArchiveName, cancellationToken).ConfigureAwait(false);
 		}
 
-		var unitEntry = FindEntry(entriesByArchive[archiveName], unitAssetKey, archiveName);
+		var unitEntry = FindEntry(scopedEntries[archiveName], unitAssetKey, archiveName);
 		var unitPayload = await ReadPayloadAsync(archiveName, unitEntry, cancellationToken).ConfigureAwait(false);
 		var compositePayload = await ReadReferencedPayloadAsync(
-			entriesByArchive,
+			scopedEntries,
 			unitPayload,
 			16,
 			PatchUnitMeshReader.CompositeUnitTypeId,
 			"Composite",
 			isRequired: true,
+			allowGlobalDependencySearch,
 			cancellationToken).ConfigureAwait(false);
 		var bonePayload = await ReadReferencedPayloadAsync(
-			entriesByArchive,
+			scopedEntries,
 			unitPayload,
 			8,
 			PatchUnitMeshReader.BoneTypeId,
 			"bone",
 			isRequired: false,
+			allowGlobalDependencySearch,
 			cancellationToken).ConfigureAwait(false);
 		var boneNames = bonePayload is null ? UnitBoneNames.Empty : new UnitBoneNamesReader().Read(bonePayload.TocData);
 		var model = compositePayload is null
 			? unitMeshReader.Read(unitPayload.TocData, unitPayload.GpuResourceData, boneNames: boneNames)
 			: unitMeshReader.Read(unitPayload.TocData, unitPayload.GpuResourceData, compositePayload.TocData, compositePayload.GpuResourceData, boneNames);
 		return new GameDataUnitMesh(unitAssetKey, archiveName, unitPayload, model, compositePayload);
+	}
+
+	private async ValueTask<IReadOnlyList<PatchTocEntry>> GetEntriesAsync(string archiveName, CancellationToken cancellationToken)
+	{
+		if (entriesByArchive.TryGetValue(archiveName, out var cached))
+		{
+			return cached;
+		}
+
+		var toc = await resolver.GetPackageTocAsync(archiveName, cancellationToken).ConfigureAwait(false)
+			?? throw new FileNotFoundException($"Could not resolve archive TOC '{archiveName}'.", archiveName);
+		var entries = tocScanner.ScanEntries(toc.Data, archiveName, toc.UsesSlimEntryOffset);
+		entriesByArchive[archiveName] = entries;
+		return entries;
 	}
 
 	private static IReadOnlyList<string> CreateArchiveScope(string archiveName, IReadOnlyCollection<string>? dependencyArchiveNames)
@@ -82,12 +98,13 @@ public sealed class GameDataUnitMeshReader
 	}
 
 	private async ValueTask<PatchEntryPayload?> ReadReferencedPayloadAsync(
-		IReadOnlyDictionary<string, IReadOnlyList<PatchTocEntry>> entriesByArchive,
+		IDictionary<string, IReadOnlyList<PatchTocEntry>> entriesByArchive,
 		PatchEntryPayload unitPayload,
 		int referenceOffset,
 		ulong typeId,
 		string resourceName,
 		bool isRequired,
+		bool allowGlobalDependencySearch,
 		CancellationToken cancellationToken)
 	{
 		if (unitPayload.TocData.Length < referenceOffset + sizeof(ulong))
@@ -103,6 +120,43 @@ public sealed class GameDataUnitMeshReader
 
 		foreach (var (archiveName, entries) in entriesByArchive)
 		{
+			var entry = entries.SingleOrDefault(candidate => candidate.AssetKey == new AssetKey(typeId, fileId));
+			if (entry is not null)
+			{
+				return await ReadPayloadAsync(archiveName, entry, cancellationToken).ConfigureAwait(false);
+			}
+		}
+
+		if (!allowGlobalDependencySearch)
+		{
+			if (isRequired)
+			{
+				throw new InvalidDataException($"Unit references {resourceName} asset 0x{fileId:x16}, but it is absent from the explicit archive scope.");
+			}
+			return null;
+		}
+
+		// Armor Units often keep Composite/Bones in a different archive. Search lazily and cache
+		// only the TOCs actually required by this Unit instead of preloading the whole Game Data set.
+		foreach (var archiveName in await resolver.GetPackageNamesAsync(cancellationToken).ConfigureAwait(false))
+		{
+			if (archiveName.EndsWith(".stream", StringComparison.OrdinalIgnoreCase)
+				|| archiveName.EndsWith(".gpu_resources", StringComparison.OrdinalIgnoreCase)
+				|| entriesByArchive.ContainsKey(archiveName))
+			{
+				continue;
+			}
+
+			IReadOnlyList<PatchTocEntry> entries;
+			try
+			{
+				entries = await GetEntriesAsync(archiveName, cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException)
+			{
+				continue;
+			}
+			entriesByArchive[archiveName] = entries;
 			var entry = entries.SingleOrDefault(candidate => candidate.AssetKey == new AssetKey(typeId, fileId));
 			if (entry is not null)
 			{

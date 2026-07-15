@@ -254,6 +254,29 @@ public sealed class AssetArchiveIndexServiceTests
 	}
 
 	[Fact]
+	public async Task GetUnitPartFactsAsync_ReturnsNoFactsForEmptyUnitKeySet()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+		try
+		{
+			const string archive = "aaaaaaaaaaaaaaaa";
+			File.WriteAllBytes(Path.Combine(gameData, archive), BuildToc(Array.Empty<AssetKey>()));
+			var json = JsonSerializer.Serialize(new Dictionary<string, Dictionary<string, string>> { ["Armor"] = new() { [archive] = "Armor A" } });
+			var service = new AssetArchiveIndexService(new StoragePaths(appRoot));
+			await service.BuildOrRebuildAsync(gameData, json);
+
+			var parts = await service.GetUnitPartFactsAsync(new HashSet<AssetKey>());
+
+			Assert.Empty(parts);
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
+
+	[Fact]
 	public async Task GetIndexStatusAsync_DetectsCurrentStaleAndMissingIndex()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));

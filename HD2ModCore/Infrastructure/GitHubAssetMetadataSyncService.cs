@@ -14,6 +14,7 @@ public sealed class GitHubAssetMetadataSyncService : IAssetMetadataSyncService
 	private static readonly IReadOnlyList<AssetMetadataFileSpec> Files = new[]
 	{
 		new AssetMetadataFileSpec("archivehashes.json", ValidateArchiveHashesJson),
+		new AssetMetadataFileSpec("bonehash.txt", ValidateBoneHashesFile),
 		new AssetMetadataFileSpec("typehash.txt", ValidateHashTextFile),
 		new AssetMetadataFileSpec("friendlynames.txt", ValidateFriendlyNamesFile),
 	};
@@ -71,6 +72,7 @@ public sealed class GitHubAssetMetadataSyncService : IAssetMetadataSyncService
 				cancellationToken).ConfigureAwait(false);
 
 			File.Copy(Path.Combine(tempDirectory, "archivehashes.json"), _paths.ArchiveHashesPath, overwrite: true);
+			File.Copy(Path.Combine(tempDirectory, "bonehash.txt"), _paths.BoneHashesPath, overwrite: true);
 			File.Copy(Path.Combine(tempDirectory, "typehash.txt"), _paths.TypeHashesPath, overwrite: true);
 			File.Copy(Path.Combine(tempDirectory, "friendlynames.txt"), _paths.FriendlyNamesPath, overwrite: true);
 			File.Copy(Path.Combine(tempDirectory, "asset-metadata-manifest.json"), _paths.AssetMetadataManifestPath, overwrite: true);
@@ -220,6 +222,29 @@ public sealed class GitHubAssetMetadataSyncService : IAssetMetadataSyncService
 			if (!ulong.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out _))
 			{
 				error = $"类型 hash 不是十六进制：{parts[0]}";
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private static bool ValidateBoneHashesFile(string content, out string error)
+	{
+		error = string.Empty;
+		var lines = content.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+		if (lines.Length == 0)
+		{
+			error = "文件没有有效行。";
+			return false;
+		}
+
+		foreach (var line in lines.Take(20))
+		{
+			var parts = line.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+			if (parts.Length != 2 || !uint.TryParse(parts[0], out _))
+			{
+				error = $"骨骼 hash 行格式无效：{line}";
 				return false;
 			}
 		}

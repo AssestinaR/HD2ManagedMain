@@ -82,46 +82,6 @@ namespace HD2ModManager.Services
             }
         }
 
-        public async Task<int> RefreshDirtyDerivedDataAsync(CancellationToken cancellationToken = default)
-        {
-            var scanner = CoreServices.CreatePatchFileGroupFingerprintScanner();
-            var store = CoreServices.CreatePatchFileGroupFingerprintStore(_paths);
-            var previous = await store.TryLoadAsync(cancellationToken).ConfigureAwait(false);
-            var validator = CoreServices.CreatePatchStorageIntegrityValidator();
-            var reports = await validator.ValidateAndRepairAsync(
-                _snapshot,
-                _paths.ModsDirectory,
-                previous?.SupportsFileLevelMatching == true ? previous : null,
-                cancellationToken).ConfigureAwait(false);
-            var current = await scanner.ScanAsync(_snapshot, _paths.ModsDirectory, cancellationToken).ConfigureAwait(false);
-            var dirty = new HashSet<ModNodeId>();
-
-            foreach (var report in reports)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (report.Status is PatchStorageIntegrityStatus.Corrupted or PatchStorageIntegrityStatus.Missing)
-                    continue;
-
-                var currentGroups = current.TryGetValue(report.NodeId, out var groups) ? groups : Array.Empty<PatchFileGroupFingerprint>();
-                var oldGroups = previous?.Nodes.TryGetValue(report.NodeId, out var previousGroups) == true
-                    ? previousGroups : Array.Empty<PatchFileGroupFingerprint>();
-                if (report.RequiresDerivedRefresh || !HaveSameFingerprints(oldGroups, currentGroups) || _derivedData.Find(report.NodeId) is null)
-                {
-                    dirty.Add(report.NodeId);
-                }
-            }
-
-            if (dirty.Count > 0)
-            {
-                await RefreshDerivedDataAsync(
-                    dirty.Select(id => id.Value.ToString("N")),
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            await store.SaveAsync(new PatchFileGroupFingerprintManifest(2, DateTimeOffset.UtcNow, current), cancellationToken).ConfigureAwait(false);
-            return dirty.Count;
-        }
-
         public void Save()
         {
             var store = CoreServices.CreateModLibraryStore(_paths);
@@ -284,18 +244,6 @@ namespace HD2ModManager.Services
 
         private static ModNodeId? ParseNodeId(string? value)
             => TryParseNodeId(value, out var nodeId) ? nodeId : null;
-
-        private static bool HaveSameFingerprints(
-            IReadOnlyList<PatchFileGroupFingerprint> left,
-            IReadOnlyList<PatchFileGroupFingerprint> right)
-        {
-            if (left.Count != right.Count) return false;
-            return left
-                .OrderBy(group => group.GroupName, StringComparer.OrdinalIgnoreCase)
-                .Zip(right.OrderBy(group => group.GroupName, StringComparer.OrdinalIgnoreCase))
-                .All(pair => string.Equals(pair.First.GroupName, pair.Second.GroupName, StringComparison.OrdinalIgnoreCase)
-                    && string.Equals(pair.First.ContentHash, pair.Second.ContentHash, StringComparison.OrdinalIgnoreCase));
-        }
 
         private static LibrarySnapshot EmptySnapshot() => new(
             Version: 1,

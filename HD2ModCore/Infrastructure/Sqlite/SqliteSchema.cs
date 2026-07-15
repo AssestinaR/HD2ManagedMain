@@ -6,7 +6,7 @@ namespace HD2ModCore.Infrastructure.Sqlite;
 // Purpose: Defines and applies the persisted GameData facts and asset->archive reverse index schema.
 internal static class SqliteSchema
 {
-	public const int SchemaVersion = 2;
+	public const int SchemaVersion = 3;
 
 	public static async Task EnsureCreatedAsync(SqliteConnection connection, CancellationToken cancellationToken)
 	{
@@ -77,6 +77,29 @@ CREATE TABLE IF NOT EXISTS asset_archives (
 );
 
 CREATE INDEX IF NOT EXISTS ix_asset_archives_archive ON asset_archives(archive_id);
+
+CREATE TABLE IF NOT EXISTS game_data_unit_parts (
+	archive_id TEXT NOT NULL,
+	unit_type_id INTEGER NOT NULL,
+	unit_file_id INTEGER NOT NULL,
+	mesh_info_index INTEGER NOT NULL,
+	mesh_id INTEGER NOT NULL,
+	part_kind INTEGER NOT NULL,
+	part_layer INTEGER NOT NULL,
+	body_variant INTEGER NOT NULL DEFAULT 0,
+	semantic_name TEXT NOT NULL,
+	confidence INTEGER NOT NULL,
+	is_visual INTEGER NOT NULL,
+	is_lod INTEGER NOT NULL,
+	reason TEXT NOT NULL,
+	PRIMARY KEY(archive_id, unit_type_id, unit_file_id, mesh_info_index),
+	FOREIGN KEY(archive_id) REFERENCES archives(archive_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_game_data_unit_parts_unit ON game_data_unit_parts(unit_type_id, unit_file_id);
+
+DROP TABLE IF EXISTS game_data_unit_part_scans;
+
 ";
 			await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 		}
@@ -84,6 +107,7 @@ CREATE INDEX IF NOT EXISTS ix_asset_archives_archive ON asset_archives(archive_i
 		await AddColumnIfMissingAsync(connection, "archives", "archive_hex", "TEXT NULL", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "archives", "uses_slim_entry_offset", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "archives", "status", "TEXT NOT NULL DEFAULT 'Indexed'", cancellationToken).ConfigureAwait(false);
+		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "body_variant", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 
 		await SetMetaAsync(connection, "schema_version", SchemaVersion.ToString(), cancellationToken).ConfigureAwait(false);
 	}
@@ -133,6 +157,7 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value;";
 		cmd.CommandText = @"
 DELETE FROM asset_archives;
 DELETE FROM assets;
+DELETE FROM game_data_unit_parts;
 DELETE FROM archive_issues;
 DELETE FROM archive_entries;
 DELETE FROM archives;
