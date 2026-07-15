@@ -41,7 +41,7 @@ public static class ModUserStatusProjector
 			if (inActive)
 			{
 				var nodeDiagnostics = diagnosticsAreCurrent ? materialDiagnostics!.Items.Where(item => item.NodeId == node.Id).ToArray() : Array.Empty<ProfileMaterialDiagnostic>();
-				var missing = nodeDiagnostics.Where(item => item.Kind is ProfileMaterialDiagnosticKind.MissingMaterial or ProfileMaterialDiagnosticKind.MissingTexture).ToArray();
+				var missing = nodeDiagnostics.Where(item => item.Kind is ProfileMaterialDiagnosticKind.MissingMaterial or ProfileMaterialDiagnosticKind.MissingTexture or ProfileMaterialDiagnosticKind.CurrentGameMaterialCandidate).ToArray();
 				if (missing.Length != 0)
 				{
 					statuses[node.Id] = new ModUserStatus(node.Id, ModUserStatusKind.MissingDependency, "材质依赖缺失", string.Join("；", missing.Take(2).Select(item => item.Summary)) + (missing.Length > 2 ? $"；另有 {missing.Length - 2} 项" : string.Empty), inSelected, true);
@@ -53,12 +53,13 @@ public static class ModUserStatusProjector
 					statuses[node.Id] = new ModUserStatus(node.Id, ModUserStatusKind.NoEffectiveConsumer, "材质无有效调用方", string.Join("；", unreachable.Take(2).Select(item => item.Summary)) + (unreachable.Length > 2 ? $"；另有 {unreachable.Length - 2} 项" : string.Empty), inSelected, true);
 					continue;
 				}
+				var currentGameFallbacks = nodeDiagnostics.Where(item => item.Kind == ProfileMaterialDiagnosticKind.CurrentGameMaterialFallback).ToArray();
 				var coverage = expectedIsCurrent ? expected!.Coverages.FirstOrDefault(item => item.NodeId == node.Id) : null;
 				statuses[node.Id] = coverage?.FullyOverridden == true
 					? new ModUserStatus(node.Id, ModUserStatusKind.FullyOverridden, "已启用但失效", "此 Mod 的影响已被后续 Mod 完全覆盖。", inSelected, true)
 					: coverage?.PartiallyOverridden == true
 						? new ModUserStatus(node.Id, ModUserStatusKind.PartiallyOverridden, "已启用，局部覆盖", "此 Mod 的部分影响被后续 Mod 覆盖。", inSelected, true)
-						: new ModUserStatus(node.Id, ModUserStatusKind.Enabled, "已启用", "已加入活动配置并等待或完成部署。", inSelected, true);
+						: new ModUserStatus(node.Id, ModUserStatusKind.Enabled, "已启用", currentGameFallbacks.Length == 0 ? "已加入活动配置并等待或完成部署。" : $"已加入活动配置；{currentGameFallbacks.Length} 个 section 使用当前原版材质回退。", inSelected, true);
 				continue;
 			}
 			statuses[node.Id] = inSelected

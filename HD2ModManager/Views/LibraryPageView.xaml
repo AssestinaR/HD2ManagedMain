@@ -18,7 +18,6 @@
         <StackPanel Orientation="Horizontal">
             <TextBlock Text="Library" FontSize="18" FontWeight="Bold"/>
             <TextBox Width="280" Margin="12,0,0,0" Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}" ToolTip="搜索名称、备注、资产标签或资产名称"/>
-            <Button Content="一键修复所有已过时" Margin="8,0,0,0" Command="{Binding RepairAllOutdatedCommand}"/>
         </StackPanel>
         </Border>
         <Border Style="{StaticResource CardContainer}" Padding="0">
@@ -48,9 +47,6 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold" FontSize="14" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-                                        <Border Grid.Column="1" Background="#FFF1F0" BorderBrush="#D93025" BorderThickness="1" CornerRadius="8" Padding="6,1" Margin="8,0,0,0" Visibility="{Binding HasCompatibilityBadge, Converter={StaticResource BoolToVis}}" ToolTip="{Binding CompatibilityTooltip}">
-                                            <TextBlock Text="{Binding CompatibilityBadgeText}" Foreground="#B3261E" FontSize="11" FontWeight="SemiBold"/>
-                                        </Border>
                                     </Grid>
                                     <Grid Margin="0,2,0,0">
                                         <Grid.ColumnDefinitions>
@@ -75,7 +71,6 @@
                                 <StackPanel x:Name="ActionPanel" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right" Opacity="0" IsHitTestVisible="False">
                                     <Button Style="{StaticResource RowIconButton}" ToolTip="查看详情" Content="ⓘ" Click="OnOpenDetailsClick"/>
                                     <Button Style="{StaticResource RowIconButton}" ToolTip="加入正在编辑的配置" Content="＋" Command="{Binding DataContext.AddToProfileCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}"/>
-                                    <Button Style="{StaticResource RowIconButton}" ToolTip="修复过时 unit" Content="↻" Command="{Binding DataContext.RepairModCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Visibility="{Binding CanRepair, Converter={StaticResource BoolToVis}}"/>
                                     <Button Style="{StaticResource RowIconButton}" ToolTip="打开文件夹" Content="📁" Command="{Binding DataContext.OpenFolderCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}"/>
                                     <Button Style="{StaticResource RowIconButton}" ToolTip="删除" Content="🗑" Command="{Binding DataContext.RemoveCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Foreground="#B3261E"/>
                                 </StackPanel>
@@ -83,7 +78,6 @@
                             <Border.ContextMenu>
                                 <ContextMenu PreviewKeyDown="OnCardContextMenuKeyDown">
                                     <MenuItem Header="Add to Profile (A)" Command="{Binding DataContext.AddToProfileCommand, Source={x:Reference Root}}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
-                                    <MenuItem Header="Repair outdated units" Command="{Binding DataContext.RepairModCommand, Source={x:Reference Root}}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
                                     <MenuItem Header="Open Folder (O)" Command="{Binding DataContext.OpenFolderCommand, Source={x:Reference Root}}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
                                     <Separator/>
                                     <MenuItem Header="Rename (R)" Click="OnRenameModClick"/>

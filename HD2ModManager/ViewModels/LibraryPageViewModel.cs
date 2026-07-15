@@ -34,8 +34,6 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ToggleSelectionCommand { get; }
         public RelayCommand AddToProfileCommand { get; }
         public RelayCommand OpenFolderCommand { get; }
-        public RelayCommand RepairModCommand { get; }
-        public RelayCommand RepairAllOutdatedCommand { get; }
         public RelayCommand RenameCommand { get; }
         public RelayCommand EditDescriptionCommand { get; }
         public RelayCommand EditImageCommand { get; }
@@ -60,8 +58,6 @@ namespace HD2ModManager.ViewModels
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
             AddToProfileCommand = new RelayCommand(parameter => AddToProfile(parameter as ModCardViewModel));
             OpenFolderCommand = new RelayCommand(parameter => OpenFolder(parameter as ModCardViewModel));
-            RepairModCommand = new RelayCommand(parameter => RepairMod(parameter as ModCardViewModel), parameter => (parameter as ModCardViewModel)?.CanRepair == true);
-            RepairAllOutdatedCommand = new RelayCommand(_ => RepairAllOutdated(), _ => Items.Any(i => i.CanRepair));
             RenameCommand = new RelayCommand(_ => { });
             EditDescriptionCommand = new RelayCommand(_ => { });
             EditImageCommand = new RelayCommand(_ => { });
@@ -163,9 +159,8 @@ namespace HD2ModManager.ViewModels
             {
                 var derived = _library.GetDerivedData(mod.Guid);
                 _userStatuses.TryGetValue(mod.Guid, out var status);
-                Items.Add(new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, derived?.UnitCompatibility, status));
+                Items.Add(new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, status));
             }
-            RepairAllOutdatedCommand.RaiseCanExecuteChanged();
             OnPropertyChanged(nameof(EmptyMessage));
         }
 
@@ -190,39 +185,6 @@ namespace HD2ModManager.ViewModels
             var dispatcher = System.Windows.Application.Current?.Dispatcher;
             if (dispatcher is null || dispatcher.CheckAccess()) action();
             else _ = dispatcher.InvokeAsync(action);
-        }
-
-        private async void RepairMod(ModCardViewModel? card)
-        {
-            if (card == null || !card.CanRepair) return;
-            try
-            {
-                var result = await _library.RepairModUnitsAsync(card.Mod.Guid);
-                _notifications?.Show(result.SummaryText, result.Success ? NotificationLevel.Info : NotificationLevel.Error);
-            }
-            catch (System.Exception ex)
-            {
-                _notifications?.Show($"修复失败：{ex.Message}", NotificationLevel.Error);
-            }
-            Refresh();
-        }
-
-        private async void RepairAllOutdated()
-        {
-            try
-            {
-                var results = await _library.RepairAllOutdatedUnitsAsync();
-                var success = results.Count(r => r.Success);
-                var units = results.Sum(r => r.UpdatedUnitCount);
-                var failed = results.Count - success;
-                var message = failed > 0 ? $"已修复 {units} 个 unit，{failed} 个 Mod 失败。" : $"已修复 {units} 个 unit。";
-                _notifications?.Show(message, failed > 0 ? NotificationLevel.Error : NotificationLevel.Info);
-            }
-            catch (System.Exception ex)
-            {
-                _notifications?.Show($"批量修复失败：{ex.Message}", NotificationLevel.Error);
-            }
-            Refresh();
         }
 
         private void RemoveMod(ModCardViewModel? card)
@@ -303,22 +265,10 @@ namespace HD2ModManager.ViewModels
     {
         public HD2ModManager.Models.ModEntity Mod { get; }
         public ModAssetSummary? AssetSummary { get; }
-        public ModUnitCompatibilityReport? UnitCompatibility { get; }
         public string Name => Mod.Name;
         public string AssetSummaryText => ModAssetSummaryFormatter.Format(AssetSummary);
         public string? ImagePath => Mod.Image;
         public string? Description => Mod.Description;
-        public bool HasCompatibilityBadge => UnitCompatibility?.HasHighConfidenceOutdated == true;
-        public bool CanRepair => UnitCompatibility?.CanRepair == true;
-        public string CompatibilityBadgeText => UnitCompatibility?.BadgeText ?? string.Empty;
-        public string CompatibilityTooltip => UnitCompatibility is null
-            ? string.Empty
-            : string.Join("\n", new[]
-            {
-                UnitCompatibility.SummaryText,
-                UnitCompatibility.Issues.FirstOrDefault(i => i.IsHighConfidenceOutdated)?.Message ?? UnitCompatibility.Issues.FirstOrDefault()?.Message ?? string.Empty,
-                UnitCompatibility.CanRepair ? "可以执行一键修复。" : string.Empty
-            }.Where(s => !string.IsNullOrWhiteSpace(s)));
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
         public ModUserStatus? UserStatus { get; }
@@ -326,11 +276,10 @@ namespace HD2ModManager.ViewModels
         public string UserStatusSummary => UserStatus?.Summary ?? "正在读取状态。";
         public bool HasUserStatus => UserStatus is not null;
 
-        public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null)
+        public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUserStatus? userStatus = null)
         {
             Mod = mod;
             AssetSummary = assetSummary;
-            UnitCompatibility = unitCompatibility;
             UserStatus = userStatus;
             _isSelected = isSelected;
         }

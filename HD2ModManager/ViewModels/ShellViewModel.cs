@@ -127,7 +127,9 @@ namespace HD2ModManager.ViewModels
             _profileService.Load();
 
             _libraryService = new ModLibraryService(System.IO.Path.Combine(configDir, "library.json"));
+            // 启动必须先展示 UI；稳定 facts 的投影在后台恢复，任何异常都不能阻止管理器启动。
             _libraryService.Load(buildDerivedData: false);
+            _profileService.ReloadFromLibrary();
             _derivedState = new DerivedStateCoordinator(_libraryService, _profileService);
             _importQueue = new ImportQueueService();
             _backgroundTasks = new BackgroundTaskService();
@@ -141,7 +143,8 @@ namespace HD2ModManager.ViewModels
             _profileService.ActiveProfileDeploymentRequired += (_, _) => _deploymentCoordinator.NotifyActiveProfileChanged();
             _profileService.ActiveProfileDeactivationRequired += (_, _) => _ = _deploymentCoordinator.DeactivateAsync();
             _libraryService.ModContentFactsChanged += (_, _) => _profileService.NotifyActiveModContentChanged();
-            _profileService.Changed += (_, _) => RefreshCurrentPage();
+            _libraryService.SnapshotChanged += (_, _) => RefreshOnUiThread(_profileService.ReloadFromLibrary);
+            _profileService.Changed += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
             _derivedState.SnapshotChanged += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
 
             RunStartupChecks(configDir);
@@ -161,7 +164,21 @@ namespace HD2ModManager.ViewModels
             _selection.SelectionChanged += (_, _) => RaiseSelectionFlags();
 
             Navigate(WorkspaceMode.Home);
+            _ = RestoreStableLibraryProjectionAsync();
             _ = _derivedState.RefreshAsync();
+        }
+
+        private async Task RestoreStableLibraryProjectionAsync()
+        {
+            try
+            {
+                await _libraryService.RefreshDerivedDataAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                LogService.Error($"Stable library projection restore failed: {exception}");
+                System.Windows.Application.Current?.Dispatcher.Invoke(() => _notificationService.Show("已启动，但稳定资产事实恢复失败；可在库页刷新后重试。", NotificationLevel.Warning, TimeSpan.FromSeconds(8)));
+            }
         }
 
         public void Navigate(WorkspaceMode mode)

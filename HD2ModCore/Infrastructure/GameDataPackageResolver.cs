@@ -81,22 +81,24 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 	public async ValueTask<IReadOnlyList<string>> GetPackageNamesAsync(CancellationToken cancellationToken = default)
 	{
 		await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-		if (_packages.Count > 0)
-		{
-			return _packages.Keys.Order(StringComparer.OrdinalIgnoreCase).ToArray();
-		}
-
 		if (!Directory.Exists(_gameDataDirectory))
 		{
 			return Array.Empty<string>();
 		}
 
-		return Directory.EnumerateFiles(_gameDataDirectory)
+		var directPackages = Directory.EnumerateFiles(_gameDataDirectory)
 			.Select(Path.GetFileName)
 			.Where(name => !string.IsNullOrWhiteSpace(name)
 				&& !name.Contains(".patch", StringComparison.OrdinalIgnoreCase)
 				&& Path.GetExtension(name) is "" or ".stream" or ".gpu_resources")
 			.Cast<string>()
+			.ToArray();
+
+		// 新版目录可同时存在直接 archive 与 bundles.nxa。两者共同构成当前 Game Data；
+		// 只返回 bundle 清单会使 SQLite 索引漏掉直接资源，反之亦然。
+		return directPackages
+			.Concat(_packages.Keys)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
 			.Order(StringComparer.OrdinalIgnoreCase)
 			.ToArray();
 	}

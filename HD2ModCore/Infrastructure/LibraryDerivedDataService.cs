@@ -8,13 +8,11 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 {
 	private readonly IModContentFactsService _contentFactsService;
 	private readonly ModAssetSummaryProjector _assetSummaryProjector;
-	private readonly IModUnitCompatibilityAnalyzer? _unitCompatibilityAnalyzer;
 
-	public LibraryDerivedDataService(IModContentFactsService contentFactsService, ModAssetSummaryProjector assetSummaryProjector, IModUnitCompatibilityAnalyzer? unitCompatibilityAnalyzer = null)
+	public LibraryDerivedDataService(IModContentFactsService contentFactsService, ModAssetSummaryProjector assetSummaryProjector)
 	{
 		_contentFactsService = contentFactsService ?? throw new ArgumentNullException(nameof(contentFactsService));
 		_assetSummaryProjector = assetSummaryProjector ?? throw new ArgumentNullException(nameof(assetSummaryProjector));
-		_unitCompatibilityAnalyzer = unitCompatibilityAnalyzer;
 	}
 
 	public async ValueTask<DerivedLibraryData> BuildAsync(LibrarySnapshot snapshot, string modsRootDirectory, string? gameDataDirectory = null, IReadOnlySet<ModNodeId>? nodeIds = null, CancellationToken cancellationToken = default)
@@ -54,19 +52,6 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "AssetSummaryProjectionFailed", $"Failed to project stable mod facts: {ex.Message}", directory, node.Id));
 			}
 
-			ModUnitCompatibilityReport? unitCompatibility = null;
-			if (_unitCompatibilityAnalyzer is not null)
-			{
-				try
-				{
-					unitCompatibility = await _unitCompatibilityAnalyzer.AnalyzeNodeAsync(node, modsRootDirectory, gameDataDirectory, cancellationToken).ConfigureAwait(false);
-				}
-				catch (Exception ex)
-				{
-					issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "UnitCompatibilityFailed", $"Failed to analyze unit compatibility: {ex.Message}", directory, node.Id));
-				}
-			}
-
 			var nodeIssues = issues.Where(i => i.NodeId == node.Id).ToList();
 			nodes[node.Id] = new DerivedModNodeData(
 				NodeId: node.Id,
@@ -77,7 +62,6 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 				PatchFiles: patchFiles,
 				ContentFacts: nodeContentFacts,
 				AssetSummary: assetSummary,
-				UnitCompatibility: unitCompatibility,
 				Issues: nodeIssues);
 		}
 

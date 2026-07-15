@@ -39,6 +39,13 @@ public static class CoreServices
 		=> new ArchiveUnitMeshReader(gameDataDirectory => new GameDataPackageResolver(gameDataDirectory), CreatePatchTocScanner(), CreateUnitMeshReader());
 	public static IUnitMeshAdaptationPlanner CreateUnitMeshAdaptationPlanner()
 		=> new UnitMeshAdaptationPlanner(new UnitMeshReplacementStrategy(allowExperimentalFallback: true), CreateUnitMeshMinifier(), new UnitMeshRetargeter(allowExperimentalLayoutFallback: true, propagateSourceMaterials: true), CreateUnitMeshWriter());
+	public static ISameKeyReconstructionPlanningService CreateSameKeyReconstructionPlanningService(StoragePaths paths)
+		=> new SameKeyReconstructionPlanningService(
+			CreatePatchTocScanner(),
+			CreatePatchUnitMeshReader(),
+			CreateAssetArchiveIndexService(paths),
+			CreateArchiveUnitMeshReader(),
+			CreateUnitMeshAdaptationPlanner());
    public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths)
 		=> new AssetArchiveIndexService(paths);
 	public static IGameDataLocator CreateGameDataLocator(IGameDataSettings settings)
@@ -62,11 +69,11 @@ public static class CoreServices
 	public static IProfileOverrideGraphService CreateProfileOverrideGraphService(StoragePaths paths)
 		=> new ProfileOverrideGraphService(CreateModContentFactsService(paths), CreateGameDataMappingFactsService(paths));
 	public static IProfileMaterialDiagnosticsService CreateProfileMaterialDiagnosticsService(StoragePaths paths)
-		=> new ProfileMaterialDiagnosticsService(CreateModFactsStore(paths), CreateGameDataMappingFactsService(paths));
+		=> new ProfileMaterialDiagnosticsService(CreateModFactsStore(paths), CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
+	public static IMaterialDeliveryFactsService CreateMaterialDeliveryFactsService(StoragePaths paths)
+		=> new MaterialDeliveryFactsService(CreateModFactsStore(paths));
 	public static IAdvancedModAssetQueryService CreateAdvancedModAssetQueryService(StoragePaths paths)
 		=> new AdvancedModAssetQueryService(CreateModFactsStore(paths), CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
-	public static IModUnitCompatibilityAnalyzer CreateModUnitCompatibilityAnalyzer()
-		=> new ModUnitCompatibilityAnalyzer(CreatePatchFileNameParser());
 	public static IMaterialPackagingApplicationService CreateMaterialPackagingApplicationService()
 		=> new MaterialPackagingApplicationService(CreatePatchFileNameParser());
 	public static IUnitMeshReader CreateUnitMeshReader()
@@ -83,11 +90,8 @@ public static class CoreServices
 		=> new UnitMeshRetargeter();
 	public static IUnitMeshReplacementStrategy CreateUnitMeshReplacementStrategy()
 		=> new UnitMeshReplacementStrategy();
-	public static IModUnitRepairService CreateModUnitRepairService()
-		=> new ModUnitRepairService(CreatePatchFileNameParser(), CreateModUnitCompatibilityAnalyzer());
 	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths)
-		// Compatibility analysis is deliberately opt-in until its Adaptation implementation is ready.
-		=> new LibraryDerivedDataService(CreateModContentFactsService(paths), new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths)), unitCompatibilityAnalyzer: null);
+		=> new LibraryDerivedDataService(CreateModContentFactsService(paths), new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths)));
    public static IReplacementTargetDeriver CreateReplacementTargetDeriver(StoragePaths paths)
 		=> new ReplacementTargetDeriver(paths, CreateAssetArchiveIndexService(paths));
    public static IModCompatibilityAnalyzer CreateModCompatibilityAnalyzer(StoragePaths paths)

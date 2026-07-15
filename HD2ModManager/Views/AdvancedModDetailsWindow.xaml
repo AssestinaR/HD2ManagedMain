@@ -40,6 +40,7 @@
             <Border Style="{StaticResource CardContainer}" Margin="0,0,0,10">
                 <StackPanel>
                     <TextBlock Text="材质打包" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="{Binding MaterialDeliverySummary}" TextWrapping="Wrap" Foreground="#255A3A" Margin="0,8,0,8"/>
                     <TextBlock Text="{Binding MaterialPackagingSummary}" TextWrapping="Wrap" Foreground="#555" Margin="0,8,0,12"/>
                     <WrapPanel>
                         <Button Content="拆分内嵌材质" ToolTip="生成模型包与材质包两个普通 Mod" Command="{Binding SplitEmbeddedMaterialsCommand}" Padding="12,7" Margin="0,0,8,8"/>

@@ -6,7 +6,7 @@ namespace HD2ModAdaptation.Analysis;
 // Purpose: Performs the first low-cost patch-group analysis using the canonical TOC scanner.
 public sealed class PatchGroupAnalyzer : IPatchGroupAnalyzer
 {
-	private const string AnalyzerVersion = "patch-group-v3";
+	private const string AnalyzerVersion = "patch-group-v4-section-materials";
 	private readonly IPatchTocScanner tocScanner;
 	private readonly IPatchEntryPayloadReader payloadReader;
 	private readonly IUnitMaterialReferenceReader unitMaterialReader;
@@ -49,8 +49,12 @@ public sealed class PatchGroupAnalyzer : IPatchGroupAnalyzer
 					typeId == PatchUnitMeshReader.CompositeUnitTypeId,
 					typeId == MaterialDependencyResolver.MaterialTypeId,
 					typeId == MaterialDependencyResolver.TextureTypeId));
-				await ReadReferencesAsync(entry, references, issues, cancellationToken).ConfigureAwait(false);
+				if (entry.AssetKey.TypeId != PatchUnitMeshReader.UnitTypeId)
+				{
+					await ReadReferencesAsync(entry, references, issues, cancellationToken).ConfigureAwait(false);
+				}
 			}
+			await ReadUnitMaterialReferencesAsync(entries, references, issues, cancellationToken).ConfigureAwait(false);
 		}
 		catch (Exception exception) when (exception is InvalidDataException or EndOfStreamException or IOException)
 		{
@@ -73,14 +77,7 @@ public sealed class PatchGroupAnalyzer : IPatchGroupAnalyzer
 		try
 		{
 			var payload = await payloadReader.ReadPayloadAsync(entry, cancellationToken).ConfigureAwait(false);
-			if (isUnit)
-			{
-				foreach (var binding in unitMaterialReader.ReadReferenceBindings(payload.TocData).Where(binding => binding.MaterialId != 0))
-				{
-					references.Add(new PatchAssetReference(entry.AssetKey, new AssetKey(MaterialDependencyResolver.MaterialTypeId, binding.MaterialId), PatchReferenceKind.UnitMaterial, binding.MaterialIdPayloadRelativeOffset, binding.SectionId));
-				}
-			}
-			else
+			if (!isUnit)
 			{
 				var textureIds = materialReader.ReadTextureIds(payload.TocData);
 				for (var index = 0; index < textureIds.Count; index++)
@@ -95,6 +92,57 @@ public sealed class PatchGroupAnalyzer : IPatchGroupAnalyzer
 		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException)
 		{
 			issues.Add(new PatchAnalysisIssue(isUnit ? "InvalidUnitMaterialReferences" : "InvalidMaterialTextureReferences", exception.Message, entry.SourceFilePath, entry.AssetKey));
+		}
+	}
+
+	private async ValueTask ReadUnitMaterialReferencesAsync(IReadOnlyList<PatchTocEntry> entries, ICollection<PatchAssetReference> references, ICollection<PatchAnalysisIssue> issues, CancellationToken cancellationToken)
+	{
+		var reader = new PatchUnitMeshReader(tocScanner: tocScanner);
+		foreach (var entry in entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
+		{
+			try
+			{
+				var unit = await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.AllowExternalCompositeReference, cancellationToken).ConfigureAwait(false);
+				var bindings = unit.Model.Materials
+					.Where(binding => binding.MaterialId != 0)
+					.GroupBy(binding => binding.SectionId)
+					.ToDictionary(group => group.Key, group => group.Select(binding => binding.MaterialId).Distinct().ToArray());
+				foreach (var mesh in unit.Model.Meshes)
+				{
+					var raw = unit.Model.RawMeshData.FirstOrDefault(candidate => candidate.MeshInfoIndex == mesh.Index);
+					var isPlaceholder = raw is not null && raw.Vertices.Count <= 3 && raw.Triangles.Count <= 1;
+					for (var sectionIndex = 0; sectionIndex < mesh.Sections.Count; sectionIndex++)
+					{
+						var section = mesh.Sections[sectionIndex];
+						if (!bindings.TryGetValue(section.MaterialSlotId, out var materialIds) || materialIds.Length != 1) continue;
+						references.Add(new PatchAssetReference(entry.AssetKey, new AssetKey(MaterialDependencyResolver.MaterialTypeId, materialIds[0]), PatchReferenceKind.UnitMaterial, 0, section.MaterialSlotId, sectionIndex, mesh.Index, isPlaceholder));
+					}
+				}
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException)
+			{
+				await ReadLegacyUnitMaterialReferencesAsync(entry, references, issues, cancellationToken).ConfigureAwait(false);
+			}
+		}
+	}
+
+	private async ValueTask ReadLegacyUnitMaterialReferencesAsync(PatchTocEntry entry, ICollection<PatchAssetReference> references, ICollection<PatchAnalysisIssue> issues, CancellationToken cancellationToken)
+	{
+		try
+		{
+			var payload = await payloadReader.ReadPayloadAsync(entry, cancellationToken).ConfigureAwait(false);
+			if (payload.TocData.Length < 0x74)
+			{
+				return;
+			}
+			foreach (var binding in unitMaterialReader.ReadReferenceBindings(payload.TocData).Where(binding => binding.MaterialId != 0))
+			{
+				references.Add(new PatchAssetReference(entry.AssetKey, new AssetKey(MaterialDependencyResolver.MaterialTypeId, binding.MaterialId), PatchReferenceKind.UnitMaterial, binding.MaterialIdPayloadRelativeOffset, binding.SectionId));
+			}
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException)
+		{
+			issues.Add(new PatchAnalysisIssue("InvalidUnitMaterialReferences", exception.Message, entry.SourceFilePath, entry.AssetKey));
 		}
 	}
 

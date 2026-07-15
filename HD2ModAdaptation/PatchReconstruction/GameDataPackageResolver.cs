@@ -101,10 +101,14 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 			.Cast<string>()
 			.Order(StringComparer.OrdinalIgnoreCase)
 			.ToArray();
-		if (directPackages.Length > 0) return directPackages;
-
 		await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-		return packages.Keys.Order(StringComparer.OrdinalIgnoreCase).ToArray();
+		// 当前游戏目录可能同时有直接 archive 和 bundles.nxa；只返回前者会遗漏
+		// 被 bundle 提供的当前 Unit/Material，从而错误报告“Game Data 中不存在”。
+		return directPackages
+			.Concat(packages.Keys)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.Order(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
 	}
 
 	private async ValueTask<byte[]?> ReconstructPackageAsync(string packageName, CancellationToken cancellationToken)

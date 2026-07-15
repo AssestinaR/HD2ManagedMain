@@ -8,8 +8,8 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Caches Adaptation patch facts while leaving Core projections in the existing analyzer.
 public sealed class CachedPatchGroupAnalysisProvider : IPatchGroupAnalysisProvider
 {
-	private const int CacheVersion = 3;
-	private const string AnalyzerVersion = "patch-group-v3";
+	private const int CacheVersion = 4;
+	private const string AnalyzerVersion = "patch-group-v4-section-materials";
 	private readonly IPatchGroupAnalysisProvider _inner;
 	private readonly IPatchGroupAnalysisCacheStore _cacheStore;
 	private readonly IPatchFileNameParser _fileNameParser;

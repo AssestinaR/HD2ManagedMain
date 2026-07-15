@@ -20,6 +20,7 @@ namespace HD2ModManager.ViewModels
         private readonly DerivedStateCoordinator _derivedState;
         private readonly NotificationService? _notifications;
         private readonly IMaterialPackagingApplicationService _materialPackaging;
+        private readonly IMaterialDeliveryFactsService _materialDeliveryFacts;
         private ModMaterialPackagingState? _materialState;
         private bool _materialOperationRunning;
         private readonly IAdvancedModAssetQueryService _advancedAssetQueryService;
@@ -44,6 +45,7 @@ namespace HD2ModManager.ViewModels
         public string UserStatusTitle { get; private set; } = "状态未知";
         public string UserStatusSummary { get; private set; } = "正在读取状态。";
         public string MaterialPackagingSummary { get; private set; } = "正在分析材质引用。";
+        public string MaterialDeliverySummary { get; private set; } = "正在读取稳定材质交付事实。";
         public bool CanSplitEmbeddedMaterials => !_materialOperationRunning && _materialState?.CanSplit == true;
         public bool CanReplaceEmbeddedMaterials => !_materialOperationRunning && _materialState?.HasEmbeddedMaterials == true;
         public bool CanEmbedExternalMaterials => !_materialOperationRunning && _materialState?.HasExternalMaterials == true;
@@ -72,6 +74,7 @@ namespace HD2ModManager.ViewModels
             _derivedState = derivedState;
             _notifications = notifications;
 			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService();
+            _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(SettingsService.CreateStoragePaths());
             _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(SettingsService.CreateStoragePaths());
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
@@ -89,6 +92,7 @@ namespace HD2ModManager.ViewModels
             });
             Refresh();
 			_ = RefreshMaterialPackagingStateAsync();
+            _ = RefreshMaterialDeliveryFactsAsync();
             _ = RefreshAdvancedAssetsAsync();
         }
 
@@ -149,6 +153,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(UserStatusTitle));
             OnPropertyChanged(nameof(UserStatusSummary));
             OnPropertyChanged(nameof(MaterialPackagingSummary));
+			OnPropertyChanged(nameof(MaterialDeliverySummary));
             RaiseMaterialCommandStates();
         }
 
@@ -226,8 +231,15 @@ namespace HD2ModManager.ViewModels
             var items = diagnostics.Items.Where(item => item.NodeId == nodeId).ToArray();
             return items.Length == 0
                 ? "未发现当前有效资源图中的材质依赖异常。"
-                : string.Join(Environment.NewLine, items.Take(20).Select(item => $"{item.Summary}：{item.Detail}")) + (items.Length > 20 ? $"{Environment.NewLine}... 另有 {items.Length - 20} 项" : string.Empty);
+                : string.Join(Environment.NewLine, items.Take(20).Select(item => $"{MaterialDiagnosticPrefix(item.Kind)}{item.Summary}：{item.Detail}")) + (items.Length > 20 ? $"{Environment.NewLine}... 另有 {items.Length - 20} 项" : string.Empty);
         }
+
+        private static string MaterialDiagnosticPrefix(ProfileMaterialDiagnosticKind kind) => kind switch
+        {
+            ProfileMaterialDiagnosticKind.CurrentGameMaterialFallback => "✓ ",
+            ProfileMaterialDiagnosticKind.CurrentGameMaterialCandidate => "⚠ ",
+            _ => string.Empty
+        };
 
         private static string BuildAssetTagTreeText(ModAssetSummary summary)
         {
@@ -331,6 +343,42 @@ namespace HD2ModManager.ViewModels
             }
             RunOnUiThread(() => { OnPropertyChanged(nameof(MaterialPackagingSummary)); RaiseMaterialCommandStates(); });
         }
+
+        private async Task RefreshMaterialDeliveryFactsAsync()
+        {
+            if (Mod is null || !TryParseNodeId(Mod.Guid, out var nodeId)) return;
+            try
+            {
+                var facts = await _materialDeliveryFacts.GetAsync(nodeId, _library.Snapshot);
+                var lines = new List<string>
+                {
+                    $"交付模式：{MaterialDeliveryModeName(facts.Mode)}",
+                    $"Unit {facts.UnitCount}；需要材质 {facts.RequiredMaterialCount}；内嵌 {facts.EmbeddedMaterialCount}；外部 {facts.ExternalMaterialCount}；缺失内嵌贴图 {facts.MissingEmbeddedTextureCount}"
+                };
+                if (facts.Candidates.Count != 0)
+                {
+                    lines.Add("库内材质候选：" + string.Join("；", facts.Candidates.Take(3).Select(candidate => $"{candidate.Name}（覆盖 {candidate.CoveredMaterialCount}，缺贴图 {candidate.MissingTextureCount}{(candidate.IsComplete ? "，完整" : string.Empty)}）")) + (facts.Candidates.Count > 3 ? $"；另有 {facts.Candidates.Count - 3} 个" : string.Empty));
+                }
+                lines.AddRange(facts.Notices);
+                MaterialDeliverySummary = string.Join(Environment.NewLine, lines);
+            }
+            catch (Exception exception)
+            {
+                MaterialDeliverySummary = $"稳定材质交付事实读取失败：{exception.Message}";
+            }
+            RunOnUiThread(() => OnPropertyChanged(nameof(MaterialDeliverySummary)));
+        }
+
+        private static string MaterialDeliveryModeName(MaterialDeliveryMode mode) => mode switch
+        {
+            MaterialDeliveryMode.NoMaterialDependencies => "无材质依赖",
+            MaterialDeliveryMode.EmbeddedComplete => "内嵌闭包完整（整体重建）",
+            MaterialDeliveryMode.EmbeddedIncomplete => "内嵌闭包不完整",
+            MaterialDeliveryMode.ExternalResolved => "外部材质已解析（仅重建模型）",
+            MaterialDeliveryMode.ExternalUnresolved => "外部材质未解析",
+            MaterialDeliveryMode.Mixed => "内嵌与外部混用",
+            _ => "未知"
+        };
 
         private async Task SplitEmbeddedMaterialsAsync()
         {

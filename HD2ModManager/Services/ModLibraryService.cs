@@ -17,7 +17,6 @@ namespace HD2ModManager.Services
         private readonly StoragePaths _paths;
         private readonly HD2ModCore.Application.IModLibraryManager _manager;
         private readonly HD2ModCore.Application.ILibraryDerivedDataService _derivedDataService;
-        private readonly HD2ModCore.Application.IModUnitRepairService _unitRepairService;
         private LibrarySnapshot _snapshot;
         private DerivedLibraryData _derivedData;
         private readonly Dictionary<string, ModEntity> _byGuid = new();
@@ -28,13 +27,13 @@ namespace HD2ModManager.Services
         public DerivedLibraryData DerivedData => _derivedData;
         public string ModsRootDirectory => _paths.ModsDirectory;
         public event EventHandler? ModContentFactsChanged;
+        public event EventHandler? SnapshotChanged;
 
         public ModLibraryService(string libraryPath)
         {
             _paths = SettingsService.CreateStoragePaths();
             _manager = CoreServices.CreateModLibraryManager(_paths);
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths);
-            _unitRepairService = CoreServices.CreateModUnitRepairService();
             _snapshot = EmptySnapshot();
             _derivedData = EmptyDerivedData();
         }
@@ -43,6 +42,7 @@ namespace HD2ModManager.Services
         {
             _snapshot = _manager.LoadOrCreateAsync().AsTask().GetAwaiter().GetResult();
             RebuildIndex(buildDerivedData);
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
         }
 
         public Task RefreshDerivedDataAsync(CancellationToken cancellationToken = default)
@@ -87,6 +87,7 @@ namespace HD2ModManager.Services
             var store = CoreServices.CreateModLibraryStore(_paths);
             store.SaveAsync(_snapshot).AsTask().GetAwaiter().GetResult();
             RebuildIndex(buildDerivedData: false);
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
         }
 
         public bool Add(ModEntity mod)
@@ -143,40 +144,6 @@ namespace HD2ModManager.Services
             return TryParseNodeId(guid, out var nodeId) ? _derivedData.Find(nodeId) : null;
         }
 
-        public async Task<ModUnitRepairResult> RepairModUnitsAsync(string guid, CancellationToken cancellationToken = default)
-        {
-            if (!TryParseNodeId(guid, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var node))
-            {
-                return new ModUnitRepairResult(default, false, 0, 0, 0, 0, new[] { new CoreIssue(CoreIssueSeverity.Error, "ModNotFound", "找不到要修复的 Mod。") });
-            }
-
-            var gameData = SettingsService.GetGameDataFolder();
-            var report = _derivedData.Find(nodeId)?.UnitCompatibility;
-            var result = await _unitRepairService.RepairNodeAsync(node, _paths.ModsDirectory, gameData, report, cancellationToken).AsTask().ConfigureAwait(false);
-            await RefreshDerivedDataAsync(cancellationToken).ConfigureAwait(false);
-            return result;
-        }
-
-        public async Task<IReadOnlyList<ModUnitRepairResult>> RepairAllOutdatedUnitsAsync(CancellationToken cancellationToken = default)
-        {
-            var targets = _snapshot.Nodes.Values
-                .Where(node => _derivedData.Find(node.Id)?.UnitCompatibility?.CanRepair == true)
-                .OrderBy(node => node.Metadata.Name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            var gameData = SettingsService.GetGameDataFolder();
-            var results = new List<ModUnitRepairResult>();
-            foreach (var node in targets)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var report = _derivedData.Find(node.Id)?.UnitCompatibility;
-                results.Add(await _unitRepairService.RepairNodeAsync(node, _paths.ModsDirectory, gameData, report, cancellationToken).AsTask().ConfigureAwait(false));
-            }
-
-            await RefreshDerivedDataAsync(cancellationToken).ConfigureAwait(false);
-            return results;
-        }
-
         public string ResolveAbsolutePath(string? maybeRelative)
         {
             if (string.IsNullOrWhiteSpace(maybeRelative)) return string.Empty;
@@ -188,6 +155,7 @@ namespace HD2ModManager.Services
         {
             _snapshot = snapshot ?? EmptySnapshot();
             RebuildIndex(buildDerivedData);
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
         }
 
         private void RebuildIndex(bool buildDerivedData = true)

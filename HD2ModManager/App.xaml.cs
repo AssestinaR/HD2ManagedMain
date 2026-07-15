@@ -1,5 +1,6 @@
 ﻿using System.Globalization;
 using System.Windows;
+using HD2ModManager.Services;
 
 namespace HD2ModManager
 {
@@ -11,6 +12,12 @@ namespace HD2ModManager
         protected override void OnStartup(StartupEventArgs e)
         {
             ApplyLocalization();
+            DispatcherUnhandledException += (_, args) =>
+            {
+                LogService.Error($"Unhandled UI exception: {args.Exception}");
+                MessageBox.Show($"管理器遇到未处理错误，详情已写入 logs：{args.Exception.Message}", "HD2 Mod Manager", MessageBoxButton.OK, MessageBoxImage.Error);
+                args.Handled = true;
+            };
             base.OnStartup(e);
         }
 

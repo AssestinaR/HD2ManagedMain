@@ -5,6 +5,8 @@ public enum ProfileMaterialDiagnosticKind
 {
 	MissingMaterial,
 	MissingTexture,
+	CurrentGameMaterialFallback,
+	CurrentGameMaterialCandidate,
 	NoEffectiveUnitConsumer,
 	UnreachableResource
 }

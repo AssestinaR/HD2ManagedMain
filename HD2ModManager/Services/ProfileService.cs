@@ -37,6 +37,12 @@ namespace HD2ModManager.Services
             RebuildIndex();
         }
 
+        public void ReloadFromLibrary()
+        {
+            Load();
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
+
         public IReadOnlyList<Profile> All() => Profiles;
 
         public string CreateNew(string? requestedName = null)

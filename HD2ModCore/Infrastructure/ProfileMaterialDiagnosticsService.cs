@@ -14,6 +14,7 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 	private readonly IPatchGroupAnalysisProvider? analysisProvider;
 	private readonly IModFactsStore? factsStore;
 	private readonly IGameDataMappingFactsService mappingFactsService;
+	private readonly IAssetArchiveIndexService? indexService;
 
 	public ProfileMaterialDiagnosticsService(IPatchGroupAnalysisProvider analysisProvider, IGameDataMappingFactsService mappingFactsService)
 	{
@@ -25,6 +26,12 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 	{
 		this.factsStore = factsStore ?? throw new ArgumentNullException(nameof(factsStore));
 		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
+	}
+
+	public ProfileMaterialDiagnosticsService(IModFactsStore factsStore, IGameDataMappingFactsService mappingFactsService, IAssetArchiveIndexService indexService)
+		: this(factsStore, mappingFactsService)
+	{
+		this.indexService = indexService ?? throw new ArgumentNullException(nameof(indexService));
 	}
 
 	public async ValueTask<ProfileMaterialDiagnostics> BuildAsync(Profile profile, LibrarySnapshot snapshot, string modsRootDirectory, CancellationToken cancellationToken = default)
@@ -55,6 +62,7 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 
 		var winners = providers.ToDictionary(pair => pair.Key, pair => pair.Value.OrderBy(provider => provider.LoadOrder).ThenBy(provider => provider.NodeId.Value).Last());
 		var diagnostics = new List<ProfileMaterialDiagnostic>();
+		var fallbackResolver = indexService is null ? null : new CurrentGameMaterialFallbackResolver(indexService);
 		var reachableMaterials = new HashSet<DomainAssetKey>();
 		var reachableTextures = new HashSet<DomainAssetKey>();
 		var referencedMaterials = winners.Where(pair => pair.Key.TypeId == UnitTypeId).SelectMany(pair => pair.Value.References.Where(reference => reference.Kind == PatchReferenceKind.UnitMaterial).Select(reference => ToDomain(reference.TargetAssetKey))).ToHashSet();
@@ -71,6 +79,21 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 				var material = ToDomain(reference.TargetAssetKey);
 				if (!winners.TryGetValue(material, out var materialProvider))
 				{
+					var fallback = fallbackResolver is null ? null : await fallbackResolver.ResolveAsync(reference, cancellationToken).ConfigureAwait(false);
+					if (fallback is not null)
+					{
+						var accepted = fallback.IsPlaceholderMesh || fallback.MaterialAssetKey == material;
+						diagnostics.Add(new ProfileMaterialDiagnostic(
+							unitProvider.NodeId,
+							fallback.MaterialAssetKey,
+							accepted ? ProfileMaterialDiagnosticKind.CurrentGameMaterialFallback : ProfileMaterialDiagnosticKind.CurrentGameMaterialCandidate,
+							accepted ? "使用当前原版材质" : "发现当前原版材质候选",
+							accepted
+								? $"Unit 0x{unitKey.FileId:x16} 的 Mesh {reference.MeshInfoIndex} section {reference.ReferenceIndex} 使用当前 Game Data {fallback.ArchiveName} 的 Material。"
+								: $"Unit 0x{unitKey.FileId:x16} 的可见 Mesh {reference.MeshInfoIndex} section {reference.ReferenceIndex} 可回退至当前 Game Data {fallback.ArchiveName} 的 Material，但为避免覆盖自定义材质，仍需要库内提供者或用户确认。",
+							unitKey));
+						if (accepted) continue;
+					}
 					if (!availableInGameData.Contains(material)) diagnostics.Add(new ProfileMaterialDiagnostic(unitProvider.NodeId, material, ProfileMaterialDiagnosticKind.MissingMaterial, "缺失材质", $"有效 Unit 0x{unitKey.FileId:x16} 引用了未由当前 Profile 或 Game Data 提供的 Material。", unitKey));
 					continue;
 				}
@@ -97,7 +120,7 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 			diagnostics.Add(new ProfileMaterialDiagnostic(provider.NodeId, asset, ProfileMaterialDiagnosticKind.UnreachableResource, "贴图无有效引用", "当前 Profile 的最终有效 Material 没有引用该 Texture。"));
 		}
 
-		return new ProfileMaterialDiagnostics(profile.Id, profile.Revision, DateTimeOffset.UtcNow, diagnostics, issues);
+		return new ProfileMaterialDiagnostics(profile.Id, profile.Revision, DateTimeOffset.UtcNow, diagnostics.Distinct().ToArray(), issues);
 
 	}
 

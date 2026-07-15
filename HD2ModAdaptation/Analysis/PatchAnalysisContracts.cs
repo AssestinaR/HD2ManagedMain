@@ -38,7 +38,9 @@ public sealed record PatchAssetReference(
 	PatchReferenceKind Kind,
 	uint PayloadRelativeOffset,
 	uint? SlotId = null,
-	int? ReferenceIndex = null);
+	int? ReferenceIndex = null,
+	int? MeshInfoIndex = null,
+	bool IsPlaceholderMesh = false);
 
 public sealed record PatchGroupAnalysis(
 	PatchGroupInput Input,
