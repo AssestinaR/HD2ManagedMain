@@ -148,7 +148,15 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
         _activeProfileSignature = current;
         MarkDirty(content: false, expected: activeChanged, deployed: false);
     }
-    private void OnContentChanged(object? sender, EventArgs e) => MarkDirty(content: true, expected: true, deployed: false);
+    private void OnContentChanged(object? sender, ModContentFactsChangedEventArgs e)
+    {
+        var active = _profiles.ActiveProfile;
+        var affectsActiveProfile = active is not null && e.NodeIds.Any(nodeId => active.Entries.Any(entry => entry.NodeId == nodeId));
+        if (affectsActiveProfile)
+        {
+            MarkDirty(content: true, expected: true, deployed: false);
+        }
+    }
 
     private void MarkDirty(bool content, bool expected, bool deployed)
     {

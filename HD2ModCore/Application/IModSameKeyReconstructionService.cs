@@ -17,4 +17,11 @@ public interface IModSameKeyReconstructionService
 		string gameDataDirectory,
 		string outputRootDirectory,
 		CancellationToken cancellationToken = default);
+
+	ValueTask<SameKeyReconstructionOperationResult> GenerateCandidateAsync(
+		ModNode source,
+		string modsRootDirectory,
+		string gameDataDirectory,
+		string outputRootDirectory,
+		CancellationToken cancellationToken = default);
 }

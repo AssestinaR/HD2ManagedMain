@@ -24,7 +24,7 @@ public sealed class MaterialPackagingApplicationService : IMaterialPackagingAppl
 			return new ModMaterialPackagingState(source.Id, null, false, false, false, 0, 0, 0, 0, new[] { patchPaths.Count == 0 ? "Mod 没有 Patch 主文件。" : "当前版本仅支持只含一个 Patch 文件组的 Mod。" });
 		}
 		var inspection = await packagingService.InspectAsync(patchPaths[0], cancellationToken).ConfigureAwait(false);
-		var split = await packagingService.PlanSplitAsync(patchPaths[0], cancellationToken).ConfigureAwait(false);
+		var split = packagingService.PlanSplit(inspection);
 		return new ModMaterialPackagingState(source.Id, patchPaths[0], split.IsApproved, inspection.EmbeddedMaterialAssetKeys.Count != 0, inspection.ExternalMaterialAssetKeys.Count != 0, inspection.RequiredMaterialAssetKeys.Count, inspection.EmbeddedMaterialAssetKeys.Count, inspection.ExternalMaterialAssetKeys.Count, inspection.EmbeddedTextureClosureAssetKeys.Count, split.Blockers);
 	}
 

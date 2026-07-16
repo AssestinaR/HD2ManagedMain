@@ -8,11 +8,10 @@ namespace HD2ModManager.Views;
 // Purpose: Confirms a non-destructive same-key reconstruction destination or automatic library import.
 public partial class SameKeyReconstructionOutputWindow : Window
 {
-	public SameKeyReconstructionOutputWindow(ModSameKeyReconstructionState state)
+	public SameKeyReconstructionOutputWindow()
 	{
 		InitializeComponent();
-		ArgumentNullException.ThrowIfNull(state);
-		SummaryText.Text = $"将处理 {state.Plan?.SourceUnitCount ?? 0} 个 Unit：替换 Unit {state.ReplacementUnitCount}，仅极小化 Unit {state.MinifyOnlyUnitCount}；替换 mesh {state.ReplacementMeshCount}，极小化 mesh {state.MinifiedMeshCount}" + (state.SharedTargetUnitCount == 0 ? "。" : $"。其中 {state.SharedTargetUnitCount} 个 Unit 位于共享 current archive，请先阅读输出报告。");
+		SummaryText.Text = "将根据当前 Game Data 直接生成独立验证候选。生成过程会执行必要的结构性检查；请随后使用 Blender 或游戏完成外部验证。";
 	}
 
 	public string OutputDirectory { get; private set; } = string.Empty;

@@ -11,6 +11,25 @@ using HD2ModManager.Models;
 
 namespace HD2ModManager.Services
 {
+    public enum ModContentChangeKind
+    {
+        Added,
+        Changed,
+        Removed,
+    }
+
+    public sealed class ModContentFactsChangedEventArgs : EventArgs
+    {
+        public ModContentFactsChangedEventArgs(IReadOnlyCollection<ModNodeId> nodeIds, ModContentChangeKind kind)
+        {
+            NodeIds = nodeIds;
+            Kind = kind;
+        }
+
+        public IReadOnlyCollection<ModNodeId> NodeIds { get; }
+        public ModContentChangeKind Kind { get; }
+    }
+
     // 作用：为现有 WPF UI 提供基于 HD2ModCore LibrarySnapshot 的模组库外观。
     public class ModLibraryService
     {
@@ -26,7 +45,7 @@ namespace HD2ModManager.Services
         public LibrarySnapshot Snapshot => _snapshot;
         public DerivedLibraryData DerivedData => _derivedData;
         public string ModsRootDirectory => _paths.ModsDirectory;
-        public event EventHandler? ModContentFactsChanged;
+        public event EventHandler<ModContentFactsChangedEventArgs>? ModContentFactsChanged;
         public event EventHandler? SnapshotChanged;
 
         public ModLibraryService(string libraryPath)
@@ -46,9 +65,12 @@ namespace HD2ModManager.Services
         }
 
         public Task RefreshDerivedDataAsync(CancellationToken cancellationToken = default)
-            => RefreshDerivedDataAsync(guids: null, cancellationToken);
+            => RefreshDerivedDataAsync(guids: null, ModContentChangeKind.Changed, cancellationToken);
 
         public async Task RefreshDerivedDataAsync(IEnumerable<string>? guids, CancellationToken cancellationToken = default)
+            => await RefreshDerivedDataAsync(guids, ModContentChangeKind.Changed, cancellationToken).ConfigureAwait(false);
+
+        public async Task RefreshDerivedDataAsync(IEnumerable<string>? guids, ModContentChangeKind changeKind, CancellationToken cancellationToken = default)
         {
             await _derivedRefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -71,9 +93,9 @@ namespace HD2ModManager.Services
                     _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues);
                 }
                 RebuildEntityIndex();
-                if (nodeIds is null || nodeIds.Count > 0)
+                if (nodeIds is { Count: > 0 })
                 {
-                    ModContentFactsChanged?.Invoke(this, EventArgs.Empty);
+                    ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(nodeIds, changeKind));
                 }
             }
             finally
@@ -111,7 +133,12 @@ namespace HD2ModManager.Services
         {
             if (!TryParseNodeId(guid, out var nodeId)) return false;
             _snapshot = _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true).AsTask().GetAwaiter().GetResult();
+            CoreServices.CreateModFactsStore(_paths).DeleteAsync(nodeId).AsTask().GetAwaiter().GetResult();
+            var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
+            nodes.Remove(nodeId);
+            _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray());
             RebuildIndex(buildDerivedData: false);
+            ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(new[] { nodeId }, ModContentChangeKind.Removed));
             return true;
         }
 

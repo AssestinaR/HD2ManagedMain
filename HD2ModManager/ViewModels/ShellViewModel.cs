@@ -142,7 +142,14 @@ namespace HD2ModManager.ViewModels
             _deploymentCoordinator.StatusChanged += OnDeploymentStatusChanged;
             _profileService.ActiveProfileDeploymentRequired += (_, _) => _deploymentCoordinator.NotifyActiveProfileChanged();
             _profileService.ActiveProfileDeactivationRequired += (_, _) => _ = _deploymentCoordinator.DeactivateAsync();
-            _libraryService.ModContentFactsChanged += (_, _) => _profileService.NotifyActiveModContentChanged();
+            _libraryService.ModContentFactsChanged += (_, change) =>
+            {
+                var active = _profileService.ActiveProfile;
+                if (active is not null && change.NodeIds.Any(nodeId => active.Entries.Any(entry => entry.NodeId == nodeId)))
+                {
+                    _profileService.NotifyActiveModContentChanged();
+                }
+            };
             _libraryService.SnapshotChanged += (_, _) => RefreshOnUiThread(_profileService.ReloadFromLibrary);
             _profileService.Changed += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
             _derivedState.SnapshotChanged += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
@@ -166,6 +173,7 @@ namespace HD2ModManager.ViewModels
             Navigate(WorkspaceMode.Home);
             _ = RestoreStableLibraryProjectionAsync();
             _ = _derivedState.RefreshAsync();
+            _ = CheckGameDataIndexOnStartupAsync();
         }
 
         private async Task RestoreStableLibraryProjectionAsync()
@@ -178,6 +186,44 @@ namespace HD2ModManager.ViewModels
             {
                 LogService.Error($"Stable library projection restore failed: {exception}");
                 System.Windows.Application.Current?.Dispatcher.Invoke(() => _notificationService.Show("已启动，但稳定资产事实恢复失败；可在库页刷新后重试。", NotificationLevel.Warning, TimeSpan.FromSeconds(8)));
+            }
+        }
+
+        private async Task CheckGameDataIndexOnStartupAsync()
+        {
+            var gameData = SettingsService.GetGameDataFolder();
+            var paths = SettingsService.CreateStoragePaths();
+            if (string.IsNullOrWhiteSpace(gameData) || !System.IO.Directory.Exists(gameData) || !System.IO.File.Exists(paths.ArchiveHashesPath)) return;
+
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.BuildAssetIndex, "检查游戏资产索引", gameData);
+            try
+            {
+                task.MarkRunning("正在检查索引指纹");
+                var archiveHashes = await System.IO.File.ReadAllTextAsync(paths.ArchiveHashesPath).ConfigureAwait(false);
+                var index = CoreServices.CreateAssetArchiveIndexService(paths);
+                var status = await index.GetIndexStatusAsync(gameData, archiveHashes, task.CancellationToken).ConfigureAwait(false);
+                if (status.IsCurrent)
+                {
+                    task.MarkCompleted();
+                    return;
+                }
+
+                task.UpdateStage("索引缺失或已过期，正在低优先级重建");
+                var progress = new Progress<IndexBuildProgress>(progress => task.UpdateStage($"正在索引 Archive {progress.Current}/{progress.Total}"));
+                await Task.Run(
+                    () => index.BuildOrRebuildAsync(gameData, archiveHashes, progress, task.CancellationToken).AsTask(),
+                    task.CancellationToken).ConfigureAwait(false);
+                task.MarkCompleted();
+                _derivedState.MarkMappingDirty();
+            }
+            catch (OperationCanceledException)
+            {
+                task.MarkCanceled();
+            }
+            catch (Exception exception)
+            {
+                task.MarkFailed(exception.Message);
+                LogService.Error($"Startup Game Data index check failed: {exception}");
             }
         }
 

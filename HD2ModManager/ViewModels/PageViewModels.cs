@@ -15,12 +15,13 @@ using HD2ModManager.Services;
 namespace HD2ModManager.ViewModels
 {
     // Purpose: Provides bindable state and commands for Manager pages.
-    public abstract class PageViewModel : BaseViewModel, IPageActionProvider
+    public abstract class PageViewModel : BaseViewModel, IPageActionProvider, IDisposable
     {
         private string _title = string.Empty;
         public string Title { get => _title; set => SetField(ref _title, value); }
         public virtual bool RequiresSingleSlot => false;
         public ObservableCollection<PageActionViewModel> PageActions { get; } = new();
+        public virtual void Dispose() { }
     }
 
     public sealed class HomePageViewModel : PageViewModel
@@ -464,7 +465,7 @@ namespace HD2ModManager.ViewModels
                 _ => "未知"
             };
 
-        public void Dispose()
+        public override void Dispose()
         {
             if (_disposed) return;
             _disposed = true;

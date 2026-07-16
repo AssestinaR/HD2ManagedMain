@@ -112,13 +112,67 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 		string gameDataDirectory,
 		string outputRootDirectory,
 		CancellationToken cancellationToken = default)
-	{
-		var state = await InspectAsync(source, modsRootDirectory, gameDataDirectory, cancellationToken).ConfigureAwait(false);
-		if (!state.CanWrite) return Failure(state.Issues);
-		if (string.IsNullOrWhiteSpace(outputRootDirectory)) return Failure(new[] { Error("OutputDirectoryMissing", "必须选择输出文件夹。", source.Id) });
+		=> await GenerateCandidateAsync(source, modsRootDirectory, gameDataDirectory, outputRootDirectory, cancellationToken).ConfigureAwait(false);
 
-		var sourcePath = state.SourcePatchTocPath!;
-		var plan = state.Plan!;
+	public async ValueTask<SameKeyReconstructionOperationResult> GenerateCandidateAsync(
+		ModNode source,
+		string modsRootDirectory,
+		string gameDataDirectory,
+		string outputRootDirectory,
+		CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrWhiteSpace(outputRootDirectory)) return Failure(new[] { Error("OutputDirectoryMissing", "必须选择输出文件夹。", source.Id) });
+		var issues = new List<CoreIssue>();
+		var patchPaths = FindBasePatchPaths(source, modsRootDirectory);
+		if (patchPaths.Count != 1)
+		{
+			issues.Add(Error("SinglePatchRequired", patchPaths.Count == 0 ? "Mod 没有 Patch 主文件。" : "当前重建仅支持只含一个 Patch 文件组的 Mod。", source.Id));
+			return Failure(issues);
+		}
+		if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory))
+		{
+			issues.Add(Error("GameDataMissing", "请先在设置中配置有效的 Game Data 文件夹。", source.Id));
+			return Failure(issues);
+		}
+
+		GameDataIndexStatus indexStatus;
+		try
+		{
+			indexStatus = await assetIndex.GetIndexStatusAsync(gameDataDirectory, await archiveHashes.GetArchiveHashesJsonAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+		{
+			issues.Add(Error("GameDataIndexUnreadable", exception.Message, source.Id, exception));
+			return Failure(issues);
+		}
+		if (!indexStatus.IsCurrent)
+		{
+			issues.Add(Error("GameDataIndexNotCurrent", "Game Data 资产索引不可用或已过期；请先在状态页建立/重建资产索引。", source.Id));
+			return Failure(issues);
+		}
+
+		SameKeyReconstructionPlan plan;
+		try
+		{
+			plan = await planningService.CreatePlanAsync(new SameKeyReconstructionRequest(patchPaths[0], gameDataDirectory), cancellationToken).ConfigureAwait(false);
+			issues.AddRange(plan.Issues);
+			foreach (var unit in plan.Units)
+			{
+				issues.AddRange(unit.Issues);
+				if (!unit.HasFullTargetShellCoverage) issues.Add(Error("IncompleteTargetShell", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 未覆盖全部 current target mesh。", source.Id));
+				if (unit.HasExperimentalCandidate) issues.Add(Error("ExperimentalMeshMapping", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 包含实验性 mesh mapping；正式第一版不会写出。", source.Id));
+				if (unit.TargetArchive is null) issues.Add(Error("SelectedArchiveMissing", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 没有可读的 current target archive。", source.Id));
+			}
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException or OverflowException)
+		{
+			issues.Add(Error("SameKeyPlanFailed", exception.Message, source.Id, exception));
+			return Failure(issues);
+		}
+		if (plan.SourceUnitCount == 0 || issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
+
+		var sourcePath = patchPaths[0];
+		var state = CreateState(source.Id, sourcePath, plan, true, issues);
 		var outputDirectory = CreateOutputDirectory(outputRootDirectory, source.Metadata.Name);
 		try
 		{
@@ -223,6 +277,8 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 			SourceMod = source.Metadata.Name,
 			SourcePatch = state.SourcePatchTocPath,
 			GeneratedUtc = DateTimeOffset.UtcNow,
+				InternalStructuralChecks = "Passed",
+				ExternalValidation = "Pending: Blender or in-game validation is required.",
 			Output = new { write.TocFilePath, write.StreamFilePath, write.GpuResourceFilePath, TocSha256 = await HashFileAsync(write.TocFilePath, cancellationToken).ConfigureAwait(false), StreamSha256 = await HashFileAsync(write.StreamFilePath, cancellationToken).ConfigureAwait(false), GpuSha256 = await HashFileAsync(write.GpuResourceFilePath, cancellationToken).ConfigureAwait(false) },
 			Units = state.Plan!.Units.Select(unit => new { AssetKey = $"0x{unit.UnitAssetKey.FileId:x16}", Archive = unit.TargetArchive?.ArchiveId, ReplacementMeshes = unit.Adaptation?.ReplacementCount ?? 0, MinifiedMeshes = unit.Adaptation?.MinifiedCount ?? 0, SharedTarget = unit.IsSharedTarget }),
 			Issues = state.Issues.Select(issue => new { Severity = issue.Severity.ToString(), issue.Code, issue.Message })
@@ -237,6 +293,8 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 			.AppendLine($"- Source Patch: {state.SourcePatchTocPath}")
 			.AppendLine($"- Output Patch: {write.TocFilePath}")
 			.AppendLine($"- Units: {state.Plan!.Units.Count}")
+			.AppendLine("- Internal structural checks: passed")
+			.AppendLine("- External validation: pending Blender or in-game test")
 			.AppendLine()
 			.AppendLine("## Units");
 		foreach (var unit in state.Plan.Units) markdown.AppendLine($"- 0x{unit.UnitAssetKey.FileId:x16}: {unit.TargetArchive?.ArchiveId}; replacement {unit.Adaptation?.ReplacementCount ?? 0}; minify {unit.Adaptation?.MinifiedCount ?? 0}");

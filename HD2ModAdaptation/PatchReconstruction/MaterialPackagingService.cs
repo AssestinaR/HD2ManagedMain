@@ -46,6 +46,12 @@ public sealed class MaterialPackagingService
 	public async ValueTask<MaterialSplitPlan> PlanSplitAsync(string patchTocPath, CancellationToken cancellationToken = default)
 	{
 		var inspection = await InspectAsync(patchTocPath, cancellationToken).ConfigureAwait(false);
+		return PlanSplit(inspection);
+	}
+
+	public MaterialSplitPlan PlanSplit(MaterialPackagingInspection inspection)
+	{
+		ArgumentNullException.ThrowIfNull(inspection);
 		var notices = new List<string>();
 		if (inspection.UnitAssetKeys.Count == 0) notices.Add("未发现 Unit；仍会把当前 Patch 的 Material 与可读取 Texture 拆为独立材质包。");
 		if (inspection.Issues.Count != 0) notices.Add("Patch 引用解析存在问题；输出会保留原始 Payload，但请在游戏或 Blender 中复核。");

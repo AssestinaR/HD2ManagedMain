@@ -46,7 +46,7 @@ namespace HD2ModManager.Services
             try
             {
                 var importer = CoreServices.CreateModLibraryImporter(_paths);
-                var before = _library.Snapshot.Nodes.Keys.ToHashSet();
+                var before = _library.Snapshot.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
                 ImportResult result;
                 if (Directory.Exists(path))
                 {
@@ -68,10 +68,18 @@ namespace HD2ModManager.Services
 
                 _library.ReplaceSnapshot(result.Snapshot, buildDerivedData: false);
                 var importedGuids = _library.Snapshot.Nodes.Values
-                    .Where(node => !before.Contains(node.Id))
+                    .Where(node => !before.ContainsKey(node.Id))
                     .Select(node => node.Id.Value.ToString("N"))
                     .ToList();
-                await _library.RefreshDerivedDataAsync(importedGuids, ct).ConfigureAwait(false);
+                await _library.RefreshDerivedDataAsync(importedGuids, ModContentChangeKind.Added, ct).ConfigureAwait(false);
+                var changedExistingNodeIds = _library.Snapshot.Nodes.Values
+                    .Where(node => before.TryGetValue(node.Id, out var previous) && !Equals(previous, node))
+                    .Select(node => node.Id)
+                    .ToArray();
+                if (changedExistingNodeIds.Length != 0)
+                {
+                    await _library.RefreshDerivedDataAsync(changedExistingNodeIds.Select(nodeId => nodeId.Value.ToString("N")), ModContentChangeKind.Changed, ct).ConfigureAwait(false);
+                }
                 _onInfo?.Invoke($"Imported {result.SourceDisplayName}");
                 return importedGuids.Where(g => _library.Get(g) != null).ToList();
             }
