@@ -1,6 +1,6 @@
 namespace HD2ModCore.Domain;
 
-// Purpose: Carries the read-only feasibility result for rebuilding each source Unit against its current same-key game-data target.
+// Purpose: Carries the plan for rebuilding each source Unit against its readable current same-key game-data target.
 public sealed record SameKeyReconstructionRequest(
 	string SourcePatchTocPath,
 	string GameDataDirectory,

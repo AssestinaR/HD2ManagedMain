@@ -1,3 +1,5 @@
+using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
+
 namespace HD2ModCore.Domain;
 
 // Purpose: Describes a Mod's persisted material delivery shape and safe library material-provider candidates.
@@ -17,7 +19,8 @@ public sealed record MaterialDeliveryCandidate(
 	string Name,
 	int CoveredMaterialCount,
 	int MissingTextureCount,
-	bool IsComplete);
+	bool IsComplete,
+	IReadOnlyCollection<AdaptationAssetKey>? ClosureAssetKeys = null);
 
 public sealed record MaterialDeliveryFacts(
 	ModNodeId NodeId,
@@ -28,7 +31,8 @@ public sealed record MaterialDeliveryFacts(
 	int ExternalMaterialCount,
 	int MissingEmbeddedTextureCount,
 	IReadOnlyList<MaterialDeliveryCandidate> Candidates,
-	IReadOnlyList<string> Notices)
+	IReadOnlyList<string> Notices,
+	IReadOnlyCollection<AdaptationAssetKey>? EmbeddedClosureAssetKeys = null)
 {
 	public bool CanRebuildModelOnly => Mode == MaterialDeliveryMode.ExternalResolved;
 	public bool CanRebuildAsWhole => Mode == MaterialDeliveryMode.EmbeddedComplete;

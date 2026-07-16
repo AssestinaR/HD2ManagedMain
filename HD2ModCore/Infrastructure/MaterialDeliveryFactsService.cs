@@ -38,6 +38,7 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 		var embedded = sourceGraph.RequiredMaterials.Intersect(sourceGraph.Materials).ToHashSet();
 		var external = sourceGraph.RequiredMaterials.Except(sourceGraph.Materials).ToHashSet();
 		var missingEmbeddedTextures = GetMissingTextures(embedded, sourceGraph);
+		var embeddedClosure = GetClosureKeys(embedded, sourceGraph);
 		var candidates = external.Count == 0
 			? Array.Empty<MaterialDeliveryCandidate>()
 			: await FindCandidatesAsync(nodeId, external, librarySnapshot, cancellationToken).ConfigureAwait(false);
@@ -49,7 +50,7 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 		if (mode == MaterialDeliveryMode.EmbeddedComplete) notices.Add("材质闭包完整，可作为整体 Mod 重建。" );
 		if (mode == MaterialDeliveryMode.Mixed) notices.Add("内嵌与外部材质混用；后续重建前需要用户确认交付策略。" );
 
-		return new MaterialDeliveryFacts(nodeId, mode, sourceGraph.UnitCount, sourceGraph.RequiredMaterials.Count, embedded.Count, external.Count, missingEmbeddedTextures.Count, candidates, notices);
+		return new MaterialDeliveryFacts(nodeId, mode, sourceGraph.UnitCount, sourceGraph.RequiredMaterials.Count, embedded.Count, external.Count, missingEmbeddedTextures.Count, candidates, notices, embeddedClosure);
 	}
 
 	private async ValueTask<IReadOnlyList<MaterialDeliveryCandidate>> FindCandidatesAsync(ModNodeId sourceNodeId, IReadOnlySet<AssetKey> requiredExternalMaterials, LibrarySnapshot snapshot, CancellationToken cancellationToken)
@@ -64,7 +65,7 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 			var covered = requiredExternalMaterials.Intersect(graph.Materials).ToHashSet();
 			if (covered.Count == 0) continue;
 			var missingTextures = GetMissingTextures(covered, graph);
-			candidates.Add(new MaterialDeliveryCandidate(node.Id, node.Metadata.Name, covered.Count, missingTextures.Count, covered.Count == requiredExternalMaterials.Count && missingTextures.Count == 0));
+			candidates.Add(new MaterialDeliveryCandidate(node.Id, node.Metadata.Name, covered.Count, missingTextures.Count, covered.Count == requiredExternalMaterials.Count && missingTextures.Count == 0, GetClosureKeys(covered, graph)));
 		}
 		return candidates
 			.OrderByDescending(candidate => candidate.IsComplete)
@@ -85,6 +86,11 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 		=> graph.MaterialTextures
 			.Where(pair => materials.Contains(pair.Material) && !graph.Textures.Contains(pair.Texture))
 			.Select(pair => pair.Texture)
+			.ToHashSet();
+
+	private static HashSet<AssetKey> GetClosureKeys(IReadOnlySet<AssetKey> materials, PatchGraph graph)
+		=> materials
+			.Concat(graph.MaterialTextures.Where(pair => materials.Contains(pair.Material) && graph.Textures.Contains(pair.Texture)).Select(pair => pair.Texture))
 			.ToHashSet();
 
 	private static PatchGraph BuildGraph(PatchGroupAnalysisCacheEntry snapshot)

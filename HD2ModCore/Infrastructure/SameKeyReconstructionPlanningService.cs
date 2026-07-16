@@ -3,7 +3,7 @@ using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure;
 
-// Purpose: Resolves each source Unit to a current game-data Unit with the exact same AssetKey and produces a read-only reconstruction plan.
+// Purpose: Resolves each source Unit to a readable current game-data Unit with the exact same AssetKey and produces its reconstruction plan.
 public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructionPlanningService
 {
 	private readonly IPatchTocScanner tocScanner;
@@ -62,11 +62,6 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 				unitPlans.Add(new SameKeyUnitReconstructionPlan(sourceEntry.AssetKey, sourceEntry, null, matchingArchives, null, issues));
 				continue;
 			}
-			if (matchingArchives.Count > 1)
-			{
-				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "SharedCurrentTarget", $"The same Unit AssetKey is present in {matchingArchives.Count} current archives; the first readable archive is used only for this feasibility plan.", sourceEntry.SourceFilePath));
-			}
-
 			PatchUnitMesh sourceUnit;
 			try
 			{
@@ -81,6 +76,7 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 
 			ArchiveMetadata? selectedArchive = null;
 			ArchiveUnitMesh? targetUnit = null;
+			var unreadableArchives = new List<string>();
 			foreach (var archive in matchingArchives)
 			{
 				try
@@ -91,12 +87,13 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 				}
 				catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException)
 				{
-					issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "CurrentTargetUnreadable", $"{archive.ArchiveId}: {exception.Message}", sourceEntry.SourceFilePath, ExceptionMessage: exception.ToString()));
+					unreadableArchives.Add($"{archive.ArchiveId}: {exception.Message}");
 				}
 			}
 			if (targetUnit is null || selectedArchive is null)
 			{
-				issues.Add(Error("CurrentTargetUnreadable", "No indexed current archive yielded a readable same-AssetKey Unit.", sourceEntry));
+				var detail = unreadableArchives.Count == 0 ? string.Empty : $" {string.Join(" | ", unreadableArchives)}";
+				issues.Add(Error("CurrentTargetUnreadable", $"No indexed current archive yielded a readable same-AssetKey Unit.{detail}", sourceEntry));
 				unitPlans.Add(new SameKeyUnitReconstructionPlan(sourceEntry.AssetKey, sourceEntry, null, matchingArchives, null, issues));
 				continue;
 			}
@@ -114,10 +111,6 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 			if (adaptation.Steps.Any(step => step.Kind == UnitMeshAdaptationStepKind.ReplaceWithSource && step.Candidate?.Kind == UnitMeshReplacementCandidateKind.ExperimentalFallback) && !request.AllowExperimentalCandidates)
 			{
 				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "ExperimentalMeshCandidate", "One or more selected mesh mappings need experimental fallback and are not eligible for automatic test-copy output.", sourceEntry.SourceFilePath));
-			}
-			if (adaptation.ReplacementCount == 0)
-			{
-				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "MinifyOnlyPlan", "No source mesh was selected for replacement; this Unit is a minify-only target-shell plan.", sourceEntry.SourceFilePath));
 			}
 			if (!adaptation.CanWrite)
 			{

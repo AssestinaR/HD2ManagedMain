@@ -16,6 +16,12 @@ public sealed class MaterialPackagingApplicationService : IMaterialPackagingAppl
 		this.packagingService = packagingService ?? new MaterialPackagingService();
 	}
 
+	public string? GetSinglePatchTocPath(ModNode source, string modsRootDirectory)
+	{
+		ArgumentNullException.ThrowIfNull(source);
+		return FindBasePatchPaths(source, modsRootDirectory).SingleOrDefault();
+	}
+
 	public async ValueTask<ModMaterialPackagingState> InspectAsync(ModNode source, string modsRootDirectory, CancellationToken cancellationToken = default)
 	{
 		var patchPaths = FindBasePatchPaths(source, modsRootDirectory);

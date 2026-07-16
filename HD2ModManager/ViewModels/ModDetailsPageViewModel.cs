@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -53,7 +54,7 @@ namespace HD2ModManager.ViewModels
         public string UserStatusSummary { get; private set; } = "正在读取状态。";
         public string MaterialPackagingSummary { get; private set; } = "在高级详情中按需读取稳定材质事实。";
         public string MaterialDeliverySummary { get; private set; } = "在高级详情中按需读取稳定材质交付事实。";
-		public string SameKeyReconstructionSummary { get; private set; } = "点击生成后会基于当前 Game Data 直接创建验证候选；内部检查不等同于游戏或 Blender 验证。";
+        public string SameKeyReconstructionSummary { get; private set; } = "仅更新失效 Unit：删除旧 Unit/关联旧 Composite，写入 current target Unit，并原样保留其余资源与 sidecar。不分析或重组材质。";
         public bool CanSplitEmbeddedMaterials => !_materialOperationRunning && _materialState?.CanSplit == true;
         public bool CanReplaceEmbeddedMaterials => !_materialOperationRunning && _materialState?.HasEmbeddedMaterials == true;
         public bool CanEmbedExternalMaterials => !_materialOperationRunning && _materialState?.HasExternalMaterials == true;
@@ -74,7 +75,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand SplitEmbeddedMaterialsCommand { get; }
         public RelayCommand ReplaceEmbeddedMaterialsCommand { get; }
         public RelayCommand EmbedExternalMaterialsCommand { get; }
-		public RelayCommand RebuildSameKeyCommand { get; }
+        public RelayCommand RebuildSameKeyCommand { get; }
 
         public ModDetailsPageViewModel(ModLibraryService library, ProfileService profiles, DerivedStateCoordinator derivedState, string modId, NotificationService? notifications = null)
         {
@@ -96,7 +97,7 @@ namespace HD2ModManager.ViewModels
             SplitEmbeddedMaterialsCommand = new RelayCommand(async _ => await SplitEmbeddedMaterialsAsync(), _ => CanSplitEmbeddedMaterials);
             ReplaceEmbeddedMaterialsCommand = new RelayCommand(async _ => await MergeMaterialCandidateAsync(requireAllExternalMaterials: false), _ => CanReplaceEmbeddedMaterials);
             EmbedExternalMaterialsCommand = new RelayCommand(async _ => await MergeMaterialCandidateAsync(requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
-			RebuildSameKeyCommand = new RelayCommand(async _ => await RebuildSameKeyAsync(), _ => CanRebuildSameKey);
+            RebuildSameKeyCommand = new RelayCommand(async _ => await RebuildSameKeyAsync(), _ => CanRebuildSameKey);
             _snapshotChangedHandler = (_, _) => RunOnUiThread(() =>
             {
                 if (_disposed) return;
@@ -437,7 +438,8 @@ namespace HD2ModManager.ViewModels
             RaiseSameKeyReconstructionCommandState();
             try
             {
-                var result = await _sameKeyReconstruction.GenerateCandidateAsync(source, _library.ModsRootDirectory, SettingsService.GetGameDataFolder(), output.OutputDirectory);
+                _notifications?.Show("正在读取写出所需 Payload 并生成 current-target 验证候选，请勿关闭程序…", NotificationLevel.Info, TimeSpan.FromSeconds(20));
+                var result = await Task.Run(() => _sameKeyReconstruction.GenerateCandidateAsync(source, _library.ModsRootDirectory, SettingsService.GetGameDataFolder(), output.OutputDirectory).AsTask());
                 if (!result.IsSuccessful)
                 {
                     _notifications?.Show(string.Join("；", result.Issues.Select(issue => issue.Message).Take(3)), NotificationLevel.Error, TimeSpan.FromSeconds(10));
@@ -447,8 +449,12 @@ namespace HD2ModManager.ViewModels
                 {
                     await new ImportService(_library).ImportPathAsync(result.OutputDirectory, default);
                 }
-                _notifications?.Show($"正式验证候选已生成：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。输出目录包含 formal-validation-checklist.md。{(output.ImportToLibrary ? "已导入 Mod 库。" : "已写出到目标文件夹。")}", NotificationLevel.Info, TimeSpan.FromSeconds(10));
+                _notifications?.Show($"正式验证候选已生成：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。其余资源与 sidecar 已保留。输出目录包含 formal-validation-checklist.md。{(output.ImportToLibrary ? "已导入 Mod 库。" : "已写出到目标文件夹。")}", NotificationLevel.Info, TimeSpan.FromSeconds(10));
             }
+			catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException or KeyNotFoundException)
+			{
+				_notifications?.Show($"生成验证候选失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(12));
+			}
             finally
             {
                 _sameKeyReconstructionRunning = false;

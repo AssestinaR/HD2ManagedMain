@@ -51,11 +51,11 @@
             </Border>
             <Border Style="{StaticResource CardContainer}" Margin="0,0,0,10">
                 <StackPanel>
-                    <TextBlock Text="重建为当前版本（正式验证候选）" Style="{StaticResource SectionTitle}"/>
-                    <TextBlock Text="点击后才会读取 source/current target Unit 并生成独立候选副本，不修改源 Mod。生成成功仅表示内部结构检查完成；请在 Blender 或游戏中完成外部验证。" TextWrapping="Wrap" Foreground="#666" Margin="0,8,0,0"/>
+                    <TextBlock Text="更新 Unit 为当前版本（正式验证候选）" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="读取 source/current target Unit 并生成独立候选副本，不修改源 Mod。操作仅更新失效 Unit，原样保留其余 Patch 条目与 sidecar；不检测、拆分或合并材质。生成成功仅表示内部结构检查完成；请在 Blender 或游戏中完成外部验证。" TextWrapping="Wrap" Foreground="#666" Margin="0,8,0,0"/>
                     <TextBlock Text="{Binding SameKeyReconstructionSummary}" TextWrapping="Wrap" Foreground="#255A3A" Margin="0,8,0,12"/>
                     <WrapPanel>
-                        <Button Content="生成正式验证候选..." ToolTip="验证同 AssetKey current target shell 后，写出独立的正式版测试候选" Command="{Binding RebuildSameKeyCommand}" Padding="12,7" Margin="0,0,8,8"/>
+                        <Button Content="更新 Unit（保持其余资源）..." ToolTip="仅替换旧 Unit/关联旧 Composite，并保留其他资源与 sidecar" Command="{Binding RebuildSameKeyCommand}" Padding="12,7" Margin="0,0,8,8"/>
                     </WrapPanel>
                 </StackPanel>
             </Border>

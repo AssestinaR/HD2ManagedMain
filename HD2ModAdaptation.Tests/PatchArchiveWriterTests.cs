@@ -76,6 +76,34 @@ public sealed class PatchArchiveWriterTests : IDisposable
 		Assert.Equal(new byte[] { 8, 8 }, payload.GpuResourceData);
 	}
 
+	[Fact]
+	public async Task WriteAsync_WithoutEdits_RetainsPayloadAndStreamSidecar()
+	{
+		var sourceDirectory = Path.Combine(root, "source-retained");
+		var outputDirectory = Path.Combine(root, "output-retained");
+		Directory.CreateDirectory(sourceDirectory);
+		var sourcePath = Path.Combine(sourceDirectory, "unit.patch");
+		var toc = CreateLegacyToc(new byte[] { 1, 2, 3 });
+		const int entryOffset = 92;
+		Write64(toc, entryOffset + 24, 2);
+		Write64(toc, entryOffset + 32, 0);
+		Write32(toc, entryOffset + 60, 3);
+		Write32(toc, entryOffset + 64, 2);
+		await File.WriteAllBytesAsync(sourcePath, toc);
+		await File.WriteAllBytesAsync(sourcePath + ".stream", new byte[] { 8, 8, 4, 5, 6 });
+		await File.WriteAllBytesAsync(sourcePath + ".gpu_resources", new byte[] { 7, 9 });
+
+		var result = await new PatchArchiveWriter().WriteAsync(sourcePath, outputDirectory, Array.Empty<PatchUnitMeshEditResult>());
+
+		Assert.True(File.Exists(result.StreamFilePath));
+		Assert.Equal(new byte[] { 8, 8, 4, 5, 6 }, await File.ReadAllBytesAsync(result.StreamFilePath));
+		var rebuilt = (await new PatchTocScanner().ScanEntriesAsync(result.TocFilePath)).Single();
+		var payload = await new PatchEntryPayloadReader().ReadPayloadAsync(rebuilt);
+		Assert.Equal(new byte[] { 1, 2, 3 }, payload.TocData);
+		Assert.Equal(new byte[] { 4, 5, 6 }, payload.StreamData);
+		Assert.Equal(new byte[] { 7, 9 }, payload.GpuResourceData);
+	}
+
 	public void Dispose()
 	{
 		if (Directory.Exists(root)) Directory.Delete(root, true);

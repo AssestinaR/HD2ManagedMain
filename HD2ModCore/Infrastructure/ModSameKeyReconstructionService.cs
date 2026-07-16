@@ -93,10 +93,6 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 				if (unit.HasExperimentalCandidate) issues.Add(Error("ExperimentalMeshMapping", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 包含实验性 mesh mapping；正式第一版不会写出。", source.Id));
 				if (unit.TargetArchive is null) issues.Add(Error("SelectedArchiveMissing", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 没有可读的 current target archive。", source.Id));
 			}
-			if (plan.Units.Count != 0 && plan.Units.Any(unit => unit.Adaptation?.ReplacementCount == 0))
-			{
-				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "MinifyOnlyTargetUnits", "部分 Unit 没有 replacement mesh；它们将作为完整 minify-only current target shell 输出。", NodeId: source.Id));
-			}
 			return CreateState(source.Id, patchPaths[0], plan, true, issues);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException or OverflowException)
@@ -105,14 +101,6 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 			return CreateState(source.Id, patchPaths[0], null, true, issues);
 		}
 	}
-
-	public async ValueTask<SameKeyReconstructionOperationResult> WriteTestCopyAsync(
-		ModNode source,
-		string modsRootDirectory,
-		string gameDataDirectory,
-		string outputRootDirectory,
-		CancellationToken cancellationToken = default)
-		=> await GenerateCandidateAsync(source, modsRootDirectory, gameDataDirectory, outputRootDirectory, cancellationToken).ConfigureAwait(false);
 
 	public async ValueTask<SameKeyReconstructionOperationResult> GenerateCandidateAsync(
 		ModNode source,
@@ -209,17 +197,16 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 			{
 				throw new InvalidDataException("Reconstruction must replace every old source Unit; refusing to preserve obsolete Unit data.");
 			}
-			var modelDirectory = Path.Combine(outputDirectory, "model");
 			var removals = await GetAllSourceUnitAndCompositeRemovalsAsync(sourceEntries, cancellationToken).ConfigureAwait(false);
 			var headerArchive = plan.Units.First().TargetArchive ?? throw new InvalidDataException("No selected current target archive is available for the output header.");
 			var headerTemplate = await resolver.GetPackageTocAsync(headerArchive.ArchiveId, cancellationToken).ConfigureAwait(false)
 				?? throw new FileNotFoundException("The selected current target archive TOC could not be read.", headerArchive.ArchiveId);
-			var write = await archiveWriter.WriteAsync(sourcePath, modelDirectory, Array.Empty<AdaptationPatchUnitMeshEditResult>(), output.AdditionalEntries, removals, preserveOriginalStream: false, headerTemplateTocData: headerTemplate.Data, cancellationToken: cancellationToken).ConfigureAwait(false);
-			var verification = await VerifyOutputAsync(write.TocFilePath, output, cancellationToken).ConfigureAwait(false);
+			var write = await archiveWriter.WriteAsync(sourcePath, outputDirectory, Array.Empty<AdaptationPatchUnitMeshEditResult>(), output.AdditionalEntries, removals, preserveOriginalStream: true, headerTemplateTocData: headerTemplate.Data, cancellationToken: cancellationToken).ConfigureAwait(false);
+			var verification = await VerifyOutputAsync(write.TocFilePath, output, removals, cancellationToken).ConfigureAwait(false);
 			if (verification.Count != 0) throw new InvalidDataException(string.Join(Environment.NewLine, verification));
 			var report = await WriteReportAsync(outputDirectory, source, state, write, cancellationToken).ConfigureAwait(false);
 			await WriteFormalValidationChecklistAsync(outputDirectory, source, state, cancellationToken).ConfigureAwait(false);
-			return new SameKeyReconstructionOperationResult(true, outputDirectory, modelDirectory, report.JsonPath, report.MarkdownPath, output.UnitResults.Count, output.UnitResults.Count(result => result.ReplacementCount > 0), output.UnitResults.Count(result => result.ReplacementCount == 0), output.UnitResults.Sum(result => result.ReplacementCount), output.UnitResults.Sum(result => result.MinifiedCount), state.Issues);
+			return new SameKeyReconstructionOperationResult(true, outputDirectory, report.JsonPath, report.MarkdownPath, output.UnitResults.Count, output.UnitResults.Count(result => result.ReplacementCount > 0), output.UnitResults.Count(result => result.ReplacementCount == 0), output.UnitResults.Sum(result => result.ReplacementCount), output.UnitResults.Sum(result => result.MinifiedCount), state.Issues);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException or OverflowException)
 		{
@@ -244,15 +231,25 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 		return unitEntries.Concat(sourceEntries.Where(entry => entry.AssetKey.TypeId == compositeUnitTypeId && compositeIds.Contains(entry.AssetKey.FileId))).ToArray();
 	}
 
-	private async ValueTask<IReadOnlyList<string>> VerifyOutputAsync(string outputTocPath, AdaptationSdkStyleTargetShellPatchOutput output, CancellationToken cancellationToken)
+	private async ValueTask<IReadOnlyList<string>> VerifyOutputAsync(string outputTocPath, AdaptationSdkStyleTargetShellPatchOutput output, IReadOnlyCollection<AdaptationPatchTocEntry> removals, CancellationToken cancellationToken)
 	{
-		const ulong compositeUnitTypeId = 0xc4f0f4be7fb0c8d6;
 		var errors = new List<string>();
 		var entries = await new AdaptationPatchTocScanner().ScanEntriesAsync(outputTocPath, cancellationToken).ConfigureAwait(false);
 		var unitKeys = entries.Where(entry => entry.AssetKey.TypeId == AdaptationPatchUnitMeshReader.UnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
 		if (!unitKeys.SetEquals(output.UnitResults.Select(result => result.TargetUnitAssetKey))) errors.Add("输出 Unit 集合与批准的 current target Unit 集合不一致。");
-		if (entries.Any(entry => entry.AssetKey.TypeId == compositeUnitTypeId)) errors.Add("输出仍包含 Composite Unit；阶段 1 的 current target shell 不应保留旧 Composite。");
+		var outputKeys = entries.Select(entry => entry.AssetKey).ToHashSet();
+		foreach (var removed in removals)
+		{
+			if (outputKeys.Contains(removed.AssetKey)) errors.Add($"输出仍包含应删除的旧资源 0x{removed.AssetKey.FileId:x16}。");
+		}
 		if (entries.GroupBy(entry => entry.AssetKey).Any(group => group.Count() != 1)) errors.Add("输出包含重复 AssetKey。");
+		var streamLength = File.Exists(outputTocPath + ".stream") ? new FileInfo(outputTocPath + ".stream").Length : 0;
+		var gpuLength = File.Exists(outputTocPath + ".gpu_resources") ? new FileInfo(outputTocPath + ".gpu_resources").Length : 0;
+		foreach (var entry in entries)
+		{
+			if ((ulong)streamLength < entry.StreamOffset + entry.StreamSize) errors.Add($"Asset 0x{entry.AssetKey.FileId:x16} 的 stream 范围超出输出 sidecar。");
+			if ((ulong)gpuLength < entry.GpuResourceOffset + entry.GpuResourceSize) errors.Add($"Asset 0x{entry.AssetKey.FileId:x16} 的 gpu_resources 范围超出输出 sidecar。");
+		}
 		foreach (var unit in output.UnitResults)
 		{
 			var entry = entries.SingleOrDefault(candidate => candidate.AssetKey == unit.TargetUnitAssetKey);
@@ -277,8 +274,8 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 			SourceMod = source.Metadata.Name,
 			SourcePatch = state.SourcePatchTocPath,
 			GeneratedUtc = DateTimeOffset.UtcNow,
-				InternalStructuralChecks = "Passed",
-				ExternalValidation = "Pending: Blender or in-game validation is required.",
+			InternalStructuralChecks = "Passed",
+			ExternalValidation = "Pending: Blender or in-game validation is required.",
 			Output = new { write.TocFilePath, write.StreamFilePath, write.GpuResourceFilePath, TocSha256 = await HashFileAsync(write.TocFilePath, cancellationToken).ConfigureAwait(false), StreamSha256 = await HashFileAsync(write.StreamFilePath, cancellationToken).ConfigureAwait(false), GpuSha256 = await HashFileAsync(write.GpuResourceFilePath, cancellationToken).ConfigureAwait(false) },
 			Units = state.Plan!.Units.Select(unit => new { AssetKey = $"0x{unit.UnitAssetKey.FileId:x16}", Archive = unit.TargetArchive?.ArchiveId, ReplacementMeshes = unit.Adaptation?.ReplacementCount ?? 0, MinifiedMeshes = unit.Adaptation?.MinifiedCount ?? 0, SharedTarget = unit.IsSharedTarget }),
 			Issues = state.Issues.Select(issue => new { Severity = issue.Severity.ToString(), issue.Code, issue.Message })
@@ -292,6 +289,7 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 			.AppendLine($"- Source Mod: {source.Metadata.Name}")
 			.AppendLine($"- Source Patch: {state.SourcePatchTocPath}")
 			.AppendLine($"- Output Patch: {write.TocFilePath}")
+			.AppendLine("- Non-Unit resources: retained unchanged from the input Patch")
 			.AppendLine($"- Units: {state.Plan!.Units.Count}")
 			.AppendLine("- Internal structural checks: passed")
 			.AppendLine("- External validation: pending Blender or in-game test")
@@ -315,11 +313,13 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 			.AppendLine($"- Candidate: {source.Metadata.Name}")
 			.AppendLine($"- Generated (UTC): {DateTimeOffset.UtcNow:O}")
 			.AppendLine($"- Units: {state.Plan?.SourceUnitCount ?? 0}; replacement meshes: {state.ReplacementMeshCount}; minified meshes: {state.MinifiedMeshCount}")
+			.AppendLine("- Non-Unit resources and sidecars: retained from the input Patch")
 			.AppendLine()
 			.AppendLine("## Candidate guarantees")
 			.AppendLine()
 			.AppendLine("- This output is generated from current same-AssetKey target Units; it does not reuse old source Unit or Composite Unit payloads.")
 			.AppendLine("- Every current target mesh slot is covered by either a transferred mesh or a minified target-shell mesh.")
+			.AppendLine("- Material bindings in rebuilt source meshes and retained non-Unit Patch entries are not repackaged or validated by this operation.")
 			.AppendLine("- Experimental mesh mappings are blocked before this candidate can be written.")
 			.AppendLine("- Bone weights are conservatively re-encoded from the source data. SDK byte-for-byte weight equality is not required for this validation candidate.")
 			.AppendLine()
@@ -334,7 +334,7 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 			.AppendLine("- Verify armoury loading, equipment preview, and a mission load without crashes or missing-resource errors.")
 			.AppendLine("- Check idle, walking, sprinting, aiming, crouching, diving, ragdoll/recovery, and camera-distance changes.")
 			.AppendLine("- Check first- and third-person views for visible stretching, detached geometry, severe clipping, or original target-shell remnants.")
-			.AppendLine("- Check material appearance separately. A current-target material fallback can be expected when a source material/texture dependency closure is unavailable.")
+			.AppendLine("- Check material appearance separately; this operation preserves existing material references and does not package dependencies.")
 			.AppendLine()
 			.AppendLine("## Result classification")
 			.AppendLine()
@@ -361,7 +361,7 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 		=> new(sourceId, patchPath, plan, indexCurrent, plan?.Units.Count(unit => unit.Adaptation?.ReplacementCount > 0) ?? 0, plan?.Units.Count(unit => unit.Adaptation?.ReplacementCount == 0) ?? 0, plan?.Units.Sum(unit => unit.Adaptation?.ReplacementCount ?? 0) ?? 0, plan?.Units.Sum(unit => unit.Adaptation?.MinifiedCount ?? 0) ?? 0, plan?.Units.Count(unit => unit.IsSharedTarget) ?? 0, issues);
 
 	private static SameKeyReconstructionOperationResult Failure(IReadOnlyList<CoreIssue> issues, string? outputDirectory = null)
-		=> new(false, outputDirectory, null, null, null, 0, 0, 0, 0, 0, issues);
+		=> new(false, outputDirectory, null, null, 0, 0, 0, 0, 0, issues);
 
 	private static CoreIssue Error(string code, string message, ModNodeId nodeId, Exception? exception = null)
 		=> new(CoreIssueSeverity.Error, code, message, NodeId: nodeId, ExceptionMessage: exception?.ToString());

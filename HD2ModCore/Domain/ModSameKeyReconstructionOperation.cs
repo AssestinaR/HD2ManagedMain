@@ -23,7 +23,6 @@ public sealed record ModSameKeyReconstructionState(
 public sealed record SameKeyReconstructionOperationResult(
 	bool IsSuccessful,
 	string? OutputDirectory,
-	string? ModelDirectory,
 	string? ReportJsonPath,
 	string? ReportMarkdownPath,
 	int OutputUnitCount,

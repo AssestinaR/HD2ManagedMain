@@ -1,6 +1,5 @@
 using System.IO;
 using System.Windows;
-using HD2ModCore.Domain;
 using Microsoft.Win32;
 
 namespace HD2ModManager.Views;
@@ -11,7 +10,7 @@ public partial class SameKeyReconstructionOutputWindow : Window
 	public SameKeyReconstructionOutputWindow()
 	{
 		InitializeComponent();
-		SummaryText.Text = "将根据当前 Game Data 直接生成独立验证候选。生成过程会执行必要的结构性检查；请随后使用 Blender 或游戏完成外部验证。";
+		SummaryText.Text = "将根据当前 Game Data 更新失效 Unit，并原样保留输入 Patch 的其余资源与 sidecar。";
 	}
 
 	public string OutputDirectory { get; private set; } = string.Empty;
