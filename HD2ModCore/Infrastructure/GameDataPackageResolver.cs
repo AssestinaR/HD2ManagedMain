@@ -21,7 +21,6 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 	private readonly string _gameDataDirectory;
 	private readonly Dictionary<string, PackageInfo> _packages = new(StringComparer.OrdinalIgnoreCase);
 	private readonly Dictionary<string, Dictionary<long, int>> _bundleChunkOffsets = new(StringComparer.OrdinalIgnoreCase);
-	private readonly Dictionary<string, byte[]> _reconstructedPackages = new(StringComparer.OrdinalIgnoreCase);
 	private bool _initialized;
 
 	public GameDataPackageResolver(string gameDataDirectory)
@@ -44,7 +43,7 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 		{
 			PackageStorageType.Legacy => await ReadLegacyTocAsync(fullPath, cancellationToken).ConfigureAwait(false),
 			PackageStorageType.Dsar => await GetResourceFromDsarAsync(fullPath, 0, cancellationToken).ConfigureAwait(false),
-			PackageStorageType.Bundled => await ReconstructBundledPackageAsync(Path.GetFileName(packageName), cancellationToken).ConfigureAwait(false),
+			PackageStorageType.Bundled => await GetBundledPackageTocAsync(Path.GetFileName(packageName), cancellationToken).ConfigureAwait(false),
 			_ => null,
 		};
 
@@ -139,33 +138,33 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 
 	private async ValueTask<byte[]?> GetBundledPackageTocAsync(string packageName, CancellationToken cancellationToken)
 	{
-		await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-		if (!_packages.TryGetValue(packageName, out var package) || package.Entries.Count == 0)
+		var header = await ReadBundledPackageRangeAsync(packageName, 0, 12, cancellationToken).ConfigureAwait(false);
+		if (header is null || header.Length < 12 || BinaryPrimitivesLE.ReadUInt32(header.AsSpan(0, 4)) != TocMagic)
 		{
 			return null;
 		}
 
-		var first = package.Entries[0];
-		return await GetResourceFromDsarAsync(
-			Path.Combine(_gameDataDirectory, $"bundles.{first.BundleIndex:00}.nxa"),
-			first.StartOffset,
-			cancellationToken).ConfigureAwait(false);
+		var typeCount = BinaryPrimitivesLE.ReadUInt32(header.AsSpan(4, 4));
+		var fileCount = BinaryPrimitivesLE.ReadUInt32(header.AsSpan(8, 4));
+		var legacyLength = checked(60 + checked((int)typeCount * 32) + checked((int)fileCount * 80));
+		var slimLength = checked(72 + checked((int)typeCount * 32) + checked((int)fileCount * 80));
+		return await ReadBundledPackageRangeAsync(packageName, 0, Math.Max(legacyLength, slimLength), cancellationToken).ConfigureAwait(false);
 	}
 
-	private async ValueTask<byte[]?> ReconstructBundledPackageAsync(string packageName, CancellationToken cancellationToken)
+	private async ValueTask<byte[]?> ReadBundledPackageRangeAsync(string packageName, long resourceOffset, int resourceSize, CancellationToken cancellationToken)
 	{
 		await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-		if (_reconstructedPackages.TryGetValue(packageName, out var cached))
-		{
-			return cached;
-		}
-
 		if (!_packages.TryGetValue(packageName, out var package) || package.Entries.Count == 0)
 		{
 			return null;
 		}
+		if (resourceOffset < 0 || resourceSize <= 0 || resourceOffset >= package.Size)
+		{
+			return null;
+		}
 
-		var packageData = new byte[checked((int)package.Size)];
+		var requestedEnd = Math.Min(package.Size, checked(resourceOffset + resourceSize));
+		var range = new byte[checked((int)(requestedEnd - resourceOffset))];
 		var orderedEntries = package.Entries
 			.OrderBy(e => e.OriginalArchiveOffset)
 			.ToArray();
@@ -174,42 +173,37 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 		{
 			var entry = orderedEntries[i];
 			var nextOffset = i + 1 < orderedEntries.Length ? orderedEntries[i + 1].OriginalArchiveOffset : package.Size;
-			var itemSize = checked((int)(nextOffset - entry.OriginalArchiveOffset));
-			if (itemSize <= 0)
+			var copyStart = Math.Max(resourceOffset, entry.OriginalArchiveOffset);
+			var copyEnd = Math.Min(requestedEnd, nextOffset);
+			if (copyEnd <= copyStart)
 			{
 				continue;
 			}
+			var bytesBeforeRange = checked((int)(copyStart - entry.OriginalArchiveOffset));
+			var bytesToRead = checked((int)(copyEnd - entry.OriginalArchiveOffset));
 
 			var resources = await GetBundledResourcesAsync(
 				Path.Combine(_gameDataDirectory, $"bundles.{entry.BundleIndex:00}.nxa"),
 				entry.StartOffset,
-				itemSize,
+				bytesToRead,
 				cancellationToken).ConfigureAwait(false);
 			var combined = Combine(resources);
-			var copyLength = Math.Min(combined.Length, itemSize);
-			Buffer.BlockCopy(combined, 0, packageData, checked((int)entry.OriginalArchiveOffset), copyLength);
+			if (combined.Length <= bytesBeforeRange)
+			{
+				continue;
+			}
+			var copyLength = Math.Min(combined.Length - bytesBeforeRange, checked((int)(copyEnd - copyStart)));
+			Buffer.BlockCopy(combined, bytesBeforeRange, range, checked((int)(copyStart - resourceOffset)), copyLength);
 		}
 
-		_reconstructedPackages[packageName] = packageData;
-		return packageData;
+		return range;
 	}
 
 	private async ValueTask<byte[]?> GetBundledPackageResourceAsync(string packageName, long resourceOffset, uint resourceSize, CancellationToken cancellationToken)
 	{
-		var packageData = await ReconstructBundledPackageAsync(packageName, cancellationToken).ConfigureAwait(false);
-		if (packageData is null || resourceSize == 0)
-		{
-			return null;
-		}
-
-		var offset = checked((int)resourceOffset);
-		var size = checked((int)resourceSize);
-		if (offset < 0 || offset + size > packageData.Length)
-		{
-			return null;
-		}
-
-		return packageData.AsSpan(offset, size).ToArray();
+		return resourceSize == 0
+			? Array.Empty<byte>()
+			: await ReadBundledPackageRangeAsync(packageName, resourceOffset, checked((int)resourceSize), cancellationToken).ConfigureAwait(false);
 	}
 
 	private async ValueTask<IReadOnlyList<byte[]>> GetBundledResourcesAsync(string bundlePath, long startOffset, int size, CancellationToken cancellationToken)

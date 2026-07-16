@@ -9,4 +9,5 @@ public enum UnitMeshReplacementCandidateKind
 	SameLodAndMaterialSlots = 2,
 	SameMeshId = 3,
 	ExperimentalFallback = 4,
+	SdkStreamTranscode = 5,
 }

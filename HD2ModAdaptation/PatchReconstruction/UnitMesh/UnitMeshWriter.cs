@@ -20,6 +20,7 @@ public sealed class UnitMeshWriter
 
 		WriteMeshMaterialSlots(meshTocData, writableModel.Meshes);
 		WriteMaterialBindings(tocData, writableModel);
+		WriteBoneInfos(tocData, writableModel);
 		var gpuData = BuildGpuData(writableModel, meshTocData);
 		return new UnitMeshWriteResult(tocData, gpuData, compositeTocData, compositeTocData is null ? null : gpuData);
 	}
@@ -304,6 +305,86 @@ public sealed class UnitMeshWriter
 		}
 	}
 
+	private static void WriteBoneInfos(byte[] tocData, UnitMeshModel model)
+	{
+		if (model.BoneInfoOffset == UnsupportedOffset || model.BoneInfos.Count == 0)
+		{
+			return;
+		}
+
+		var boneInfoOffset = checked((int)model.BoneInfoOffset);
+		EnsureWritableRange(tocData, boneInfoOffset, 4 + model.BoneInfos.Count * 4, "bone info table");
+		var storedCount = checked((int)ReadUInt32(tocData, boneInfoOffset));
+		if (storedCount != model.BoneInfos.Count)
+		{
+			throw new InvalidDataException("Cannot rewrite BoneInfo because its record count differs from the current target payload.");
+		}
+
+		var matrixByTransformIndex = new Dictionary<uint, byte[]>();
+		foreach (var boneInfo in model.BoneInfos)
+		{
+			for (var i = 0; i < Math.Min(boneInfo.RealIndices.Count, boneInfo.BoneMatrices.Count); i++)
+			{
+				matrixByTransformIndex.TryAdd(boneInfo.RealIndices[i], boneInfo.BoneMatrices[i]);
+			}
+		}
+
+		for (var index = 0; index < model.BoneInfos.Count; index++)
+		{
+			var recordStart = checked(boneInfoOffset + (int)ReadUInt32(tocData, boneInfoOffset + 4 + index * 4));
+			var recordEnd = index + 1 < model.BoneInfos.Count
+				? checked(boneInfoOffset + (int)ReadUInt32(tocData, boneInfoOffset + 4 + (index + 1) * 4))
+				: checked((int)(model.StreamInfoOffset == UnsupportedOffset ? model.MeshInfoOffset : model.StreamInfoOffset));
+			var payload = SerializeBoneInfo(model.BoneInfos[index], matrixByTransformIndex);
+			if (payload.Length > recordEnd - recordStart)
+			{
+				throw new InvalidDataException($"Rebuilt BoneInfo {index} needs {payload.Length} bytes but the current target record has {recordEnd - recordStart} bytes.");
+			}
+			payload.CopyTo(tocData.AsSpan(recordStart, payload.Length));
+			tocData.AsSpan(recordStart + payload.Length, recordEnd - recordStart - payload.Length).Clear();
+		}
+	}
+
+	private static byte[] SerializeBoneInfo(UnitBoneInfo boneInfo, IReadOnlyDictionary<uint, byte[]> matrixByTransformIndex)
+	{
+		var count = boneInfo.RealIndices.Count;
+		var matrixOffset = 16;
+		var realIndicesOffset = checked(matrixOffset + count * 64);
+		var remapDataOffset = checked(realIndicesOffset + count * 4);
+		var remapTableSize = checked(4 + boneInfo.Remaps.Count * 8);
+		var remapValuesSize = checked(boneInfo.Remaps.Sum(remap => remap.FakeIndices.Count) * 4);
+		var payload = new byte[checked(remapDataOffset + remapTableSize + remapValuesSize)];
+		WriteUInt32(payload, 0, checked((uint)count));
+		WriteUInt32(payload, 4, checked((uint)matrixOffset));
+		WriteUInt32(payload, 8, checked((uint)realIndicesOffset));
+		WriteUInt32(payload, 12, checked((uint)remapDataOffset));
+		for (var index = 0; index < count; index++)
+		{
+			if (!matrixByTransformIndex.TryGetValue(boneInfo.RealIndices[index], out var matrix) || matrix.Length != 64)
+			{
+				throw new InvalidDataException($"No current-target inverse joint matrix exists for transform index {boneInfo.RealIndices[index]}.");
+			}
+			matrix.CopyTo(payload.AsSpan(matrixOffset + index * 64, 64));
+			WriteUInt32(payload, realIndicesOffset + index * 4, boneInfo.RealIndices[index]);
+		}
+
+		WriteUInt32(payload, remapDataOffset, checked((uint)boneInfo.Remaps.Count));
+		var valuesOffset = remapTableSize;
+		for (var index = 0; index < boneInfo.Remaps.Count; index++)
+		{
+			var remap = boneInfo.Remaps[index];
+			var tableOffset = remapDataOffset + 4 + index * 8;
+			WriteUInt32(payload, tableOffset, checked((uint)valuesOffset));
+			WriteUInt32(payload, tableOffset + 4, checked((uint)remap.FakeIndices.Count));
+			foreach (var fakeIndex in remap.FakeIndices)
+			{
+				WriteUInt32(payload, remapDataOffset + valuesOffset, fakeIndex);
+				valuesOffset += 4;
+			}
+		}
+		return payload;
+	}
+
 	private static UnitMeshInfo? FindMeshInfo(UnitMeshModel model, int meshInfoIndex)
 	{
 		return model.Meshes.FirstOrDefault(mesh => mesh.Index == meshInfoIndex);
@@ -322,7 +403,7 @@ public sealed class UnitMeshWriter
 		cursor += 4;
 		cursor += 32;
 		WriteUInt32(tocData, cursor, indexCount); cursor += 4;
-		cursor += 4;
+		WriteUInt32(tocData, cursor, stream.IndexBufferType); cursor += 4;
 		cursor += 16;
 		WriteUInt32(tocData, cursor, vertexBufferOffset); cursor += 4;
 		WriteUInt32(tocData, cursor, vertexBufferSize); cursor += 4;

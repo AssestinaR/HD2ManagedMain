@@ -157,9 +157,25 @@ public sealed class UnitMeshReader
 		var realIndicesOffset = ReadUInt32(data, absoluteOffset + 8);
 		var remapDataOffset = ReadUInt32(data, absoluteOffset + 12);
 
+		var matrices = ReadBoneInfoMatrices(data, absoluteOffset, endOffset, numBones, matrixOffset);
 		var realIndices = ReadBoneInfoRealIndices(data, absoluteOffset, endOffset, numBones, realIndicesOffset);
 		var remaps = ReadBoneInfoRemaps(data, absoluteOffset, endOffset, remapDataOffset);
-		return new UnitBoneInfo(index, absoluteOffset, numBones, matrixOffset, realIndicesOffset, remapDataOffset, realIndices, remaps);
+		return new UnitBoneInfo(index, absoluteOffset, numBones, matrixOffset, realIndicesOffset, remapDataOffset, realIndices, remaps)
+		{
+			BoneMatrices = matrices
+		};
+	}
+
+	private static IReadOnlyList<byte[]> ReadBoneInfoMatrices(ReadOnlySpan<byte> data, uint absoluteOffset, uint endOffset, uint numBones, uint matrixOffset)
+	{
+		var matrixStart = checked(absoluteOffset + matrixOffset);
+		EnsureRangeWithin(data, matrixStart, checked((int)(numBones * 64)), endOffset, "bone info matrices");
+		var matrices = new byte[checked((int)numBones)][];
+		for (var i = 0; i < matrices.Length; i++)
+		{
+			matrices[i] = data.Slice(checked((int)matrixStart + i * 64), 64).ToArray();
+		}
+		return matrices;
 	}
 
 	private static IReadOnlyList<uint> ReadBoneInfoRealIndices(ReadOnlySpan<byte> data, uint absoluteOffset, uint endOffset, uint numBones, uint realIndicesOffset)

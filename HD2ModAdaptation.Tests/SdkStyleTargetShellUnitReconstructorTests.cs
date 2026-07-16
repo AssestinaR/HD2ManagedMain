@@ -1,0 +1,78 @@
+using HD2ModAdaptation.PatchReconstruction;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle;
+using Xunit;
+
+namespace HD2ModAdaptation.Tests;
+
+// Purpose: Verifies SDK-style target-shell reconstruction replaces explicit slots and minifies all other current target slots.
+public sealed class SdkStyleTargetShellUnitReconstructorTests
+{
+	private static readonly AssetKey SourceKey = new(PatchUnitMeshReader.UnitTypeId, 0x1001);
+	private static readonly AssetKey TargetKey = new(PatchUnitMeshReader.UnitTypeId, 0x2001);
+
+	[Fact]
+	public void Reconstruct_ReplacesMappedSlotAndMinifiesEveryOtherTargetSlot()
+	{
+		var source = CreatePatchUnit(SourceKey, CreateModel(vertexSeed: 7, meshCount: 1));
+		var target = CreateTargetUnit(CreateModel(vertexSeed: 1, meshCount: 2));
+
+		var result = new SdkStyleTargetShellUnitReconstructor().Reconstruct(
+			target,
+			new[] { source },
+			new[] { new TargetShellMeshMapping(SourceKey, 0, 0) });
+
+		Assert.Equal(new[] { 1 }, result.MinifiedTargetMeshInfoIndexes);
+		Assert.Equal(2, result.CoveredTargetMeshCount);
+		Assert.Equal(3, result.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == 1).Vertices.Count);
+		Assert.NotEmpty(result.WriteResult.TocData);
+		Assert.NotEmpty(result.WriteResult.GpuData);
+	}
+
+	[Fact]
+	public void Reconstruct_WithoutMappings_MinifiesEveryTargetSlot()
+	{
+		var target = CreateTargetUnit(CreateModel(vertexSeed: 1, meshCount: 2));
+
+		var result = new SdkStyleTargetShellUnitReconstructor().Reconstruct(
+			target,
+			Array.Empty<PatchUnitMesh>(),
+			Array.Empty<TargetShellMeshMapping>());
+
+		Assert.Empty(result.Replacements);
+		Assert.Equal(new[] { 0, 1 }, result.MinifiedTargetMeshInfoIndexes);
+		Assert.All(result.Model.RawMeshData, mesh => Assert.Equal(3, mesh.Vertices.Count));
+		Assert.NotEmpty(result.WriteResult.TocData);
+		Assert.NotEmpty(result.WriteResult.GpuData);
+	}
+
+	private static PatchUnitMesh CreatePatchUnit(AssetKey key, UnitMeshModel model)
+	{
+		var entry = new PatchTocEntry(key, "source.patch", "source.patch");
+		return new PatchUnitMesh(entry, new PatchEntryPayload(entry, CreateToc(), Array.Empty<byte>(), Array.Empty<byte>()), model);
+	}
+
+	private static GameDataUnitMesh CreateTargetUnit(UnitMeshModel model)
+	{
+		var entry = new PatchTocEntry(TargetKey, "target", "target");
+		return new GameDataUnitMesh(TargetKey, "target", new PatchEntryPayload(entry, CreateToc(), Array.Empty<byte>(), Array.Empty<byte>()), model);
+	}
+
+	private static UnitMeshModel CreateModel(byte vertexSeed, int meshCount)
+	{
+		var stream = new UnitStreamInfo(0, 128, 0, 1, 0, 3, 12, 0, 3, 0, 0, 0, 0, 0, new[] { new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12) });
+		var meshes = Enumerable.Range(0, meshCount).Select(index => new UnitMeshInfo(index, (uint)(500 + index * 100), (uint)(100 + index), 0, 0, 0, 1, 0, 1, (uint)(650 + index * 100), UnitMeshSemanticInfo.Empty(0, index), new uint[] { (uint)(20 + index) }, new[] { new UnitMeshSectionInfo((uint)(650 + index * 100), 0, (uint)(20 + index), 0, 3, 0, 3, 0) })).ToArray();
+		var rawMeshes = Enumerable.Range(0, meshCount).Select(index => new UnitRawMeshData(index, (uint)(100 + index), 0, 0, new[] { new UnitRawMeshSectionData(0, (uint)(20 + index), new[] { new UnitTriangleIndices(0, 1, 2) }) }, new[] { new UnitTriangleIndices(0, 1, 2) }, Enumerable.Range(0, 3).Select(vertex => new UnitRawVertexRecord((uint)vertex, new[] { (byte)(vertexSeed + vertex), (byte)0, (byte)0, (byte)0, (byte)0, (byte)0, (byte)0, (byte)0, (byte)0, (byte)0, (byte)0, (byte)0 }, Array.Empty<UnitVertexComponentValue>())).ToArray())).ToArray();
+		return new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 496, 800, 900, UnitCustomizationInfo.Empty, Array.Empty<UnitBoneInfo>(), new[] { stream }, meshes, meshes.Select(mesh => new UnitMaterialBinding(mesh.MaterialSlotIds[0], 0x100)).ToArray(), Array.Empty<UnitRawMeshSummary>(), rawMeshes);
+	}
+
+	private static byte[] CreateToc()
+	{
+		var data = new byte[1200];
+		WriteUInt32(data, 0x60, 900); WriteUInt32(data, 0x70, 800); WriteUInt32(data, 496, 4); WriteUInt32(data, 604, 2); WriteUInt32(data, 620, 1);
+		for (var index = 0; index < 2; index++) { var offset = 500 + index * 100; WriteUInt32(data, offset + 104, 1); WriteUInt32(data, offset + 108, 128); WriteUInt32(data, offset + 120, 1); WriteUInt32(data, offset + 124, 150); WriteUInt32(data, 650 + index * 100, 0); WriteUInt32(data, 654 + index * 100, 0); WriteUInt32(data, 658 + index * 100, 3); WriteUInt32(data, 662 + index * 100, 0); WriteUInt32(data, 666 + index * 100, 3); }
+		WriteUInt32(data, 800, 2); WriteUInt32(data, 804, 20); WriteUInt32(data, 808, 21); return data;
+	}
+
+	private static void WriteUInt32(byte[] data, int offset, uint value) { data[offset] = (byte)value; data[offset + 1] = (byte)(value >> 8); data[offset + 2] = (byte)(value >> 16); data[offset + 3] = (byte)(value >> 24); }
+}

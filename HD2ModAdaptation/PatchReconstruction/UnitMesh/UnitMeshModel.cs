@@ -43,7 +43,10 @@ public sealed record UnitBoneInfo(
 	uint RealIndicesOffset,
 	uint RemapDataOffset,
 	IReadOnlyList<uint> RealIndices,
-	IReadOnlyList<UnitBoneRemap> Remaps);
+	IReadOnlyList<UnitBoneRemap> Remaps)
+{
+	public IReadOnlyList<byte[]> BoneMatrices { get; init; } = Array.Empty<byte[]>();
+}
 
 public sealed record UnitBoneRemap(
 	int MaterialIndex,

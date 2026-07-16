@@ -21,8 +21,11 @@ namespace HD2ModManager.ViewModels
         private readonly NotificationService? _notifications;
         private readonly IMaterialPackagingApplicationService _materialPackaging;
         private readonly IMaterialDeliveryFactsService _materialDeliveryFacts;
+		private readonly IModSameKeyReconstructionService _sameKeyReconstruction;
         private ModMaterialPackagingState? _materialState;
         private bool _materialOperationRunning;
+		private ModSameKeyReconstructionState? _sameKeyReconstructionState;
+		private bool _sameKeyReconstructionRunning;
         private readonly IAdvancedModAssetQueryService _advancedAssetQueryService;
         private IReadOnlyList<AdvancedModAssetRow> _allAdvancedAssets = Array.Empty<AdvancedModAssetRow>();
         private string _advancedAssetQuery = string.Empty;
@@ -46,9 +49,11 @@ namespace HD2ModManager.ViewModels
         public string UserStatusSummary { get; private set; } = "正在读取状态。";
         public string MaterialPackagingSummary { get; private set; } = "正在分析材质引用。";
         public string MaterialDeliverySummary { get; private set; } = "正在读取稳定材质交付事实。";
+		public string SameKeyReconstructionSummary { get; private set; } = "正在检查同 AssetKey 重建条件。";
         public bool CanSplitEmbeddedMaterials => !_materialOperationRunning && _materialState?.CanSplit == true;
         public bool CanReplaceEmbeddedMaterials => !_materialOperationRunning && _materialState?.HasEmbeddedMaterials == true;
         public bool CanEmbedExternalMaterials => !_materialOperationRunning && _materialState?.HasExternalMaterials == true;
+		public bool CanRebuildSameKey => !_sameKeyReconstructionRunning && _sameKeyReconstructionState?.CanWrite == true;
         public ObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
         public bool AdvancedOnlyIssues { get => _advancedOnlyIssues; set { if (SetField(ref _advancedOnlyIssues, value)) ApplyAdvancedAssetFilter(); } }
@@ -65,6 +70,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand SplitEmbeddedMaterialsCommand { get; }
         public RelayCommand ReplaceEmbeddedMaterialsCommand { get; }
         public RelayCommand EmbedExternalMaterialsCommand { get; }
+		public RelayCommand RebuildSameKeyCommand { get; }
 
         public ModDetailsPageViewModel(ModLibraryService library, ProfileService profiles, DerivedStateCoordinator derivedState, string modId, NotificationService? notifications = null)
         {
@@ -75,6 +81,7 @@ namespace HD2ModManager.ViewModels
             _notifications = notifications;
 			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService();
             _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(SettingsService.CreateStoragePaths());
+			_sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(SettingsService.CreateStoragePaths());
             _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(SettingsService.CreateStoragePaths());
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
@@ -85,14 +92,17 @@ namespace HD2ModManager.ViewModels
             SplitEmbeddedMaterialsCommand = new RelayCommand(async _ => await SplitEmbeddedMaterialsAsync(), _ => CanSplitEmbeddedMaterials);
             ReplaceEmbeddedMaterialsCommand = new RelayCommand(async _ => await MergeMaterialCandidateAsync(requireAllExternalMaterials: false), _ => CanReplaceEmbeddedMaterials);
             EmbedExternalMaterialsCommand = new RelayCommand(async _ => await MergeMaterialCandidateAsync(requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
+			RebuildSameKeyCommand = new RelayCommand(async _ => await RebuildSameKeyAsync(), _ => CanRebuildSameKey);
             _derivedState.SnapshotChanged += (_, _) => RunOnUiThread(() =>
             {
                 Refresh();
                 _ = RefreshAdvancedAssetsAsync();
+				_ = RefreshSameKeyReconstructionStateAsync();
             });
             Refresh();
 			_ = RefreshMaterialPackagingStateAsync();
             _ = RefreshMaterialDeliveryFactsAsync();
+			_ = RefreshSameKeyReconstructionStateAsync();
             _ = RefreshAdvancedAssetsAsync();
         }
 
@@ -154,7 +164,9 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(UserStatusSummary));
             OnPropertyChanged(nameof(MaterialPackagingSummary));
 			OnPropertyChanged(nameof(MaterialDeliverySummary));
+            OnPropertyChanged(nameof(SameKeyReconstructionSummary));
             RaiseMaterialCommandStates();
+            RaiseSameKeyReconstructionCommandState();
         }
 
         private void RefreshDerivedStatus()
@@ -380,6 +392,66 @@ namespace HD2ModManager.ViewModels
             _ => "未知"
         };
 
+        private async Task RefreshSameKeyReconstructionStateAsync()
+        {
+            if (!TryGetCurrentNode(out var source)) return;
+            try
+            {
+                _sameKeyReconstructionState = await _sameKeyReconstruction.InspectAsync(source, _library.ModsRootDirectory, SettingsService.GetGameDataFolder());
+                var state = _sameKeyReconstructionState;
+                SameKeyReconstructionSummary = state.CanWrite
+                    ? $"可生成测试副本：Unit {state.Plan?.SourceUnitCount ?? 0}；替换 Unit {state.ReplacementUnitCount}；仅极小化 Unit {state.MinifyOnlyUnitCount}；替换 mesh {state.ReplacementMeshCount}；极小化 mesh {state.MinifiedMeshCount}" + (state.SharedTargetUnitCount == 0 ? string.Empty : $"；共享 current archive Unit {state.SharedTargetUnitCount}。")
+                    : string.Join(Environment.NewLine, state.Issues.Take(8).Select(issue => $"{issue.Code}：{issue.Message}"));
+                if (string.IsNullOrWhiteSpace(SameKeyReconstructionSummary)) SameKeyReconstructionSummary = "当前 Mod 没有可用的同 AssetKey 重建计划。";
+            }
+            catch (Exception exception)
+            {
+                _sameKeyReconstructionState = null;
+                SameKeyReconstructionSummary = $"重建条件检查失败：{exception.Message}";
+            }
+            RunOnUiThread(() =>
+            {
+                OnPropertyChanged(nameof(SameKeyReconstructionSummary));
+                RaiseSameKeyReconstructionCommandState();
+            });
+        }
+
+        private async Task RebuildSameKeyAsync()
+        {
+            if (!TryGetCurrentNode(out var source)) return;
+            if (_sameKeyReconstructionState is null) await RefreshSameKeyReconstructionStateAsync();
+            var state = _sameKeyReconstructionState;
+            if (state?.CanWrite != true)
+            {
+                _notifications?.Show("当前 Mod 不满足同 AssetKey 重建条件；请查看重建卡片中的阻断原因。", NotificationLevel.Warning);
+                return;
+            }
+            var output = new HD2ModManager.Views.SameKeyReconstructionOutputWindow(state) { Owner = System.Windows.Application.Current?.MainWindow };
+            if (output.ShowDialog() != true) return;
+            _sameKeyReconstructionRunning = true;
+            RaiseSameKeyReconstructionCommandState();
+            try
+            {
+                var result = await _sameKeyReconstruction.WriteTestCopyAsync(source, _library.ModsRootDirectory, SettingsService.GetGameDataFolder(), output.OutputDirectory);
+                if (!result.IsSuccessful)
+                {
+                    _notifications?.Show(string.Join("；", result.Issues.Select(issue => issue.Message).Take(3)), NotificationLevel.Error, TimeSpan.FromSeconds(10));
+                    return;
+                }
+                if (output.ImportToLibrary && result.OutputDirectory is not null)
+                {
+                    await new ImportService(_library).ImportPathAsync(result.OutputDirectory, default);
+                }
+                _notifications?.Show($"正式验证候选已生成：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。输出目录包含 formal-validation-checklist.md。{(output.ImportToLibrary ? "已导入 Mod 库。" : "已写出到目标文件夹。")}", NotificationLevel.Info, TimeSpan.FromSeconds(10));
+            }
+            finally
+            {
+                _sameKeyReconstructionRunning = false;
+                RaiseSameKeyReconstructionCommandState();
+                await RefreshSameKeyReconstructionStateAsync();
+            }
+        }
+
         private async Task SplitEmbeddedMaterialsAsync()
         {
             if (!TryGetCurrentNode(out var node) || !TryChooseOutput(out var output)) return;
@@ -455,6 +527,12 @@ namespace HD2ModManager.ViewModels
         {
             OnPropertyChanged(nameof(CanSplitEmbeddedMaterials)); OnPropertyChanged(nameof(CanReplaceEmbeddedMaterials)); OnPropertyChanged(nameof(CanEmbedExternalMaterials));
             SplitEmbeddedMaterialsCommand.RaiseCanExecuteChanged(); ReplaceEmbeddedMaterialsCommand.RaiseCanExecuteChanged(); EmbedExternalMaterialsCommand.RaiseCanExecuteChanged();
+        }
+
+        private void RaiseSameKeyReconstructionCommandState()
+        {
+            OnPropertyChanged(nameof(CanRebuildSameKey));
+            RebuildSameKeyCommand.RaiseCanExecuteChanged();
         }
 
         private static string SanitizeFileName(string name) => string.Concat(name.Select(character => System.IO.Path.GetInvalidFileNameChars().Contains(character) ? '_' : character)).Trim();

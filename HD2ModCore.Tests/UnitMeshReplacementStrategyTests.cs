@@ -71,22 +71,54 @@ public sealed class UnitMeshReplacementStrategyTests
 		var source = CreateModel(CreateRawMesh(meshInfoIndex: 0, meshId: 100, lodIndex: 0, materialSlots: [10], vertexCount: 16000, triangleCount: 25000), componentFormat: 2);
 		var strategy = new UnitMeshReplacementStrategy(allowExperimentalFallback: true);
 
-		var candidate = Assert.Single(strategy.FindCandidates(target, source));
-
-		Assert.Equal(UnitMeshReplacementCandidateKind.ExperimentalFallback, candidate.Kind);
-		Assert.Equal(100u, candidate.SourceMeshId);
+		Assert.Empty(strategy.FindCandidates(target, source));
 	}
 
 	[Fact]
 	public void FindCandidates_ExperimentalFallbackWithComparableGeometry_ReturnsCandidate()
 	{
-		var target = CreateModel(CreateRawMesh(meshInfoIndex: 0, meshId: 100, lodIndex: 0, materialSlots: [10], vertexCount: 1200, triangleCount: 800));
-		var source = CreateModel(CreateRawMesh(meshInfoIndex: 0, meshId: 100, lodIndex: 0, materialSlots: [10], vertexCount: 900, triangleCount: 700), componentFormat: 2);
+		var target = CreateModel(CreateRawMesh(meshInfoIndex: 0, meshId: 100, lodIndex: 0, materialSlots: [10], vertexCount: 1200, triangleCount: 800), CreateSemantic("Torso", "Armor", "Slim"));
+		var source = CreateModel(CreateRawMesh(meshInfoIndex: 0, meshId: 100, lodIndex: 1, materialSlots: [10], vertexCount: 900, triangleCount: 700), CreateSemantic("Torso", "Armor", "Slim"));
+		var targetWithCurrentLayout = target with { Streams = [CreateStream(0, componentFormat: 2)] };
 		var strategy = new UnitMeshReplacementStrategy(allowExperimentalFallback: true);
 
-		var candidate = Assert.Single(strategy.FindCandidates(target, source));
+		var candidate = Assert.Single(strategy.FindCandidates(targetWithCurrentLayout, source));
 
 		Assert.Equal(UnitMeshReplacementCandidateKind.ExperimentalFallback, candidate.Kind);
+	}
+
+	[Fact]
+	public void FindCandidates_DifferentSectionCounts_ReturnsNoCandidates()
+	{
+		var target = CreateModel(CreateRawMesh(meshInfoIndex: 0, meshId: 100, lodIndex: 0, materialSlots: [10, 20]), CreateSemantic("Torso", "Armor", "Slim"));
+		var source = CreateModel(CreateRawMesh(meshInfoIndex: 0, meshId: 200, lodIndex: 0, materialSlots: [10]), CreateSemantic("Torso", "Armor", "Slim"));
+		var strategy = new UnitMeshReplacementStrategy(allowExperimentalFallback: true);
+
+		Assert.Empty(strategy.FindCandidates(target, source));
+	}
+
+	[Fact]
+	public void FindCandidates_StaticExactGeometryWithoutSemanticEvidence_ReturnsNoCandidates()
+	{
+		var target = CreateModel(CreateRawMesh(meshInfoIndex: 0, meshId: 100, lodIndex: 0, materialSlots: [10], vertexCount: 1200, triangleCount: 800), componentFormat: 2);
+		var source = CreateModel(CreateRawMesh(meshInfoIndex: 0, meshId: 100, lodIndex: 0, materialSlots: [10], vertexCount: 1200, triangleCount: 800));
+		var strategy = new UnitMeshReplacementStrategy(allowExperimentalFallback: true);
+
+		Assert.Empty(strategy.FindCandidates(target, source));
+	}
+
+	[Fact]
+	public void FindCandidates_ExactSemanticLodWithDifferentLayout_ReturnsSdkStyleTranscodeCandidate()
+	{
+		var target = CreateModel(CreateRawMesh(meshInfoIndex: 0, meshId: 100, lodIndex: 0, materialSlots: [10]), CreateSemantic("Torso", "Armor", "Slim"));
+		var source = CreateModel(CreateRawMesh(meshInfoIndex: 0, meshId: 200, lodIndex: 0, materialSlots: [10]), CreateSemantic("Torso", "Armor", "Slim"));
+		var targetWithCurrentLayout = target with { Streams = [CreateStream(0, componentFormat: 2)] };
+		var strategy = new UnitMeshReplacementStrategy(allowExperimentalFallback: true);
+
+		var candidate = Assert.Single(strategy.FindCandidates(targetWithCurrentLayout, source));
+
+		Assert.Equal(UnitMeshReplacementCandidateKind.SdkStreamTranscode, candidate.Kind);
+		Assert.Contains("SDK-style", candidate.Reason, StringComparison.OrdinalIgnoreCase);
 	}
 
 	[Fact]

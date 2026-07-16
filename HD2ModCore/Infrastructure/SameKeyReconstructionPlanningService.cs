@@ -43,6 +43,7 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 			.GroupBy(entry => entry.AssetKey)
 			.Select(group => group.First())
 			.OrderBy(entry => entry.AssetKey.FileId)
+			.Take(request.MaxSourceUnitCount ?? int.MaxValue)
 			.ToArray();
 		var archiveMatches = await assetIndex.FindAssetArchivesAsync(
 			sourceUnits.Select(entry => entry.AssetKey).ToHashSet(), cancellationToken).ConfigureAwait(false);
@@ -100,10 +101,19 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 				continue;
 			}
 
-			var adaptation = adaptationPlanner.BuildPlan(sourceUnit, targetUnit);
-			if (adaptation.Candidates.Any(candidate => candidate.Kind == UnitMeshReplacementCandidateKind.ExperimentalFallback) && !request.AllowExperimentalCandidates)
+			var dryRun = adaptationPlanner.BuildPlan(sourceUnit, targetUnit);
+			// A library/UI plan needs the decision and diagnostics, not a retained full GPU model for every Unit.
+			// The Adaptation reconstruction pipeline re-reads and rebuilds the selected targets on demand.
+			var adaptation = dryRun with { EditedModel = null, WriteResult = null };
+			var evidence = BuildMeshEvidence(sourceUnit, targetUnit, adaptation);
+			var targetMeshCount = targetUnit.Model.RawMeshData.Count;
+			var coveredTargetMeshCount = adaptation.Steps
+				.Select(step => step.TargetMeshInfoIndex)
+				.Distinct()
+				.Count();
+			if (adaptation.Steps.Any(step => step.Kind == UnitMeshAdaptationStepKind.ReplaceWithSource && step.Candidate?.Kind == UnitMeshReplacementCandidateKind.ExperimentalFallback) && !request.AllowExperimentalCandidates)
 			{
-				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "ExperimentalMeshCandidate", "One or more mesh mappings need experimental fallback and are not eligible for automatic test-copy output.", sourceEntry.SourceFilePath));
+				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "ExperimentalMeshCandidate", "One or more selected mesh mappings need experimental fallback and are not eligible for automatic test-copy output.", sourceEntry.SourceFilePath));
 			}
 			if (adaptation.ReplacementCount == 0)
 			{
@@ -113,7 +123,7 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 			{
 				issues.Add(Error("TargetSerializationFailed", adaptation.Reason, sourceEntry));
 			}
-			unitPlans.Add(new SameKeyUnitReconstructionPlan(sourceEntry.AssetKey, sourceEntry, selectedArchive, matchingArchives, adaptation, issues));
+			unitPlans.Add(new SameKeyUnitReconstructionPlan(sourceEntry.AssetKey, sourceEntry, selectedArchive, matchingArchives, adaptation, issues, evidence, targetMeshCount, coveredTargetMeshCount));
 		}
 
 		var globalIssues = new List<CoreIssue>();
@@ -126,6 +136,80 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 
 	private static IReadOnlyList<ArchiveMetadata> OrderArchives(IReadOnlyList<ArchiveMetadata> archives)
 		=> archives.OrderBy(archive => archive.CategoryOrder).ThenBy(archive => archive.ArchiveOrder).ThenBy(archive => archive.ArchiveId, StringComparer.OrdinalIgnoreCase).ToArray();
+
+	private static IReadOnlyList<SameKeyMeshEvidence> BuildMeshEvidence(
+		PatchUnitMesh sourceUnit,
+		ArchiveUnitMesh targetUnit,
+		UnitMeshAdaptationPlan adaptation)
+	{
+		var replacementTargets = adaptation.Steps
+			.Where(step => step.Kind == UnitMeshAdaptationStepKind.ReplaceWithSource)
+			.Select(step => step.TargetMeshInfoIndex)
+			.ToHashSet();
+		var minifiedTargets = adaptation.Steps
+			.Where(step => step.Kind == UnitMeshAdaptationStepKind.MinifyTarget)
+			.Select(step => step.TargetMeshInfoIndex)
+			.ToHashSet();
+		return adaptation.Candidates.Select(candidate =>
+		{
+			var source = sourceUnit.Model.RawMeshData.First(mesh => mesh.MeshInfoIndex == candidate.SourceMeshInfoIndex);
+			var target = targetUnit.Model.RawMeshData.First(mesh => mesh.MeshInfoIndex == candidate.TargetMeshInfoIndex);
+			var sourceStream = sourceUnit.Model.Streams.First(stream => stream.Index == source.StreamIndex);
+			var targetStream = targetUnit.Model.Streams.First(stream => stream.Index == target.StreamIndex);
+			var sourceBones = GetRealBoneIndices(sourceUnit.Model, source);
+			var targetBones = GetRealBoneIndices(targetUnit.Model, target);
+			return new SameKeyMeshEvidence(
+				candidate.SourceMeshInfoIndex,
+				candidate.TargetMeshInfoIndex,
+				candidate.Kind,
+				candidate.Score,
+				candidate.SourceSemanticName,
+				candidate.TargetSemanticName,
+				source.LodIndex,
+				target.LodIndex,
+				source.Vertices.Count,
+				target.Vertices.Count,
+				source.Triangles.Count,
+				target.Triangles.Count,
+				source.Sections.Count,
+				target.Sections.Count,
+				sourceStream.VertexStride,
+				targetStream.VertexStride,
+				DescribeComponents(sourceStream),
+				DescribeComponents(targetStream),
+				sourceBones,
+				targetBones,
+				sourceBones.Intersect(targetBones).Count(),
+				replacementTargets.Contains(candidate.TargetMeshInfoIndex),
+				minifiedTargets.Contains(candidate.TargetMeshInfoIndex),
+				candidate.Reason);
+		}).ToArray();
+	}
+
+	private static IReadOnlyList<string> DescribeComponents(UnitStreamInfo stream)
+		=> stream.Components.Select(component => $"{component.TypeName}[{component.Index}]={component.FormatName}:{component.Size}").ToArray();
+
+	private static IReadOnlyList<uint> GetRealBoneIndices(UnitMeshModel model, UnitRawMeshData mesh)
+	{
+		if (model.BoneInfos.Count == 0)
+		{
+			return Array.Empty<uint>();
+		}
+		var boneInfoIndex = mesh.LodIndex is >= 0 and < int.MaxValue && mesh.LodIndex < model.BoneInfos.Count ? mesh.LodIndex : 0;
+		var boneInfo = model.BoneInfos[boneInfoIndex];
+		var fakeToReal = boneInfo.Remaps
+			.SelectMany(remap => remap.FakeIndices)
+			.Where(index => index < boneInfo.RealIndices.Count)
+			.Select(index => boneInfo.RealIndices[(int)index])
+			.ToHashSet();
+		return mesh.Vertices
+			.SelectMany(vertex => vertex.Components.Where(component => component.Type == 6).SelectMany(component => component.UIntValues))
+			.Select(index => index < boneInfo.RealIndices.Count ? boneInfo.RealIndices[(int)index] : index)
+			.Where(index => fakeToReal.Count == 0 || fakeToReal.Contains(index))
+			.Distinct()
+			.OrderBy(index => index)
+			.ToArray();
+	}
 
 	private static CoreIssue Error(string code, string message, PatchTocEntry sourceEntry, Exception? exception = null)
 		=> new(CoreIssueSeverity.Error, code, message, sourceEntry.SourceFilePath, ExceptionMessage: exception?.ToString());

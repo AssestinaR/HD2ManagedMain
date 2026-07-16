@@ -46,6 +46,12 @@ public static class CoreServices
 			CreateAssetArchiveIndexService(paths),
 			CreateArchiveUnitMeshReader(),
 			CreateUnitMeshAdaptationPlanner());
+	public static IModSameKeyReconstructionService CreateModSameKeyReconstructionService(StoragePaths paths)
+		=> new ModSameKeyReconstructionService(
+			CreatePatchFileNameParser(),
+			CreateSameKeyReconstructionPlanningService(paths),
+			CreateAssetArchiveIndexService(paths),
+			CreateFileSystemArchiveHashesProvider(paths));
    public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths)
 		=> new AssetArchiveIndexService(paths);
 	public static IGameDataLocator CreateGameDataLocator(IGameDataSettings settings)
