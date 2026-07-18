@@ -301,6 +301,13 @@ namespace HD2ModManager.ViewModels
             OpenSecondaryPage(WorkspacePageType.ModDetails, sourcePage);
         }
 
+        public void OpenAdvancedModDetails(string modId)
+        {
+            if (string.IsNullOrWhiteSpace(modId)) return;
+            SelectedModId = modId;
+            OpenSinglePage(WorkspacePageType.AdvancedModDetails);
+        }
+
         private void OpenSecondaryPage(WorkspacePageType pageType, PageViewModel? sourcePage)
         {
             var targetPage = CreatePage(pageType);
@@ -660,6 +667,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.Library => CreateLibraryPage(),
                 WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _backgroundTasks),
                 WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),
+                WorkspacePageType.AdvancedModDetails => new AdvancedModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
             };
         }
@@ -699,6 +707,7 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.Library => "模组库",
             WorkspacePageType.Settings => "设置",
             WorkspacePageType.ModDetails => "Mod 详情",
+            WorkspacePageType.AdvancedModDetails => "高级 Mod 详情",
             _ => "页面",
         };
 

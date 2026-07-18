@@ -31,6 +31,9 @@
         <DataTemplate DataType="{x:Type localVM:ModDetailsPageViewModel}">
             <views:ModDetailsPageView/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:AdvancedModDetailsPageViewModel}">
+            <views:AdvancedModDetailsPageView/>
+        </DataTemplate>
 
         <Style x:Key="TopNavButton" TargetType="Button">
             <Setter Property="Height" Value="32"/>

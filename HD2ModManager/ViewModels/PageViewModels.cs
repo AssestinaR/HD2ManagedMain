@@ -24,6 +24,12 @@ namespace HD2ModManager.ViewModels
         public virtual void Dispose() { }
     }
 
+    // 作用：标记需要横跨整个工作区的页面，避免宽数据表被压缩进双槽之一。
+    public abstract class FullWorkspacePageViewModel : PageViewModel
+    {
+        public override bool RequiresSingleSlot => true;
+    }
+
     public sealed class HomePageViewModel : PageViewModel
     {
         private readonly ProfileService _profiles;

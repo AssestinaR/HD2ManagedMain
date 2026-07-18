@@ -8,5 +8,6 @@ namespace HD2ModManager.Enums
         Library,
         Settings,
         ModDetails,
+        AdvancedModDetails,
     }
 }

@@ -15,7 +15,7 @@ using HD2ModManager.Services;
 namespace HD2ModManager.ViewModels
 {
     // 作用：展示单个 Mod 的派生信息与文件组概览。
-    public sealed class ModDetailsPageViewModel : PageViewModel
+    public class ModDetailsPageViewModel : PageViewModel
     {
         private readonly ModLibraryService _library;
         private readonly ProfileService _profiles;
@@ -368,14 +368,10 @@ namespace HD2ModManager.ViewModels
 
         private void OpenAdvancedDetails()
         {
-            var window = new HD2ModManager.Views.AdvancedModDetailsWindow
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
             {
-                Owner = System.Windows.Application.Current?.MainWindow,
-                DataContext = this,
-            };
-            window.Loaded += async (_, _) => await RefreshAdvancedDetailsAsync();
-            window.Closed += (_, _) => CancelAdvancedDetails();
-            window.ShowDialog();
+                shell.OpenAdvancedModDetails(ModId);
+            }
         }
 
         private async Task RefreshMaterialPackagingStateAsync(CancellationToken cancellationToken)
