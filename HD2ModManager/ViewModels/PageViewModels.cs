@@ -519,9 +519,12 @@ namespace HD2ModManager.ViewModels
         public ObservableCollection<ProfileListItemViewModel> Items { get; } = new();
         public ObservableCollection<string> Profiles { get; } = new();
         public string Query { get => _query; set { if (SetField(ref _query, value)) Refresh(); } }
+        public string CurrentProfileTitle => _profiles.SelectedKey ?? "未选择配置";
 
         private string? _selectedProfileKey;
         private string _renameText = string.Empty;
+        private ProfileSwitchActionViewModel? _switchAction;
+        private ProfileRenameActionViewModel? _renameAction;
         public string? SelectedProfileKey
         {
             get => _selectedProfileKey;
@@ -575,9 +578,12 @@ namespace HD2ModManager.ViewModels
             MoveDownCommand = new RelayCommand(parameter => MoveMod(parameter, 1));
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
             PageActions.Add(new PageActionViewModel("＋", "新建配置", CreateProfileCommand, order: 10, kind: "CreateProfile"));
+            _switchAction = new ProfileSwitchActionViewModel(this);
+            PageActions.Add(new PageActionViewModel("⇄", "切换当前配置", new RelayCommand(_ => { }), expandedContent: _switchAction, order: 12, kind: "SwitchProfile"));
             PageActions.Add(new PageActionViewModel("▶", "设为活动配置", ActivateProfileCommand, background: new SolidColorBrush(Color.FromRgb(26, 127, 75)), order: 15, kind: "ActivateProfile"));
             PageActions.Add(new PageActionViewModel("■", "停用活动配置", DeactivateProfileCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 16, kind: "DeactivateProfile"));
-            PageActions.Add(new PageActionViewModel("✎", "重命名配置", RenameProfileCommand, background: new SolidColorBrush(Color.FromRgb(30, 99, 214)), order: 20, kind: "RenameProfile"));
+            _renameAction = new ProfileRenameActionViewModel(this);
+            PageActions.Add(new PageActionViewModel("✎", "重命名配置", new RelayCommand(_ => { }), background: new SolidColorBrush(Color.FromRgb(30, 99, 214)), expandedContent: _renameAction, order: 20, kind: "RenameProfile"));
             PageActions.Add(new PageActionViewModel("🗑", "删除当前配置", RemoveSelectedProfileCommand, background: new SolidColorBrush(Color.FromRgb(179, 38, 30)), order: 30, kind: "RemoveProfile"));
             PageActions.Add(new PageActionViewModel("⟳", "刷新配置", RefreshCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 40, kind: "RefreshProfile"));
             Refresh();
@@ -692,8 +698,11 @@ namespace HD2ModManager.ViewModels
             _renameText = _selectedProfileKey ?? string.Empty;
             OnPropertyChanged(nameof(SelectedProfileKey));
             OnPropertyChanged(nameof(RenameText));
+            OnPropertyChanged(nameof(CurrentProfileTitle));
             OnPropertyChanged(nameof(ActiveProfileText));
             OnPropertyChanged(nameof(SelectedProfileState));
+            _switchAction?.SyncFromPage();
+            _renameAction?.SyncFromPage();
 
             Items.Clear();
             var profile = _profiles.SelectedProfile;
@@ -757,6 +766,65 @@ namespace HD2ModManager.ViewModels
         {
             foreach (var item in Items) item.IsSelected = IsSelected(item.Guid);
         }
+
+        internal void SwitchProfile(string? profileName)
+        {
+            if (string.IsNullOrWhiteSpace(profileName)) return;
+            SelectedProfileKey = profileName;
+        }
+
+        internal void RenameCurrentProfile(string? newName)
+        {
+            RenameText = newName ?? string.Empty;
+            RenameProfile();
+        }
+    }
+
+    // 作用：提供配置浮动操作簇中按需展开的配置切换输入状态。
+    public sealed class ProfileSwitchActionViewModel : BaseViewModel
+    {
+        private readonly ProfilePageViewModel _page;
+        private string? _selectedProfile;
+
+        public ProfileSwitchActionViewModel(ProfilePageViewModel page)
+        {
+            _page = page;
+            ConfirmCommand = new RelayCommand(Confirm);
+            SyncFromPage();
+        }
+
+        public ObservableCollection<string> Profiles => _page.Profiles;
+        public string? SelectedProfile { get => _selectedProfile; set => SetField(ref _selectedProfile, value); }
+        public RelayCommand ConfirmCommand { get; }
+
+        public void SyncFromPage()
+        {
+            SelectedProfile = _page.SelectedProfileKey;
+            OnPropertyChanged(nameof(Profiles));
+        }
+
+        private void Confirm() => _page.SwitchProfile(SelectedProfile);
+    }
+
+    // 作用：提供配置浮动操作簇中按需展开的重命名输入状态。
+    public sealed class ProfileRenameActionViewModel : BaseViewModel
+    {
+        private readonly ProfilePageViewModel _page;
+        private string _newName = string.Empty;
+
+        public ProfileRenameActionViewModel(ProfilePageViewModel page)
+        {
+            _page = page;
+            ConfirmCommand = new RelayCommand(Confirm);
+            SyncFromPage();
+        }
+
+        public string NewName { get => _newName; set => SetField(ref _newName, value); }
+        public RelayCommand ConfirmCommand { get; }
+
+        public void SyncFromPage() => NewName = _page.SelectedProfileKey ?? string.Empty;
+
+        private void Confirm() => _page.RenameCurrentProfile(NewName);
     }
 
     public sealed class ProfileListItemViewModel : BaseViewModel
