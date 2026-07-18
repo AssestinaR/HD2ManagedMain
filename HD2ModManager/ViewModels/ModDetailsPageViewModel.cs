@@ -24,6 +24,7 @@ namespace HD2ModManager.ViewModels
         private readonly IMaterialPackagingApplicationService _materialPackaging;
         private readonly IMaterialDeliveryFactsService _materialDeliveryFacts;
 		private readonly IModSameKeyReconstructionService _sameKeyReconstruction;
+        private readonly IEquipmentUnitCatalogService _equipmentUnitCatalog;
         private ModMaterialPackagingState? _materialState;
         private bool _materialOperationRunning;
 		private bool _sameKeyReconstructionRunning;
@@ -59,6 +60,7 @@ namespace HD2ModManager.ViewModels
         public bool CanReplaceEmbeddedMaterials => !_materialOperationRunning && _materialState?.HasEmbeddedMaterials == true;
         public bool CanEmbedExternalMaterials => !_materialOperationRunning && _materialState?.HasExternalMaterials == true;
         public bool CanRebuildSameKey => !_sameKeyReconstructionRunning && !_disposed && TryGetCurrentNode(out _);
+		public bool CanPlanCrossArmorTransfer => !_disposed && TryGetCurrentNode(out _);
         public ObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
         public bool AdvancedOnlyIssues { get => _advancedOnlyIssues; set { if (SetField(ref _advancedOnlyIssues, value)) ApplyAdvancedAssetFilter(); } }
@@ -76,6 +78,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ReplaceEmbeddedMaterialsCommand { get; }
         public RelayCommand EmbedExternalMaterialsCommand { get; }
         public RelayCommand RebuildSameKeyCommand { get; }
+		public RelayCommand PlanCrossArmorTransferCommand { get; }
 
         public ModDetailsPageViewModel(ModLibraryService library, ProfileService profiles, DerivedStateCoordinator derivedState, string modId, NotificationService? notifications = null)
         {
@@ -87,6 +90,7 @@ namespace HD2ModManager.ViewModels
 			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService();
             _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(SettingsService.CreateStoragePaths());
 			_sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(SettingsService.CreateStoragePaths());
+            _equipmentUnitCatalog = CoreServices.CreateEquipmentUnitCatalogService(SettingsService.CreateStoragePaths());
             _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(SettingsService.CreateStoragePaths());
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
@@ -98,6 +102,7 @@ namespace HD2ModManager.ViewModels
             ReplaceEmbeddedMaterialsCommand = new RelayCommand(async _ => await MergeMaterialCandidateAsync(requireAllExternalMaterials: false), _ => CanReplaceEmbeddedMaterials);
             EmbedExternalMaterialsCommand = new RelayCommand(async _ => await MergeMaterialCandidateAsync(requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
             RebuildSameKeyCommand = new RelayCommand(async _ => await RebuildSameKeyAsync(), _ => CanRebuildSameKey);
+			PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
             _snapshotChangedHandler = (_, _) => RunOnUiThread(() =>
             {
                 if (_disposed) return;
@@ -196,6 +201,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(MaterialPackagingSummary));
 			OnPropertyChanged(nameof(MaterialDeliverySummary));
             OnPropertyChanged(nameof(SameKeyReconstructionSummary));
+			OnPropertyChanged(nameof(CanPlanCrossArmorTransfer));
             RaiseMaterialCommandStates();
             RaiseSameKeyReconstructionCommandState();
         }
@@ -462,6 +468,44 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        private async Task PlanCrossArmorTransferAsync()
+        {
+            if (!TryGetCurrentNode(out var source)) return;
+            try
+            {
+                _notifications?.Show("正在读取当前 Mod 的 Unit 事实与装备目录…", NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                var facts = await CoreServices.CreateModContentFactsService(SettingsService.CreateStoragePaths())
+                    .GetNodeFactsAsync(source, _library.ModsRootDirectory);
+                var unitKeys = facts.PatchGroups.SelectMany(group => group.AssetKeys)
+                    .Where(asset => asset.TypeId == 0xe0a48d0be9a7453f).ToHashSet();
+                var sourceCatalogCandidates = await _equipmentUnitCatalog.GetEntriesAsync(unitKeys);
+                var sourcePatchPaths = facts.PatchGroups
+                    .SelectMany(group => group.Files)
+                    .Where(file => file.SidecarKind == PatchSidecarKind.Base)
+                    .Select(file => file.FilePath)
+                    .ToArray();
+                var sourceCandidates = await _equipmentUnitCatalog.FilterTransferableSourcePartsAsync(sourceCatalogCandidates, sourcePatchPaths);
+                var allCandidates = await _equipmentUnitCatalog.GetEntriesAsync();
+                if (sourceCandidates.Count == 0)
+                {
+                    _notifications?.Show("当前 Mod 没有可转移的真实 Unit 几何：索引未匹配、Unit 无法读取或所有匹配 mesh 均已极小化。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
+                    return;
+                }
+                if (sourcePatchPaths.Length != 1)
+                {
+                    _notifications?.Show("跨护甲验证候选目前仅支持源 Mod 含一个 Patch 主文件组。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
+                    return;
+                }
+                var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(_equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder());
+                var window = new HD2ModManager.Views.CrossArmorTransferPlanWindow(viewModel) { Owner = System.Windows.Application.Current?.MainWindow };
+                window.ShowDialog();
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
+            {
+                _notifications?.Show($"读取跨护甲计划失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(12));
+            }
+        }
+
         private async Task SplitEmbeddedMaterialsAsync()
         {
             if (!TryGetCurrentNode(out var node) || !TryChooseOutput(out var output)) return;
@@ -542,7 +586,9 @@ namespace HD2ModManager.ViewModels
         private void RaiseSameKeyReconstructionCommandState()
         {
             OnPropertyChanged(nameof(CanRebuildSameKey));
+			OnPropertyChanged(nameof(CanPlanCrossArmorTransfer));
             RebuildSameKeyCommand.RaiseCanExecuteChanged();
+			PlanCrossArmorTransferCommand.RaiseCanExecuteChanged();
         }
 
         private static string SanitizeFileName(string name) => string.Concat(name.Select(character => System.IO.Path.GetInvalidFileNameChars().Contains(character) ? '_' : character)).Trim();

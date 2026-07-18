@@ -18,7 +18,7 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Builds and queries a persisted (TypeID, FileID) -> ArchiveId reverse index using SQLite.
 public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 {
-	private const string UnitPartAnalyzerVersion = "unit-parts-v3-sdk-customization-variants";
+	private const string UnitPartAnalyzerVersion = "unit-parts-v4-sdk-customization-variants-armor-helmet";
 	private readonly StoragePaths _paths;
 	private readonly IGameDataArchiveIndexer _archiveIndexer;
 	private readonly UnitMeshPartClassifier _unitPartClassifier;
@@ -69,7 +69,11 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 			normalizedGameDataDirectory,
 			archiveHashesJson,
 			cancellationToken).ConfigureAwait(false);
+		await using var versionConnection = new SqliteConnection($"Data Source={_paths.DbPath};Mode=ReadOnly;Cache=Shared");
+		await versionConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		var indexedUnitPartVersion = await SqliteSchema.GetMetaAsync(versionConnection, "unit_part_analyzer_version", cancellationToken).ConfigureAwait(false);
 		var state = string.Equals(stored.SourceFingerprint, currentFingerprint, StringComparison.OrdinalIgnoreCase)
+			&& string.Equals(indexedUnitPartVersion, UnitPartAnalyzerVersion, StringComparison.Ordinal)
 			? GameDataIndexState.Current
 			: GameDataIndexState.Stale;
 
@@ -370,38 +374,38 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		await SqliteSchema.SetMetaAsync(connection, "parser_version", facts.ParserVersion, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "index_schema_version", facts.SchemaVersion, cancellationToken).ConfigureAwait(false);
 
-		var armorArchiveIds = GetArmorArchiveIds(root);
+		var equipmentArchiveIds = GetEquipmentArchiveIds(root);
 		var globalBoneNames = LoadGlobalBoneNames(_paths.BoneHashesPath);
-		var partFacts = await AnalyzeArmorUnitPartsAsync(normalizedGameDataDirectory, facts.Archives, armorArchiveIds, globalBoneNames, progress, cancellationToken).ConfigureAwait(false);
+		var partFacts = await AnalyzeEquipmentUnitPartsAsync(normalizedGameDataDirectory, facts.Archives, equipmentArchiveIds, globalBoneNames, progress, cancellationToken).ConfigureAwait(false);
 		await SaveUnitPartFactsAsync(partFacts, cancellationToken).ConfigureAwait(false);
 	}
 
-	private async ValueTask<IReadOnlyList<GameDataUnitPartFact>> AnalyzeArmorUnitPartsAsync(
+	private async ValueTask<IReadOnlyList<GameDataUnitPartFact>> AnalyzeEquipmentUnitPartsAsync(
 		string gameDataDirectory,
 		IReadOnlyList<GameDataArchiveFact> archives,
-		IReadOnlySet<string> armorArchiveIds,
+		IReadOnlySet<string> equipmentArchiveIds,
 		IReadOnlyDictionary<uint, string> globalBoneNames,
 		IProgress<IndexBuildProgress>? progress,
 		CancellationToken cancellationToken)
 	{
-		if (armorArchiveIds.Count == 0)
+		if (equipmentArchiveIds.Count == 0)
 		{
 			return Array.Empty<GameDataUnitPartFact>();
 		}
 
-		var armorArchives = archives.Where(archive => archive.IsIndexed && armorArchiveIds.Contains(archive.PackageName)).ToArray();
+		var equipmentArchives = archives.Where(archive => archive.IsIndexed && equipmentArchiveIds.Contains(archive.PackageName)).ToArray();
 		var resolver = new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(gameDataDirectory);
 		var reader = new GameDataUnitMeshReader(resolver);
 		var result = new List<GameDataUnitPartFact>();
-		var total = armorArchives.Sum(archive => archive.Entries.Count(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId));
+		var total = equipmentArchives.Sum(archive => archive.Entries.Count(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId));
 		var current = 0;
-		foreach (var archive in armorArchives)
+		foreach (var archive in equipmentArchives)
 		{
 			foreach (var entry in archive.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
 			{
 				cancellationToken.ThrowIfCancellationRequested();
 				current++;
-				progress?.Report(new IndexBuildProgress(current, Math.Max(total, 1), $"分析护甲 Unit：{archive.PackageName}"));
+				progress?.Report(new IndexBuildProgress(current, Math.Max(total, 1), $"分析装备 Unit：{archive.PackageName}"));
 				var unitKey = new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId);
 				try
 				{
@@ -559,12 +563,13 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value;";
 		return archives;
 	}
 
-	private static IReadOnlySet<string> GetArmorArchiveIds(ArchiveHashesRoot root)
+	private static IReadOnlySet<string> GetEquipmentArchiveIds(ArchiveHashesRoot root)
 	{
 		var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		foreach (var (category, archives) in root)
 		{
-			if (!category.Contains("armor", StringComparison.OrdinalIgnoreCase))
+			if (!category.Contains("armor", StringComparison.OrdinalIgnoreCase)
+				&& !category.Contains("helmet", StringComparison.OrdinalIgnoreCase))
 			{
 				continue;
 			}

@@ -108,7 +108,7 @@ public sealed class SdkStyleUnitReconstructionPipelineTests
 	private static SdkStyleAvatarRigResource CreateAvatarRig(AssetKey key, string archiveName, ulong bonesRef, ulong stateMachineRef)
 	{
 		var payload = new PatchEntryPayload(CreateEntry(key), CreateWritableTocData(stateMachineRef, bonesRef), Array.Empty<byte>(), Array.Empty<byte>());
-		return new SdkStyleAvatarRigResource(key, archiveName, payload, bonesRef, stateMachineRef);
+		return new SdkStyleAvatarRigResource(key, archiveName, payload, bonesRef, stateMachineRef, UnitTransformInfo.Empty);
 	}
 
 	private static PatchTocEntry CreateEntry(AssetKey key) => new(key, "source.patch", "source.patch");

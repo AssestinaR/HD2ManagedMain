@@ -13,7 +13,8 @@ public sealed record SdkStyleAvatarRigResource(
 	string ArchiveName,
 	PatchEntryPayload Payload,
 	ulong BonesReference,
-	ulong StateMachineReference);
+	ulong StateMachineReference,
+	UnitTransformInfo TransformInfo);
 
 public sealed record SdkStyleMeshBinding(
 	PatchUnitMesh SourceUnit,

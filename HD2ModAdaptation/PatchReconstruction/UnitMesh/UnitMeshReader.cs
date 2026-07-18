@@ -82,9 +82,9 @@ public sealed class UnitMeshReader
 		var rawMeshes = BuildRawMeshSummaries(meshes, streams, effectiveGpuData.Length);
 		var rawMeshData = ReadRawMeshData(meshes, streams, effectiveGpuData);
 		meshes = ApplySdkMeshClassification(meshes, rawMeshData, materials);
-		var transformNameHashes = transformInfoOffset == UnsupportedOffset
-			? Array.Empty<uint>()
-			: ReadTransformNameHashes(tocData, transformInfoOffset);
+		var transformInfo = transformInfoOffset == UnsupportedOffset
+			? UnitTransformInfo.Empty
+			: ReadTransformInfo(tocData, transformInfoOffset);
 
 		return new UnitMeshModel(
 			version,
@@ -105,24 +105,58 @@ public sealed class UnitMeshReader
 			rawMeshes,
 			rawMeshData)
 		{
-			TransformNameHashes = transformNameHashes
+			TransformInfoOffset = transformInfoOffset,
+			TransformInfo = transformInfo,
+			TransformNameHashes = transformInfo.NameHashes
 		};
 	}
 
-	private static IReadOnlyList<uint> ReadTransformNameHashes(ReadOnlySpan<byte> data, uint transformInfoOffset)
+	public static UnitTransformInfo ReadTransformInfoFromUnitToc(ReadOnlySpan<byte> tocData)
+	{
+		if (tocData.Length < 0x38) throw new InvalidDataException("Unit TocData is too small to contain TransformInfoOffset.");
+		var transformInfoOffset = ReadUInt32(tocData, 0x34);
+		return transformInfoOffset == UnsupportedOffset ? UnitTransformInfo.Empty : ReadTransformInfo(tocData, transformInfoOffset);
+	}
+
+	private static UnitTransformInfo ReadTransformInfo(ReadOnlySpan<byte> data, uint transformInfoOffset)
 	{
 		EnsureRange(data, transformInfoOffset, 16, "transform info header");
 		var count = checked((int)ReadUInt32(data, transformInfoOffset));
-		var hashesOffset = checked((int)transformInfoOffset + 16 + count * 64 + count * 64 + count * 4);
+		var reserved0 = ReadUInt32(data, transformInfoOffset + 4);
+		var reserved1 = ReadUInt32(data, transformInfoOffset + 8);
+		var reserved2 = ReadUInt32(data, transformInfoOffset + 12);
+		var localOffset = checked((int)transformInfoOffset + 16);
+		var matricesOffset = checked(localOffset + count * 64);
+		var entriesOffset = checked(matricesOffset + count * 64);
+		var hashesOffset = checked(entriesOffset + count * 4);
 		EnsureRange(data, hashesOffset, checked(count * 4), "transform name hashes");
 
+		var locals = new UnitLocalTransform[count];
+		var matrices = new UnitTransformMatrix[count];
+		var entries = new UnitTransformEntry[count];
 		var hashes = new uint[count];
-		for (var i = 0; i < hashes.Length; i++)
+		for (var i = 0; i < count; i++)
 		{
+			var itemOffset = checked(localOffset + i * 64);
+			locals[i] = new UnitLocalTransform(
+				ReadSingles(data, itemOffset, 9),
+				ReadSingles(data, itemOffset + 36, 3),
+				ReadSingles(data, itemOffset + 48, 3),
+				ReadSingle(data, itemOffset + 60));
+			matrices[i] = new UnitTransformMatrix(ReadSingles(data, checked(matricesOffset + i * 64), 16));
+			entries[i] = new UnitTransformEntry(ReadUInt16(data, checked(entriesOffset + i * 4)), ReadUInt16(data, checked(entriesOffset + i * 4 + 2)));
 			hashes[i] = ReadUInt32(data, hashesOffset + i * 4);
 		}
 
-		return hashes;
+		return new UnitTransformInfo(reserved0, reserved1, reserved2, locals, matrices, entries, hashes);
+	}
+
+	private static float[] ReadSingles(ReadOnlySpan<byte> data, int offset, int count)
+	{
+		EnsureRange(data, offset, checked(count * 4), "float array");
+		var values = new float[count];
+		for (var i = 0; i < count; i++) values[i] = ReadSingle(data, checked(offset + i * 4));
+		return values;
 	}
 
 	private static IReadOnlyList<UnitBoneInfo> ReadBoneInfos(ReadOnlySpan<byte> data, uint boneInfoOffset, uint endOffset)

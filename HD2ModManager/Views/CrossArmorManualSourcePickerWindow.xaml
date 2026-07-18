@@ -1,0 +1,14 @@
+<Window x:Class="HD2ModManager.Views.CrossArmorManualSourcePickerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="强制来源" Width="580" Height="390" WindowStartupLocation="CenterOwner" Background="#F5F6F8">
+    <Grid Margin="18">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <TextBlock x:Name="PromptText" TextWrapping="Wrap" Foreground="#444"/>
+        <ListBox x:Name="Candidates" Grid.Row="1" Margin="0,12,0,12" DisplayMemberPath="Display"/>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="取消" Width="88" Margin="0,0,8,0" IsCancel="True"/>
+            <Button Content="强制指定" Width="96" Click="Confirm_Click" IsDefault="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -21,8 +21,32 @@ public sealed record UnitMeshModel(
 	IReadOnlyList<UnitRawMeshSummary> RawMeshes,
 	IReadOnlyList<UnitRawMeshData> RawMeshData)
 {
+	public uint TransformInfoOffset { get; init; }
+	public UnitTransformInfo TransformInfo { get; init; } = UnitTransformInfo.Empty;
 	public IReadOnlyList<uint> TransformNameHashes { get; init; } = Array.Empty<uint>();
 }
+
+public sealed record UnitTransformInfo(
+	uint Reserved0,
+	uint Reserved1,
+	uint Reserved2,
+	IReadOnlyList<UnitLocalTransform> LocalTransforms,
+	IReadOnlyList<UnitTransformMatrix> Matrices,
+	IReadOnlyList<UnitTransformEntry> Entries,
+	IReadOnlyList<uint> NameHashes)
+{
+	public static UnitTransformInfo Empty { get; } = new(0, 0, 0, Array.Empty<UnitLocalTransform>(), Array.Empty<UnitTransformMatrix>(), Array.Empty<UnitTransformEntry>(), Array.Empty<uint>());
+}
+
+public sealed record UnitLocalTransform(
+	IReadOnlyList<float> Rotation,
+	IReadOnlyList<float> Position,
+	IReadOnlyList<float> Scale,
+	float Padding);
+
+public sealed record UnitTransformMatrix(IReadOnlyList<float> Values);
+
+public sealed record UnitTransformEntry(ushort Increment, ushort ParentIndex);
 
 public sealed record UnitCustomizationInfo(
 	string BodyType,

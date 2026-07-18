@@ -78,6 +78,10 @@ public static class CoreServices
 		=> new ProfileMaterialDiagnosticsService(CreateModFactsStore(paths), CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
 	public static IMaterialDeliveryFactsService CreateMaterialDeliveryFactsService(StoragePaths paths)
 		=> new MaterialDeliveryFactsService(CreateModFactsStore(paths));
+	public static IEquipmentUnitCatalogService CreateEquipmentUnitCatalogService(StoragePaths paths)
+		=> new EquipmentUnitCatalogService(paths, CreatePatchTocScanner(), CreatePatchUnitMeshReader());
+	public static ICrossArmorTransferCandidateService CreateCrossArmorTransferCandidateService()
+		=> new CrossArmorTransferCandidateService();
 	public static IAdvancedModAssetQueryService CreateAdvancedModAssetQueryService(StoragePaths paths)
 		=> new AdvancedModAssetQueryService(CreateModFactsStore(paths), CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
 	public static IMaterialPackagingApplicationService CreateMaterialPackagingApplicationService()

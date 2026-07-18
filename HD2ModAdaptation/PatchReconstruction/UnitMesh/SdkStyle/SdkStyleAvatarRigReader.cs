@@ -40,7 +40,8 @@ public sealed class SdkStyleAvatarRigReader
 			archiveName,
 			payload,
 			ReadReference(tocData, BonesReferenceOffset, "Bones"),
-			ReadReference(tocData, StateMachineReferenceOffset, "StateMachine"));
+			ReadReference(tocData, StateMachineReferenceOffset, "StateMachine"),
+			UnitMeshReader.ReadTransformInfoFromUnitToc(tocData));
 	}
 
 	private async ValueTask<byte[]> ReadRequiredResourceAsync(string archiveName, ulong offset, uint size, CancellationToken cancellationToken)

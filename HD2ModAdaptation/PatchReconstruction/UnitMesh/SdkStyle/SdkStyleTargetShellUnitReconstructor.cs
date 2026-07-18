@@ -4,16 +4,26 @@ namespace HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle;
 public sealed class SdkStyleTargetShellUnitReconstructor
 {
 	private readonly PlaceholderUnitMeshMinifier minifier;
+	private readonly SdkStyleVertexStreamPlanner streamPlanner;
 	private readonly SdkStyleMeshReencoder reencoder;
 	private readonly UnitMeshWriter writer;
 
 	public SdkStyleTargetShellUnitReconstructor(
 		PlaceholderUnitMeshMinifier? minifier = null,
+		SdkStyleVertexStreamPlanner? streamPlanner = null,
 		SdkStyleMeshReencoder? reencoder = null,
-		UnitMeshWriter? writer = null)
+		UnitMeshWriter? writer = null,
+		bool allowSectionRebuild = false,
+		bool propagateSourceMaterials = true,
+		IReadOnlySet<ulong>? allowedSourceMaterialIds = null)
 	{
 		this.minifier = minifier ?? new PlaceholderUnitMeshMinifier();
-		this.reencoder = reencoder ?? new SdkStyleMeshReencoder();
+		this.streamPlanner = streamPlanner ?? new SdkStyleVertexStreamPlanner();
+		this.reencoder = reencoder ?? new SdkStyleMeshReencoder(
+			allowSectionRebuild: allowSectionRebuild,
+			propagateSourceMaterials: propagateSourceMaterials,
+			transformMeshSpace: allowSectionRebuild,
+			allowedSourceMaterialIds: allowedSourceMaterialIds);
 		this.writer = writer ?? new UnitMeshWriter();
 	}
 
@@ -35,9 +45,13 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 			if (!targetUnit.Model.RawMeshData.Any(mesh => mesh.MeshInfoIndex == mapping.TargetMeshInfoIndex)) throw new KeyNotFoundException($"Target Unit does not contain mesh {mapping.TargetMeshInfoIndex}.");
 		}
 
+		var plannedTargetModel = streamPlanner.Plan(targetUnit.Model, mappings.Select(mapping => new SdkStyleStreamReplacement(
+			mapping.TargetMeshInfoIndex,
+			sourceByKey[mapping.SourceUnitAssetKey].Model,
+			mapping.SourceMeshInfoIndex)).ToArray());
 		var model = targetIndexes.Count == 0
 			? minifier.MinifyAll(targetUnit.Model)
-			: minifier.MinifyExcept(targetUnit.Model, targetIndexes);
+			: minifier.MinifyExcept(plannedTargetModel, targetIndexes);
 		var rebuiltBoneInfoIndexes = new HashSet<int>();
 		var replacementMaterialIds = new HashSet<ulong>();
 		foreach (var mapping in mappings.OrderBy(mapping => mapping.TargetMeshInfoIndex))

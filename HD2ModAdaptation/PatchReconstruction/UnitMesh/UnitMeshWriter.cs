@@ -6,10 +6,24 @@ namespace HD2ModAdaptation.PatchReconstruction.UnitMesh;
 public sealed class UnitMeshWriter
 {
 	private const uint UnsupportedOffset = 0;
+	private readonly bool allowBoneInfoRelocation;
+	private readonly bool allowTransformInfoRelocation;
+
+	public UnitMeshWriter(bool allowBoneInfoRelocation = false, bool allowTransformInfoRelocation = false)
+	{
+		this.allowBoneInfoRelocation = allowBoneInfoRelocation;
+		this.allowTransformInfoRelocation = allowTransformInfoRelocation;
+	}
 
 	public UnitMeshWriteResult Write(UnitMeshModel model, ReadOnlySpan<byte> originalTocData, ReadOnlySpan<byte> originalCompositeTocData = default)
 	{
-		var (tocData, writableModel) = PrepareTocForExpandedMetadata(model, originalTocData);
+		var transformRelocation = allowTransformInfoRelocation
+			? RelocateTransformInfo(model, originalTocData)
+			: new MetadataRelocation(originalTocData.ToArray(), model);
+		var relocation = allowBoneInfoRelocation
+			? RelocateBoneInfos(transformRelocation.Model, transformRelocation.TocData)
+			: new MetadataRelocation(transformRelocation.TocData, transformRelocation.Model);
+		var (tocData, writableModel) = PrepareTocForExpandedMetadata(relocation.Model, relocation.TocData);
 		var meshTocData = tocData;
 		byte[]? compositeTocData = null;
 		if (writableModel.StreamInfoOffset == UnsupportedOffset && !originalCompositeTocData.IsEmpty)
@@ -19,6 +33,7 @@ public sealed class UnitMeshWriter
 		}
 
 		WriteMeshMaterialSlots(meshTocData, writableModel.Meshes);
+		WriteStreamLayouts(meshTocData, writableModel.Streams);
 		WriteMaterialBindings(tocData, writableModel);
 		WriteBoneInfos(tocData, writableModel);
 		var gpuData = BuildGpuData(writableModel, meshTocData);
@@ -125,10 +140,48 @@ public sealed class UnitMeshWriter
 		data.Add((byte)(value >> 24));
 	}
 
+	private static void WriteUInt16(byte[] data, int offset, ushort value)
+	{
+		EnsureWritableRange(data, offset, 2, "uint16");
+		data[offset] = (byte)value;
+		data[offset + 1] = (byte)(value >> 8);
+	}
+
+	private static void WriteSingle(byte[] data, int offset, float value)
+		=> WriteUInt32(data, offset, unchecked((uint)BitConverter.SingleToInt32Bits(value)));
+
 	private static void AppendUInt64(List<byte> data, ulong value)
 	{
 		AppendUInt32(data, unchecked((uint)value));
 		AppendUInt32(data, unchecked((uint)(value >> 32)));
+	}
+
+	private static void WriteStreamLayouts(byte[] tocData, IReadOnlyList<UnitStreamInfo> streams)
+	{
+		foreach (var stream in streams)
+		{
+			if (stream.Offset == UnsupportedOffset) continue;
+			EnsureWritableRange(tocData, checked((int)stream.Offset), 8, "stream ComponentInfoId");
+			WriteUInt64(tocData, checked((int)stream.Offset), stream.ComponentInfoId);
+			var componentOffset = checked((int)stream.Offset + 8);
+			const int componentBlockSize = 320;
+			if (stream.Components.Count * 20 > componentBlockSize) throw new InvalidDataException("A Unit stream has too many components for its StreamInfo component block.");
+			EnsureWritableRange(tocData, componentOffset, componentBlockSize + 40, "stream layout");
+			Array.Clear(tocData, componentOffset, componentBlockSize);
+			for (var index = 0; index < stream.Components.Count; index++)
+			{
+				var component = stream.Components[index];
+				var offset = componentOffset + index * 20;
+				WriteUInt32(tocData, offset, component.Type);
+				WriteUInt32(tocData, offset + 4, component.Format);
+				WriteUInt32(tocData, offset + 8, component.Index);
+				WriteUInt64(tocData, offset + 12, component.Unknown);
+			}
+
+			var headerOffset = componentOffset + componentBlockSize;
+			WriteUInt64(tocData, headerOffset, checked((ulong)stream.Components.Count));
+			WriteUInt32(tocData, headerOffset + 28, stream.VertexStride);
+		}
 	}
 
 	private static byte[] BuildMaterialBindingPayload(IReadOnlyList<UnitMaterialBinding> materials)
@@ -320,14 +373,7 @@ public sealed class UnitMeshWriter
 			throw new InvalidDataException("Cannot rewrite BoneInfo because its record count differs from the current target payload.");
 		}
 
-		var matrixByTransformIndex = new Dictionary<uint, byte[]>();
-		foreach (var boneInfo in model.BoneInfos)
-		{
-			for (var i = 0; i < Math.Min(boneInfo.RealIndices.Count, boneInfo.BoneMatrices.Count); i++)
-			{
-				matrixByTransformIndex.TryAdd(boneInfo.RealIndices[i], boneInfo.BoneMatrices[i]);
-			}
-		}
+		var matrixByTransformIndex = BuildMatrixMap(model.BoneInfos);
 
 		for (var index = 0; index < model.BoneInfos.Count; index++)
 		{
@@ -345,7 +391,7 @@ public sealed class UnitMeshWriter
 		}
 	}
 
-	private static byte[] SerializeBoneInfo(UnitBoneInfo boneInfo, IReadOnlyDictionary<uint, byte[]> matrixByTransformIndex)
+	internal static byte[] SerializeBoneInfo(UnitBoneInfo boneInfo, IReadOnlyDictionary<uint, byte[]> matrixByTransformIndex)
 	{
 		var count = boneInfo.RealIndices.Count;
 		var matrixOffset = 16;
@@ -384,6 +430,156 @@ public sealed class UnitMeshWriter
 		}
 		return payload;
 	}
+
+	private static MetadataRelocation RelocateTransformInfo(UnitMeshModel model, ReadOnlySpan<byte> originalTocData)
+	{
+		if (model.TransformInfoOffset == UnsupportedOffset || model.TransformInfo.NameHashes.Count == 0) return new MetadataRelocation(originalTocData.ToArray(), model);
+		var oldStart = checked((int)model.TransformInfoOffset);
+		EnsureWritableRange(originalTocData.ToArray(), oldStart, 16, "current TransformInfo header");
+		var oldCount = checked((int)ReadUInt32(originalTocData.ToArray(), oldStart));
+		var oldLength = checked(16 + oldCount * 136);
+		var oldEnd = checked(oldStart + oldLength);
+		EnsureWritableRange(originalTocData.ToArray(), oldStart, oldLength, "current TransformInfo block");
+		var replacement = SerializeTransformInfo(model.TransformInfo).ToList();
+		PadToAlignment(replacement, 16);
+		var alignedOldEnd = checked((oldEnd + 15) & ~15);
+		EnsureWritableRange(originalTocData.ToArray(), oldEnd, alignedOldEnd - oldEnd, "current TransformInfo alignment");
+		var delta = replacement.Count - (alignedOldEnd - oldStart);
+		if (delta == 0)
+		{
+			var unchanged = originalTocData.ToArray();
+			replacement.CopyTo(unchanged, oldStart);
+			return new MetadataRelocation(unchanged, model);
+		}
+		var relocated = new byte[checked(originalTocData.Length + delta)];
+		originalTocData[..oldStart].CopyTo(relocated);
+		replacement.CopyTo(relocated, oldStart);
+		originalTocData[alignedOldEnd..].CopyTo(relocated.AsSpan(oldStart + replacement.Count));
+		foreach (var headerOffset in new[] { 0x4c, 0x50, 0x54, 0x58, 0x5c, 0x60, 0x64, 0x70 }) ShiftHeaderOffset(relocated, headerOffset, alignedOldEnd, delta, $"header field 0x{headerOffset:x}");
+		return new MetadataRelocation(relocated, ShiftModelOffsets(model, alignedOldEnd, delta));
+	}
+
+	private static byte[] SerializeTransformInfo(UnitTransformInfo info)
+	{
+		var count = info.NameHashes.Count;
+		if (info.LocalTransforms.Count != count || info.Matrices.Count != count || info.Entries.Count != count) throw new InvalidDataException("TransformInfo arrays have inconsistent counts.");
+		var data = new byte[checked(16 + count * 136)];
+		WriteUInt32(data, 0, checked((uint)count)); WriteUInt32(data, 4, info.Reserved0); WriteUInt32(data, 8, info.Reserved1); WriteUInt32(data, 12, info.Reserved2);
+		var matrixOffset = 16 + count * 64;
+		var entryOffset = matrixOffset + count * 64;
+		var hashOffset = entryOffset + count * 4;
+		for (var index = 0; index < count; index++)
+		{
+			var local = info.LocalTransforms[index];
+			if (local.Rotation.Count != 9 || local.Position.Count != 3 || local.Scale.Count != 3) throw new InvalidDataException("A TransformInfo local transform has an invalid component count.");
+			var cursor = 16 + index * 64;
+			foreach (var value in local.Rotation.Concat(local.Position).Concat(local.Scale).Append(local.Padding)) { WriteSingle(data, cursor, value); cursor += 4; }
+			if (info.Matrices[index].Values.Count != 16) throw new InvalidDataException("A TransformInfo matrix does not contain 16 floats.");
+			cursor = matrixOffset + index * 64;
+			foreach (var value in info.Matrices[index].Values) { WriteSingle(data, cursor, value); cursor += 4; }
+			WriteUInt16(data, entryOffset + index * 4, info.Entries[index].Increment);
+			WriteUInt16(data, entryOffset + index * 4 + 2, info.Entries[index].ParentIndex);
+			WriteUInt32(data, hashOffset + index * 4, info.NameHashes[index]);
+		}
+		return data;
+	}
+
+	private static MetadataRelocation RelocateBoneInfos(UnitMeshModel model, ReadOnlySpan<byte> originalTocData)
+	{
+		if (model.BoneInfoOffset == UnsupportedOffset || model.BoneInfos.Count == 0)
+		{
+			return new MetadataRelocation(originalTocData.ToArray(), model);
+		}
+
+		if (model.StreamInfoOffset == UnsupportedOffset)
+		{
+			throw new InvalidDataException("Cross-armor BoneInfo relocation does not support Composite-backed Units yet.");
+		}
+
+		var oldBoneStart = checked((int)model.BoneInfoOffset);
+		var oldBoneEnd = checked((int)model.StreamInfoOffset);
+		EnsureWritableRange(originalTocData.ToArray(), oldBoneStart, oldBoneEnd - oldBoneStart, "current BoneInfo block");
+		var matrixByTransformIndex = BuildMatrixMap(model.BoneInfos);
+		var payloads = model.BoneInfos.Select(boneInfo => SerializeBoneInfo(boneInfo, matrixByTransformIndex)).ToArray();
+		var replacement = new List<byte>(4 + payloads.Length * 4 + payloads.Sum(payload => payload.Length));
+		AppendUInt32(replacement, checked((uint)payloads.Length));
+		var relativeOffset = checked(4 + payloads.Length * 4);
+		foreach (var payload in payloads)
+		{
+			AppendUInt32(replacement, checked((uint)relativeOffset));
+			relativeOffset = checked(relativeOffset + payload.Length);
+		}
+		foreach (var payload in payloads) replacement.AddRange(payload);
+		PadToAlignment(replacement, 16);
+
+		var delta = replacement.Count - (oldBoneEnd - oldBoneStart);
+		if (delta == 0)
+		{
+			var unchanged = originalTocData.ToArray();
+			replacement.CopyTo(unchanged, oldBoneStart);
+			return new MetadataRelocation(unchanged, model);
+		}
+
+		var relocated = new byte[checked(originalTocData.Length + delta)];
+		originalTocData[..oldBoneStart].CopyTo(relocated);
+		replacement.CopyTo(relocated, oldBoneStart);
+		originalTocData[oldBoneEnd..].CopyTo(relocated.AsSpan(oldBoneStart + replacement.Count));
+		ShiftHeaderOffset(relocated, 0x5c, oldBoneEnd, delta, "StreamInfoOffset");
+		ShiftHeaderOffset(relocated, 0x60, oldBoneEnd, delta, "EndingOffset");
+		ShiftHeaderOffset(relocated, 0x64, oldBoneEnd, delta, "MeshInfoOffset");
+		ShiftHeaderOffset(relocated, 0x70, oldBoneEnd, delta, "MaterialsOffset");
+		return new MetadataRelocation(relocated, ShiftModelOffsets(model, oldBoneEnd, delta));
+	}
+
+	private static IReadOnlyDictionary<uint, byte[]> BuildMatrixMap(IReadOnlyList<UnitBoneInfo> boneInfos)
+	{
+		var matrixByTransformIndex = new Dictionary<uint, byte[]>();
+		foreach (var boneInfo in boneInfos)
+		{
+			for (var i = 0; i < Math.Min(boneInfo.RealIndices.Count, boneInfo.BoneMatrices.Count); i++)
+			{
+				matrixByTransformIndex.TryAdd(boneInfo.RealIndices[i], boneInfo.BoneMatrices[i]);
+			}
+		}
+		return matrixByTransformIndex;
+	}
+
+	private static void ShiftHeaderOffset(byte[] tocData, int headerOffset, int threshold, int delta, string description)
+	{
+		var value = ReadUInt32(tocData, headerOffset);
+		if (value != UnsupportedOffset && value >= threshold)
+		{
+			WriteUInt32(tocData, headerOffset, checked((uint)((int)value + delta)));
+		}
+		else if (value != UnsupportedOffset && value < threshold)
+		{
+			throw new InvalidDataException($"Cannot relocate BoneInfo because {description} precedes the BoneInfo successor block.");
+		}
+	}
+
+	private static UnitMeshModel ShiftModelOffsets(UnitMeshModel model, int threshold, int delta)
+	{
+		uint Shift(uint value) => value != UnsupportedOffset && value >= threshold ? checked((uint)((int)value + delta)) : value;
+		return model with
+		{
+			CustomizationInfoOffset = Shift(model.CustomizationInfoOffset),
+			BoneInfoOffset = Shift(model.BoneInfoOffset),
+			StreamInfoOffset = Shift(model.StreamInfoOffset),
+			EndingOffset = Shift(model.EndingOffset),
+			MeshInfoOffset = Shift(model.MeshInfoOffset),
+			MaterialsOffset = Shift(model.MaterialsOffset),
+			Streams = model.Streams.Select(stream => stream with { Offset = Shift(stream.Offset) }).ToArray(),
+			Meshes = model.Meshes.Select(mesh => mesh with
+			{
+				Offset = Shift(mesh.Offset),
+				MaterialOffset = Shift(mesh.MaterialOffset),
+				SectionsOffset = Shift(mesh.SectionsOffset),
+				Sections = mesh.Sections.Select(section => section with { Offset = Shift(section.Offset) }).ToArray()
+			}).ToArray()
+		};
+	}
+
+	private sealed record MetadataRelocation(byte[] TocData, UnitMeshModel Model);
 
 	private static UnitMeshInfo? FindMeshInfo(UnitMeshModel model, int meshInfoIndex)
 	{

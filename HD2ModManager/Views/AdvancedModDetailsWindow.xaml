@@ -56,6 +56,7 @@
                     <TextBlock Text="{Binding SameKeyReconstructionSummary}" TextWrapping="Wrap" Foreground="#255A3A" Margin="0,8,0,12"/>
                     <WrapPanel>
                         <Button Content="更新 Unit（保持其余资源）..." ToolTip="仅替换旧 Unit/关联旧 Composite，并保留其他资源与 sidecar" Command="{Binding RebuildSameKeyCommand}" Padding="12,7" Margin="0,0,8,8"/>
+						<Button Content="生成更换护甲 Mod（计划）..." ToolTip="仅预览来源/目标部件映射；不会写出 Patch" Command="{Binding PlanCrossArmorTransferCommand}" Padding="12,7" Margin="0,0,8,8"/>
                     </WrapPanel>
                 </StackPanel>
             </Border>
