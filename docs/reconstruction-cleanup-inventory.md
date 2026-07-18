@@ -1,7 +1,7 @@
 # 重建链路清理盘点
 
 **盘点日期：** 2026-07-18
-**行为基线：** `6de5c33 refactor: move Core Unit reads to Adaptation`；已实际验收 patch 重构与跨护甲替换。
+**行为基线：** `f5407ba refactor: move same-key execution to Adaptation`；已实际验收 patch 重构与跨护甲替换。
 **范围：** Core、Adaptation 与 Manager 的 Unit/Patch 重建调用；不改变现有输出行为。
 
 ## 目标边界
@@ -14,7 +14,7 @@
 
 | 入口 | Manager 调用 | Core 当前职责 | Adaptation 当前职责 | 结论 |
 |---|---|---|---|---|
-| Same-key 重建 | `ModDetailsPageViewModel` → `IModSameKeyReconstructionService` | facts 新鲜度、archive 选择、计划、输出目录/报告、验收 | 实际 source/target Unit 读取、target-shell 输出、archive 写入 | 输出已验收；Core 仍直接编排多个 Adaptation 技术类型，尚可收敛为 operation。 |
+| Same-key 重建 | `ModDetailsPageViewModel` → `IModSameKeyReconstructionService` | facts 新鲜度、archive 选择、计划、输出目录/报告、验收 | `SameKeyTargetShellReconstructionOperation` 执行 source/target Unit 读取、target-shell 输出、旧 Unit/Composite 删除、archive 写入与回读 | `f5407ba` 后实际验收成功；Core 已不再直接编排 Patch/Unit 二进制执行细节。 |
 | Cross-armor 候选 | `CrossArmorTransferPlanWindow` → `ICrossArmorTransferCandidateService` | 已批准 mapping、候选策略、报告、输出事务 | source/target 读取、TransformInfo/BoneInfo 处理、SDK target-shell 重建、archive 写入 | 输出已验收；Core service 仍包含大量技术编排和诊断投影，尚可迁移为 Adaptation operation。 |
 | facts/索引/部署 | 多个 Manager service/view model | SQLite facts、archive 索引、部署、冲突分析 | Patch 解析器/资源读取被按需调用 | 保留在 Core；不是重建旧链路。 |
 
@@ -71,9 +71,9 @@
 
 ### 1. Core 重建编排仍未完全去技术化（高价值，需单独验收）
 
-- `ModSameKeyReconstructionService` 仍直接构造 Adaptation scanner、reader、writer、target-shell output builder 和 patch archive writer。
 - `CrossArmorTransferCandidateService` 仍直接构造并配置 Adaptation 的 rig reader、bone/transform diagnostics、reencoder、writer、output builder、material resolver 与 archive writer。
-- 两者都应最终改为调用输入明确、输出稳定的 Adaptation operation；Core 只保留 archive/facts 选择、已批准 mapping、输出事务与用户报告。
+- same-key 已于 `f5407ba` 收敛为 `SameKeyTargetShellReconstructionOperation`，且用户已完成实际 patch 重构与替换护甲验收。
+- Cross-armor 仍应最终迁为输入明确、输出稳定的 Adaptation operation；Core 只保留 archive/facts 选择、已批准 mapping、输出事务与用户报告。
 
 这是剩余的主要架构项，但也是最不应仓促处理的一项：它们位于已通过游戏验证的输出链路，改动后必须重新执行 same-key 和 cross-armor 的实际验收。
 
