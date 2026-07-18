@@ -21,15 +21,9 @@ public static class CoreServices
 		=> new PatchUnitMeshReader(CreatePatchEntryPayloadReader(), CreateUnitMeshReader(), CreatePatchTocScanner());
 	public static IArchiveUnitMeshReader CreateArchiveUnitMeshReader()
 		=> new ArchiveUnitMeshReader(gameDataDirectory => new GameDataPackageResolver(gameDataDirectory), CreatePatchTocScanner(), CreateUnitMeshReader());
-	public static IUnitMeshAdaptationPlanner CreateUnitMeshAdaptationPlanner()
-		=> new UnitMeshAdaptationPlanner(new UnitMeshReplacementStrategy(allowExperimentalFallback: true), CreateUnitMeshMinifier(), new UnitMeshRetargeter(allowExperimentalLayoutFallback: true, propagateSourceMaterials: true), CreateUnitMeshWriter());
 	public static ISameKeyReconstructionPlanningService CreateSameKeyReconstructionPlanningService(StoragePaths paths)
 		=> new SameKeyReconstructionPlanningService(
-			CreatePatchTocScanner(),
-			CreatePatchUnitMeshReader(),
-			CreateAssetArchiveIndexService(paths),
-			CreateArchiveUnitMeshReader(),
-			CreateUnitMeshAdaptationPlanner());
+			CreateAssetArchiveIndexService(paths));
 	public static IModSameKeyReconstructionService CreateModSameKeyReconstructionService(StoragePaths paths)
 		=> new ModSameKeyReconstructionService(
 			CreatePatchFileNameParser(),

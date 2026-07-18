@@ -46,6 +46,35 @@ public sealed class UnitMeshReplacementStrategyTests
 	}
 
 	[Fact]
+	public void FindCandidates_RejectsDifferentStreamsWithoutSemanticEvidence()
+	{
+		var target = CreateModel(new MeshSpec(0, 100, "", "", "", "", "", 60, 20));
+		var source = CreateModel(new MeshSpec(0, 200, "", "", "", "", "", 60, 20)) with
+		{
+			Streams = [CreateStream(vertexStride: 16)]
+		};
+
+		var candidates = new UnitMeshReplacementStrategy(allowExperimentalFallback: true).FindCandidates(target, source);
+
+		Assert.Empty(candidates);
+	}
+
+	[Fact]
+	public void FindCandidates_DifferentStreamsWithSameSemanticEvidence_UsesSdkStreamTranscode()
+	{
+		var target = CreateModel(new MeshSpec(0, 100, "body_legs_Medium_lod0", "body", "legs", "Medium", "", 60, 20));
+		var source = CreateModel(new MeshSpec(0, 200, "body_legs_Medium_lod0", "body", "legs", "Medium", "", 60, 20)) with
+		{
+			Streams = [CreateStream(vertexStride: 16)]
+		};
+
+		var candidate = Assert.Single(new UnitMeshReplacementStrategy(allowExperimentalFallback: true).FindCandidates(target, source));
+
+		Assert.Equal(UnitMeshReplacementCandidateKind.SdkStreamTranscode, candidate.Kind);
+		Assert.Contains("SDK-style stream transcode", candidate.Reason);
+	}
+
+	[Fact]
 	public void CreatePlan_MapsSelectedCandidatesAndMinifiesRemainingTargetMeshes()
 	{
 		var unitKey = new AssetKey(PatchUnitMeshReader.UnitTypeId, 0x1111111111111111);
@@ -67,8 +96,7 @@ public sealed class UnitMeshReplacementStrategyTests
 
 	private static UnitMeshModel CreateModel(params MeshSpec[] meshes)
 	{
-		var component = new UnitStreamComponentInfo(0, "position", 0, "vec3_float", 0, 0, 12);
-		var stream = new UnitStreamInfo(0, 0, 0, 1, 0, 6, 12, 0, 6, 0, 0, 0, 0, 0, new[] { component });
+		var stream = CreateStream(vertexStride: 12);
 		var meshInfos = new List<UnitMeshInfo>();
 		var rawMeshes = new List<UnitRawMeshData>();
 		foreach (var spec in meshes)
@@ -92,6 +120,9 @@ public sealed class UnitMeshReplacementStrategyTests
 
 		return new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UnitCustomizationInfo.Empty, Array.Empty<UnitBoneInfo>(), new[] { stream }, meshInfos, Array.Empty<UnitMaterialBinding>(), Array.Empty<UnitRawMeshSummary>(), rawMeshes);
 	}
+
+	private static UnitStreamInfo CreateStream(uint vertexStride)
+		=> new(0, 0, 0, 1, 0, 6, vertexStride, 0, 6, 0, 0, 0, 0, 0, [new UnitStreamComponentInfo(0, "position", 0, "vec3_float", 0, 0, vertexStride)]);
 
 	private sealed record MeshSpec(
 		int MeshInfoIndex,
