@@ -19,9 +19,6 @@
         <DataTemplate DataType="{x:Type localVM:HomePageViewModel}">
             <views:HomePageView/>
         </DataTemplate>
-        <DataTemplate DataType="{x:Type localVM:StatusPageViewModel}">
-            <views:StatusPageView/>
-        </DataTemplate>
         <DataTemplate DataType="{x:Type localVM:ProfilePageViewModel}">
             <views:ProfilePageView/>
         </DataTemplate>
@@ -141,13 +138,6 @@
                     <Button.Style>
                         <Style TargetType="Button" BasedOn="{StaticResource TopNavButton}">
                             <Style.Triggers><DataTrigger Binding="{Binding IsHomeActive}" Value="True"><Setter Property="Tag" Value="Active"/></DataTrigger></Style.Triggers>
-                        </Style>
-                    </Button.Style>
-                </Button>
-                <Button Content="📊 状态" Command="{Binding ShowStatusCommand}">
-                    <Button.Style>
-                        <Style TargetType="Button" BasedOn="{StaticResource TopNavButton}">
-                            <Style.Triggers><DataTrigger Binding="{Binding IsStatusActive}" Value="True"><Setter Property="Tag" Value="Active"/></DataTrigger></Style.Triggers>
                         </Style>
                     </Button.Style>
                 </Button>

@@ -81,7 +81,28 @@
                         </ComboBox>
                         <TextBlock Text="{Binding GameDataIndexLastCheckText}" Foreground="#666" Margin="12,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
-                    <Button Content="查看资产索引" Command="{Binding ViewGameDataIndexCommand}" HorizontalAlignment="Left" Margin="0,14,0,0"/>
+
+                    <Border BorderBrush="#E1E6EF" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,14,0,0">
+                        <StackPanel>
+                            <TextBlock Text="资产索引状态" FontWeight="SemiBold"/>
+                            <UniformGrid Columns="2" Margin="0,10,0,0">
+                                <TextBlock Text="状态" Foreground="#666" Margin="0,0,8,8"/>
+                                <TextBlock Text="{Binding AssetIndexState}" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                <TextBlock Text="摘要" Foreground="#666" Margin="0,0,8,8"/>
+                                <TextBlock Text="{Binding AssetIndexSummary}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                <TextBlock Text="构建时间" Foreground="#666" Margin="0,0,8,8"/>
+                                <TextBlock Text="{Binding AssetIndexBuiltUtc}" Margin="0,0,0,8"/>
+                                <TextBlock Text="索引内容" Foreground="#666" Margin="0,0,8,8"/>
+                                <TextBlock Text="{Binding AssetIndexCounts}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                            </UniformGrid>
+                            <TextBlock Text="{Binding AssetIndexHint}" Foreground="#666" TextWrapping="Wrap"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                <Button Content="建立 / 重建资产索引" Command="{Binding BuildAssetIndexCommand}"/>
+                                <Button Content="刷新状态" Command="{Binding RefreshAssetIndexStatusCommand}" Margin="8,0,0,0"/>
+                                <Button Content="查看资产索引" Command="{Binding ViewGameDataIndexCommand}" Margin="8,0,0,0"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
             </Border>
         </StackPanel>

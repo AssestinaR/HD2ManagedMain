@@ -4,7 +4,6 @@ namespace HD2ModManager.Enums
     public enum WorkspacePageType
     {
         Home,
-        Status,
         Profile,
         Library,
         Settings,

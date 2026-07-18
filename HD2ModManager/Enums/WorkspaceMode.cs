@@ -4,7 +4,6 @@ namespace HD2ModManager.Enums
     public enum WorkspaceMode
     {
         Home,
-        Status,
         ProfileOnly,
         LibraryOnly,
         ProfileLibrarySplit,

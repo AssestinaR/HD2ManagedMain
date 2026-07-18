@@ -76,7 +76,6 @@ namespace HD2ModManager.ViewModels
         public bool HasUnreadTaskHubEvents => EventHistory.Any(item => item.IsUnread);
 
         public RelayCommand ShowHomeCommand { get; }
-        public RelayCommand ShowStatusCommand { get; }
         public RelayCommand ShowProfileCommand { get; }
         public RelayCommand ShowLibraryCommand { get; }
         public RelayCommand ShowSplitCommand { get; }
@@ -90,7 +89,6 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ToggleTaskHubCommand { get; }
 
         public bool IsHomeActive => CurrentMode == WorkspaceMode.Home;
-        public bool IsStatusActive => CurrentMode == WorkspaceMode.Status;
         public bool IsProfileActive => CurrentMode == WorkspaceMode.ProfileOnly;
         public bool IsLibraryActive => CurrentMode == WorkspaceMode.LibraryOnly;
         public bool IsSplitActive => CurrentMode == WorkspaceMode.ProfileLibrarySplit;
@@ -166,7 +164,6 @@ namespace HD2ModManager.ViewModels
             RunStartupChecks(configDir);
 
             ShowHomeCommand = new RelayCommand(() => Navigate(WorkspaceMode.Home));
-            ShowStatusCommand = new RelayCommand(() => Navigate(WorkspaceMode.Status));
             ShowProfileCommand = new RelayCommand(() => Navigate(WorkspaceMode.ProfileOnly));
             ShowLibraryCommand = new RelayCommand(() => Navigate(WorkspaceMode.LibraryOnly));
             ShowSplitCommand = new RelayCommand(() => Navigate(WorkspaceMode.ProfileLibrarySplit));
@@ -252,9 +249,6 @@ namespace HD2ModManager.ViewModels
                     break;
                 case WorkspaceMode.LibraryOnly:
                     OpenSinglePage(WorkspacePageType.Library);
-                    break;
-                case WorkspaceMode.Status:
-                    OpenSinglePage(WorkspacePageType.Status);
                     break;
                 case WorkspaceMode.Settings:
                     OpenSinglePage(WorkspacePageType.Settings);
@@ -520,9 +514,6 @@ namespace HD2ModManager.ViewModels
                 case HomePageViewModel home:
                     home.Refresh();
                     break;
-                case StatusPageViewModel status:
-                    status.Refresh();
-                    break;
                 case ProfilePageViewModel profile:
                     profile.Refresh();
                     break;
@@ -665,7 +656,6 @@ namespace HD2ModManager.ViewModels
             return pageType switch
             {
                 WorkspacePageType.Home => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
-                WorkspacePageType.Status => new StatusPageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
                 WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection),
                 WorkspacePageType.Library => CreateLibraryPage(),
                 WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _backgroundTasks),
@@ -694,7 +684,6 @@ namespace HD2ModManager.ViewModels
             CurrentMode = (LeftPageType, RightPageType, IsSplitView) switch
             {
                 (WorkspacePageType.Home, WorkspacePageType.Home, false) => WorkspaceMode.Home,
-                (WorkspacePageType.Status, WorkspacePageType.Status, false) => WorkspaceMode.Status,
                 (WorkspacePageType.Profile, WorkspacePageType.Profile, false) => WorkspaceMode.ProfileOnly,
                 (WorkspacePageType.Library, WorkspacePageType.Library, false) => WorkspaceMode.LibraryOnly,
                 (WorkspacePageType.Profile, WorkspacePageType.Library, true) => WorkspaceMode.ProfileLibrarySplit,
@@ -706,7 +695,6 @@ namespace HD2ModManager.ViewModels
         private static string GetPageTitle(WorkspacePageType pageType) => pageType switch
         {
             WorkspacePageType.Home => "首页",
-            WorkspacePageType.Status => "状态",
             WorkspacePageType.Profile => "配置页",
             WorkspacePageType.Library => "模组库",
             WorkspacePageType.Settings => "设置",
@@ -750,7 +738,6 @@ namespace HD2ModManager.ViewModels
         private void RaiseModeFlags()
         {
             OnPropertyChanged(nameof(IsHomeActive));
-            OnPropertyChanged(nameof(IsStatusActive));
             OnPropertyChanged(nameof(IsProfileActive));
             OnPropertyChanged(nameof(IsLibraryActive));
             OnPropertyChanged(nameof(IsSplitActive));
