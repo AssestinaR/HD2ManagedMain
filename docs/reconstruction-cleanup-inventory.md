@@ -90,7 +90,7 @@
 
 ### 4. Adaptation 历史输出分支（独立高风险清理）
 
-- 已标记 obsolete 但仍有测试和编译 warning：`StrictUnitMeshTransfer`、`StrictUnitMeshEditPreparer`、`SdkStyleUnitOutputBuilder`。
+- 已标记 obsolete 但仍有测试和编译 warning：`StrictUnitMeshTransfer`、`StrictUnitMeshEditPreparer`、`SdkStyleUnitOutputBuilder`。2026-07-18 已尝试将其测试切至 `Processing.MeshTransfer` 并移除旧实现；100 个 Adaptation 测试中有 4 个失败（target-layout 分量重编码、未映射 influence 保留、材质 slot/section 扩容）。因此当前 `MeshTransfer` 不具备 strict 路径的完整兼容语义，旧分支必须保留，直至先补齐 parity 测试与实现。
 - 仍有独立测试覆盖的旧 target-shell 支路：`TargetShellUnitOutputBuilder`、`TargetShellPatchReconstructor`。
 - `SdkStyleTargetShellPatchOutputBuilder.CreateWithSectionRebuild` 当前未发现独立生产调用，但与跨护甲“禁止 generic section rebuild”的硬约束相冲突；删除前必须先完成全调用图确认。
 - `Processing/AdaptiveOutputWriter` 需要单独确认是否有独立产品入口，再决定删除或吸收。
@@ -125,7 +125,7 @@
 
 ### 批次 4：独立清理 Adaptation 历史实现
 
-按 D 类逐个建立调用图、迁移测试、删除。每个可能影响 Unit 输出的批次单独提交并要求游戏验收。
+按 D 类逐个建立调用图、迁移测试、删除。`StrictUnitMeshTransfer` 必须先使 `MeshTransfer` 通过其 7 个兼容语义测试，且补充生产 target-shell smoke 后才可删除。每个可能影响 Unit 输出的批次单独提交并要求游戏验收。
 
 ## 不可违反的验收条件
 
