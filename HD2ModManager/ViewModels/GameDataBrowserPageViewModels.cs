@@ -93,6 +93,7 @@ namespace HD2ModManager.ViewModels
                 CategoryFilters.Clear();
                 CategoryFilters.Add("全部");
                 foreach (var category in Archives.Select(row => row.Category).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase)) CategoryFilters.Add(category);
+                ResetFilters();
                 Summary = $"Archive {snapshot.Fingerprint.ArchivesIndexed}/{snapshot.Fingerprint.ArchivesTotal}，AssetKey {snapshot.Fingerprint.AssetKeysTotal} · 已生效 {Archives.Count(row => row.ReplacementStatus == "已生效")} · 竞争 {Archives.Count(row => row.ReplacementStatus == "竞争生效")} · 异常 {Archives.Count(row => row.ReplacementStatus == "异常")}";
                 BuiltText = $"构建时间：{snapshot.Fingerprint.BuiltUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
                 SourceText = $"来源：{snapshot.Fingerprint.GameDataDirectory}";
@@ -127,6 +128,15 @@ namespace HD2ModManager.ViewModels
             ArchivesView.SortDescriptions.Clear(); ArchivesView.SortDescriptions.Add(new(propertyName, direction));
         }
 
+        private void ResetFilters()
+        {
+            _categoryFilter = "全部";
+            _statusFilter = "全部";
+            OnPropertyChanged(nameof(CategoryFilter));
+            OnPropertyChanged(nameof(StatusFilter));
+            ArchivesView.Refresh();
+        }
+
         private bool FilterArchive(object value)
         {
             if (value is not GameDataArchiveRowViewModel row) return false;
@@ -146,6 +156,9 @@ namespace HD2ModManager.ViewModels
     public sealed class GameDataArchiveDetailsPageViewModel : BaseViewModel
     {
         private string _copyStatus = string.Empty;
+        private string _searchText = string.Empty;
+        private string _typeFilter = "全部";
+        private string _replacementFilter = "全部";
         public string DisplayName { get; private set; } = "未选择 archive";
         public string PackageName { get; private set; } = "—";
         public string Category { get; private set; } = "—";
@@ -155,13 +168,24 @@ namespace HD2ModManager.ViewModels
         public string ContentSummary { get; private set; } = "从左侧选择 archive 后显示 AssetKey。";
         public string LoadState { get; private set; } = "等待选择";
         public ObservableCollection<GameDataArchiveAssetRowViewModel> Assets { get; } = new();
+        public ICollectionView AssetsView { get; }
+        public ObservableCollection<string> TypeFilters { get; } = new() { "全部" };
+        public IReadOnlyList<string> ReplacementFilters { get; } = new[] { "全部", "已生效", "未生效" };
         public string CopyStatus { get => _copyStatus; private set => SetField(ref _copyStatus, value); }
+        public string SearchText { get => _searchText; set { if (SetField(ref _searchText, value)) AssetsView.Refresh(); } }
+        public string TypeFilter { get => _typeFilter; set { if (SetField(ref _typeFilter, value)) AssetsView.Refresh(); } }
+        public string ReplacementFilter { get => _replacementFilter; set { if (SetField(ref _replacementFilter, value)) AssetsView.Refresh(); } }
 
-        public GameDataArchiveDetailsPageViewModel() { }
-        public GameDataArchiveDetailsPageViewModel(GameDataArchiveDetails details, GameDataArchiveRowViewModel row)
+        public GameDataArchiveDetailsPageViewModel()
+        {
+            AssetsView = CollectionViewSource.GetDefaultView(Assets);
+            AssetsView.Filter = FilterAsset;
+        }
+        public GameDataArchiveDetailsPageViewModel(GameDataArchiveDetails details, GameDataArchiveRowViewModel row) : this()
         {
             DisplayName = row.DisplayName; PackageName = row.PackageName; Category = row.Category; ReplacementStatus = row.ReplacementStatus; EffectivePatchGroup = row.EffectivePatchGroup; EffectiveMod = row.EffectiveMod;
             foreach (var asset in details.Assets) Assets.Add(new GameDataArchiveAssetRowViewModel(asset, row));
+            foreach (var typeName in Assets.Select(asset => asset.TypeName).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase)) TypeFilters.Add(typeName);
             ContentSummary = $"共 {Assets.Count} 个 AssetKey"; LoadState = "详情已加载。";
         }
         public static GameDataArchiveDetailsPageViewModel Loading(GameDataArchiveRowViewModel row) => CreateState(row, "正在读取 AssetKey 详情。");
@@ -169,6 +193,13 @@ namespace HD2ModManager.ViewModels
         public static GameDataArchiveDetailsPageViewModel Failed(GameDataArchiveRowViewModel row, string message) => CreateState(row, $"读取详情失败：{message}");
         private static GameDataArchiveDetailsPageViewModel CreateState(GameDataArchiveRowViewModel row, string state) => new() { DisplayName = row.DisplayName, PackageName = row.PackageName, Category = row.Category, ReplacementStatus = row.ReplacementStatus, EffectivePatchGroup = row.EffectivePatchGroup, EffectiveMod = row.EffectiveMod, LoadState = state, ContentSummary = state };
         public void CopyAsset(GameDataArchiveAssetRowViewModel row) { System.Windows.Clipboard.SetText($"Type={row.TypeName}\nTypeID={row.TypeId}\nFileID={row.FileId}\nPart={row.PartSummary}\nPackage={PackageName}\nDisplayName={DisplayName}\nEffectivePatchGroup={row.EffectivePatchGroup}\nEffectiveMod={row.EffectiveMod}\nSharedPackages={string.Join(", ", row.SharedPackages)}\nSharedObjects={string.Join(", ", row.SharedObjects)}"); CopyStatus = "已复制 AssetKey 信息"; }
+        private bool FilterAsset(object value)
+        {
+            if (value is not GameDataArchiveAssetRowViewModel asset) return false;
+            if (TypeFilter != "全部" && !string.Equals(TypeFilter, asset.TypeName, StringComparison.OrdinalIgnoreCase)) return false;
+            if (ReplacementFilter != "全部" && ReplacementFilter != asset.ReplacementStatus) return false;
+            return string.IsNullOrWhiteSpace(SearchText) || asset.TypeName.Contains(SearchText, StringComparison.OrdinalIgnoreCase) || asset.Hash.Contains(SearchText, StringComparison.OrdinalIgnoreCase) || asset.FriendlyName.Contains(SearchText, StringComparison.OrdinalIgnoreCase) || asset.PartSummary.Contains(SearchText, StringComparison.OrdinalIgnoreCase) || asset.EffectiveMod.Contains(SearchText, StringComparison.OrdinalIgnoreCase) || asset.SharedPackagesFullText.Contains(SearchText, StringComparison.OrdinalIgnoreCase) || asset.SharedObjectsFullText.Contains(SearchText, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     // 作用：将左槽浏览器的异步选中详情投影到固定右槽，且不重新创建 archive 列表。
@@ -246,10 +277,13 @@ namespace HD2ModManager.ViewModels
         public string PartSummary { get; }
         public string EffectivePatchGroup { get; }
         public string EffectiveMod { get; }
+        public string ReplacementStatus => EffectivePatchGroup == "—" ? "未生效" : "已生效";
         public IReadOnlyList<string> SharedPackages { get; }
         public IReadOnlyList<string> SharedObjects { get; }
         public string SharedPackagesText => SharedPackages.Count == 0 ? "—" : SharedPackages.Count == 1 ? SharedPackages[0] : $"{SharedPackages.Count} 个 Package";
         public string SharedObjectsText => SharedObjects.Count == 0 ? "—" : SharedObjects.Count == 1 ? SharedObjects[0] : $"{SharedObjects.Count} 个对象";
+        public string SharedPackagesFullText => SharedPackages.Count == 0 ? "—" : string.Join("\n", SharedPackages);
+        public string SharedObjectsFullText => SharedObjects.Count == 0 ? "—" : string.Join("\n", SharedObjects);
 
         public GameDataArchiveAssetRowViewModel(GameDataArchiveAssetEntry asset, GameDataArchiveRowViewModel archive)
         {
