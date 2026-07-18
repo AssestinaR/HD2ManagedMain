@@ -70,3 +70,10 @@
 3. 优化 cross-armor 计划窗口的同步阻塞与候选流程的分步反馈。
 4. 优化库列表/高级详情的大数据体验和按需加载。
 5. 最后讨论视觉层面的导航、双栏工作区、浮动操作按钮和页面信息密度。
+
+## 已确认的补充事实
+
+- 参考项目 `docs/参考项目/PCL-main` 的有效借鉴点是集中颜色/状态资源、统一 `MyButton` / `MyTextBox` / `MyComboBox` 模板，以及仅用于 hover、focus、展开的短动画；不得复制其源码、资源或视觉资产。
+- Manager 目前至少有高级 Mod 详情、cross-armor 计划/输出/手动选择、材质候选/输出、same-key 输出、Game Data 索引/详情、后台任务等内部模态窗口；这些应逐个迁入页面工作区，系统文件选择器和最终危险确认除外。
+- 删除库 Mod 后配置页和详情页残留的根因已定位：Core `DeleteNodeAsync` 会移除 Profile entry，但 Manager `ModLibraryService.Remove()` 没有触发 `SnapshotChanged`，使 Shell 未重新加载 Profile snapshot。此项应列为首批同步修复。
+- 详细的页面、控件、任务中心、设置资产卡和分批落地方案见 [manager-ux-redesign-plan.md](manager-ux-redesign-plan.md)。
