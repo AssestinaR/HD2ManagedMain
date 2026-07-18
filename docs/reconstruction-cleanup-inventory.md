@@ -34,13 +34,13 @@
 
 ### B. 必须迁移后才能删除：Core 的旧 Unit 适配/计划栈
 
-`SameKeyReconstructionPlanningService` 当前直接依赖下列 Core 技术类型：
+`SameKeyReconstructionPlanningService` 曾直接依赖下列 Core 技术类型：
 
 - `PatchTocScanner`、`PatchUnitMeshReader`、`ArchiveUnitMeshReader`
 - `UnitMeshAdaptationPlanner`、`UnitMeshReplacementStrategy`
 - `UnitMeshReader`、`UnitMeshWriter`、`UnitMeshMinifier`、`UnitMeshRetargeter`
 
-这些类型仍被 same-key UI 入口间接调用，不能先删。迁移目标是由 Adaptation 提供只接收明确 source/target/archive/mapping 的计划与执行门面；Core 仅把 facts 转换为批准的输入并消费结果。
+其中 same-key 的 source/target 读取、候选选择与 SDK target-shell dry-run 已于 `5e936aa` 切换到 Adaptation。`UnitMeshAdaptationPlanner`、`UnitMeshReplacementStrategy` 及其专属接口/测试已经没有 production caller，可单独删除。其余 Core Unit reader/writer/minifier/retargeter 仍被 catalog/material-fallback 或历史测试使用，必须继续按调用图拆分，不能在本批混删。
 
 注意：`UnitMeshAdaptationPlanner` 的候选选择语义仍影响 same-key plan。迁移时必须先将它的稳定 candidate/evidence DTO 和测试迁到 Adaptation，不能以 cross-armor 的显式 mapping 直接替代 same-key 自动选择。
 

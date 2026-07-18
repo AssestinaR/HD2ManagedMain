@@ -76,8 +76,6 @@ public static class CoreServices
 		=> new UnitMeshMinifier();
 	public static IUnitMeshRetargeter CreateUnitMeshRetargeter()
 		=> new UnitMeshRetargeter();
-	public static IUnitMeshReplacementStrategy CreateUnitMeshReplacementStrategy()
-		=> new UnitMeshReplacementStrategy();
 	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths)
 		=> new LibraryDerivedDataService(CreateModContentFactsService(paths), new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths)));
    public static IReplacementTargetDeriver CreateReplacementTargetDeriver(StoragePaths paths)
