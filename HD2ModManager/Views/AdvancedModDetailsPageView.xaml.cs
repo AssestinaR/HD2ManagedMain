@@ -1,5 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views
@@ -23,6 +25,38 @@ namespace HD2ModManager.Views
             {
                 viewModel.CancelAdvancedDetails();
             }
+        }
+
+        private void OnTablePreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if (sender is not DataGrid table || FindScrollViewer(table) is not ScrollViewer tableScrollViewer)
+            {
+                return;
+            }
+
+            var scrollingUp = e.Delta > 0;
+            var isAtTop = tableScrollViewer.VerticalOffset <= 0;
+            var isAtBottom = tableScrollViewer.VerticalOffset >= tableScrollViewer.ScrollableHeight;
+            if ((!scrollingUp || !isAtTop) && (scrollingUp || !isAtBottom))
+            {
+                return;
+            }
+
+            e.Handled = true;
+            PageScrollViewer.ScrollToVerticalOffset(Math.Max(0, PageScrollViewer.VerticalOffset - e.Delta));
+        }
+
+        private static ScrollViewer? FindScrollViewer(DependencyObject current)
+        {
+            for (var parent = VisualTreeHelper.GetParent(current); parent is not null; parent = VisualTreeHelper.GetParent(parent))
+            {
+                if (parent is ScrollViewer scrollViewer)
+                {
+                    return scrollViewer;
+                }
+            }
+
+            return null;
         }
     }
 }

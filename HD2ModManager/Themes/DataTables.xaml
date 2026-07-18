@@ -28,7 +28,7 @@
         <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
         <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/>
         <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
-        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Auto"/>
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
         <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto"/>
         <Setter Property="HeadersVisibility" Value="Column"/>
         <Setter Property="GridLinesVisibility" Value="Horizontal"/>
@@ -36,8 +36,8 @@
         <Setter Property="VerticalGridLinesBrush" Value="Transparent"/>
         <Setter Property="Background" Value="White"/>
         <Setter Property="BorderThickness" Value="0"/>
-        <Setter Property="RowHeight" Value="36"/>
-        <Setter Property="ColumnHeaderHeight" Value="38"/>
+        <Setter Property="RowHeight" Value="24"/>
+        <Setter Property="ColumnHeaderHeight" Value="28"/>
         <Setter Property="AlternatingRowBackground" Value="#FAFBFD"/>
         <Setter Property="SelectionMode" Value="Single"/>
         <Setter Property="SelectionUnit" Value="FullRow"/>
@@ -48,17 +48,16 @@
         <Setter Property="Background" Value="#F4F6F9"/>
         <Setter Property="Foreground" Value="#263246"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
-        <Setter Property="Padding" Value="10,0"/>
+        <Setter Property="Padding" Value="8,0"/>
         <Setter Property="BorderBrush" Value="#E1E6EF"/>
         <Setter Property="BorderThickness" Value="0,0,1,1"/>
         <Setter Property="HorizontalContentAlignment" Value="Left"/>
     </Style>
 
     <Style TargetType="DataGridCell">
-        <Setter Property="Padding" Value="10,0"/>
+        <Setter Property="Padding" Value="8,0"/>
         <Setter Property="BorderThickness" Value="0"/>
         <Setter Property="VerticalContentAlignment" Value="Center"/>
-        <Setter Property="ToolTip" Value="{Binding RelativeSource={RelativeSource Self}, Path=Content.Text}"/>
     </Style>
 
     <Style TargetType="DataGridRow">
