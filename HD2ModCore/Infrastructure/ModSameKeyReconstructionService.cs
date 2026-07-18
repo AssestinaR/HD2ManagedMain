@@ -4,18 +4,9 @@ using System.Text.Json;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
-using AdaptationGameDataPackageResolver = HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver;
-using AdaptationGameDataUnitMeshReader = HD2ModAdaptation.PatchReconstruction.UnitMesh.GameDataUnitMeshReader;
-using AdaptationPatchArchiveWriter = HD2ModAdaptation.PatchReconstruction.PatchArchiveWriter;
-using AdaptationPatchEntryPayloadReader = HD2ModAdaptation.PatchReconstruction.PatchEntryPayloadReader;
-using AdaptationPatchTocEntry = HD2ModAdaptation.PatchReconstruction.PatchTocEntry;
-using AdaptationPatchTocScanner = HD2ModAdaptation.PatchReconstruction.PatchTocScanner;
-using AdaptationPatchUnitMesh = HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMesh;
-using AdaptationPatchUnitMeshEditResult = HD2ModAdaptation.PatchReconstruction.PatchUnitMeshEditResult;
-using AdaptationPatchUnitMeshReader = HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader;
-using AdaptationSdkStyleTargetShellPatchOutput = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellPatchOutput;
-using AdaptationSdkStyleTargetShellPatchOutputBuilder = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellPatchOutputBuilder;
-using AdaptationSdkStyleTargetShellPatchWorkItem = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellPatchWorkItem;
+using AdaptationSameKeyTargetShellReconstructionOperation = HD2ModAdaptation.PatchReconstruction.UnitMesh.SameKeyTargetShellReconstructionOperation;
+using AdaptationSameKeyTargetShellReconstructionRequest = HD2ModAdaptation.PatchReconstruction.UnitMesh.SameKeyTargetShellReconstructionRequest;
+using AdaptationSameKeyTargetShellReconstructionUnit = HD2ModAdaptation.PatchReconstruction.UnitMesh.SameKeyTargetShellReconstructionUnit;
 using AdaptationTargetShellMeshMapping = HD2ModAdaptation.PatchReconstruction.UnitMesh.TargetShellMeshMapping;
 
 namespace HD2ModCore.Infrastructure;
@@ -27,23 +18,20 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 	private readonly ISameKeyReconstructionPlanningService planningService;
 	private readonly IAssetArchiveIndexService assetIndex;
 	private readonly IArchiveHashesProvider archiveHashes;
-	private readonly AdaptationSdkStyleTargetShellPatchOutputBuilder outputBuilder;
-	private readonly AdaptationPatchArchiveWriter archiveWriter;
+	private readonly AdaptationSameKeyTargetShellReconstructionOperation reconstructionOperation;
 
 	public ModSameKeyReconstructionService(
 		IPatchFileNameParser fileNameParser,
 		ISameKeyReconstructionPlanningService planningService,
 		IAssetArchiveIndexService assetIndex,
 		IArchiveHashesProvider archiveHashes,
-		AdaptationSdkStyleTargetShellPatchOutputBuilder? outputBuilder = null,
-		AdaptationPatchArchiveWriter? archiveWriter = null)
+		AdaptationSameKeyTargetShellReconstructionOperation? reconstructionOperation = null)
 	{
 		this.fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
 		this.planningService = planningService ?? throw new ArgumentNullException(nameof(planningService));
 		this.assetIndex = assetIndex ?? throw new ArgumentNullException(nameof(assetIndex));
 		this.archiveHashes = archiveHashes ?? throw new ArgumentNullException(nameof(archiveHashes));
-		this.outputBuilder = outputBuilder ?? new AdaptationSdkStyleTargetShellPatchOutputBuilder();
-		this.archiveWriter = archiveWriter ?? new AdaptationPatchArchiveWriter();
+		this.reconstructionOperation = reconstructionOperation ?? new AdaptationSameKeyTargetShellReconstructionOperation();
 	}
 
 	public async ValueTask<ModSameKeyReconstructionState> InspectAsync(
@@ -165,106 +153,29 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 		try
 		{
 			Directory.CreateDirectory(outputDirectory);
-			var sourceEntries = await new AdaptationPatchTocScanner().ScanEntriesAsync(sourcePath, cancellationToken).ConfigureAwait(false);
-			var sourceUnits = new Dictionary<AdaptationAssetKey, AdaptationPatchUnitMesh>();
-			foreach (var entry in sourceEntries.Where(entry => entry.AssetKey.TypeId == AdaptationPatchUnitMeshReader.UnitTypeId))
-			{
-				sourceUnits.Add(entry.AssetKey, await new AdaptationPatchUnitMeshReader().ReadAsync(entry, sourceEntries, cancellationToken: cancellationToken).ConfigureAwait(false));
-			}
-			var expectedSourceKeys = plan.Units.Select(unit => new AdaptationAssetKey(unit.UnitAssetKey.TypeId, unit.UnitAssetKey.FileId)).ToHashSet();
-			if (sourceUnits.Count != plan.Units.Count || !sourceUnits.Keys.ToHashSet().SetEquals(expectedSourceKeys))
-			{
-				throw new InvalidDataException("Source patch Unit 集合已变化；请重新创建重建计划。输出未写入。");
-			}
-
-			var resolver = new AdaptationGameDataPackageResolver(gameDataDirectory);
-			var targetReader = new AdaptationGameDataUnitMeshReader(resolver);
-			var workItems = new List<AdaptationSdkStyleTargetShellPatchWorkItem>();
-			foreach (var unit in plan.Units)
-			{
-				cancellationToken.ThrowIfCancellationRequested();
-				var targetArchive = unit.TargetArchive ?? throw new InvalidDataException($"Unit 0x{unit.UnitAssetKey.FileId:x16} has no selected target archive.");
-				var unitKey = new AdaptationAssetKey(unit.UnitAssetKey.TypeId, unit.UnitAssetKey.FileId);
-				var target = await targetReader.ReadAsync(targetArchive.ArchiveId, unitKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
-				var mappings = unit.Adaptation!.Steps
-					.Where(step => step.Kind == UnitMeshAdaptationStepKind.ReplaceWithSource)
-					.Select(step => new AdaptationTargetShellMeshMapping(unitKey, step.SourceMeshInfoIndex ?? throw new InvalidDataException("Replacement step lacks source mesh index."), step.TargetMeshInfoIndex))
-					.ToArray();
-				workItems.Add(new AdaptationSdkStyleTargetShellPatchWorkItem(target, new[] { sourceUnits[unitKey] }, mappings));
-			}
-			var output = outputBuilder.Build(workItems);
-			if (!output.ReplacedSourceUnitAssetKeys.ToHashSet().SetEquals(sourceUnits.Keys))
-			{
-				throw new InvalidDataException("Reconstruction must replace every old source Unit; refusing to preserve obsolete Unit data.");
-			}
-			var removals = await GetAllSourceUnitAndCompositeRemovalsAsync(sourceEntries, cancellationToken).ConfigureAwait(false);
-			var headerArchive = plan.Units.First().TargetArchive ?? throw new InvalidDataException("No selected current target archive is available for the output header.");
-			var headerTemplate = await resolver.GetPackageTocAsync(headerArchive.ArchiveId, cancellationToken).ConfigureAwait(false)
-				?? throw new FileNotFoundException("The selected current target archive TOC could not be read.", headerArchive.ArchiveId);
-			var write = await archiveWriter.WriteAsync(sourcePath, outputDirectory, Array.Empty<AdaptationPatchUnitMeshEditResult>(), output.AdditionalEntries, removals, preserveOriginalStream: true, headerTemplateTocData: headerTemplate.Data, cancellationToken: cancellationToken).ConfigureAwait(false);
-			var verification = await VerifyOutputAsync(write.TocFilePath, output, removals, cancellationToken).ConfigureAwait(false);
-			if (verification.Count != 0) throw new InvalidDataException(string.Join(Environment.NewLine, verification));
-			var report = await WriteReportAsync(outputDirectory, source, state, write, cancellationToken).ConfigureAwait(false);
+			var request = new AdaptationSameKeyTargetShellReconstructionRequest(
+				sourcePath,
+				gameDataDirectory,
+				outputDirectory,
+				plan.Units.Select(unit =>
+				{
+					var targetArchive = unit.TargetArchive ?? throw new InvalidDataException($"Unit 0x{unit.UnitAssetKey.FileId:x16} has no selected target archive.");
+					var unitKey = new AdaptationAssetKey(unit.UnitAssetKey.TypeId, unit.UnitAssetKey.FileId);
+					var mappings = unit.Adaptation!.Steps
+						.Where(step => step.Kind == UnitMeshAdaptationStepKind.ReplaceWithSource)
+						.Select(step => new AdaptationTargetShellMeshMapping(unitKey, step.SourceMeshInfoIndex ?? throw new InvalidDataException("Replacement step lacks source mesh index."), step.TargetMeshInfoIndex))
+						.ToArray();
+					return new AdaptationSameKeyTargetShellReconstructionUnit(unitKey, targetArchive.ArchiveId, mappings);
+				}).ToArray());
+			var execution = await reconstructionOperation.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+			var report = await WriteReportAsync(outputDirectory, source, state, execution.WriteResult, cancellationToken).ConfigureAwait(false);
 			await WriteFormalValidationChecklistAsync(outputDirectory, source, state, cancellationToken).ConfigureAwait(false);
-			return new SameKeyReconstructionOperationResult(true, outputDirectory, report.JsonPath, report.MarkdownPath, output.UnitResults.Count, output.UnitResults.Count(result => result.ReplacementCount > 0), output.UnitResults.Count(result => result.ReplacementCount == 0), output.UnitResults.Sum(result => result.ReplacementCount), output.UnitResults.Sum(result => result.MinifiedCount), state.Issues);
+			return new SameKeyReconstructionOperationResult(true, outputDirectory, report.JsonPath, report.MarkdownPath, execution.UnitCount, execution.UnitsWithReplacements, execution.MinifyOnlyUnitCount, execution.ReplacementMeshCount, execution.MinifiedMeshCount, state.Issues);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException or OverflowException)
 		{
 			return Failure(state.Issues.Concat(new[] { Error("SameKeyWriteFailed", exception.Message, source.Id, exception) }).ToArray(), outputDirectory);
 		}
-	}
-
-	private async ValueTask<IReadOnlyList<AdaptationPatchTocEntry>> GetAllSourceUnitAndCompositeRemovalsAsync(IReadOnlyList<AdaptationPatchTocEntry> sourceEntries, CancellationToken cancellationToken)
-	{
-		const ulong compositeUnitTypeId = 0xc4f0f4be7fb0c8d6;
-		var unitEntries = sourceEntries.Where(entry => entry.AssetKey.TypeId == AdaptationPatchUnitMeshReader.UnitTypeId).ToArray();
-		var compositeIds = new HashSet<ulong>();
-		foreach (var unit in unitEntries)
-		{
-			var payload = await new AdaptationPatchEntryPayloadReader().ReadPayloadAsync(unit, cancellationToken).ConfigureAwait(false);
-			if (payload.TocData.Length >= 24)
-			{
-				var compositeId = BitConverter.ToUInt64(payload.TocData, 16);
-				if (compositeId != 0) compositeIds.Add(compositeId);
-			}
-		}
-		return unitEntries.Concat(sourceEntries.Where(entry => entry.AssetKey.TypeId == compositeUnitTypeId && compositeIds.Contains(entry.AssetKey.FileId))).ToArray();
-	}
-
-	private async ValueTask<IReadOnlyList<string>> VerifyOutputAsync(string outputTocPath, AdaptationSdkStyleTargetShellPatchOutput output, IReadOnlyCollection<AdaptationPatchTocEntry> removals, CancellationToken cancellationToken)
-	{
-		var errors = new List<string>();
-		var entries = await new AdaptationPatchTocScanner().ScanEntriesAsync(outputTocPath, cancellationToken).ConfigureAwait(false);
-		var unitKeys = entries.Where(entry => entry.AssetKey.TypeId == AdaptationPatchUnitMeshReader.UnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
-		if (!unitKeys.SetEquals(output.UnitResults.Select(result => result.TargetUnitAssetKey))) errors.Add("输出 Unit 集合与批准的 current target Unit 集合不一致。");
-		var outputKeys = entries.Select(entry => entry.AssetKey).ToHashSet();
-		foreach (var removed in removals)
-		{
-			if (outputKeys.Contains(removed.AssetKey)) errors.Add($"输出仍包含应删除的旧资源 0x{removed.AssetKey.FileId:x16}。");
-		}
-		if (entries.GroupBy(entry => entry.AssetKey).Any(group => group.Count() != 1)) errors.Add("输出包含重复 AssetKey。");
-		var streamLength = File.Exists(outputTocPath + ".stream") ? new FileInfo(outputTocPath + ".stream").Length : 0;
-		var gpuLength = File.Exists(outputTocPath + ".gpu_resources") ? new FileInfo(outputTocPath + ".gpu_resources").Length : 0;
-		foreach (var entry in entries)
-		{
-			if ((ulong)streamLength < entry.StreamOffset + entry.StreamSize) errors.Add($"Asset 0x{entry.AssetKey.FileId:x16} 的 stream 范围超出输出 sidecar。");
-			if ((ulong)gpuLength < entry.GpuResourceOffset + entry.GpuResourceSize) errors.Add($"Asset 0x{entry.AssetKey.FileId:x16} 的 gpu_resources 范围超出输出 sidecar。");
-		}
-		foreach (var unit in output.UnitResults)
-		{
-			var entry = entries.SingleOrDefault(candidate => candidate.AssetKey == unit.TargetUnitAssetKey);
-			if (entry is null) { errors.Add($"输出缺少 Unit 0x{unit.TargetUnitAssetKey.FileId:x16}。"); continue; }
-			var readback = await new AdaptationPatchUnitMeshReader().ReadAsync(entry, entries, cancellationToken: cancellationToken).ConfigureAwait(false);
-			if (readback.Model.RawMeshData.Count != unit.CoveredTargetMeshCount) errors.Add($"Unit 0x{unit.TargetUnitAssetKey.FileId:x16} readback mesh coverage differs from the rebuilt target shell.");
-			foreach (var boneIndex in unit.RebuiltBoneInfoIndexes)
-			{
-				if (boneIndex < 0 || boneIndex >= readback.Model.BoneInfos.Count || boneIndex >= unit.BoneInfos.Count) { errors.Add($"Unit 0x{unit.TargetUnitAssetKey.FileId:x16} has an invalid rebuilt BoneInfo index."); continue; }
-				var expected = unit.BoneInfos[boneIndex];
-				var actual = readback.Model.BoneInfos[boneIndex];
-				if (!expected.RealIndices.SequenceEqual(actual.RealIndices) || !expected.BoneMatrices.SelectMany(matrix => matrix).SequenceEqual(actual.BoneMatrices.SelectMany(matrix => matrix)) || !expected.Remaps.SelectMany(remap => remap.FakeIndices).SequenceEqual(actual.Remaps.SelectMany(remap => remap.FakeIndices))) errors.Add($"Unit 0x{unit.TargetUnitAssetKey.FileId:x16} BoneInfo {boneIndex} failed readback verification.");
-			}
-		}
-		return errors;
 	}
 
 	private static async ValueTask<(string JsonPath, string MarkdownPath)> WriteReportAsync(string outputDirectory, ModNode source, ModSameKeyReconstructionState state, HD2ModAdaptation.PatchReconstruction.PatchArchiveFileWriteResult write, CancellationToken cancellationToken)
