@@ -4,14 +4,12 @@ using HD2ModCore.Domain;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using AdaptationGameDataPackageResolver = HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver;
 using AdaptationGameDataUnitMeshReader = HD2ModAdaptation.PatchReconstruction.UnitMesh.GameDataUnitMeshReader;
-using AdaptationPatchArchiveWriter = HD2ModAdaptation.PatchReconstruction.PatchArchiveWriter;
 using AdaptationMaterialDependencyResolver = HD2ModAdaptation.PatchReconstruction.MaterialDependencyResolver;
-using AdaptationPatchEntryPayloadReader = HD2ModAdaptation.PatchReconstruction.PatchEntryPayloadReader;
-using AdaptationPatchTocEntry = HD2ModAdaptation.PatchReconstruction.PatchTocEntry;
 using AdaptationPatchTocScanner = HD2ModAdaptation.PatchReconstruction.PatchTocScanner;
 using AdaptationPatchUnitMesh = HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMesh;
 using AdaptationPatchUnitMeshReader = HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader;
-using AdaptationSdkStyleTargetShellPatchOutputBuilder = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellPatchOutputBuilder;
+using AdaptationCrossArmorTargetShellPatchOperation = HD2ModAdaptation.PatchReconstruction.UnitMesh.CrossArmorTargetShellPatchOperation;
+using AdaptationCrossArmorTargetShellPatchOperationRequest = HD2ModAdaptation.PatchReconstruction.UnitMesh.CrossArmorTargetShellPatchOperationRequest;
 using AdaptationSdkStyleTargetShellPatchWorkItem = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellPatchWorkItem;
 using AdaptationTargetShellMeshMapping = HD2ModAdaptation.PatchReconstruction.UnitMesh.TargetShellMeshMapping;
 using AdaptationCrossArmorBoneDiagnosticAnalyzer = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.CrossArmorBoneDiagnosticAnalyzer;
@@ -24,10 +22,9 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Rebuilds current target shells from an approved cross-armor plan into an isolated test Patch.
 public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCandidateService
 {
-	private const ulong CompositeUnitTypeId = 0xc4f0f4be7fb0c8d6;
 	private readonly AdaptationPatchTocScanner scanner = new();
 	private readonly AdaptationPatchUnitMeshReader unitReader = new();
-	private readonly AdaptationPatchArchiveWriter archiveWriter = new();
+	private readonly AdaptationCrossArmorTargetShellPatchOperation patchOperation = new();
 	private readonly AdaptationCrossArmorBoneDiagnosticAnalyzer boneDiagnosticAnalyzer = new();
 	private readonly AdaptationCrossArmorTransformInfoExpander transformInfoExpander = new();
 	private readonly AdaptationCrossArmorSkinningDiagnosticAnalyzer skinningDiagnosticAnalyzer = new();
@@ -70,13 +67,6 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			{
 				allowedMaterialIds = requestedMaterialIds.Except(materialDependencies.RejectedMaterialReasons.Keys).ToHashSet();
 			}
-			var outputBuilder = new AdaptationSdkStyleTargetShellPatchOutputBuilder(
-				new HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellUnitReconstructor(
-					reencoder: new HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true),
-					writer: new HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshWriter(allowBoneInfoRelocation: true, allowTransformInfoRelocation: true),
-					propagateSourceMaterials: true,
-					allowedSourceMaterialIds: allowedMaterialIds));
-
 			var resolver = new AdaptationGameDataPackageResolver(request.GameDataDirectory);
 			var avatarRig = await new AdaptationSdkStyleAvatarRigReader(resolver).ReadAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 			var targetReader = new AdaptationGameDataUnitMeshReader(resolver);
@@ -136,23 +126,19 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			{
 				throw new InvalidDataException($"跨护甲候选包含尚不安全的骨骼映射，已在写出前阻止：{string.Join("; ", unsafeBoneMappings)}。请查看 cross-armor-bone-diagnostic.json。当前仅允许 DirectTargetCompatible 和 NeedsBoneInfoRelocation。");
 			}
-			var output = outputBuilder.Build(workItems);
-			var removals = await GetSourceUnitAndCompositeRemovalsAsync(sourceEntries, cancellationToken).ConfigureAwait(false);
 			var headerArchiveId = request.Plan.SelectedTargets.First().ArchiveId;
 			var headerTemplate = await resolver.GetPackageTocAsync(headerArchiveId, cancellationToken).ConfigureAwait(false)
 				?? throw new FileNotFoundException("无法读取所选目标 archive 的 current TOC。", headerArchiveId);
 			Directory.CreateDirectory(request.OutputDirectory);
-			var preservedSourceKeys = sourceEntries.Where(entry => !removals.Contains(entry)).Select(entry => entry.AssetKey).ToHashSet();
-			var additionalEntries = output.AdditionalEntries
-				.Concat((request.MaterialBindingMode == CrossArmorMaterialBindingMode.RequireCompleteSourceClosure
-					? materialDependencies.Entries
-					: Array.Empty<HD2ModAdaptation.PatchReconstruction.PatchArchiveAdditionalEntry>()).Where(entry => !preservedSourceKeys.Contains(entry.AssetKey)))
-				.GroupBy(entry => entry.AssetKey)
-				.Select(group => group.First())
-				.ToArray();
-			var write = await archiveWriter.WriteAsync(request.SourcePatchTocPath, request.OutputDirectory, Array.Empty<HD2ModAdaptation.PatchReconstruction.PatchUnitMeshEditResult>(), additionalEntries, removals, preserveOriginalStream: true, headerTemplateTocData: headerTemplate.Data, cancellationToken: cancellationToken).ConfigureAwait(false);
-			await VerifyAsync(write.TocFilePath, output.UnitResults.Select(result => result.TargetUnitAssetKey).ToHashSet(), cancellationToken).ConfigureAwait(false);
-			var outputEntries = await scanner.ScanEntriesAsync(write.TocFilePath, cancellationToken).ConfigureAwait(false);
+			var execution = await patchOperation.ExecuteAsync(new AdaptationCrossArmorTargetShellPatchOperationRequest(
+				request.SourcePatchTocPath,
+				request.OutputDirectory,
+				headerTemplate.Data,
+				workItems,
+				materialDependencies.Entries,
+				request.MaterialBindingMode == CrossArmorMaterialBindingMode.RequireCompleteSourceClosure,
+				allowedMaterialIds), cancellationToken).ConfigureAwait(false);
+			var outputEntries = await scanner.ScanEntriesAsync(execution.WriteResult.TocFilePath, cancellationToken).ConfigureAwait(false);
 			foreach (var mapping in mappings)
 			{
 				var targetKey = ToAdaptationKey(mapping.PhysicalTarget.UnitAssetKey);
@@ -168,8 +154,8 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 					outputUnit.Model,
 					sourceUnits[ToAdaptationKey(mapping.Source.UnitAssetKey)].Model));
 			}
-			var reportPath = await WriteReportAsync(request, write.TocFilePath, output, boneDiagnostics, skinningDiagnostics, transferLayoutDiagnostics, outputTransferLayoutDiagnostics, requestedMaterialIds, materialDependencies, cancellationToken).ConfigureAwait(false);
-			return new CrossArmorTransferCandidateResult(true, request.OutputDirectory, reportPath, output.UnitResults.Count, output.UnitResults.Sum(result => result.ReplacementCount), output.UnitResults.Sum(result => result.MinifiedCount), issues);
+			var reportPath = await WriteReportAsync(request, execution.WriteResult.TocFilePath, execution.Output, boneDiagnostics, skinningDiagnostics, transferLayoutDiagnostics, outputTransferLayoutDiagnostics, requestedMaterialIds, materialDependencies, cancellationToken).ConfigureAwait(false);
+			return new CrossArmorTransferCandidateResult(true, request.OutputDirectory, reportPath, execution.Output.UnitResults.Count, execution.Output.UnitResults.Sum(result => result.ReplacementCount), execution.Output.UnitResults.Sum(result => result.MinifiedCount), issues);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException or OverflowException)
 		{
@@ -258,31 +244,6 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		return expanded.Any(mapping => mapping.TargetMeshInfoIndex == approved.TargetMeshInfoIndex && mapping.SourceMeshInfoIndex == approved.SourceMeshInfoIndex)
 			? expanded
 			: approvedMappings;
-	}
-
-	private async ValueTask<IReadOnlyList<AdaptationPatchTocEntry>> GetSourceUnitAndCompositeRemovalsAsync(IReadOnlyList<AdaptationPatchTocEntry> entries, CancellationToken cancellationToken)
-	{
-		var units = entries.Where(entry => entry.AssetKey.TypeId == AdaptationPatchUnitMeshReader.UnitTypeId).ToArray();
-		var compositeIds = new HashSet<ulong>();
-		var payloadReader = new AdaptationPatchEntryPayloadReader();
-		foreach (var unit in units)
-		{
-			var payload = await payloadReader.ReadPayloadAsync(unit, cancellationToken).ConfigureAwait(false);
-			if (payload.TocData.Length >= 24)
-			{
-				var compositeId = BitConverter.ToUInt64(payload.TocData, 16);
-				if (compositeId != 0) compositeIds.Add(compositeId);
-			}
-		}
-		return units.Concat(entries.Where(entry => entry.AssetKey.TypeId == CompositeUnitTypeId && compositeIds.Contains(entry.AssetKey.FileId))).ToArray();
-	}
-
-	private async ValueTask VerifyAsync(string tocPath, IReadOnlySet<AdaptationAssetKey> expectedUnits, CancellationToken cancellationToken)
-	{
-		var entries = await scanner.ScanEntriesAsync(tocPath, cancellationToken).ConfigureAwait(false);
-		var actualUnits = entries.Where(entry => entry.AssetKey.TypeId == AdaptationPatchUnitMeshReader.UnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
-		if (!actualUnits.SetEquals(expectedUnits)) throw new InvalidDataException("输出 Unit 集合与批准的物理目标集合不一致。");
-		if (entries.GroupBy(entry => entry.AssetKey).Any(group => group.Count() != 1)) throw new InvalidDataException("输出包含重复 AssetKey。");
 	}
 
 	private static async ValueTask<string> WriteReportAsync(
