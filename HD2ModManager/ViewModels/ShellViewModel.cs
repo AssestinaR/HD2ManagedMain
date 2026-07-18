@@ -308,6 +308,16 @@ namespace HD2ModManager.ViewModels
             OpenSinglePage(WorkspacePageType.AdvancedModDetails);
         }
 
+        public void OpenGameDataBrowser()
+        {
+            LeftPageType = WorkspacePageType.GameDataBrowser;
+            RightPageType = WorkspacePageType.GameDataArchiveDetails;
+            LeftPage = new GameDataBrowserPageViewModel(_libraryService, _profileService);
+            RightPage = new GameDataArchiveDetailsHostPageViewModel((GameDataBrowserPageViewModel)LeftPage);
+            UpdateModeFromSlots();
+            RaiseSlotFlags();
+        }
+
         private void OpenSecondaryPage(WorkspacePageType pageType, PageViewModel? sourcePage)
         {
             var targetPage = CreatePage(pageType);
@@ -668,6 +678,8 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _backgroundTasks),
                 WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),
                 WorkspacePageType.AdvancedModDetails => new AdvancedModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),
+                WorkspacePageType.GameDataBrowser => new GameDataBrowserPageViewModel(_libraryService, _profileService),
+                WorkspacePageType.GameDataArchiveDetails => new GameDataArchiveDetailsHostPageViewModel(null),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
             };
         }
@@ -708,6 +720,8 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.Settings => "设置",
             WorkspacePageType.ModDetails => "Mod 详情",
             WorkspacePageType.AdvancedModDetails => "高级 Mod 详情",
+            WorkspacePageType.GameDataBrowser => "Game Data 资产",
+            WorkspacePageType.GameDataArchiveDetails => "Archive 详情",
             _ => "页面",
         };
 

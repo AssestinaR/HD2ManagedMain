@@ -34,6 +34,12 @@
         <DataTemplate DataType="{x:Type localVM:AdvancedModDetailsPageViewModel}">
             <views:AdvancedModDetailsPageView/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:GameDataBrowserPageViewModel}">
+            <views:GameDataBrowserPageView/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:GameDataArchiveDetailsHostPageViewModel}">
+            <views:GameDataArchiveDetailsPageView/>
+        </DataTemplate>
 
         <Style x:Key="TopNavButton" TargetType="Button">
             <Setter Property="Height" Value="32"/>

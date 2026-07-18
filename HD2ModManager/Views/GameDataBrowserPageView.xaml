@@ -1,0 +1,52 @@
+<UserControl x:Class="HD2ModManager.Views.GameDataBrowserPageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:HD2ModManager.Views">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+            <StackPanel>
+                <TextBlock Text="Game Data 资产" FontSize="20" FontWeight="SemiBold"/>
+                <TextBlock Text="选择 archive 后，在右侧按需读取 AssetKey 详情。" Foreground="#6C7280" Margin="0,3,0,0"/>
+            </StackPanel>
+        </Border>
+        <StackPanel Grid.Row="1" Margin="2,0,2,10">
+            <TextBlock Text="{Binding Summary}" Foreground="#555" TextWrapping="Wrap"/>
+            <TextBlock Text="{Binding BuiltText}" Foreground="#777" Margin="0,3,0,0"/>
+            <TextBlock Text="{Binding SourceText}" Foreground="#777" TextTrimming="CharacterEllipsis" Margin="0,3,0,0"/>
+            <TextBlock Text="{Binding ProfileText}" Foreground="#777" Margin="0,3,0,0"/>
+        </StackPanel>
+        <Border Grid.Row="2" Style="{StaticResource DataTableCard}" Margin="0,0,0,10">
+            <Border Style="{StaticResource DataTableToolbar}">
+                <StackPanel Orientation="Horizontal">
+                    <TextBox Width="180" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Padding="7,3" ToolTip="搜索显示名、Package、Category 或 Mod"/>
+                    <ComboBox Width="120" ItemsSource="{Binding CategoryFilters}" SelectedItem="{Binding CategoryFilter}" Margin="8,0,0,0"/>
+                    <ComboBox Width="120" ItemsSource="{Binding StatusFilters}" SelectedItem="{Binding StatusFilter}" Margin="8,0,0,0"/>
+                </StackPanel>
+            </Border>
+        </Border>
+        <Grid Grid.Row="3">
+            <Border Style="{StaticResource DataTableCard}">
+                <DataGrid Style="{StaticResource DataTableGrid}" ItemsSource="{Binding ArchivesView}" SelectedItem="{Binding SelectedArchive, Mode=TwoWay}" SelectionChanged="OnSelectionChanged">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="对象" Binding="{Binding DisplayName}" Width="1.6*"/>
+                        <DataGridTextColumn Header="Package" Binding="{Binding PackageName}" Width="1.15*"/>
+                        <DataGridTextColumn Header="分类" Binding="{Binding Category}" Width="0.8*"/>
+                        <DataGridTextColumn Header="AssetKey" Binding="{Binding EntryCount}" Width="0.65*"/>
+                        <DataGridTextColumn Header="替换状态" Binding="{Binding ReplacementStatus}" Width="0.9*"/>
+                        <DataGridTextColumn Header="生效 patch 组" Binding="{Binding EffectivePatchGroup}" Width="1.15*"/>
+                        <DataGridTextColumn Header="生效 Mod" Binding="{Binding EffectiveMod}" Width="1.1*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Border>
+            <Border Style="{StaticResource DataTableStatePanel}" Visibility="{Binding IsLoading, Converter={StaticResource BooleanToVisibilityConverter}}" VerticalAlignment="Center" Margin="24">
+                <TextBlock Text="{Binding LoadState}" TextWrapping="Wrap" HorizontalAlignment="Center"/>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

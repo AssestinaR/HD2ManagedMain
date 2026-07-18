@@ -9,5 +9,7 @@ namespace HD2ModManager.Enums
         Settings,
         ModDetails,
         AdvancedModDetails,
+        GameDataBrowser,
+        GameDataArchiveDetails,
     }
 }

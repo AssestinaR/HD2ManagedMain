@@ -843,52 +843,10 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        private async void ViewGameDataIndex()
+        private void ViewGameDataIndex()
         {
-            if (IsLoadingGameDataIndex) return;
-            var gameData = SettingsService.GetGameDataFolder();
-            if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
-            {
-                System.Windows.MessageBox.Show("请先配置有效的 Game Data 文件夹。", "GameData 资产索引", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
-                return;
-            }
-
-            IsLoadingGameDataIndex = true;
-            ViewGameDataIndexCommand.RaiseCanExecuteChanged();
-            try
-            {
-                var paths = SettingsService.CreateStoragePaths();
-                var index = CoreServices.CreateAssetArchiveIndexService(paths);
-                var browser = CoreServices.CreateGameDataArchiveBrowserService(paths);
-                var snapshot = await browser.BuildAsync(_library.Snapshot, _library.ModsRootDirectory, gameData).ConfigureAwait(true);
-                if (snapshot is null)
-                {
-                    System.Windows.MessageBox.Show("当前 GameData 资产索引不可用。请先在状态页建立资产索引。", "GameData 资产索引", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
-                    return;
-                }
-
-                if (snapshot.Archives.Count == 0)
-                {
-                    System.Windows.MessageBox.Show("资产索引数据库中没有可显示的 archive。请重新建立资产索引。", "GameData 资产索引", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
-                    return;
-                }
-
-                var window = new HD2ModManager.Views.GameDataIndexWindow
-                {
-                    Owner = System.Windows.Application.Current?.MainWindow,
-                    DataContext = new HD2ModManager.Views.GameDataIndexWindowViewModel(snapshot, _profiles.ActiveKey, index),
-                };
-                window.ShowDialog();
-            }
-            catch (Exception ex)
-            {
-                System.Windows.MessageBox.Show($"读取 GameData 资产索引失败：{ex.Message}", "GameData 资产索引", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
-            }
-            finally
-            {
-                IsLoadingGameDataIndex = false;
-                ViewGameDataIndexCommand.RaiseCanExecuteChanged();
-            }
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
+                shell.OpenGameDataBrowser();
         }
 
         public void PromptLanguageIfMissing()
