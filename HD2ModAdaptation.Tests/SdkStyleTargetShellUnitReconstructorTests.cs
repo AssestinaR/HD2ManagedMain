@@ -47,6 +47,87 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 	}
 
 	[Fact]
+	public void Reencode_RebuildingInverseJointMatrices_PreservesTheCompleteSourcePaletteOrderForEveryTargetSection()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with
+		{
+			TransformNameHashes = [101, 102],
+			BoneInfos = [new UnitBoneInfo(0, 0, 0, 0, 0, 0, [0, 1], [new UnitBoneRemap(0, 0, [0, 1]), new UnitBoneRemap(1, 0, [0, 1])])],
+			RawMeshData = [CreateModel(vertexSeed: 7, meshCount: 1).RawMeshData[0] with
+			{
+				Sections = [new UnitRawMeshSectionData(0, 20, [new UnitTriangleIndices(0, 1, 2)]), new UnitRawMeshSectionData(1, 21, [new UnitTriangleIndices(0, 1, 2)])]
+			}]
+		};
+		var targetModel = sourceModel with { TransformNameHashes = [101, 102] };
+
+		var result = new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true).Reencode(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal(new uint[] { 0, 1 }, result.RebuiltTargetBoneInfo.RealIndices);
+		Assert.All(result.RebuiltTargetBoneInfo.Remaps, remap => Assert.Equal(new uint[] { 0, 1 }, remap.FakeIndices));
+	}
+
+	[Fact]
+	public void Reencode_RebuildingInverseJointMatrices_DoesNotReuseTheTargetShellPaletteOrder()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with
+		{
+			TransformNameHashes = [101, 102, 103],
+			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [IdentityMatrix(), IdentityMatrix(), IdentityMatrix()], Array.Empty<UnitTransformEntry>(), [101, 102, 103]),
+			Streams = [CreateSkinnedStream()],
+			BoneInfos = [new UnitBoneInfo(0, 0, 0, 0, 0, 0, [2, 0, 1], [new UnitBoneRemap(0, 0, [1, 2, 0])])],
+			RawMeshData = [CreateSkinnedRawMesh()]
+		};
+		var targetModel = sourceModel with
+		{
+			BoneInfos = [new UnitBoneInfo(0, 0, 0, 0, 0, 0, [0, 1, 2], [new UnitBoneRemap(0, 0, [0, 1, 2])])]
+		};
+
+		var result = new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true).Reencode(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal(new uint[] { 2, 0, 1 }, result.RebuiltTargetBoneInfo.RealIndices);
+		Assert.Equal(new uint[] { 1, 2, 0 }, Assert.Single(result.RebuiltTargetBoneInfo.Remaps).FakeIndices);
+	}
+
+	[Fact]
+	public void Reencode_RebuildingInverseJointMatrices_SkipsUnreachableUnusedSourcePaletteBones()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with
+		{
+			TransformNameHashes = [101, 102, 103],
+			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [IdentityMatrix(), IdentityMatrix(), IdentityMatrix()], Array.Empty<UnitTransformEntry>(), [101, 102, 103]),
+			Streams = [CreateSkinnedStream()],
+			BoneInfos = [new UnitBoneInfo(0, 0, 0, 0, 0, 0, [2, 0, 1], [new UnitBoneRemap(0, 0, [1, 2, 0])])],
+			RawMeshData = [CreateSkinnedRawMesh()]
+		};
+		var targetModel = sourceModel with
+		{
+			TransformNameHashes = [101, 102],
+			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [IdentityMatrix(), IdentityMatrix()], Array.Empty<UnitTransformEntry>(), [101, 102]),
+			BoneInfos = [new UnitBoneInfo(0, 0, 0, 0, 0, 0, [0, 1], [new UnitBoneRemap(0, 0, [0, 1])])]
+		};
+
+		var result = new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true).Reencode(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal(new uint[] { 0, 1 }, result.RebuiltTargetBoneInfo.RealIndices);
+		Assert.Equal(new uint[] { 0, 1 }, Assert.Single(result.RebuiltTargetBoneInfo.Remaps).FakeIndices);
+	}
+
+	[Fact]
+	public void Reencode_RebuildingInverseJointMatrices_TransformsOnlyVertexPositions()
+	{
+		var sourceModel = CreateSurfaceVectorModel(meshTransformX: 4f);
+		var targetModel = CreateSurfaceVectorModel(meshTransformX: 0f);
+
+		var result = new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true).Reencode(targetModel, 0, sourceModel, 0);
+		var vertex = Assert.Single(result.Model.RawMeshData).Vertices[0];
+
+		Assert.Equal(5f, BitConverter.ToSingle(vertex.Data, 0));
+		Assert.Equal(new float[] { 0f, 1f, 0f }, ReadVector3(vertex.Data, 12));
+		Assert.Equal(new float[] { 1f, 0f, 0f }, ReadVector3(vertex.Data, 24));
+		Assert.Equal(new float[] { 0f, 0f, 1f }, ReadVector3(vertex.Data, 36));
+	}
+
+	[Fact]
 	public void Reconstruct_WithSectionRebuild_HandlesDifferentSourceAndTargetSectionCounts()
 	{
 		var source = CreatePatchUnit(SourceKey, CreateModel(vertexSeed: 7, meshCount: 1));
@@ -105,9 +186,9 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 			sourceModel,
 			0);
 
-		Assert.Equal(sourceMaterial, Assert.Single(allowed.Model.Materials.Where(binding => binding.SectionId == 20)).MaterialId);
+		Assert.Equal(sourceMaterial, Assert.Single(allowed.Model.Materials, binding => binding.SectionId == 20).MaterialId);
 		Assert.Equal(new[] { sourceMaterial }, allowed.SourceMaterialIds);
-		Assert.Equal(0x100ul, Assert.Single(rejected.Model.Materials.Where(binding => binding.SectionId == 20)).MaterialId);
+		Assert.Equal(0x100ul, Assert.Single(rejected.Model.Materials, binding => binding.SectionId == 20).MaterialId);
 		Assert.Empty(rejected.SourceMaterialIds);
 	}
 
@@ -195,6 +276,61 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [new UnitTransformMatrix([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])], Array.Empty<UnitTransformEntry>(), Array.Empty<uint>())
 		};
 	}
+
+	private static UnitStreamInfo CreateSkinnedStream()
+		=> new(0, 128, 0, 3, 0, 3, 28, 0, 3, 0, 0, 0, 0, 0,
+		[
+			new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+			new UnitStreamComponentInfo(7, "bone_weight", 33, "vec4_half", 0, 0, 8),
+			new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4)
+		]);
+
+	private static UnitRawMeshData CreateSkinnedRawMesh()
+		=> new(0, 100, 0, 0,
+			[new UnitRawMeshSectionData(0, 20, [new UnitTriangleIndices(0, 1, 2)])],
+			[new UnitTriangleIndices(0, 1, 2)],
+			Enumerable.Range(0, 3).Select(index => new UnitRawVertexRecord(
+				(uint)index,
+				Array.Empty<byte>(),
+				[
+					new UnitVertexComponentValue(0, "position", 2, "vec3_float", 0, [0f, 0f, 0f], Array.Empty<uint>(), Array.Empty<byte>()),
+					new UnitVertexComponentValue(7, "bone_weight", 33, "vec4_half", 0, [1f, 0f, 0f, 0f], Array.Empty<uint>(), Array.Empty<byte>()),
+					new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, Array.Empty<float>(), [0u, 0u, 0u, 0u], Array.Empty<byte>())
+				])).ToArray());
+
+	private static UnitTransformMatrix IdentityMatrix()
+		=> new([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+
+	private static UnitMeshModel CreateSurfaceVectorModel(float meshTransformX)
+	{
+		var stream = new UnitStreamInfo(0, 128, 0, 6, 0, 1, 60, 0, 3, 0, 0, 0, 0, 0,
+		[
+			new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+			new UnitStreamComponentInfo(1, "normal", 2, "vec3_float", 0, 0, 12),
+			new UnitStreamComponentInfo(2, "tangent", 2, "vec3_float", 0, 0, 12),
+			new UnitStreamComponentInfo(3, "bitangent", 2, "vec3_float", 0, 0, 12),
+			new UnitStreamComponentInfo(7, "bone_weight", 33, "vec4_half", 0, 0, 8),
+			new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4)
+		]);
+		var mesh = new UnitMeshInfo(0, 500, 100, 0, 0, 0, 1, 0, 1, 650, UnitMeshSemanticInfo.Empty(0, 0), [20], [new UnitMeshSectionInfo(650, 0, 20, 0, 3, 0, 3, 0)]);
+		var vertex = new UnitRawVertexRecord(0, Array.Empty<byte>(),
+		[
+			new UnitVertexComponentValue(0, "position", 2, "vec3_float", 0, [1f, 2f, 3f], Array.Empty<uint>(), Array.Empty<byte>()),
+			new UnitVertexComponentValue(1, "normal", 2, "vec3_float", 0, [0f, 1f, 0f], Array.Empty<uint>(), Array.Empty<byte>()),
+			new UnitVertexComponentValue(2, "tangent", 2, "vec3_float", 0, [1f, 0f, 0f], Array.Empty<uint>(), Array.Empty<byte>()),
+			new UnitVertexComponentValue(3, "bitangent", 2, "vec3_float", 0, [0f, 0f, 1f], Array.Empty<uint>(), Array.Empty<byte>()),
+			new UnitVertexComponentValue(7, "bone_weight", 33, "vec4_half", 0, [1f, 0f, 0f, 0f], Array.Empty<uint>(), Array.Empty<byte>()),
+			new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, Array.Empty<float>(), [0u, 0u, 0u, 0u], Array.Empty<byte>())
+		]);
+		return new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 496, 800, 900, UnitCustomizationInfo.Empty, [new UnitBoneInfo(0, 0, 1, 0, 0, 0, [0], [new UnitBoneRemap(0, 0, [0])])], [stream], [mesh], [new UnitMaterialBinding(20, 0x100)], Array.Empty<UnitRawMeshSummary>(), [new UnitRawMeshData(0, 100, 0, 0, [new UnitRawMeshSectionData(0, 20, [new UnitTriangleIndices(0, 0, 0)])], [new UnitTriangleIndices(0, 0, 0)], [vertex])])
+		{
+			TransformNameHashes = [101],
+			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [new UnitTransformMatrix([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, meshTransformX, 0, 0, 1])], Array.Empty<UnitTransformEntry>(), [101])
+		};
+	}
+
+	private static float[] ReadVector3(byte[] data, int offset)
+		=> [BitConverter.ToSingle(data, offset), BitConverter.ToSingle(data, offset + 4), BitConverter.ToSingle(data, offset + 8)];
 
 	private static byte[] CreateToc(int materialBindingCount = 2)
 	{

@@ -70,9 +70,12 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			{
 				allowedMaterialIds = requestedMaterialIds.Except(materialDependencies.RejectedMaterialReasons.Keys).ToHashSet();
 			}
-			var outputBuilder = AdaptationSdkStyleTargetShellPatchOutputBuilder.CreateWithSectionRebuild(
-				propagateSourceMaterials: true,
-				allowedSourceMaterialIds: allowedMaterialIds);
+			var outputBuilder = new AdaptationSdkStyleTargetShellPatchOutputBuilder(
+				new HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellUnitReconstructor(
+					reencoder: new HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true),
+					writer: new HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshWriter(allowBoneInfoRelocation: true, allowTransformInfoRelocation: true),
+					propagateSourceMaterials: true,
+					allowedSourceMaterialIds: allowedMaterialIds));
 
 			var resolver = new AdaptationGameDataPackageResolver(request.GameDataDirectory);
 			var avatarRig = await new AdaptationSdkStyleAvatarRigReader(resolver).ReadAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -87,14 +90,15 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 				var unitMappings = group.Where(mapping => mapping.WillReplace)
 					.Select(mapping => new AdaptationTargetShellMeshMapping(ToAdaptationKey(mapping.Source!.UnitAssetKey), mapping.Source.MeshInfoIndex, mapping.PhysicalTarget.MeshInfoIndex))
 					.ToArray();
-				var requiredSources = unitMappings.Select(mapping => sourceUnits[mapping.SourceUnitAssetKey]).Distinct().ToArray();
+				var effectiveUnitMappings = ExpandCompleteLodFamilyMappings(targetUnit.Model, sourceUnits, unitMappings);
+				var requiredSources = effectiveUnitMappings.Select(mapping => sourceUnits[mapping.SourceUnitAssetKey]).Distinct().ToArray();
 				var expandedTargetModel = targetUnit.Model;
-				foreach (var mapping in unitMappings)
+				foreach (var mapping in effectiveUnitMappings)
 				{
 					expandedTargetModel = transformInfoExpander.Expand(expandedTargetModel, mapping.TargetMeshInfoIndex, sourceUnits[mapping.SourceUnitAssetKey].Model, mapping.SourceMeshInfoIndex, avatarRig.TransformInfo);
 				}
 				targetUnit = targetUnit with { Model = expandedTargetModel };
-				foreach (var mapping in unitMappings)
+				foreach (var mapping in effectiveUnitMappings)
 				{
 					transferLayoutDiagnostics.Add(CreateTransferLayoutDiagnostic(
 						targetKey,
@@ -126,7 +130,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 						unsafeBoneMappings.Add($"target 0x{targetKey.FileId:x16}/mesh {mapping.TargetMeshInfoIndex} <- source 0x{mapping.SourceUnitAssetKey.FileId:x16}/mesh {mapping.SourceMeshInfoIndex}: {diagnostic.Status}");
 					}
 				}
-				workItems.Add(new AdaptationSdkStyleTargetShellPatchWorkItem(targetUnit, requiredSources, unitMappings));
+				workItems.Add(new AdaptationSdkStyleTargetShellPatchWorkItem(targetUnit, requiredSources, effectiveUnitMappings));
 			}
 			if (unsafeBoneMappings.Count != 0)
 			{
@@ -203,6 +207,58 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 
 	private static string? FindTargetArchiveId(CrossArmorTransferPlan plan, CrossArmorPhysicalTargetKey target)
 		=> plan.SelectedTargets.FirstOrDefault(entry => entry.Parts.Any(part => part.UnitAssetKey == target.UnitAssetKey && part.MeshInfoIndex == target.MeshInfoIndex))?.ArchiveId;
+
+	private static IReadOnlyList<AdaptationTargetShellMeshMapping> ExpandCompleteLodFamilyMappings(
+		HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshModel targetModel,
+		IReadOnlyDictionary<AdaptationAssetKey, AdaptationPatchUnitMesh> sourceUnits,
+		IReadOnlyList<AdaptationTargetShellMeshMapping> approvedMappings)
+	{
+		// A selected visual LOD0 is only one member of a Unit's render family.  SDK saves
+		// the matching source geometry into every sibling LOD; minifying those siblings
+		// leaves only the chest vulnerable to the target's fallback rendering path.
+		if (approvedMappings.Count != 1) return approvedMappings;
+		var approved = approvedMappings[0];
+		var sourceModel = sourceUnits[approved.SourceUnitAssetKey].Model;
+		var targetRenderFamily = targetModel.RawMeshData
+			.Where(mesh => mesh.LodIndex is >= 0 and <= 4)
+			.OrderBy(mesh => mesh.MeshInfoIndex)
+			.ToArray();
+		var sourceRenderFamily = sourceModel.RawMeshData
+			.Where(mesh => mesh.LodIndex is -1 or >= 0 and <= 3)
+			.OrderBy(mesh => mesh.MeshInfoIndex)
+			.ToArray();
+		if (approved.TargetMeshInfoIndex != targetRenderFamily.SingleOrDefault(mesh => mesh.LodIndex == 0)?.MeshInfoIndex
+			|| approved.SourceMeshInfoIndex != sourceRenderFamily.SingleOrDefault(mesh => mesh.LodIndex == 0)?.MeshInfoIndex
+			|| targetRenderFamily.Length != sourceRenderFamily.Length
+			|| targetRenderFamily.Length < 2) return approvedMappings;
+
+		var sourceByLod = sourceRenderFamily
+			.GroupBy(mesh => mesh.LodIndex)
+			.ToDictionary(group => group.Key, group => group.ToArray());
+		var expanded = new List<AdaptationTargetShellMeshMapping>(targetRenderFamily.Length);
+		foreach (var targetMesh in targetRenderFamily)
+		{
+			var sourceLod = targetMesh.LodIndex == 4 ? -1 : targetMesh.LodIndex;
+			if (!sourceByLod.TryGetValue(sourceLod, out var sourceCandidates) || sourceCandidates.Length != 1)
+			{
+				return approvedMappings;
+			}
+			var sourceMesh = sourceCandidates[0];
+			// Re-encoding is intentionally limited to equal section layouts.  The failed
+			// section-rebuild route changes target metadata and can corrupt skinning. A
+			// partial LOD family is also invalid: its untouched sibling BoneInfo palette
+			// may lack matrices required by the expanded transform table.
+			if (sourceMesh.Sections.Count != targetMesh.Sections.Count)
+			{
+				return approvedMappings;
+			}
+			expanded.Add(new AdaptationTargetShellMeshMapping(approved.SourceUnitAssetKey, sourceMesh.MeshInfoIndex, targetMesh.MeshInfoIndex));
+		}
+
+		return expanded.Any(mapping => mapping.TargetMeshInfoIndex == approved.TargetMeshInfoIndex && mapping.SourceMeshInfoIndex == approved.SourceMeshInfoIndex)
+			? expanded
+			: approvedMappings;
+	}
 
 	private async ValueTask<IReadOnlyList<AdaptationPatchTocEntry>> GetSourceUnitAndCompositeRemovalsAsync(IReadOnlyList<AdaptationPatchTocEntry> entries, CancellationToken cancellationToken)
 	{
