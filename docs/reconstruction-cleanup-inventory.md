@@ -80,8 +80,8 @@
 ### 2. Core 仍保有通用 Patch/Archive 二进制辅助实现（中风险，先分离 Material closure）
 
 - `PatchTocScanner`、`PatchEntryPayloadReader`、`GameDataPackageResolver`、`StingrayMaterialReferenceReader` 以及相关 Core 接口/测试仍存在。
-- 它们目前服务于 mod facts、冲突/部署图、材质/纹理闭包与 archive fallback；其中 `ArchiveDependencyResolver` 仍自行读取 Game Data 的 TOC、stream 和 GPU sidecar。
-- 不能按“包含 Patch”一概删除：部署、索引、文件分组和只读 facts 属于 Core 的合法职责。下一步应仅把 Material closure 的二进制读取迁为 Adaptation operation，再复查哪些基础 scanner 可安全保留为只读 facts 适配器、哪些应删除。
+- 已确认无生产调用的 `ArchiveDependencyResolver` 及其 Core factory 已删除；实际候选写出使用 Adaptation `MaterialDependencyResolver` 处理 Material/Texture 闭包。
+- 不能按“包含 Patch”一概删除：部署、索引、文件分组和只读 facts 属于 Core 的合法职责。下一步应复查哪些基础 scanner 可安全保留为只读 facts 适配器、哪些仍与 Adaptation 重复。
 
 ### 3. Core 的 same-key 轻量报告 DTO（低风险，非功能阻塞）
 

@@ -62,8 +62,6 @@ public static class CoreServices
 		=> new MaterialPackagingApplicationService(CreatePatchFileNameParser());
 	public static IMaterialDependencyValidator CreateMaterialDependencyValidator()
 		=> new MaterialDependencyValidator(CreatePatchEntryPayloadReader(), new StingrayMaterialReferenceReader());
-	public static ArchiveDependencyResolver CreateArchiveDependencyResolver()
-		=> new ArchiveDependencyResolver(CreatePatchTocScanner(), CreatePatchEntryPayloadReader(), new StingrayMaterialReferenceReader());
 	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths)
 		=> new LibraryDerivedDataService(CreateModContentFactsService(paths), new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths)));
    public static IReplacementTargetDeriver CreateReplacementTargetDeriver(StoragePaths paths)
