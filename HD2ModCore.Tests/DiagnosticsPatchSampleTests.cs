@@ -1,5 +1,5 @@
-using HD2ModCore.Domain;
-using HD2ModCore.Infrastructure;
+using HD2ModAdaptation.PatchReconstruction;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 
 namespace HD2ModCore.Tests;
 
@@ -115,7 +115,7 @@ public sealed class DiagnosticsPatchSampleTests
 				{
 					try
 					{
-						await unitReader.ReadUnitMeshAsync(entry);
+						await unitReader.ReadAsync(entry, entries);
 						parsedUnits++;
 						parsedRoots.Add(rootName);
 					}

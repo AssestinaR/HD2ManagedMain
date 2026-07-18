@@ -17,10 +17,6 @@ public static class CoreServices
 	public static IPatchTocScanner CreatePatchTocScanner() => new PatchTocScanner();
  	public static IPatchEntryPayloadReader CreatePatchEntryPayloadReader()
 		=> new PatchEntryPayloadReader();
-	public static IPatchUnitMeshReader CreatePatchUnitMeshReader()
-		=> new PatchUnitMeshReader(CreatePatchEntryPayloadReader(), CreateUnitMeshReader(), CreatePatchTocScanner());
-	public static IArchiveUnitMeshReader CreateArchiveUnitMeshReader()
-		=> new ArchiveUnitMeshReader(gameDataDirectory => new GameDataPackageResolver(gameDataDirectory), CreatePatchTocScanner(), CreateUnitMeshReader());
 	public static ISameKeyReconstructionPlanningService CreateSameKeyReconstructionPlanningService(StoragePaths paths)
 		=> new SameKeyReconstructionPlanningService(
 			CreateAssetArchiveIndexService(paths));
@@ -57,25 +53,17 @@ public static class CoreServices
 	public static IMaterialDeliveryFactsService CreateMaterialDeliveryFactsService(StoragePaths paths)
 		=> new MaterialDeliveryFactsService(CreateModFactsStore(paths));
 	public static IEquipmentUnitCatalogService CreateEquipmentUnitCatalogService(StoragePaths paths)
-		=> new EquipmentUnitCatalogService(paths, CreatePatchTocScanner(), CreatePatchUnitMeshReader());
+		=> new EquipmentUnitCatalogService(paths);
 	public static ICrossArmorTransferCandidateService CreateCrossArmorTransferCandidateService()
 		=> new CrossArmorTransferCandidateService();
 	public static IAdvancedModAssetQueryService CreateAdvancedModAssetQueryService(StoragePaths paths)
 		=> new AdvancedModAssetQueryService(CreateModFactsStore(paths), CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
 	public static IMaterialPackagingApplicationService CreateMaterialPackagingApplicationService()
 		=> new MaterialPackagingApplicationService(CreatePatchFileNameParser());
-	public static IUnitMeshReader CreateUnitMeshReader()
-		=> new UnitMeshReader();
-	public static IUnitMeshWriter CreateUnitMeshWriter()
-		=> new UnitMeshWriter();
 	public static IMaterialDependencyValidator CreateMaterialDependencyValidator()
 		=> new MaterialDependencyValidator(CreatePatchEntryPayloadReader(), new StingrayMaterialReferenceReader());
 	public static ArchiveDependencyResolver CreateArchiveDependencyResolver()
 		=> new ArchiveDependencyResolver(CreatePatchTocScanner(), CreatePatchEntryPayloadReader(), new StingrayMaterialReferenceReader());
-	public static IUnitMeshMinifier CreateUnitMeshMinifier()
-		=> new UnitMeshMinifier();
-	public static IUnitMeshRetargeter CreateUnitMeshRetargeter()
-		=> new UnitMeshRetargeter();
 	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths)
 		=> new LibraryDerivedDataService(CreateModContentFactsService(paths), new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths)));
    public static IReplacementTargetDeriver CreateReplacementTargetDeriver(StoragePaths paths)

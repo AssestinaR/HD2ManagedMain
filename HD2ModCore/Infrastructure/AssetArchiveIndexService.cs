@@ -180,7 +180,7 @@ ORDER BY type_id, file_id;";
 		}
 		await entriesReader.DisposeAsync().ConfigureAwait(false);
 
-		var unitKeys = keys.Where(key => key.TypeId == PatchUnitMeshReader.UnitTypeId).ToHashSet();
+		var unitKeys = keys.Where(key => key.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId).ToHashSet();
 		var partsByUnit = await GetUnitPartFactsAsync(unitKeys, cancellationToken).ConfigureAwait(false);
 		var assets = new List<GameDataArchiveAssetEntry>(keys.Count);
 		foreach (var key in keys)
@@ -224,8 +224,8 @@ FROM game_data_unit_parts
 
 WHERE unit_type_id=$unitType AND unit_file_id IN (SELECT value FROM json_each($fileIds))
 ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
-		command.Parameters.AddWithValue("$unitType", unchecked((long)PatchUnitMeshReader.UnitTypeId));
-		command.Parameters.AddWithValue("$fileIds", JsonSerializer.Serialize(unitAssetKeys.Where(key => key.TypeId == PatchUnitMeshReader.UnitTypeId).Select(key => unchecked((long)key.FileId))));
+		command.Parameters.AddWithValue("$unitType", unchecked((long)HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId));
+		command.Parameters.AddWithValue("$fileIds", JsonSerializer.Serialize(unitAssetKeys.Where(key => key.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId).Select(key => unchecked((long)key.FileId))));
 		var result = new Dictionary<CoreAssetKey, List<GameDataUnitPartFact>>();
 		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -397,11 +397,11 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		var resolver = new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(gameDataDirectory);
 		var reader = new GameDataUnitMeshReader(resolver);
 		var result = new List<GameDataUnitPartFact>();
-		var total = equipmentArchives.Sum(archive => archive.Entries.Count(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId));
+		var total = equipmentArchives.Sum(archive => archive.Entries.Count(entry => entry.AssetKey.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId));
 		var current = 0;
 		foreach (var archive in equipmentArchives)
 		{
-			foreach (var entry in archive.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
+			foreach (var entry in archive.Entries.Where(entry => entry.AssetKey.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId))
 			{
 				cancellationToken.ThrowIfCancellationRequested();
 				current++;

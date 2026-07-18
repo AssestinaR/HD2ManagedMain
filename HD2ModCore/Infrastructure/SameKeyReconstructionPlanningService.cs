@@ -148,7 +148,6 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 		HD2ModAdaptation.PatchReconstruction.UnitMesh.GameDataUnitMesh targetUnit)
 	{
 		var coreSourceEntry = ToCoreEntry(sourceEntry);
-		var coreTargetEntry = new ArchiveTocEntry(coreSourceEntry.AssetKey, targetArchive.ArchiveId);
 		var candidates = targetShellPlan.Candidates.Select(ToCoreCandidate).ToArray();
 		var candidateByMapping = candidates.ToDictionary(candidate => (candidate.SourceMeshInfoIndex, candidate.TargetMeshInfoIndex));
 		var steps = targetShellPlan.MinifiedTargetMeshInfoIndexes
@@ -162,12 +161,12 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 			.ToArray();
 		try
 		{
-			var writeResult = reconstructor.Reconstruct(targetUnit, new[] { sourceUnit }, targetShellPlan.MeshMappings).WriteResult;
-			return new UnitMeshAdaptationPlan(new UnitMeshAdaptationIntent(coreSourceEntry, coreTargetEntry, null), true, candidates, steps, null, null, targetShellPlan.Reason);
+			reconstructor.Reconstruct(targetUnit, new[] { sourceUnit }, targetShellPlan.MeshMappings);
+			return new UnitMeshAdaptationPlan(new UnitMeshAdaptationIntent(coreSourceEntry, targetArchive.ArchiveId, null), true, candidates, steps, targetShellPlan.Reason);
 		}
 		catch (Exception exception) when (exception is InvalidDataException or ArgumentException or ArgumentOutOfRangeException or KeyNotFoundException)
 		{
-			return new UnitMeshAdaptationPlan(new UnitMeshAdaptationIntent(coreSourceEntry, coreTargetEntry, null), false, candidates, steps, null, null, $"SDK target-shell dry-run failed to serialize the planned Unit: {exception.Message}");
+			return new UnitMeshAdaptationPlan(new UnitMeshAdaptationIntent(coreSourceEntry, targetArchive.ArchiveId, null), false, candidates, steps, $"SDK target-shell dry-run failed to serialize the planned Unit: {exception.Message}");
 		}
 	}
 

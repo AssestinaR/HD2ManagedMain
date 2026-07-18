@@ -4,5 +4,5 @@ namespace HD2ModCore.Domain;
 // Purpose: Describes one adaptation request from a source Unit mesh to a vanilla target Unit template.
 public sealed record UnitMeshAdaptationIntent(
 	PatchTocEntry SourceEntry,
-	ArchiveTocEntry TargetEntry,
+	string TargetArchiveId,
 	int? SourceMeshInfoIndex);

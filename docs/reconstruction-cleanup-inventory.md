@@ -40,7 +40,9 @@
 - `UnitMeshAdaptationPlanner`、`UnitMeshReplacementStrategy`
 - `UnitMeshReader`、`UnitMeshWriter`、`UnitMeshMinifier`、`UnitMeshRetargeter`
 
-其中 same-key 的 source/target 读取、候选选择与 SDK target-shell dry-run 已于 `5e936aa` 切换到 Adaptation。`UnitMeshAdaptationPlanner`、`UnitMeshReplacementStrategy` 及其专属接口/测试已经没有 production caller，可单独删除。其余 Core Unit reader/writer/minifier/retargeter 仍被 catalog/material-fallback 或历史测试使用，必须继续按调用图拆分，不能在本批混删。
+其中 same-key 的 source/target 读取、候选选择与 SDK target-shell dry-run 已于 `5e936aa` 切换到 Adaptation。`UnitMeshAdaptationPlanner`、`UnitMeshReplacementStrategy` 及其专属接口/测试已经没有 production caller，已删除。
+
+随后，`CurrentGameMaterialFallbackResolver` 改为通过 Adaptation `GameDataUnitMeshReader` 读取明确 archive Unit，`EquipmentUnitCatalogService` 改为通过 Adaptation `PatchTocScanner` 与 `PatchUnitMeshReader` 检测 source 几何。确认无 Core production caller 后，Core 的 archive/patch Unit reader、Unit reader/writer/minifier/retargeter、bone reader、二进制 Unit model 及专属测试已删除。Core 仅保留 `PatchEntryPayload`，供不属于 Unit 解析的材质依赖闭包服务读取 patch payload。
 
 注意：`UnitMeshAdaptationPlanner` 的候选选择语义仍影响 same-key plan。迁移时必须先将它的稳定 candidate/evidence DTO 和测试迁到 Adaptation，不能以 cross-armor 的显式 mapping 直接替代 same-key 自动选择。
 

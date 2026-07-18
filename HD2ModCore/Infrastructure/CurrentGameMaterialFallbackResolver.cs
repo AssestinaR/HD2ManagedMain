@@ -3,6 +3,9 @@ using HD2ModAdaptation.PatchReconstruction;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using CoreAssetKey = HD2ModCore.Domain.AssetKey;
+using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
+using AdaptationGameDataPackageResolver = HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver;
+using AdaptationGameDataUnitMeshReader = HD2ModAdaptation.PatchReconstruction.UnitMesh.GameDataUnitMeshReader;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -11,7 +14,6 @@ public sealed class CurrentGameMaterialFallbackResolver
 {
 	private readonly IAssetArchiveIndexService indexService;
 	private readonly Dictionary<SectionKey, SectionResolution?> cache = new();
-	private readonly IArchiveUnitMeshReader unitReader = CoreServices.CreateArchiveUnitMeshReader();
 
 	public CurrentGameMaterialFallbackResolver(IAssetArchiveIndexService indexService)
 	{
@@ -46,7 +48,11 @@ public sealed class CurrentGameMaterialFallbackResolver
 
 		try
 		{
-			var target = await unitReader.ReadUnitMeshAsync(fingerprint.GameDataDirectory, archive.ArchiveId, unitKey, cancellationToken).ConfigureAwait(false);
+			var target = await new AdaptationGameDataUnitMeshReader(new AdaptationGameDataPackageResolver(fingerprint.GameDataDirectory)).ReadAsync(
+				archive.ArchiveId,
+				new AdaptationAssetKey(unitKey.TypeId, unitKey.FileId),
+				allowGlobalDependencySearch: true,
+				cancellationToken: cancellationToken).ConfigureAwait(false);
 			var mesh = target.Model.Meshes.FirstOrDefault(item => item.Index == reference.MeshInfoIndex.Value);
 			if (mesh is null || reference.ReferenceIndex.Value < 0 || reference.ReferenceIndex.Value >= mesh.Sections.Count)
 			{

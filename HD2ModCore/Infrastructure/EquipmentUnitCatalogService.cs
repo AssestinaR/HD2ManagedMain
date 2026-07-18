@@ -1,9 +1,11 @@
 using System.Text.Json;
 using HD2ModAdaptation.Analysis;
-using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using Microsoft.Data.Sqlite;
+using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
+using AdaptationPatchTocScanner = HD2ModAdaptation.PatchReconstruction.PatchTocScanner;
+using AdaptationPatchUnitMeshReader = HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -11,21 +13,17 @@ namespace HD2ModCore.Infrastructure;
 public sealed class EquipmentUnitCatalogService : IEquipmentUnitCatalogService
 {
 	private readonly StoragePaths paths;
-	private readonly IPatchTocScanner patchTocScanner;
-	private readonly IPatchUnitMeshReader patchUnitMeshReader;
 
-	public EquipmentUnitCatalogService(StoragePaths paths, IPatchTocScanner patchTocScanner, IPatchUnitMeshReader patchUnitMeshReader)
+	public EquipmentUnitCatalogService(StoragePaths paths)
 	{
 		this.paths = paths ?? throw new ArgumentNullException(nameof(paths));
-		this.patchTocScanner = patchTocScanner ?? throw new ArgumentNullException(nameof(patchTocScanner));
-		this.patchUnitMeshReader = patchUnitMeshReader ?? throw new ArgumentNullException(nameof(patchUnitMeshReader));
 	}
 
 	public async ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> GetEntriesAsync(IReadOnlySet<AssetKey>? unitAssetKeys = null, CancellationToken cancellationToken = default)
 	{
 		if (!File.Exists(paths.DbPath)) return Array.Empty<EquipmentUnitCatalogEntry>();
 		var unitIds = unitAssetKeys?
-			.Where(key => key.TypeId == PatchUnitMeshReader.UnitTypeId)
+			.Where(key => key.TypeId == AdaptationPatchUnitMeshReader.UnitTypeId)
 			.Select(key => unchecked((long)key.FileId))
 			.Distinct()
 			.ToArray();
@@ -88,17 +86,19 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		ArgumentNullException.ThrowIfNull(patchTocPaths);
 		var candidateKeys = candidates.SelectMany(entry => entry.Parts).Select(part => part.UnitAssetKey).ToHashSet();
 		var transferableMeshes = new HashSet<(AssetKey unit, int mesh)>();
+		var tocScanner = new AdaptationPatchTocScanner();
+		var unitReader = new AdaptationPatchUnitMeshReader();
 		foreach (var patchPath in patchTocPaths.Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase))
 		{
-			var entries = await patchTocScanner.ScanEntriesAsync(patchPath, cancellationToken).ConfigureAwait(false);
-			foreach (var entry in entries.Where(entry => candidateKeys.Contains(entry.AssetKey)))
+			var entries = await tocScanner.ScanEntriesAsync(patchPath, cancellationToken).ConfigureAwait(false);
+			foreach (var entry in entries.Where(entry => candidateKeys.Contains(ToCoreKey(entry.AssetKey))))
 			{
 				try
 				{
-					var unit = await patchUnitMeshReader.ReadUnitMeshAsync(entry, entries, cancellationToken).ConfigureAwait(false);
+					var unit = await unitReader.ReadAsync(entry, entries, cancellationToken: cancellationToken).ConfigureAwait(false);
 					foreach (var mesh in unit.Model.RawMeshData.Where(HasTransferableGeometry))
 					{
-						transferableMeshes.Add((entry.AssetKey, mesh.MeshInfoIndex));
+						transferableMeshes.Add((ToCoreKey(entry.AssetKey), mesh.MeshInfoIndex));
 					}
 				}
 				catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException)
@@ -288,8 +288,10 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 			_ => UnitMeshPartLayer.Armor
 		};
 
-	private static bool HasTransferableGeometry(HD2ModCore.Domain.UnitRawMeshData mesh)
+	private static bool HasTransferableGeometry(HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData mesh)
 		=> mesh.Vertices.Count > 3 || mesh.Triangles.Count > 1;
+
+	private static AssetKey ToCoreKey(AdaptationAssetKey assetKey) => new(assetKey.TypeId, assetKey.FileId);
 
 	private sealed record TargetUse(EquipmentUnitCatalogEntry Entry, EquipmentUnitPart Part);
 
@@ -306,7 +308,7 @@ WHERE lower(a.category) IN ('armor','helmet')
   AND p.unit_file_id IN (SELECT value FROM json_each($unitIds))
 GROUP BY p.unit_type_id,p.unit_file_id,p.archive_id
 ORDER BY p.unit_file_id,p.archive_id;";
-		command.Parameters.AddWithValue("$unitType", unchecked((long)PatchUnitMeshReader.UnitTypeId));
+		command.Parameters.AddWithValue("$unitType", unchecked((long)AdaptationPatchUnitMeshReader.UnitTypeId));
 		command.Parameters.AddWithValue("$unitIds", JsonSerializer.Serialize(unitKeys.Select(key => unchecked((long)key.FileId))));
 		var result = new Dictionary<AssetKey, List<string>>();
 		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);

@@ -1,5 +1,4 @@
 using HD2ModAdaptation.Analysis;
-using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using Xunit;
@@ -90,7 +89,7 @@ public sealed class EquipmentUnitCatalogServiceTests
 	}
 
 	private static EquipmentUnitCatalogService CreateService()
-		=> new(new StoragePaths(Path.GetTempPath()), new EmptyScanner(), new UnusedUnitReader());
+		=> new(new StoragePaths(Path.GetTempPath()));
 
 	private static EquipmentUnitCatalogEntry Entry(string id, params EquipmentUnitPart[] parts)
 		=> new(id, "Armor", id, parts);
@@ -98,17 +97,4 @@ public sealed class EquipmentUnitCatalogServiceTests
 	private static EquipmentUnitPart Part(AssetKey unit, int mesh, UnitMeshPartLayer layer, string name)
 		=> new(unit, mesh, checked((uint)mesh), UnitMeshPartKind.RightLeg, layer, UnitMeshBodyVariant.Slim, name, 100, Array.Empty<string>());
 
-	private sealed class EmptyScanner : IPatchTocScanner
-	{
-		public ValueTask<IReadOnlySet<AssetKey>> ScanAssetKeysAsync(string patchTocFilePath, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlySet<AssetKey>>(new HashSet<AssetKey>());
-		public IReadOnlySet<AssetKey> ScanAssetKeys(ReadOnlySpan<byte> tocData, bool usesSlimEntryOffset = false) => new HashSet<AssetKey>();
-		public IReadOnlyList<PatchTocEntry> ScanEntries(ReadOnlySpan<byte> tocData, string sourceFilePath, bool usesSlimEntryOffset = false) => Array.Empty<PatchTocEntry>();
-		public ValueTask<IReadOnlyList<PatchTocEntry>> ScanEntriesAsync(string patchTocFilePath, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<PatchTocEntry>>(Array.Empty<PatchTocEntry>());
-	}
-
-	private sealed class UnusedUnitReader : IPatchUnitMeshReader
-	{
-		public ValueTask<PatchUnitMesh> ReadUnitMeshAsync(PatchTocEntry entry, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-		public ValueTask<PatchUnitMesh> ReadUnitMeshAsync(PatchTocEntry entry, IReadOnlyList<PatchTocEntry> entries, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-	}
 }
