@@ -1,4 +1,5 @@
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
+using HD2ModAdaptation.PatchReconstruction;
 using Xunit;
 
 namespace HD2ModAdaptation.Tests;
@@ -33,6 +34,37 @@ public sealed class UnitMeshReplacementStrategyTests
 		Assert.Empty(candidates);
 	}
 
+	[Fact]
+	public void FindCandidates_RejectsDifferentSectionCounts()
+	{
+		var target = CreateModel(new MeshSpec(0, 100, "body_legs_Medium_lod0", "body", "legs", "Medium", "", 60, 20, SectionCount: 1));
+		var source = CreateModel(new MeshSpec(0, 200, "body_legs_Medium_lod0", "body", "legs", "Medium", "", 60, 20, SectionCount: 2));
+
+		var candidates = new UnitMeshReplacementStrategy(allowExperimentalFallback: true).FindCandidates(target, source);
+
+		Assert.Empty(candidates);
+	}
+
+	[Fact]
+	public void CreatePlan_MapsSelectedCandidatesAndMinifiesRemainingTargetMeshes()
+	{
+		var unitKey = new AssetKey(PatchUnitMeshReader.UnitTypeId, 0x1111111111111111);
+		var sourceModel = CreateModel(new MeshSpec(0, 200, "body_legs_Medium_lod0", "body", "legs", "Medium", "", 60, 20));
+		var targetModel = CreateModel(
+			new MeshSpec(0, 100, "body_legs_Medium_lod0", "body", "legs", "Medium", "", 60, 20),
+			new MeshSpec(1, 101, "body_torso_Medium_lod0", "body", "torso", "Medium", "", 60, 20));
+		var source = new PatchUnitMesh(new PatchTocEntry(unitKey, "source.patch", "source.patch"), new PatchEntryPayload(new PatchTocEntry(unitKey, "source.patch", "source.patch"), Array.Empty<byte>(), Array.Empty<byte>(), Array.Empty<byte>()), sourceModel);
+		var target = new GameDataUnitMesh(unitKey, "units", new PatchEntryPayload(new PatchTocEntry(unitKey, "units", "units"), Array.Empty<byte>(), Array.Empty<byte>(), Array.Empty<byte>()), targetModel);
+
+		var plan = new SameKeyTargetShellPlanningOperation().CreatePlan(source, target);
+
+		var mapping = Assert.Single(plan.MeshMappings);
+		Assert.Equal(0, mapping.SourceMeshInfoIndex);
+		Assert.Equal(0, mapping.TargetMeshInfoIndex);
+		Assert.Equal(new[] { 1 }, plan.MinifiedTargetMeshInfoIndexes);
+		Assert.True(plan.HasFullTargetShellCoverage);
+	}
+
 	private static UnitMeshModel CreateModel(params MeshSpec[] meshes)
 	{
 		var component = new UnitStreamComponentInfo(0, "position", 0, "vec3_float", 0, 0, 12);
@@ -52,8 +84,10 @@ public sealed class UnitMeshReplacementStrategyTests
 			var triangles = Enumerable.Range(0, checked((int)spec.TriangleCount))
 				.Select(index => new UnitTriangleIndices((uint)(index % spec.VertexCount), (uint)((index + 1) % spec.VertexCount), (uint)((index + 2) % spec.VertexCount)))
 				.ToArray();
-			var section = new UnitRawMeshSectionData(0, materialSlot, triangles);
-			rawMeshes.Add(new UnitRawMeshData(spec.MeshInfoIndex, spec.MeshId, 0, 0, new[] { section }, triangles, vertices));
+			var sections = Enumerable.Range(0, spec.SectionCount)
+				.Select(index => new UnitRawMeshSectionData((uint)index, materialSlot, triangles))
+				.ToArray();
+			rawMeshes.Add(new UnitRawMeshData(spec.MeshInfoIndex, spec.MeshId, 0, 0, sections, triangles, vertices));
 		}
 
 		return new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UnitCustomizationInfo.Empty, Array.Empty<UnitBoneInfo>(), new[] { stream }, meshInfos, Array.Empty<UnitMaterialBinding>(), Array.Empty<UnitRawMeshSummary>(), rawMeshes);
@@ -68,5 +102,6 @@ public sealed class UnitMeshReplacementStrategyTests
 		string BodyType,
 		string Weight,
 		uint VertexCount,
-		uint TriangleCount);
+		uint TriangleCount,
+		int SectionCount = 1);
 }

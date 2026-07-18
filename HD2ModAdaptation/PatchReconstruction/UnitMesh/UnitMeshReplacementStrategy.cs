@@ -46,10 +46,21 @@ public sealed class UnitMeshReplacementStrategy
 				{
 					continue;
 				}
+				// SDK-style target-shell reconstruction rebuilds material remaps per
+				// section. A different section count is not an encodable replacement;
+				// leave the target slot minified instead of selecting an unsafe fallback.
+				if (targetRawMesh.Sections.Count != sourceRawMesh.Sections.Count)
+				{
+					continue;
+				}
 
 				var sameStreamLayout = HasSameStreamLayout(targetStream, sourceStream);
 				var sameMeshId = targetRawMesh.MeshId == sourceRawMesh.MeshId;
 				if (!sameStreamLayout && !allowExperimentalFallback)
+				{
+					continue;
+				}
+				if (!sameStreamLayout && (!targetSemantic.HasValue || !sourceSemantic.HasValue))
 				{
 					continue;
 				}
@@ -72,7 +83,12 @@ public sealed class UnitMeshReplacementStrategy
 					continue;
 				}
 
-				var kind = ResolveKind(sameStreamLayout, sameMeshId, sameLod, sameMaterialSlots);
+				var kind = ResolveKind(
+					sameStreamLayout,
+					sameMeshId,
+					sameLod,
+					sameMaterialSlots,
+					CanUseSdkStyleTranscode(targetRawMesh, sourceRawMesh, targetSemantic, sourceSemantic, semanticMatch));
 				var score = CalculateScore(kind, targetRawMesh, sourceRawMesh, targetStream, sourceStream, sameStreamLayout, sameVertexStride, semanticMatch);
 				candidates.Add(new UnitMeshReplacementCandidate(
 					targetRawMesh.MeshInfoIndex,
@@ -184,11 +200,27 @@ public sealed class UnitMeshReplacementStrategy
 		return ratio >= ExperimentalFallbackMinGeometryRatio && ratio <= ExperimentalFallbackMaxGeometryRatio;
 	}
 
-	private static UnitMeshReplacementCandidateKind ResolveKind(bool sameStreamLayout, bool sameMeshId, bool sameLod, bool sameMaterialSlots)
+	private static bool CanUseSdkStyleTranscode(
+		UnitRawMeshData targetRawMesh,
+		UnitRawMeshData sourceRawMesh,
+		UnitMeshSemanticInfo targetSemantic,
+		UnitMeshSemanticInfo sourceSemantic,
+		int semanticMatch)
+	{
+		return targetRawMesh.Sections.Count == sourceRawMesh.Sections.Count
+			&& targetSemantic.HasValue
+			&& sourceSemantic.HasValue
+			&& targetRawMesh.LodIndex == sourceRawMesh.LodIndex
+			&& semanticMatch > 0;
+	}
+
+	private static UnitMeshReplacementCandidateKind ResolveKind(bool sameStreamLayout, bool sameMeshId, bool sameLod, bool sameMaterialSlots, bool canUseSdkStyleTranscode)
 	{
 		if (!sameStreamLayout)
 		{
-			return UnitMeshReplacementCandidateKind.ExperimentalFallback;
+			return canUseSdkStyleTranscode
+				? UnitMeshReplacementCandidateKind.SdkStreamTranscode
+				: UnitMeshReplacementCandidateKind.ExperimentalFallback;
 		}
 		if (sameMeshId)
 		{
@@ -214,6 +246,7 @@ public sealed class UnitMeshReplacementStrategy
 			UnitMeshReplacementCandidateKind.SameLodAndMaterialSlots => 300,
 			UnitMeshReplacementCandidateKind.SameLod => 200,
 			UnitMeshReplacementCandidateKind.LayoutOnly => 100,
+			UnitMeshReplacementCandidateKind.SdkStreamTranscode => 500,
 			_ => 40,
 		};
 		if (sameStreamLayout)
@@ -313,6 +346,7 @@ public sealed class UnitMeshReplacementStrategy
 			UnitMeshReplacementCandidateKind.SameMeshId => "Same mesh id and compatible stream layout.",
 			UnitMeshReplacementCandidateKind.SameLodAndMaterialSlots => "Same LOD, same material slots, and compatible stream layout.",
 			UnitMeshReplacementCandidateKind.SameLod => "Same LOD and compatible stream layout.",
+			UnitMeshReplacementCandidateKind.SdkStreamTranscode => "Verified SDK-style stream transcode candidate; semantic slot evidence permits normalizing legacy vertex data to the current target stride.",
 			UnitMeshReplacementCandidateKind.ExperimentalFallback => "Experimental fallback candidate; stream layout may differ and vertex data will be normalized to the target stride.",
 			_ => "Compatible stream layout only.",
 		};
@@ -353,5 +387,6 @@ public enum UnitMeshReplacementCandidateKind
 	SameLodAndMaterialSlots,
 	SameLod,
 	LayoutOnly,
-	ExperimentalFallback
+	ExperimentalFallback,
+	SdkStreamTranscode
 }
