@@ -139,6 +139,7 @@ namespace HD2ModManager.Services
             _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray());
             RebuildIndex(buildDerivedData: false);
             ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(new[] { nodeId }, ModContentChangeKind.Removed));
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
             return true;
         }
 

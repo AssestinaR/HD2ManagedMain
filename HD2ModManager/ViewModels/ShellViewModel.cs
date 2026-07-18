@@ -150,7 +150,7 @@ namespace HD2ModManager.ViewModels
                     _profileService.NotifyActiveModContentChanged();
                 }
             };
-            _libraryService.SnapshotChanged += (_, _) => RefreshOnUiThread(_profileService.ReloadFromLibrary);
+            _libraryService.SnapshotChanged += (_, _) => RefreshOnUiThread(HandleLibrarySnapshotChanged);
             _profileService.Changed += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
             _derivedState.SnapshotChanged += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
 
@@ -491,26 +491,8 @@ namespace HD2ModManager.ViewModels
 
         public void RefreshCurrentPage()
         {
-            switch (CurrentPage)
-            {
-                case HomePageViewModel home:
-                    home.Refresh();
-                    break;
-                case StatusPageViewModel status:
-                    status.Refresh();
-                    break;
-                case ProfilePageViewModel profile:
-                    profile.Refresh();
-                    break;
-                case LibraryPageViewModel library:
-                    library.Refresh();
-                    break;
-            }
-
-            if (IsSplitView && RightPage != CurrentPage)
-            {
-                RefreshPage(RightPage);
-            }
+            RefreshPage(LeftPage);
+            if (IsSplitView) RefreshPage(RightPage);
         }
 
         private void RefreshPage(PageViewModel? page)
@@ -545,6 +527,43 @@ namespace HD2ModManager.ViewModels
                 _notificationService.Show($"导入队列 - 总数：{total}，已导入：{imported}，待处理：{pending}");
             }
             catch { }
+        }
+
+        private void HandleLibrarySnapshotChanged()
+        {
+            _profileService.ReloadFromLibrary();
+            CloseDeletedModDetails();
+            RefreshCurrentPage();
+        }
+
+        private void CloseDeletedModDetails()
+        {
+            var selectedModWasDeleted = !string.IsNullOrWhiteSpace(SelectedModId)
+                && _libraryService.Get(SelectedModId) is null;
+            if (selectedModWasDeleted) SelectedModId = null;
+
+            var leftDetailsWasDeleted = LeftPage is ModDetailsPageViewModel leftDetails
+                && _libraryService.Get(leftDetails.ModId) is null;
+            var rightDetailsWasDeleted = RightPage is ModDetailsPageViewModel rightDetails
+                && _libraryService.Get(rightDetails.ModId) is null;
+            if (!leftDetailsWasDeleted && !rightDetailsWasDeleted) return;
+
+            if (rightDetailsWasDeleted)
+            {
+                RightPageType = LeftPageType;
+                RightPage = null;
+                UpdateModeFromSlots();
+                RaiseSlotFlags();
+                return;
+            }
+
+            if (RightPage is not null)
+            {
+                OpenSinglePage(RightPageType);
+                return;
+            }
+
+            OpenSinglePage(WorkspacePageType.Library);
         }
 
         private void ExecuteSelectionPrimary(object? _)
