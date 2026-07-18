@@ -318,6 +318,16 @@ namespace HD2ModManager.ViewModels
             RaiseSlotFlags();
         }
 
+        public void OpenCrossArmorPlan(HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel plan)
+        {
+            LeftPageType = WorkspacePageType.CrossArmorPlan;
+            RightPageType = WorkspacePageType.CrossArmorCandidateOutput;
+            LeftPage = plan;
+            RightPage = new CrossArmorCandidateOutputPageViewModel(plan, _notificationService);
+            UpdateModeFromSlots();
+            RaiseSlotFlags();
+        }
+
         private void OpenSecondaryPage(WorkspacePageType pageType, PageViewModel? sourcePage)
         {
             var targetPage = CreatePage(pageType);
@@ -680,6 +690,8 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.AdvancedModDetails => new AdvancedModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),
                 WorkspacePageType.GameDataBrowser => new GameDataBrowserPageViewModel(_libraryService, _profileService),
                 WorkspacePageType.GameDataArchiveDetails => new GameDataArchiveDetailsHostPageViewModel(null),
+                WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),
+                WorkspacePageType.CrossArmorCandidateOutput => throw new InvalidOperationException("跨护甲输出必须通过专用路由创建。"),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
             };
         }
@@ -722,6 +734,8 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.AdvancedModDetails => "高级 Mod 详情",
             WorkspacePageType.GameDataBrowser => "Game Data 资产",
             WorkspacePageType.GameDataArchiveDetails => "Archive 详情",
+            WorkspacePageType.CrossArmorPlan => "跨护甲计划",
+            WorkspacePageType.CrossArmorCandidateOutput => "验证候选输出",
             _ => "页面",
         };
 

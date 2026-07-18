@@ -11,7 +11,7 @@ using HD2ModManager.ViewModels;
 namespace HD2ModManager.Views;
 
 // Purpose: Presents a no-write source-to-target equipment transfer preview before cross-armor Patch output is implemented.
-public sealed class CrossArmorTransferPlanWindowViewModel : INotifyPropertyChanged
+public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 {
 	private EquipmentUnitCatalogEntry? selectedSource;
 	private UnitMeshBodyVariant? selectedSourceBodyVariant;
@@ -22,22 +22,55 @@ public sealed class CrossArmorTransferPlanWindowViewModel : INotifyPropertyChang
 	private readonly Dictionary<CrossArmorPhysicalTargetKey, CrossArmorManualMapping> manualMappings = new();
 	private readonly HashSet<CrossArmorPhysicalTargetKey> suppressedTargets = new();
 	private bool candidateGenerationRunning;
+	private CancellationTokenSource? planCancellation;
+	private int planGeneration;
+	private bool isPlanning;
+	private string planState = "正在准备跨护甲计划。";
+	private CrossArmorTransferMapping? selectedTargetMapping;
+	private EquipmentUnitPart? selectedManualSource;
 
-	public event PropertyChangedEventHandler? PropertyChanged;
 	public IReadOnlyList<CrossArmorTransferEquipmentRow> SourceChoices { get; }
 	public IReadOnlyList<CrossArmorTransferEquipmentRow> TargetChoices { get; }
 	public string SourcePatchTocPath { get; }
 	public string GameDataDirectory { get; }
 	public RelayCommand RefreshPlanCommand { get; }
+	public RelayCommand ApplyManualMappingCommand { get; }
+	public RelayCommand SuppressSelectedMappingCommand { get; }
+	public RelayCommand RestoreSelectedMappingCommand { get; }
+	public bool IsPlanning { get => isPlanning; private set { if (isPlanning == value) return; isPlanning = value; OnPropertyChanged(); } }
+	public string PlanState { get => planState; private set { if (planState == value) return; planState = value; OnPropertyChanged(); } }
+	public CrossArmorTransferMapping? SelectedTargetMapping
+	{
+		get => selectedTargetMapping;
+		set
+		{
+			if (ReferenceEquals(selectedTargetMapping, value)) return;
+			selectedTargetMapping = value;
+			selectedManualSource = null;
+			OnPropertyChanged();
+			OnPropertyChanged(nameof(ManualSourceChoices));
+			OnPropertyChanged(nameof(SelectedManualSource));
+			RaiseManualMappingCommandStates();
+		}
+	}
+	public EquipmentUnitPart? SelectedManualSource
+	{
+		get => selectedManualSource;
+		set { if (selectedManualSource == value) return; selectedManualSource = value; OnPropertyChanged(); RaiseManualMappingCommandStates(); }
+	}
+	public IReadOnlyList<EquipmentUnitPart> ManualSourceChoices => SelectedTargetMapping is null
+		? Array.Empty<EquipmentUnitPart>()
+		: SourceParts.Where(part => part.PartKind == SelectedTargetMapping.Target.PartKind).ToArray();
+	public bool CanEditSelectedMapping => AllowManualMappings && SelectedTargetMapping is not null;
 	public CrossArmorBodyVariantPreference BodyVariantPreference
 	{
 		get => bodyVariantPreference;
-		set { if (bodyVariantPreference == value) return; bodyVariantPreference = value; OnPropertyChanged(); RefreshPlan(); }
+		set { if (bodyVariantPreference == value) return; bodyVariantPreference = value; OnPropertyChanged(); QueueRefreshPlan(); }
 	}
 	public CrossArmorLayerPreference LayerPreference
 	{
 		get => layerPreference;
-		set { if (layerPreference == value) return; layerPreference = value; OnPropertyChanged(); RefreshPlan(); }
+		set { if (layerPreference == value) return; layerPreference = value; OnPropertyChanged(); QueueRefreshPlan(); }
 	}
 	public bool AllowManualMappings
 	{
@@ -52,7 +85,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : INotifyPropertyChang
 				suppressedTargets.Clear();
 			}
 			OnPropertyChanged();
-			RefreshPlan();
+			RaiseManualMappingCommandStates();
+			QueueRefreshPlan();
 		}
 	}
 	public EquipmentUnitCatalogEntry? SelectedSource
@@ -63,7 +97,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : INotifyPropertyChang
 			if (ReferenceEquals(selectedSource, value)) return;
 			selectedSource = value;
 			OnPropertyChanged();
-			RefreshPlan();
+			QueueRefreshPlan();
 		}
 	}
 	public UnitMeshBodyVariant? SelectedSourceBodyVariant
@@ -74,7 +108,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : INotifyPropertyChang
 			if (selectedSourceBodyVariant == value) return;
 			selectedSourceBodyVariant = value;
 			OnPropertyChanged();
-			RefreshPlan();
+			QueueRefreshPlan();
 		}
 	}
 	public IReadOnlyList<EquipmentUnitPart> SourceParts => plan?.SelectedSource?.Parts
@@ -115,18 +149,23 @@ public sealed class CrossArmorTransferPlanWindowViewModel : INotifyPropertyChang
 		this.catalogService = catalogService;
 		this.sourceCandidates = sourceCandidates;
 		this.targetCandidates = targetCandidates;
+		Title = "跨护甲计划";
 		SourcePatchTocPath = sourcePatchTocPath;
 		GameDataDirectory = gameDataDirectory;
 		SourceChoices = sourceCandidates.Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
 		TargetChoices = targetCandidates.Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
-		RefreshPlanCommand = new RelayCommand(RefreshPlan);
+		foreach (var target in TargetChoices) target.PropertyChanged += (_, _) => QueueRefreshPlan();
+		RefreshPlanCommand = new RelayCommand(_ => QueueRefreshPlan(), _ => !IsPlanning);
+		ApplyManualMappingCommand = new RelayCommand(_ => { if (SelectedTargetMapping is not null && SelectedManualSource is not null) SetManualMapping(SelectedTargetMapping, SelectedManualSource); }, _ => CanEditSelectedMapping && SelectedManualSource is not null);
+		SuppressSelectedMappingCommand = new RelayCommand(_ => { if (SelectedTargetMapping is not null) SuppressAutomaticMapping(SelectedTargetMapping); }, _ => CanEditSelectedMapping);
+		RestoreSelectedMappingCommand = new RelayCommand(_ => { if (SelectedTargetMapping is not null) RestoreAutomaticMapping(SelectedTargetMapping); }, _ => CanEditSelectedMapping);
 		SelectedSource = sourceCandidates.FirstOrDefault();
 	}
 
 	public void ExportJson(string outputPath)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
-		RefreshPlan();
+		QueueRefreshPlan();
 		var export = new
 		{
 			format = "hd2-cross-armor-transfer-plan-v1",
@@ -180,7 +219,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : INotifyPropertyChang
 		ArgumentNullException.ThrowIfNull(source);
 		suppressedTargets.Remove(target.PhysicalTarget);
 		manualMappings[target.PhysicalTarget] = new CrossArmorManualMapping(target.PhysicalTarget, source.UnitAssetKey, source.MeshInfoIndex);
-		RefreshPlan();
+		QueueRefreshPlan();
 	}
 
 	public void SuppressAutomaticMapping(CrossArmorTransferMapping target)
@@ -188,41 +227,82 @@ public sealed class CrossArmorTransferPlanWindowViewModel : INotifyPropertyChang
 		ArgumentNullException.ThrowIfNull(target);
 		manualMappings.Remove(target.PhysicalTarget);
 		suppressedTargets.Add(target.PhysicalTarget);
-		RefreshPlan();
+		QueueRefreshPlan();
 	}
 
 	public void ClearManualMapping(CrossArmorTransferMapping target)
 	{
 		ArgumentNullException.ThrowIfNull(target);
-		if (manualMappings.Remove(target.PhysicalTarget)) RefreshPlan();
+		if (manualMappings.Remove(target.PhysicalTarget)) QueueRefreshPlan();
 	}
 
 	public void RestoreAutomaticMapping(CrossArmorTransferMapping target)
 	{
 		ArgumentNullException.ThrowIfNull(target);
-		if (suppressedTargets.Remove(target.PhysicalTarget)) RefreshPlan();
+		if (suppressedTargets.Remove(target.PhysicalTarget)) QueueRefreshPlan();
 	}
 
-	private void RefreshPlan()
+	private void QueueRefreshPlan()
 	{
+		_ = RefreshPlanAsync();
+	}
+
+	private async Task RefreshPlanAsync()
+	{
+		planCancellation?.Cancel();
+		planCancellation?.Dispose();
+		planCancellation = new CancellationTokenSource();
+		var cancellationToken = planCancellation.Token;
+		var generation = ++planGeneration;
+		IsPlanning = true;
+		PlanState = "正在重新规划来源与目标 mesh。";
+		RefreshPlanCommand.RaiseCanExecuteChanged();
 		var targetIds = TargetChoices.Where(row => row.IsSelected).Select(row => row.Entry.ArchiveId).ToArray();
-		plan = catalogService.CreatePlanAsync(sourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray()).AsTask().GetAwaiter().GetResult();
-		OnPropertyChanged(nameof(SourceParts));
-		OnPropertyChanged(nameof(TargetMappings));
-		OnPropertyChanged(nameof(Impacts));
-		OnPropertyChanged(nameof(Summary));
-		OnPropertyChanged(nameof(Issues));
-		OnPropertyChanged(nameof(CanGenerateCandidate));
+		try
+		{
+			var nextPlan = await Task.Run(() => catalogService.CreatePlanAsync(sourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray(), cancellationToken).AsTask(), cancellationToken);
+			if (cancellationToken.IsCancellationRequested || generation != planGeneration) return;
+			plan = nextPlan;
+			PlanState = "计划已更新。";
+			OnPropertyChanged(nameof(SourceParts));
+			OnPropertyChanged(nameof(TargetMappings));
+			OnPropertyChanged(nameof(Impacts));
+			OnPropertyChanged(nameof(Summary));
+			OnPropertyChanged(nameof(Issues));
+			OnPropertyChanged(nameof(CanGenerateCandidate));
+			OnPropertyChanged(nameof(ManualSourceChoices));
+			RaiseManualMappingCommandStates();
+		}
+		catch (OperationCanceledException) { }
+		catch (Exception exception)
+		{
+			if (!cancellationToken.IsCancellationRequested) PlanState = $"计划读取失败：{exception.Message}";
+		}
+		finally
+		{
+			if (generation == planGeneration)
+			{
+				IsPlanning = false;
+				RefreshPlanCommand.RaiseCanExecuteChanged();
+			}
+		}
 	}
 
-	public CrossArmorTransferPlan? GetCurrentPlan()
+	public CrossArmorTransferPlan? GetCurrentPlan() => plan;
+
+	public override void Dispose()
 	{
-		RefreshPlan();
-		return plan;
+		planCancellation?.Cancel();
+		planCancellation?.Dispose();
 	}
 
-	private void OnPropertyChanged([CallerMemberName] string? name = null)
-		=> PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+	private void RaiseManualMappingCommandStates()
+	{
+		OnPropertyChanged(nameof(CanEditSelectedMapping));
+		ApplyManualMappingCommand?.RaiseCanExecuteChanged();
+		SuppressSelectedMappingCommand?.RaiseCanExecuteChanged();
+		RestoreSelectedMappingCommand?.RaiseCanExecuteChanged();
+	}
 
 	private static object ToEquipmentExport(EquipmentUnitCatalogEntry entry) => new
 	{

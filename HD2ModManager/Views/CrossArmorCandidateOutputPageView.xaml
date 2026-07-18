@@ -1,0 +1,16 @@
+<UserControl x:Class="HD2ModManager.Views.CrossArmorCandidateOutputPageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+            <StackPanel><TextBlock Text="跨护甲验证候选" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="输出会重建 current target Unit 壳；映射 mesh 写入来源模型，其余 mesh 极小化。" Foreground="#6C7280" Margin="0,4,0,0" TextWrapping="Wrap"/></StackPanel>
+        </Border>
+        <Border Grid.Row="1" Style="{StaticResource CardContainer}" Margin="0,0,0,12"><StackPanel>
+            <TextBlock Text="材质绑定" FontWeight="SemiBold"/><ComboBox ItemsSource="{Binding MaterialBindingModes}" SelectedItem="{Binding MaterialBindingMode}" Margin="0,6,0,0"/>
+            <TextBlock Text="输出根文件夹必须为空；候选不会导入 Mod 库或部署到游戏。" Foreground="#666" TextWrapping="Wrap" Margin="0,8,0,0"/>
+        </StackPanel></Border>
+        <Border Grid.Row="2" Style="{StaticResource CardContainer}"><StackPanel><TextBlock Text="输出目录" FontWeight="SemiBold"/><Grid Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox Text="{Binding OutputDirectory}" IsReadOnly="True" Padding="7,3"/><Button Grid.Column="1" Content="浏览..." Margin="8,0,0,0" Padding="12,5" Click="OnBrowseClick"/></Grid><TextBlock Text="{Binding State}" TextWrapping="Wrap" Margin="0,12,0,0" Foreground="#444"/></StackPanel></Border>
+        <Button Grid.Row="3" Content="生成验证候选" Command="{Binding GenerateCommand}" IsEnabled="{Binding CanGenerate}" HorizontalAlignment="Right" Margin="0,12,0,0" Padding="14,7"/>
+    </Grid>
+</UserControl>

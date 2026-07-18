@@ -493,8 +493,7 @@ namespace HD2ModManager.ViewModels
                     return;
                 }
                 var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(_equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder());
-                var window = new HD2ModManager.Views.CrossArmorTransferPlanWindow(viewModel) { Owner = System.Windows.Application.Current?.MainWindow };
-                window.ShowDialog();
+                if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenCrossArmorPlan(viewModel);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
             {

@@ -1,0 +1,42 @@
+<UserControl x:Class="HD2ModManager.Views.CrossArmorPlanPageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:analysis="clr-namespace:HD2ModAdaptation.Analysis;assembly=HD2ModAdaptation">
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+            <StackPanel>
+                <TextBlock Text="更换护甲 Mod：计划" FontSize="20" FontWeight="SemiBold"/>
+                <TextBlock Text="此页仅规划来源与目标；候选输出始终写入独立空目录，不修改源 Mod、库或部署。" Foreground="#6C7280" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                <TextBlock Text="{Binding PlanState}" Foreground="#166534" Margin="0,6,0,0" TextWrapping="Wrap"/>
+            </StackPanel>
+        </Border>
+        <Grid Grid.Row="1" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Text="来源装备" FontWeight="SemiBold"/>
+                <ComboBox ItemsSource="{Binding SourceChoices}" DisplayMemberPath="Display" SelectedValuePath="Entry" SelectedValue="{Binding SelectedSource}" Margin="0,5,0,0"/>
+                <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <StackPanel><TextBlock Text="来源身形"/><ComboBox SelectedValuePath="Tag" SelectedValue="{Binding SelectedSourceBodyVariant}"><ComboBoxItem Content="任意" Tag="{x:Static analysis:UnitMeshBodyVariant.Any}"/><ComboBoxItem Content="Slim" Tag="{x:Static analysis:UnitMeshBodyVariant.Slim}"/><ComboBoxItem Content="Stocky" Tag="{x:Static analysis:UnitMeshBodyVariant.Stocky}"/></ComboBox></StackPanel>
+                    <StackPanel Grid.Column="1" Margin="8,0,0,0"><TextBlock Text="优先身形"/><ComboBox SelectedValuePath="Tag" SelectedValue="{Binding BodyVariantPreference}"><ComboBoxItem Content="Slim 优先" Tag="Slim"/><ComboBoxItem Content="Stocky 优先" Tag="Stocky"/></ComboBox></StackPanel>
+                </Grid>
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+                <TextBlock Text="目标装备（可多选）" FontWeight="SemiBold"/>
+                <ListBox ItemsSource="{Binding TargetChoices}" Height="106" Margin="0,5,0,0">
+                    <ListBox.ItemTemplate><DataTemplate><CheckBox Content="{Binding Display}" IsChecked="{Binding IsSelected}"/></DataTemplate></ListBox.ItemTemplate>
+                </ListBox>
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0"><TextBlock Text="优先层级" VerticalAlignment="Center"/><ComboBox Width="130" Margin="8,0,0,0" SelectedValuePath="Tag" SelectedValue="{Binding LayerPreference}"><ComboBoxItem Content="护甲优先" Tag="Armor"/><ComboBoxItem Content="内层优先" Tag="Undergarment"/><ComboBoxItem Content="附件优先" Tag="Accessory"/></ComboBox></StackPanel>
+            </StackPanel>
+        </Grid>
+        <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Border Style="{StaticResource DataTableCard}"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><TextBlock Text="来源可见部件" FontWeight="SemiBold" Margin="12,10"/><DataGrid Grid.Row="1" Style="{StaticResource DataTableGrid}" ItemsSource="{Binding SourceParts}"><DataGrid.Columns><DataGridTextColumn Header="部位" Binding="{Binding PartKind}" Width="*"/><DataGridTextColumn Header="层级" Binding="{Binding Layer}" Width="*"/><DataGridTextColumn Header="语义" Binding="{Binding SemanticName}" Width="1.5*"/></DataGrid.Columns></DataGrid></Grid></Border>
+            <Border Grid.Column="2" Style="{StaticResource DataTableCard}"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><TextBlock Text="目标预测（替换或极小化）" FontWeight="SemiBold" Margin="12,10"/><DataGrid Grid.Row="1" Style="{StaticResource DataTableGrid}" ItemsSource="{Binding TargetMappings}" SelectedItem="{Binding SelectedTargetMapping, Mode=TwoWay}"><DataGrid.Columns><DataGridTextColumn Header="目标" Binding="{Binding Target.SemanticName}" Width="1.3*"/><DataGridTextColumn Header="来源" Binding="{Binding Source.SemanticName, TargetNullValue=（极小化）}" Width="1.3*"/><DataGridTextColumn Header="原因" Binding="{Binding Reason}" Width="1.8*"/></DataGrid.Columns></DataGrid></Grid></Border>
+        </Grid>
+        <StackPanel Grid.Row="3" Margin="0,10,0,0">
+            <TextBlock Text="{Binding Summary}" TextWrapping="Wrap"/><TextBlock Text="{Binding Issues}" Foreground="#A02323" TextWrapping="Wrap" Margin="0,4,0,0"/>
+            <CheckBox Content="允许手动调整选中的目标映射" IsChecked="{Binding AllowManualMappings}" Margin="0,8,0,0"/>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0" IsEnabled="{Binding CanEditSelectedMapping}"><ComboBox Width="260" ItemsSource="{Binding ManualSourceChoices}" SelectedItem="{Binding SelectedManualSource}" DisplayMemberPath="SemanticName"/><Button Content="强制来源" Command="{Binding ApplyManualMappingCommand}" Margin="8,0,0,0" Padding="10,4"/><Button Content="极小化" Command="{Binding SuppressSelectedMappingCommand}" Margin="8,0,0,0" Padding="10,4"/><Button Content="恢复自动" Command="{Binding RestoreSelectedMappingCommand}" Margin="8,0,0,0" Padding="10,4"/><Button Content="刷新计划" Command="{Binding RefreshPlanCommand}" Margin="8,0,0,0" Padding="10,4"/></StackPanel>
+        </StackPanel>
+    </Grid>
+</UserControl>
