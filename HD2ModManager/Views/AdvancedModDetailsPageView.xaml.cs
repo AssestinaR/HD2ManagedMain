@@ -29,30 +29,38 @@ namespace HD2ModManager.Views
 
         private void OnTablePreviewMouseWheel(object sender, MouseWheelEventArgs e)
         {
-            if (sender is not DataGrid table || FindScrollViewer(table) is not ScrollViewer tableScrollViewer)
+            if (sender is not DataGrid table || FindInnerScrollViewer(table) is not ScrollViewer tableScrollViewer)
             {
                 return;
             }
 
             var scrollingUp = e.Delta > 0;
-            var isAtTop = tableScrollViewer.VerticalOffset <= 0;
-            var isAtBottom = tableScrollViewer.VerticalOffset >= tableScrollViewer.ScrollableHeight;
+            var isAtTop = tableScrollViewer.VerticalOffset <= 0.5;
+            var isAtBottom = tableScrollViewer.VerticalOffset >= tableScrollViewer.ScrollableHeight - 0.5;
             if ((!scrollingUp || !isAtTop) && (scrollingUp || !isAtBottom))
             {
                 return;
             }
 
             e.Handled = true;
-            PageScrollViewer.ScrollToVerticalOffset(Math.Max(0, PageScrollViewer.VerticalOffset - e.Delta));
+            PageScrollViewer.ScrollToVerticalOffset(Math.Max(0, PageScrollViewer.VerticalOffset - e.Delta / 3d));
         }
 
-        private static ScrollViewer? FindScrollViewer(DependencyObject current)
+        private static ScrollViewer? FindInnerScrollViewer(DependencyObject current)
         {
-            for (var parent = VisualTreeHelper.GetParent(current); parent is not null; parent = VisualTreeHelper.GetParent(parent))
+            var childCount = VisualTreeHelper.GetChildrenCount(current);
+            for (var index = 0; index < childCount; index++)
             {
-                if (parent is ScrollViewer scrollViewer)
+                var child = VisualTreeHelper.GetChild(current, index);
+                if (child is ScrollViewer scrollViewer)
                 {
                     return scrollViewer;
+                }
+
+                var nestedScrollViewer = FindInnerScrollViewer(child);
+                if (nestedScrollViewer is not null)
+                {
+                    return nestedScrollViewer;
                 }
             }
 
