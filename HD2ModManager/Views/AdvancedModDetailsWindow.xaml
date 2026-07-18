@@ -7,17 +7,19 @@
         <StackPanel>
             <TextBlock Text="{Binding Name}" FontSize="22" FontWeight="SemiBold"/>
             <TextBlock Text="稳定资产事实只读展示；Profile 状态和诊断为当前配置投影。" Foreground="#777" Margin="0,4,0,10"/>
-            <Border Style="{StaticResource CardContainer}" Margin="0,0,0,10">
+            <Border Style="{StaticResource DataTableCard}" Margin="0,0,0,10">
+                <Border Style="{StaticResource DataTableToolbar}">
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                         <CheckBox Content="仅异常" IsChecked="{Binding AdvancedOnlyIssues, Mode=TwoWay}" VerticalAlignment="Center" Margin="10,0,0,0"/>
                     </StackPanel>
                     <TextBox Text="{Binding AdvancedAssetQuery, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="搜索类型、AssetKey、名称或目标" Padding="8"/>
                 </DockPanel>
+                </Border>
             </Border>
             <TextBlock Text="{Binding AdvancedAssetState}" Foreground="#666" Margin="2,0,0,8"/>
-            <Border Style="{StaticResource CardContainer}" Padding="0" Margin="0,0,0,10">
-                <DataGrid ItemsSource="{Binding AdvancedAssets}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" EnableRowVirtualization="True" EnableColumnVirtualization="True" HeadersVisibility="Column" GridLinesVisibility="Horizontal" MinHeight="360">
+            <Border Style="{StaticResource DataTableCard}" Margin="0,0,0,10">
+                <DataGrid Style="{StaticResource DataTableGrid}" ItemsSource="{Binding AdvancedAssets}" MinHeight="360">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="类型" Binding="{Binding TypeName}" Width="110"/>
                         <DataGridTextColumn Header="AssetKey" Binding="{Binding AssetKeyText}" Width="250"/>

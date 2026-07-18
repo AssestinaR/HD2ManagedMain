@@ -6,6 +6,9 @@
              StartupUri="MainWindow.xaml">
     <Application.Resources>
         <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/DataTables.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
             <sys:Double x:Key="LayoutGap">12</sys:Double>
             <Thickness x:Key="LayoutGapThickness">12</Thickness>
             <Thickness x:Key="CardStackMargin">0,0,0,12</Thickness>
