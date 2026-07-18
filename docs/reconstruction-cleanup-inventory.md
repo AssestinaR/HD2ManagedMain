@@ -1,7 +1,7 @@
 # 重建链路清理盘点
 
 **盘点日期：** 2026-07-18
-**行为基线：** `a5279e2 feat: checkpoint verified cross-armor shell reconstruction`
+**行为基线：** `6de5c33 refactor: move Core Unit reads to Adaptation`；已实际验收 patch 重构与跨护甲替换。
 **范围：** Core、Adaptation 与 Manager 的 Unit/Patch 重建调用；不改变现有输出行为。
 
 ## 目标边界
@@ -14,8 +14,8 @@
 
 | 入口 | Manager 调用 | Core 当前职责 | Adaptation 当前职责 | 结论 |
 |---|---|---|---|---|
-| Same-key 重建 | `ModDetailsPageViewModel` → `IModSameKeyReconstructionService` | facts 新鲜度、archive 选择、计划、输出目录/报告、验收 | 实际 source/target Unit 读取、target-shell 输出、archive 写入 | Core 仍泄漏 Unit/Patch 技术细节；须抽出 Adaptation 门面后收敛。 |
-| Cross-armor 候选 | `CrossArmorTransferPlanWindow` → `ICrossArmorTransferCandidateService` | 已批准 mapping、候选策略、报告、输出事务 | source/target 读取、TransformInfo/BoneInfo 处理、SDK target-shell 重建、archive 写入 | 已采用正确底层实现，但 service 自己编排大量 Adaptation 类型；须迁移为 Adaptation operation。 |
+| Same-key 重建 | `ModDetailsPageViewModel` → `IModSameKeyReconstructionService` | facts 新鲜度、archive 选择、计划、输出目录/报告、验收 | 实际 source/target Unit 读取、target-shell 输出、archive 写入 | 输出已验收；Core 仍直接编排多个 Adaptation 技术类型，尚可收敛为 operation。 |
+| Cross-armor 候选 | `CrossArmorTransferPlanWindow` → `ICrossArmorTransferCandidateService` | 已批准 mapping、候选策略、报告、输出事务 | source/target 读取、TransformInfo/BoneInfo 处理、SDK target-shell 重建、archive 写入 | 输出已验收；Core service 仍包含大量技术编排和诊断投影，尚可迁移为 Adaptation operation。 |
 | facts/索引/部署 | 多个 Manager service/view model | SQLite facts、archive 索引、部署、冲突分析 | Patch 解析器/资源读取被按需调用 | 保留在 Core；不是重建旧链路。 |
 
 ## 已确认的重复/遗留实现
@@ -66,6 +66,40 @@
 - `Processing/AdaptiveOutputWriter` 与 PatchReconstruction writer 的职责可能重叠。
 
 这些项目不得和 Core 第一批删除混在同一个提交中。
+
+## 剩余清理清单（按风险排序）
+
+### 1. Core 重建编排仍未完全去技术化（高价值，需单独验收）
+
+- `ModSameKeyReconstructionService` 仍直接构造 Adaptation scanner、reader、writer、target-shell output builder 和 patch archive writer。
+- `CrossArmorTransferCandidateService` 仍直接构造并配置 Adaptation 的 rig reader、bone/transform diagnostics、reencoder、writer、output builder、material resolver 与 archive writer。
+- 两者都应最终改为调用输入明确、输出稳定的 Adaptation operation；Core 只保留 archive/facts 选择、已批准 mapping、输出事务与用户报告。
+
+这是剩余的主要架构项，但也是最不应仓促处理的一项：它们位于已通过游戏验证的输出链路，改动后必须重新执行 same-key 和 cross-armor 的实际验收。
+
+### 2. Core 仍保有通用 Patch/Archive 二进制辅助实现（中风险，先分离 Material closure）
+
+- `PatchTocScanner`、`PatchEntryPayloadReader`、`GameDataPackageResolver`、`StingrayMaterialReferenceReader` 以及相关 Core 接口/测试仍存在。
+- 它们目前服务于 mod facts、冲突/部署图、材质/纹理闭包与 archive fallback；其中 `ArchiveDependencyResolver` 仍自行读取 Game Data 的 TOC、stream 和 GPU sidecar。
+- 不能按“包含 Patch”一概删除：部署、索引、文件分组和只读 facts 属于 Core 的合法职责。下一步应仅把 Material closure 的二进制读取迁为 Adaptation operation，再复查哪些基础 scanner 可安全保留为只读 facts 适配器、哪些应删除。
+
+### 3. Core 的 same-key 轻量报告 DTO（低风险，非功能阻塞）
+
+- `UnitMeshAdaptationPlan`、`UnitMeshAdaptationStep`、`UnitMeshReplacementCandidate` 等当前只是 Core → Manager 的报告合同，不再携带 Unit binary model 或 serialized payload。
+- 可在 operation 收敛时改名为业务化的 reconstruction report；现在删除会无谓触及 Manager 合同，暂不建议优先处理。
+
+### 4. Adaptation 历史输出分支（独立高风险清理）
+
+- 已标记 obsolete 但仍有测试和编译 warning：`StrictUnitMeshTransfer`、`StrictUnitMeshEditPreparer`、`SdkStyleUnitOutputBuilder`。
+- 仍有独立测试覆盖的旧 target-shell 支路：`TargetShellUnitOutputBuilder`、`TargetShellPatchReconstructor`。
+- `SdkStyleTargetShellPatchOutputBuilder.CreateWithSectionRebuild` 当前未发现独立生产调用，但与跨护甲“禁止 generic section rebuild”的硬约束相冲突；删除前必须先完成全调用图确认。
+- `Processing/AdaptiveOutputWriter` 需要单独确认是否有独立产品入口，再决定删除或吸收。
+
+### 明确保留、不是清理候选
+
+- Patch 文件名、sidecar 归组、mod library 导入/导出、部署/回滚、冲突检测与 facts/SQLite archive index。
+- `EquipmentUnitCatalogService`、`CurrentGameMaterialFallbackResolver` 的业务判断本身；它们已不依赖 Core Unit reader。
+- Adaptation 当前 SDK target-shell reconstruction、archive writer、Unit/GPU/stream reader/writer 及其回读验证。
 
 ## 推荐提交批次
 
