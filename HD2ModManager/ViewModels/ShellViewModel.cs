@@ -32,6 +32,7 @@ namespace HD2ModManager.ViewModels
         private WorkspacePageType _leftPageType;
         private WorkspacePageType _rightPageType;
         private string? _selectedModId;
+        private bool _isTaskHubOpen;
 
         public PageViewModel? CurrentPage => LeftPage;
         public PageViewModel? LeftPage
@@ -67,7 +68,12 @@ namespace HD2ModManager.ViewModels
         public WorkspacePageType LeftPageType { get => _leftPageType; private set { if (SetField(ref _leftPageType, value)) RaiseSlotFlags(); } }
         public WorkspacePageType RightPageType { get => _rightPageType; private set { if (SetField(ref _rightPageType, value)) RaiseSlotFlags(); } }
         public string? SelectedModId { get => _selectedModId; private set => SetField(ref _selectedModId, value); }
+        public bool IsTaskHubOpen { get => _isTaskHubOpen; private set => SetField(ref _isTaskHubOpen, value); }
         public ReadOnlyObservableCollection<NotificationItem> Notifications { get; }
+        public ReadOnlyObservableCollection<NotificationItem> EventHistory => _notificationService.History;
+        public ReadOnlyObservableCollection<BackgroundTaskItem> TaskHubTasks => _backgroundTasks.Tasks;
+        public int ActiveTaskCount => _backgroundTasks.CountQueued + _backgroundTasks.CountRunning;
+        public bool HasUnreadTaskHubEvents => EventHistory.Any(item => item.IsUnread);
 
         public RelayCommand ShowHomeCommand { get; }
         public RelayCommand ShowStatusCommand { get; }
@@ -81,6 +87,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand CancelSelectionCommand { get; }
         public RelayCommand SelectionPrimaryCommand { get; }
         public RelayCommand SelectionDeleteCommand { get; }
+        public RelayCommand ToggleTaskHubCommand { get; }
 
         public bool IsHomeActive => CurrentMode == WorkspaceMode.Home;
         public bool IsStatusActive => CurrentMode == WorkspaceMode.Status;
@@ -153,6 +160,8 @@ namespace HD2ModManager.ViewModels
             _libraryService.SnapshotChanged += (_, _) => RefreshOnUiThread(HandleLibrarySnapshotChanged);
             _profileService.Changed += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
             _derivedState.SnapshotChanged += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
+            _backgroundTasks.Changed += (_, _) => RefreshOnUiThread(RefreshTaskHubState);
+            _notificationService.Changed += (_, _) => RefreshOnUiThread(RefreshTaskHubState);
 
             RunStartupChecks(configDir);
 
@@ -168,6 +177,7 @@ namespace HD2ModManager.ViewModels
             CancelSelectionCommand = new RelayCommand(_selection.Clear);
             SelectionPrimaryCommand = new RelayCommand(ExecuteSelectionPrimary);
             SelectionDeleteCommand = new RelayCommand(ExecuteSelectionDelete);
+            ToggleTaskHubCommand = new RelayCommand(ToggleTaskHub);
             _selection.SelectionChanged += (_, _) => RaiseSelectionFlags();
 
             Navigate(WorkspaceMode.Home);
@@ -534,6 +544,21 @@ namespace HD2ModManager.ViewModels
             _profileService.ReloadFromLibrary();
             CloseDeletedModDetails();
             RefreshCurrentPage();
+        }
+
+        private void ToggleTaskHub()
+        {
+            IsTaskHubOpen = !IsTaskHubOpen;
+            if (IsTaskHubOpen) _notificationService.MarkAllRead();
+            RefreshTaskHubState();
+        }
+
+        private void RefreshTaskHubState()
+        {
+            OnPropertyChanged(nameof(TaskHubTasks));
+            OnPropertyChanged(nameof(EventHistory));
+            OnPropertyChanged(nameof(ActiveTaskCount));
+            OnPropertyChanged(nameof(HasUnreadTaskHubEvents));
         }
 
         private void CloseDeletedModDetails()
