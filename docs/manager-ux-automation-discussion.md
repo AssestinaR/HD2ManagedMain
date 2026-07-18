@@ -77,3 +77,4 @@
 - Manager 目前至少有高级 Mod 详情、cross-armor 计划/输出/手动选择、材质候选/输出、same-key 输出、Game Data 索引/详情、后台任务等内部模态窗口；这些应逐个迁入页面工作区，系统文件选择器和最终危险确认除外。
 - 删除库 Mod 后配置页和详情页残留的根因已定位：Core `DeleteNodeAsync` 会移除 Profile entry，但 Manager `ModLibraryService.Remove()` 没有触发 `SnapshotChanged`，使 Shell 未重新加载 Profile snapshot。此项应列为首批同步修复。
 - 详细的页面、控件、任务中心、设置资产卡和分批落地方案见 [manager-ux-redesign-plan.md](manager-ux-redesign-plan.md)。
+- 已更正页面槽位规则：普通 Mod 详情保持单槽；高级详情才转为双槽，且高列数资产表必须跨全部槽位。配置页不新建汉堡菜单，而是收敛现有 `PageActions` / `FloatingActionCluster` 浮动菜单。
