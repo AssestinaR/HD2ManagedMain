@@ -13,12 +13,14 @@
         <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
     </UserControl.Resources>
     <DockPanel Background="Transparent">
-        <!-- Top controls -->
         <Border DockPanel.Dock="Top" Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
-        <StackPanel Orientation="Horizontal">
-            <TextBlock Text="Library" FontSize="18" FontWeight="Bold"/>
-            <TextBox Width="280" Margin="12,0,0,0" Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}" ToolTip="搜索名称、备注、资产标签或资产名称"/>
-        </StackPanel>
+            <DockPanel LastChildFill="False">
+                <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center">
+                    <TextBlock Text="模组库" FontSize="20" FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding ItemCountText}" Foreground="#6C7280" FontSize="12" Margin="0,3,0,0"/>
+                </StackPanel>
+                <TextBox DockPanel.Dock="Right" Width="240" Margin="16,0,0,0" VerticalAlignment="Center" Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}" ToolTip="搜索名称、备注、资产标签或资产名称"/>
+            </DockPanel>
         </Border>
         <Border Style="{StaticResource CardContainer}" Padding="0">
             <ListBox ItemsSource="{Binding Items}">

@@ -8,11 +8,18 @@
     <DockPanel Background="Transparent">
         <Border DockPanel.Dock="Top" Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
             <DockPanel>
-                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding CurrentProfileTitle}" FontSize="20" FontWeight="SemiBold" Margin="0,0,10,0"/>
-                    <TextBox Width="220" Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}" Margin="8,0,0,0" ToolTip="搜索名称、备注、资产标签或资产名称"/>
-                    <TextBlock Text="{Binding ActiveProfileText}" Foreground="#1E63D6" Margin="12,0,0,0" VerticalAlignment="Center"/>
-                    <TextBlock Text="{Binding SelectedProfileState}" Foreground="#6C7280" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding CurrentProfileTitle}" FontSize="20" FontWeight="SemiBold"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                        <TextBlock Text="{Binding ItemCountText}" Foreground="#6C7280" FontSize="12"/>
+                        <TextBlock Text=" · " Foreground="#6C7280" FontSize="12"/>
+                        <TextBlock Text="{Binding ActiveProfileText}" Foreground="#1E63D6" FontSize="12"/>
+                        <TextBlock Text=" · " Foreground="#6C7280" FontSize="12"/>
+                        <TextBlock Text="{Binding SelectedProfileState}" Foreground="#6C7280" FontSize="12"/>
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
+                    <TextBox Width="220" Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}" ToolTip="搜索名称、备注、资产标签或资产名称"/>
                 </StackPanel>
             </DockPanel>
         </Border>

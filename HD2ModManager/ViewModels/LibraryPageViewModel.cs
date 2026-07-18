@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using HD2ModCore.Infrastructure;
@@ -22,11 +23,23 @@ namespace HD2ModManager.ViewModels
         private readonly ObservableCollection<string> _selectedGuids = new();
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private string? _selectionAnchorGuid;
+        private CancellationTokenSource? _searchCancellation;
 
         public ObservableCollection<ModCardViewModel> Items { get; } = new();
 
         private string _query = string.Empty;
-        public string Query { get => _query; set { _query = value; Refresh(); } }
+        public string Query
+        {
+            get => _query;
+            set
+            {
+                if (string.Equals(_query, value, StringComparison.Ordinal)) return;
+                _query = value;
+                OnPropertyChanged();
+                QueueSearchRefresh();
+            }
+        }
+        public string ItemCountText => $"显示 {Items.Count} / {_library.All().Count()} 个 Mod";
         public string EmptyMessage => _hideSelectedProfileMembers && _profiles?.SelectedProfile is not null ? "所有 Mod 都已加入此配置。" : "模组库中没有可显示的 Mod。";
 
         public RelayCommand RefreshCommand { get; }
@@ -43,7 +56,7 @@ namespace HD2ModManager.ViewModels
 
         public LibraryPageViewModel(ModLibraryService library, DerivedStateCoordinator? derivedState = null, SelectionCoordinator? selection = null, ProfileService? profiles = null, NotificationService? notifications = null, bool hideSelectedProfileMembers = false)
         {
-            Title = "Library";
+            Title = "模组库";
             _library = library;
             _derivedState = derivedState;
             _profiles = profiles;
@@ -162,6 +175,21 @@ namespace HD2ModManager.ViewModels
                 Items.Add(new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, status));
             }
             OnPropertyChanged(nameof(EmptyMessage));
+            OnPropertyChanged(nameof(ItemCountText));
+        }
+
+        private async void QueueSearchRefresh()
+        {
+            _searchCancellation?.Cancel();
+            _searchCancellation?.Dispose();
+            _searchCancellation = new CancellationTokenSource();
+            var cancellationToken = _searchCancellation.Token;
+            try
+            {
+                await Task.Delay(180, cancellationToken);
+                if (!cancellationToken.IsCancellationRequested) Refresh();
+            }
+            catch (OperationCanceledException) { }
         }
 
         private async Task RefreshUserStatusesAsync()
@@ -258,6 +286,13 @@ namespace HD2ModManager.ViewModels
             {
                 card.IsSelected = IsSelected(card.Mod.Guid);
             }
+        }
+
+        public override void Dispose()
+        {
+            _searchCancellation?.Cancel();
+            _searchCancellation?.Dispose();
+            _searchCancellation = null;
         }
     }
 

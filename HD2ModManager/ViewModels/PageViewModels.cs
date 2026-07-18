@@ -138,372 +138,6 @@ namespace HD2ModManager.ViewModels
         }
     }
 
-    public sealed class StatusPageViewModel : PageViewModel, IDisposable
-    {
-        private readonly ProfileService _profiles;
-        private readonly ModLibraryService _library;
-        private readonly ImportQueueService _queue;
-        private readonly BackgroundTaskService _backgroundTasks;
-        private readonly ApplyStatusService _applyStatus;
-        private readonly StoragePaths _paths;
-
-        private string _assetIndexState = "未检查";
-        private string _assetIndexSummary = "尚未刷新";
-        private string _assetIndexBuiltUtc = "未知";
-        private string _assetIndexGameData = "未知";
-        private string _assetIndexCounts = "未知";
-        private string _assetIndexHint = "刷新状态后显示索引诊断。";
-        private string _assetMetadataStatus = "未知";
-        private bool _isBuildingAssetIndex;
-        private bool _isRefreshingAssetIndex;
-        private readonly EventHandler _backgroundTasksChangedHandler;
-        private CancellationTokenSource? _statusRefreshCancellation;
-        private bool _disposed;
-
-        public string ActiveProfile => _profiles.ActiveKey ?? "未启用";
-        public string GameDataFolder => SettingsService.GetGameDataFolder();
-        public string ModsRoot => _library.ModsRootDirectory;
-        public int ModCount => _library.All().Count();
-        public int ProfileCount => _profiles.All().Count;
-        public string QueueSummary => $"Queued={_queue.CountQueued}, Running={_queue.CountRunning}, Done={_queue.CountDone}, Failed={_queue.CountFailed}";
-        public string ApplySummary => _applyStatus.Summary;
-        public string LastAppliedUtc => _applyStatus.LastAppliedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "尚未应用";
-        public string ProfileEntrySummary => BuildProfileEntrySummary();
-        public string ConflictSummary => BuildConflictSummary();
-        public string AssetIndexState { get => _assetIndexState; private set => SetField(ref _assetIndexState, value); }
-        public string AssetIndexSummary { get => _assetIndexSummary; private set => SetField(ref _assetIndexSummary, value); }
-        public string AssetIndexBuiltUtc { get => _assetIndexBuiltUtc; private set => SetField(ref _assetIndexBuiltUtc, value); }
-        public string AssetIndexGameData { get => _assetIndexGameData; private set => SetField(ref _assetIndexGameData, value); }
-        public string AssetIndexCounts { get => _assetIndexCounts; private set => SetField(ref _assetIndexCounts, value); }
-        public string AssetIndexHint { get => _assetIndexHint; private set => SetField(ref _assetIndexHint, value); }
-        public string AssetMetadataStatus { get => _assetMetadataStatus; private set => SetField(ref _assetMetadataStatus, value); }
-        public bool IsBuildingAssetIndex { get => _isBuildingAssetIndex; private set => SetField(ref _isBuildingAssetIndex, value); }
-        public bool IsRefreshingAssetIndex { get => _isRefreshingAssetIndex; private set => SetField(ref _isRefreshingAssetIndex, value); }
-        public ObservableCollection<string> ApplyDetails { get; } = new();
-        public ReadOnlyObservableCollection<BackgroundTaskItem> BackgroundTasks => _backgroundTasks.Tasks;
-        public IEnumerable<BackgroundTaskItem> RunningTasks => BackgroundTasks.Where(t => t.Status == BackgroundTaskStatus.Running);
-        public IEnumerable<BackgroundTaskItem> QueuedTasks => BackgroundTasks.Where(t => t.Status == BackgroundTaskStatus.Queued);
-        public IEnumerable<BackgroundTaskItem> RecentCompletedTasks => BackgroundTasks.Where(t => t.Status == BackgroundTaskStatus.Completed).OrderByDescending(t => t.FinishedAt).Take(4);
-        public int MoreQueuedTaskCount => Math.Max(0, _backgroundTasks.CountQueued - 4);
-        public int MoreCompletedTaskCount => Math.Max(0, _backgroundTasks.CountCompleted - 4);
-        public string BackgroundTaskSummary => $"进行中 {_backgroundTasks.CountRunning} · 排队中 {_backgroundTasks.CountQueued} · 已完成 {_backgroundTasks.CountCompleted} · 失败 {_backgroundTasks.CountFailed}";
-        public bool HasRunningTasks => RunningTasks.Any();
-        public bool HasQueuedTasks => QueuedTasks.Any();
-        public bool HasCompletedTasks => RecentCompletedTasks.Any();
-        public RelayCommand ShowAllTasksCommand { get; }
-
-        public RelayCommand RefreshCommand { get; }
-        public RelayCommand BuildAssetIndexCommand { get; }
-
-        public StatusPageViewModel(ProfileService profiles, ModLibraryService library, ImportQueueService queue, ApplyStatusService applyStatus, BackgroundTaskService backgroundTasks)
-        {
-            Title = "状态";
-            _profiles = profiles;
-            _library = library;
-            _queue = queue;
-            _backgroundTasks = backgroundTasks;
-            _applyStatus = applyStatus;
-            _paths = SettingsService.CreateStoragePaths();
-            RefreshCommand = new RelayCommand(_ => _ = RefreshAsync(), _ => !IsRefreshingAssetIndex);
-            BuildAssetIndexCommand = new RelayCommand(_ => BuildAssetIndex(), _ => !IsBuildingAssetIndex);
-            ShowAllTasksCommand = new RelayCommand(_ => ShowAllTasks());
-            _backgroundTasksChangedHandler = (_, _) => RefreshBackgroundTaskProperties();
-            _backgroundTasks.Changed += _backgroundTasksChangedHandler;
-            RefreshDisplayProperties();
-            _ = RefreshAsync();
-        }
-
-        public void Refresh() => _ = RefreshAsync();
-
-        private void RefreshDisplayProperties()
-        {
-            OnPropertyChanged(nameof(ActiveProfile));
-            OnPropertyChanged(nameof(GameDataFolder));
-            OnPropertyChanged(nameof(ModsRoot));
-            OnPropertyChanged(nameof(ModCount));
-            OnPropertyChanged(nameof(ProfileCount));
-            OnPropertyChanged(nameof(QueueSummary));
-            RefreshBackgroundTaskProperties();
-            OnPropertyChanged(nameof(ApplySummary));
-            OnPropertyChanged(nameof(LastAppliedUtc));
-            OnPropertyChanged(nameof(ProfileEntrySummary));
-            OnPropertyChanged(nameof(ConflictSummary));
-            ApplyDetails.Clear();
-            foreach (var detail in _applyStatus.Details) ApplyDetails.Add(detail);
-        }
-
-        private async Task RefreshAsync()
-        {
-            if (_disposed || IsRefreshingAssetIndex) return;
-
-            RefreshDisplayProperties();
-            _statusRefreshCancellation?.Cancel();
-            _statusRefreshCancellation?.Dispose();
-            _statusRefreshCancellation = new CancellationTokenSource();
-            IsRefreshingAssetIndex = true;
-            RefreshCommand.RaiseCanExecuteChanged();
-            AssetIndexState = "检查中";
-            AssetIndexSummary = "正在读取索引状态。";
-
-            try
-            {
-                await RefreshAssetIndexStatusAsync(_statusRefreshCancellation.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                if (!_disposed)
-                {
-                    AssetIndexState = "已取消";
-                    AssetIndexSummary = "索引状态检查已取消。";
-                }
-            }
-            catch (Exception ex)
-            {
-                if (!_disposed)
-                {
-                    AssetIndexState = "检查失败";
-                    AssetIndexSummary = ex.Message;
-                    AssetIndexBuiltUtc = "未知";
-                    AssetIndexGameData = SettingsService.GetGameDataFolder();
-                    AssetIndexCounts = "未知";
-                    AssetIndexHint = "请检查 Game Data 路径、资产元数据和索引数据库是否可访问。";
-                }
-            }
-            finally
-            {
-                if (!_disposed)
-                {
-                    IsRefreshingAssetIndex = false;
-                    RefreshCommand.RaiseCanExecuteChanged();
-                }
-            }
-        }
-
-        private void RefreshBackgroundTaskProperties()
-        {
-            if (System.Windows.Application.Current?.Dispatcher is { } dispatcher && !dispatcher.CheckAccess())
-            {
-                _ = dispatcher.InvokeAsync(RefreshBackgroundTaskProperties);
-                return;
-            }
-            OnPropertyChanged(nameof(BackgroundTaskSummary));
-            OnPropertyChanged(nameof(RunningTasks));
-            OnPropertyChanged(nameof(QueuedTasks));
-            OnPropertyChanged(nameof(RecentCompletedTasks));
-            OnPropertyChanged(nameof(MoreQueuedTaskCount));
-            OnPropertyChanged(nameof(MoreCompletedTaskCount));
-            OnPropertyChanged(nameof(HasRunningTasks));
-            OnPropertyChanged(nameof(HasQueuedTasks));
-            OnPropertyChanged(nameof(HasCompletedTasks));
-            OnPropertyChanged(nameof(BackgroundTasks));
-        }
-
-        private void ShowAllTasks()
-        {
-            var window = new HD2ModManager.Views.BackgroundTasksWindow(_backgroundTasks)
-            {
-                Owner = System.Windows.Application.Current.MainWindow,
-            };
-            window.ShowDialog();
-        }
-
-        private async Task RefreshAssetIndexStatusAsync(CancellationToken cancellationToken)
-        {
-            AssetMetadataStatus = File.Exists(_paths.ArchiveHashesPath)
-                ? $"已找到 archivehashes.json：{_paths.ArchiveHashesPath}"
-                : $"缺少 archivehashes.json：{_paths.ArchiveHashesPath}";
-
-            var gameData = SettingsService.GetGameDataFolder();
-            if (string.IsNullOrWhiteSpace(gameData))
-            {
-                AssetIndexState = "未设置游戏目录";
-                AssetIndexSummary = "无法判断索引状态，因为 Game Data 目录尚未设置。";
-                AssetIndexBuiltUtc = "无";
-                AssetIndexGameData = "未设置";
-                AssetIndexCounts = "无";
-                AssetIndexHint = "请先在设置页配置 Game Data 目录，再建立资产索引。";
-                return;
-            }
-
-            var index = CoreServices.CreateAssetArchiveIndexService(_paths);
-            var fingerprint = await index.GetFingerprintAsync(cancellationToken);
-            if (fingerprint is null)
-            {
-                AssetIndexState = "缺失";
-                AssetIndexSummary = "未找到资产反向索引数据库，无法从 patch 资产反查真实装备/分类。";
-                AssetIndexBuiltUtc = "无";
-                AssetIndexGameData = gameData;
-                AssetIndexCounts = "无";
-                AssetIndexHint = "这是当前无语义资产标签的最可能原因。需要先基于当前 Game Data 建立索引。";
-                return;
-            }
-
-            AssetIndexBuiltUtc = fingerprint.BuiltUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
-            AssetIndexGameData = string.IsNullOrWhiteSpace(fingerprint.GameDataDirectory) ? gameData : fingerprint.GameDataDirectory;
-            AssetIndexCounts = $"Archive {fingerprint.ArchivesIndexed}/{fingerprint.ArchivesTotal}，AssetKey {fingerprint.AssetKeysTotal}";
-
-            if (!File.Exists(_paths.ArchiveHashesPath))
-            {
-                AssetIndexState = "无法校验";
-                AssetIndexSummary = "索引数据库存在，但缺少 archivehashes.json，无法判断是否与当前游戏文件匹配。";
-                AssetIndexHint = "请先在设置页更新资产信息，然后刷新状态。";
-                return;
-            }
-
-            var archiveHashesJson = await File.ReadAllTextAsync(_paths.ArchiveHashesPath, cancellationToken);
-            var status = await index.GetIndexStatusAsync(gameData, archiveHashesJson, cancellationToken);
-            AssetIndexState = ToDisplayState(status.State);
-            AssetIndexSummary = status.State switch
-            {
-                GameDataIndexState.Current => "索引与当前 Game Data 匹配，资产标签可以使用真实 archive 语义。",
-                GameDataIndexState.Stale => "索引存在但已过期，当前游戏文件或 archive metadata 已变化。",
-                GameDataIndexState.Invalid => "索引状态无法验证，资产元数据格式可能无效。",
-                GameDataIndexState.Missing => "未找到资产反向索引数据库。",
-                _ => "索引状态未知。"
-            };
-            AssetIndexHint = status.State == GameDataIndexState.Current
-                ? "如果仍无标签，可能是该 mod 的 TypeID/FileID 未命中当前游戏索引，或旧资产分析缓存尚未刷新。"
-                : "语义资产标签依赖当前索引；请重建索引后刷新模组库资产摘要。";
-        }
-
-        private async void BuildAssetIndex()
-        {
-            if (IsBuildingAssetIndex) return;
-
-            var gameData = SettingsService.GetGameDataFolder();
-            if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
-            {
-                AssetIndexState = "无法建立";
-                AssetIndexSummary = "Game Data 目录未设置或不存在。";
-                AssetIndexHint = "请先在设置页配置正确的 Helldivers 2 data 目录。";
-                return;
-            }
-
-            if (!File.Exists(_paths.ArchiveHashesPath))
-            {
-                AssetIndexState = "无法建立";
-                AssetIndexSummary = "缺少 archivehashes.json，无法知道需要索引哪些 archive。";
-                AssetIndexHint = "请先在设置页更新资产信息，然后再建立资产索引。";
-                return;
-            }
-
-            IsBuildingAssetIndex = true;
-            var backgroundTask = _backgroundTasks.Enqueue(BackgroundTaskKind.BuildAssetIndex, "建立资产索引", gameData);
-            backgroundTask.MarkRunning("正在准备资产索引");
-            BuildAssetIndexCommand.RaiseCanExecuteChanged();
-            RefreshCommand.RaiseCanExecuteChanged();
-            AssetIndexState = "建立中";
-            AssetIndexSummary = "正在解析 Game Data。新版 slim/bundled 数据会通过 bundles.nxa 与 bundles.xx.nxa 建立索引。";
-            AssetIndexCounts = "准备中";
-            AssetIndexGameData = gameData;
-            AssetIndexHint = "建立过程可能需要一些时间，请不要关闭程序。";
-
-            try
-            {
-                var archiveHashesJson = await File.ReadAllTextAsync(_paths.ArchiveHashesPath).ConfigureAwait(true);
-                var index = CoreServices.CreateAssetArchiveIndexService(_paths);
-                var progress = new Progress<IndexBuildProgress>(p =>
-                {
-                    backgroundTask.UpdateStage($"正在索引 Archive {p.Current}/{p.Total}");
-                    AssetIndexCounts = $"Archive {p.Current}/{p.Total}";
-                    if (!string.IsNullOrWhiteSpace(p.CurrentArchiveId))
-                    {
-                        AssetIndexHint = $"正在索引 {p.CurrentArchiveId}。";
-                    }
-                });
-
-                await Task.Run(
-                    () => index.BuildOrRebuildAsync(gameData, archiveHashesJson, progress, backgroundTask.CancellationToken).AsTask(),
-                    backgroundTask.CancellationToken).ConfigureAwait(true);
-                await RefreshAsync();
-                AssetIndexHint = "索引已重建；稳定资产事实会在需要时直接投影到界面。";
-                backgroundTask.MarkCompleted();
-            }
-            catch (OperationCanceledException)
-            {
-                backgroundTask.MarkCanceled();
-                AssetIndexState = "已取消";
-                AssetIndexSummary = "资产索引建立已取消。";
-            }
-            catch (Exception ex)
-            {
-                var detail = FormatAssetIndexException(ex);
-                backgroundTask.MarkFailed(detail);
-                AssetIndexState = "建立失败";
-                AssetIndexSummary = detail;
-                AssetIndexHint = $"索引失败。路径包含空格或中文通常不会导致此问题。GameData：{gameData}";
-            }
-            finally
-            {
-                IsBuildingAssetIndex = false;
-                BuildAssetIndexCommand.RaiseCanExecuteChanged();
-                RefreshCommand.RaiseCanExecuteChanged();
-            }
-        }
-
-        private static string FormatAssetIndexException(Exception exception)
-        {
-            var messages = new List<string>();
-            for (var current = exception; current is not null; current = current.InnerException)
-            {
-                if (!string.IsNullOrWhiteSpace(current.Message) && !messages.Contains(current.Message, StringComparer.Ordinal))
-                {
-                    messages.Add(current.Message);
-                }
-            }
-
-            return $"{exception.GetType().Name}: {string.Join(" | ", messages)}";
-        }
-
-        private static string ToDisplayState(GameDataIndexState state)
-            => state switch
-            {
-                GameDataIndexState.Current => "可用",
-                GameDataIndexState.Stale => "过期",
-                GameDataIndexState.Missing => "缺失",
-                GameDataIndexState.Invalid => "无效",
-                _ => "未知"
-            };
-
-        public override void Dispose()
-        {
-            if (_disposed) return;
-            _disposed = true;
-            _backgroundTasks.Changed -= _backgroundTasksChangedHandler;
-            _statusRefreshCancellation?.Cancel();
-            _statusRefreshCancellation?.Dispose();
-            _statusRefreshCancellation = null;
-        }
-
-        private string BuildProfileEntrySummary()
-        {
-            var profile = _profiles.ActiveProfile;
-            if (profile == null) return "无活动配置";
-            return $"已启用 {profile.Entries.Count} 个 Mod";
-        }
-
-        private string BuildConflictSummary()
-        {
-            try
-            {
-                var profile = _profiles.ActiveProfile;
-                if (profile == null) return "无活动配置，未检测冲突";
-                var ids = profile.Entries.Select(e => e.NodeId).Distinct().ToList();
-                if (ids.Count < 2) return "启用 Mod 少于 2 个，无需检测";
-
-                var detector = CoreServices.CreateConflictDetector(_paths);
-                var conflicts = detector.DetectNodeConflictsAsync(ids, _library.Snapshot, _library.ModsRootDirectory).AsTask().GetAwaiter().GetResult();
-                if (conflicts.Count == 0) return "未发现启用 Mod 资产冲突";
-                var sharedKeyCount = conflicts.Sum(c => c.SharedKeys.Count);
-                return $"发现 {conflicts.Count} 组冲突，涉及 {sharedKeyCount} 个资产键";
-            }
-            catch (Exception ex)
-            {
-                return $"冲突检测失败：{ex.Message}";
-            }
-        }
-    }
-
     public sealed class ProfilePageViewModel : PageViewModel
     {
         private const string SelectionScope = "Profile";
@@ -515,11 +149,20 @@ namespace HD2ModManager.ViewModels
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private string? _selectionAnchorGuid;
         private string _query = string.Empty;
+        private CancellationTokenSource? _searchCancellation;
 
         public ObservableCollection<ProfileListItemViewModel> Items { get; } = new();
         public ObservableCollection<string> Profiles { get; } = new();
-        public string Query { get => _query; set { if (SetField(ref _query, value)) Refresh(); } }
+        public string Query
+        {
+            get => _query;
+            set
+            {
+                if (SetField(ref _query, value)) QueueSearchRefresh();
+            }
+        }
         public string CurrentProfileTitle => _profiles.SelectedKey ?? "未选择配置";
+        public string ItemCountText => $"显示 {Items.Count} / {_profiles.SelectedProfile?.Entries.Count ?? 0} 个 Mod";
 
         private string? _selectedProfileKey;
         private string _renameText = string.Empty;
@@ -701,6 +344,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(CurrentProfileTitle));
             OnPropertyChanged(nameof(ActiveProfileText));
             OnPropertyChanged(nameof(SelectedProfileState));
+            OnPropertyChanged(nameof(ItemCountText));
             _switchAction?.SyncFromPage();
             _renameAction?.SyncFromPage();
 
@@ -716,6 +360,21 @@ namespace HD2ModManager.ViewModels
                 _userStatuses.TryGetValue(guid, out var status);
                 Items.Add(new ProfileListItemViewModel(guid, mod?.Name ?? guid, mod?.Description, mod?.Image, ModAssetSummaryFormatter.Format(assetSummary), entry.LoadOrder, entry.AddedUtc, IsSelected(guid), status));
             }
+            OnPropertyChanged(nameof(ItemCountText));
+        }
+
+        private async void QueueSearchRefresh()
+        {
+            _searchCancellation?.Cancel();
+            _searchCancellation?.Dispose();
+            _searchCancellation = new CancellationTokenSource();
+            var cancellationToken = _searchCancellation.Token;
+            try
+            {
+                await Task.Delay(180, cancellationToken);
+                if (!cancellationToken.IsCancellationRequested) Refresh();
+            }
+            catch (OperationCanceledException) { }
         }
 
         private async Task RefreshUserStatusesAsync()
@@ -777,6 +436,13 @@ namespace HD2ModManager.ViewModels
         {
             RenameText = newName ?? string.Empty;
             RenameProfile();
+        }
+
+        public override void Dispose()
+        {
+            _searchCancellation?.Cancel();
+            _searchCancellation?.Dispose();
+            _searchCancellation = null;
         }
     }
 
