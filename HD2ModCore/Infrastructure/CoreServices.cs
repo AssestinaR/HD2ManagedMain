@@ -19,22 +19,6 @@ public static class CoreServices
 		=> new PatchEntryPayloadReader();
 	public static IPatchUnitMeshReader CreatePatchUnitMeshReader()
 		=> new PatchUnitMeshReader(CreatePatchEntryPayloadReader(), CreateUnitMeshReader(), CreatePatchTocScanner());
-	public static IPatchUnitMeshEditor CreatePatchUnitMeshEditor()
-		=> new PatchUnitMeshEditor(CreatePatchUnitMeshReader(), CreateUnitMeshMinifier(), CreateUnitMeshRetargeter(), CreateUnitMeshWriter());
-	public static IPatchArchiveDryWriter CreatePatchArchiveDryWriter()
-		=> new PatchArchiveDryWriter(CreatePatchTocScanner(), CreatePatchEntryPayloadReader());
-	public static IPatchArchiveFileWriter CreatePatchArchiveFileWriter()
-		=> new PatchArchiveFileWriter();
-	public static IPatchArchiveBatchPlanner CreatePatchArchiveBatchPlanner()
-		=> new PatchArchiveBatchPlanner(CreatePatchTocScanner(), CreatePatchArchiveDryWriter());
-	public static IPatchUnitMeshReplacementPlanner CreatePatchUnitMeshReplacementPlanner()
-		=> new PatchUnitMeshReplacementPlanner(CreatePatchArchiveBatchPlanner(), CreatePatchUnitMeshReader(), CreatePatchUnitMeshEditor(), CreateUnitMeshReplacementStrategy());
-	public static IPatchUnitMeshAutomationReporter CreatePatchUnitMeshAutomationReporter()
-		=> new PatchUnitMeshAutomationReporter(CreatePatchUnitMeshReplacementPlanner());
-	public static IPatchUnitMeshFolderAutomationReporter CreatePatchUnitMeshFolderAutomationReporter()
-		=> new PatchUnitMeshFolderAutomationReporter(CreatePatchTocFileCollector(), CreatePatchUnitMeshAutomationReporter());
-	public static IPatchUnitMeshSourceCatalogBuilder CreatePatchUnitMeshSourceCatalogBuilder()
-		=> new PatchUnitMeshSourceCatalogBuilder(CreatePatchTocFileCollector(), CreatePatchTocScanner(), CreatePatchUnitMeshReader());
 	public static IArchiveUnitMeshReader CreateArchiveUnitMeshReader()
 		=> new ArchiveUnitMeshReader(gameDataDirectory => new GameDataPackageResolver(gameDataDirectory), CreatePatchTocScanner(), CreateUnitMeshReader());
 	public static IUnitMeshAdaptationPlanner CreateUnitMeshAdaptationPlanner()

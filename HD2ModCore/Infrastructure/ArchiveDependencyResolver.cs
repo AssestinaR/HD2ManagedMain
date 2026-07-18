@@ -1,5 +1,6 @@
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
+using AdaptationPatchArchiveAdditionalEntry = HD2ModAdaptation.PatchReconstruction.PatchArchiveAdditionalEntry;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -38,7 +39,7 @@ public sealed class ArchiveDependencyResolver
 
 		var resolver = new GameDataPackageResolver(gameDataDirectory);
 		var patchEntryByKey = patchEntries.ToDictionary(entry => entry.AssetKey);
-		var resolved = new Dictionary<AssetKey, PatchArchiveAdditionalEntry>();
+		var resolved = new Dictionary<AssetKey, AdaptationPatchArchiveAdditionalEntry>();
 		var origins = new Dictionary<AssetKey, ArchiveDependencyPayloadOrigin>();
 		var materialTextureIds = new Dictionary<ulong, IReadOnlyList<ulong>>();
 		var rejectedReasons = new Dictionary<ulong, string>();
@@ -215,8 +216,16 @@ public sealed class ArchiveDependencyResolver
 	private static byte[] Trim(byte[] data, uint size)
 		=> data.Length == size ? data : data.AsSpan(0, checked((int)size)).ToArray();
 
-	private static PatchArchiveAdditionalEntry ToAdditionalEntry(ResolvedArchivePayload payload)
-		=> new(payload.AssetKey, payload.TocData, payload.StreamData, payload.GpuResourceData, payload.Unknown1, payload.Unknown2, payload.Unknown3, payload.Unknown4);
+	private static AdaptationPatchArchiveAdditionalEntry ToAdditionalEntry(ResolvedArchivePayload payload)
+		=> new(
+			new HD2ModAdaptation.PatchReconstruction.AssetKey(payload.AssetKey.TypeId, payload.AssetKey.FileId),
+			payload.TocData,
+			payload.StreamData,
+			payload.GpuResourceData,
+			payload.Unknown1,
+			payload.Unknown2,
+			payload.Unknown3,
+			payload.Unknown4);
 
 	private sealed record ResolvedArchivePayload(
 		AssetKey AssetKey,
@@ -239,7 +248,7 @@ public enum ArchiveDependencyPayloadOriginKind
 public sealed record ArchiveDependencyPayloadOrigin(ArchiveDependencyPayloadOriginKind Kind, string Name);
 
 public sealed record ArchiveDependencyResolutionResult(
-	IReadOnlyList<PatchArchiveAdditionalEntry> Entries,
+	IReadOnlyList<AdaptationPatchArchiveAdditionalEntry> Entries,
 	IReadOnlyDictionary<ulong, IReadOnlyList<ulong>> MaterialTextureIds,
 	IReadOnlyDictionary<ulong, string> RejectedMaterialReasons,
 	IReadOnlyDictionary<AssetKey, ArchiveDependencyPayloadOrigin> Origins);
