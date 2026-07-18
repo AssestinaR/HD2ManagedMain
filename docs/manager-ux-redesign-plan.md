@@ -50,6 +50,8 @@ PCL 的可借鉴点是：先定义颜色 token 与控件状态，再统一文本
 
 应新增 `Themes/` 资源字典和少量可复用自定义控件（如 `AppButton`、`AppTextBox`、`AppComboBox`、`AppToggleSwitch`、`TaskHub`），而不是继续在每个 XAML 局部复制 `ControlTemplate`。
 
+new-api 默认 Web 前端提供了卡片和数据表的第二份参考：其有效模式是 token → 基础控件 → 数据表页面编排、首次 loading 与后台 refresh 区分、全宽宽表的固定表头和横向滚动、列预设/显示控制。WPF 的具体迁移和不照搬边界见 [new-api-ui-table-reference-analysis.md](new-api-ui-table-reference-analysis.md)。
+
 ## 新页面与导航模型
 
 ### 顶部导航
@@ -197,6 +199,13 @@ PCL 的可借鉴点是：先定义颜色 token 与控件状态，再统一文本
 
 - 顶部卡片收缩；复用并统一既有浮动操作菜单，将配置选择器和低频重命名输入作为其按需展开内容。
 - 优化列表虚拟化、搜索防抖、增量同步、保持滚动和选择。
+
+### 数据展示基础工作包：高级表格先行
+
+- 建立 `DataTableCard`、`DataTableToolbar`、`DataTableEmptyState`、`DataTableSkeleton` 和行状态资源；统一 `DataGrid` 的表头、行状态、横向滚动、固定表头、截断 tooltip、数值/代码列。
+- 建立列预设和列显示菜单；先支持高级数据表的默认列组与显隐，不要求首批实现任意列拖拽。
+- 以高级 Mod 详情为第一个试点：开启高级模式后使用双槽，基本详情关键卡片保留在顶部，资产大表格横跨全宽。
+- 以 Game Data archive 浏览为第二个试点，验证筛选、分页、行选择、右侧详情、加载取消与后台刷新不清空旧数据。
 
 ### 批次 5：弹窗迁入页面系统
 
