@@ -92,7 +92,7 @@
 
 - 已标记 obsolete 但仍有测试和编译 warning：`StrictUnitMeshTransfer`、`StrictUnitMeshEditPreparer`、`SdkStyleUnitOutputBuilder`。2026-07-18 已尝试将其测试切至 `Processing.MeshTransfer` 并移除旧实现；100 个 Adaptation 测试中有 4 个失败（target-layout 分量重编码、未映射 influence 保留、材质 slot/section 扩容）。因此当前 `MeshTransfer` 不具备 strict 路径的完整兼容语义，旧分支必须保留，直至先补齐 parity 测试与实现。
 - 仍有独立测试覆盖的旧 target-shell 支路：`TargetShellUnitOutputBuilder`、`TargetShellPatchReconstructor`。
-- `SdkStyleTargetShellPatchOutputBuilder.CreateWithSectionRebuild` 当前未发现独立生产调用，但与跨护甲“禁止 generic section rebuild”的硬约束相冲突；删除前必须先完成全调用图确认。
+- `SdkStyleTargetShellPatchOutputBuilder.CreateWithSectionRebuild` 已于 2026-07-18 在全仓库调用图确认无生产或测试调用后删除，避免跨护甲链路意外选择 generic section rebuild；底层 `SdkStyleTargetShellUnitReconstructor(allowSectionRebuild: true)` 和其专属测试仍保留，后续须作为独立兼容能力重新评估。
 - `Processing/AdaptiveOutputWriter` 需要单独确认是否有独立产品入口，再决定删除或吸收。
 
 ### 明确保留、不是清理候选

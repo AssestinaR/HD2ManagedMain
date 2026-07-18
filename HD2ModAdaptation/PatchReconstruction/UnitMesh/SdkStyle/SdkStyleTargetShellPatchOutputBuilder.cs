@@ -10,15 +10,6 @@ public sealed class SdkStyleTargetShellPatchOutputBuilder
 		this.unitReconstructor = unitReconstructor ?? new SdkStyleTargetShellUnitReconstructor();
 	}
 
-	public static SdkStyleTargetShellPatchOutputBuilder CreateWithSectionRebuild(
-		bool propagateSourceMaterials = false,
-		IReadOnlySet<ulong>? allowedSourceMaterialIds = null)
-		=> new(new SdkStyleTargetShellUnitReconstructor(
-			writer: new UnitMeshWriter(allowBoneInfoRelocation: true, allowTransformInfoRelocation: true),
-			allowSectionRebuild: true,
-			propagateSourceMaterials: propagateSourceMaterials,
-			allowedSourceMaterialIds: allowedSourceMaterialIds));
-
 	public SdkStyleTargetShellPatchOutput Build(IReadOnlyCollection<SdkStyleTargetShellPatchWorkItem> workItems)
 	{
 		ArgumentNullException.ThrowIfNull(workItems);
