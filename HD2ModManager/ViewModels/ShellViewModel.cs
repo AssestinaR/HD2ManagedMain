@@ -201,6 +201,10 @@ namespace HD2ModManager.ViewModels
 
         private async Task CheckGameDataIndexOnStartupAsync()
         {
+            if (!SettingsService.GetAutoCheckGameDataIndex() || !IsCheckDue(
+                    SettingsService.GetLastGameDataIndexCheckUtc(),
+                    SettingsService.GetGameDataIndexCheckIntervalHours())) return;
+
             var gameData = SettingsService.GetGameDataFolder();
             var paths = SettingsService.CreateStoragePaths();
             if (string.IsNullOrWhiteSpace(gameData) || !System.IO.Directory.Exists(gameData) || !System.IO.File.Exists(paths.ArchiveHashesPath)) return;
@@ -212,19 +216,15 @@ namespace HD2ModManager.ViewModels
                 var archiveHashes = await System.IO.File.ReadAllTextAsync(paths.ArchiveHashesPath).ConfigureAwait(false);
                 var index = CoreServices.CreateAssetArchiveIndexService(paths);
                 var status = await index.GetIndexStatusAsync(gameData, archiveHashes, task.CancellationToken).ConfigureAwait(false);
+                SettingsService.SetLastGameDataIndexCheckUtc(DateTime.UtcNow);
                 if (status.IsCurrent)
                 {
                     task.MarkCompleted();
                     return;
                 }
 
-                task.UpdateStage("索引缺失或已过期，正在低优先级重建");
-                var progress = new Progress<IndexBuildProgress>(progress => task.UpdateStage($"正在索引 Archive {progress.Current}/{progress.Total}"));
-                await Task.Run(
-                    () => index.BuildOrRebuildAsync(gameData, archiveHashes, progress, task.CancellationToken).AsTask(),
-                    task.CancellationToken).ConfigureAwait(false);
+                task.UpdateStage("索引缺失或已过期；请在设置与资产中明确启动重建");
                 task.MarkCompleted();
-                _derivedState.MarkMappingDirty();
             }
             catch (OperationCanceledException)
             {
@@ -410,6 +410,10 @@ namespace HD2ModManager.ViewModels
 
         private async Task UpdateAssetMetadataOnStartupAsync()
         {
+            if (!IsCheckDue(
+                    SettingsService.GetLastAssetMetadataCheckUtc(),
+                    SettingsService.GetAssetMetadataCheckIntervalHours())) return;
+
             var task = _backgroundTasks.Enqueue(BackgroundTaskKind.UpdateAssetMetadata, "更新资产元数据", "启动检查");
             try
             {
@@ -419,6 +423,7 @@ namespace HD2ModManager.ViewModels
                 var result = await sync.SyncAsync(SettingsService.GetAssetMetadataRepository()).ConfigureAwait(false);
                 if (result.Success)
                 {
+                    SettingsService.SetLastAssetMetadataCheckUtc(DateTime.UtcNow);
                     task.MarkCompleted();
                     System.Windows.Application.Current.Dispatcher.Invoke(() => _notificationService.Show("资产信息已自动更新", NotificationLevel.Info, TimeSpan.FromSeconds(4)));
                 }
@@ -434,6 +439,9 @@ namespace HD2ModManager.ViewModels
                 System.Windows.Application.Current.Dispatcher.Invoke(() => _notificationService.Show($"资产信息自动更新失败：{ex.Message}", NotificationLevel.Warning, TimeSpan.FromSeconds(6)));
             }
         }
+
+        private static bool IsCheckDue(DateTime? lastCheckUtc, int intervalHours)
+            => lastCheckUtc is null || DateTime.UtcNow - lastCheckUtc.Value >= TimeSpan.FromHours(intervalHours);
 
         private void QueueActiveProfileDeployment()
         {
@@ -660,7 +668,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.Status => new StatusPageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
                 WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection),
                 WorkspacePageType.Library => CreateLibraryPage(),
-                WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService),
+                WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _backgroundTasks),
                 WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
             };

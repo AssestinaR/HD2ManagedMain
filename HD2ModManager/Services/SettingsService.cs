@@ -21,6 +21,11 @@ namespace HD2ModManager.Services
             public bool EnableLibraryImages { get; set; } = true;
             public bool AutoUpdateAssetMetadata { get; set; } = false;
             public string? AssetMetadataRepository { get; set; }
+            public DateTime? LastAssetMetadataCheckUtc { get; set; }
+            public int AssetMetadataCheckIntervalHours { get; set; } = 24;
+            public bool AutoCheckGameDataIndex { get; set; } = true;
+            public DateTime? LastGameDataIndexCheckUtc { get; set; }
+            public int GameDataIndexCheckIntervalHours { get; set; } = 24;
         }
 
         public const string DefaultAssetMetadataRepository = "https://raw.githubusercontent.com/Boxofbiscuits97/HD2SDK-CommunityEdition/main";
@@ -82,6 +87,76 @@ namespace HD2ModManager.Services
                 model.AutoUpdateAssetMetadata = enabled;
                 var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(SettingsPath, json);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static DateTime? GetLastAssetMetadataCheckUtc() => LoadAll()?.LastAssetMetadataCheckUtc;
+
+        public static bool SetLastAssetMetadataCheckUtc(DateTime? value)
+        {
+            try
+            {
+                var model = LoadAll() ?? new SettingsModel();
+                model.LastAssetMetadataCheckUtc = value;
+                Save(model);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static int GetAssetMetadataCheckIntervalHours() => NormalizeInterval(LoadAll()?.AssetMetadataCheckIntervalHours);
+
+        public static bool SetAssetMetadataCheckIntervalHours(int value)
+        {
+            try
+            {
+                var model = LoadAll() ?? new SettingsModel();
+                model.AssetMetadataCheckIntervalHours = NormalizeInterval(value);
+                Save(model);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static bool GetAutoCheckGameDataIndex() => LoadAll()?.AutoCheckGameDataIndex ?? true;
+
+        public static bool SetAutoCheckGameDataIndex(bool enabled)
+        {
+            try
+            {
+                var model = LoadAll() ?? new SettingsModel();
+                model.AutoCheckGameDataIndex = enabled;
+                Save(model);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static DateTime? GetLastGameDataIndexCheckUtc() => LoadAll()?.LastGameDataIndexCheckUtc;
+
+        public static bool SetLastGameDataIndexCheckUtc(DateTime? value)
+        {
+            try
+            {
+                var model = LoadAll() ?? new SettingsModel();
+                model.LastGameDataIndexCheckUtc = value;
+                Save(model);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static int GetGameDataIndexCheckIntervalHours() => NormalizeInterval(LoadAll()?.GameDataIndexCheckIntervalHours);
+
+        public static bool SetGameDataIndexCheckIntervalHours(int value)
+        {
+            try
+            {
+                var model = LoadAll() ?? new SettingsModel();
+                model.GameDataIndexCheckIntervalHours = NormalizeInterval(value);
+                Save(model);
                 return true;
             }
             catch { return false; }
@@ -183,6 +258,15 @@ namespace HD2ModManager.Services
             }
             catch { return null; }
         }
+
+        private static int NormalizeInterval(int? value)
+        {
+            var interval = value ?? 24;
+            return interval is 0 or 6 or 24 or 168 ? interval : 24;
+        }
+
+        private static void Save(SettingsModel model)
+            => File.WriteAllText(SettingsPath, JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true }));
 
         public static string GetDefaultModLibraryFolder()
         {

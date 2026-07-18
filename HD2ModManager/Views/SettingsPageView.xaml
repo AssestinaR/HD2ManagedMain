@@ -25,45 +25,63 @@
                 </StackPanel>
             </Border>
 
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
-                <StackPanel>
-                    <TextBlock Text="资产信息" Style="{StaticResource SectionTitle}"/>
-                    <CheckBox Content="自动更新资产信息" IsChecked="{Binding AutoUpdateAssetMetadata, Mode=TwoWay}" Margin="0,12,0,0"/>
-                    <TextBlock Text="仓库 Raw 地址或 GitHub 仓库地址" Foreground="#666" Margin="0,12,0,4"/>
-                    <DockPanel>
-                        <Button DockPanel.Dock="Right" Content="立即更新资产" Command="{Binding UpdateAssetMetadataCommand}" Margin="8,0,0,0"/>
-                        <TextBox Text="{Binding AssetMetadataRepository, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                    </DockPanel>
-                    <TextBlock Text="{Binding AssetMetadataStatus}" Foreground="#666" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                </StackPanel>
-            </Border>
-
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
-                <StackPanel>
-                    <TextBlock Text="Mod Library Folder" Style="{StaticResource SectionTitle}"/>
-                    <DockPanel Margin="0,10,0,0">
-                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="8,0,0,0">
-                            <Button Content="Browse" Click="BrowseModFolder_Click"/>
-                            <Button Content="Open" Command="{Binding OpenModFolderCommand}" Margin="8,0,0,0"/>
-                            <Button Content="Reset" Command="{Binding ResetModFolderCommand}" Margin="8,0,0,0"/>
-                        </StackPanel>
-                        <TextBox Text="{Binding ModLibraryFolder, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                    </DockPanel>
-                </StackPanel>
-            </Border>
-
             <Border Style="{StaticResource CardContainer}">
                 <StackPanel>
-                    <TextBlock Text="Game Data Folder" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="游戏与资产" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="游戏目录" FontWeight="SemiBold" Margin="0,14,0,4"/>
                     <DockPanel Margin="0,10,0,0">
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="8,0,0,0">
-                            <Button Content="Browse" Click="BrowseGameDataFolder_Click"/>
-                            <Button Content="Open" Command="{Binding OpenGameDataFolderCommand}" Margin="8,0,0,0"/>
-                            <Button Content="Detect" Command="{Binding DetectGameDataFolderCommand}" Margin="8,0,0,0"/>
-                            <Button Content="查看资产索引" Command="{Binding ViewGameDataIndexCommand}" Margin="8,0,0,0"/>
+                            <Button Content="浏览" Click="BrowseGameDataFolder_Click"/>
+                            <Button Content="打开" Command="{Binding OpenGameDataFolderCommand}" Margin="8,0,0,0"/>
+                            <Button Content="自动检测" Command="{Binding DetectGameDataFolderCommand}" Margin="8,0,0,0"/>
                         </StackPanel>
                         <TextBox Text="{Binding GameDataFolder, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                     </DockPanel>
+                    <TextBlock Text="Mod 库目录" FontWeight="SemiBold" Margin="0,16,0,4"/>
+                    <DockPanel Margin="0,10,0,0">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="8,0,0,0">
+                            <Button Content="浏览" Click="BrowseModFolder_Click"/>
+                            <Button Content="打开" Command="{Binding OpenModFolderCommand}" Margin="8,0,0,0"/>
+                            <Button Content="重置推荐目录" Command="{Binding ResetModFolderCommand}" Margin="8,0,0,0"/>
+                        </StackPanel>
+                        <TextBox Text="{Binding ModLibraryFolder, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                    </DockPanel>
+
+                    <Separator Margin="0,18,0,14"/>
+                    <TextBlock Text="在线资产索引源" FontWeight="SemiBold"/>
+                    <TextBlock Text="仓库 Raw 地址或 GitHub 仓库地址" Foreground="#666" Margin="0,8,0,4"/>
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="立即检查 / 更新" Command="{Binding UpdateAssetMetadataCommand}" Margin="8,0,0,0"/>
+                        <TextBox Text="{Binding AssetMetadataRepository, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                    </DockPanel>
+                    <TextBlock Text="{Binding AssetMetadataStatus}" Foreground="#666" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                        <CheckBox Content="自动检查在线资产" IsChecked="{Binding AutoUpdateAssetMetadata, Mode=TwoWay}" VerticalAlignment="Center"/>
+                        <TextBlock Text="周期" Margin="18,0,6,0" VerticalAlignment="Center"/>
+                        <ComboBox Width="120" SelectedValue="{Binding AssetMetadataCheckIntervalHours, Mode=TwoWay}" SelectedValuePath="Tag">
+                            <ComboBoxItem Content="每次启动" Tag="0"/>
+                            <ComboBoxItem Content="每 6 小时" Tag="6"/>
+                            <ComboBoxItem Content="每 1 天" Tag="24"/>
+                            <ComboBoxItem Content="每 7 天" Tag="168"/>
+                        </ComboBox>
+                        <TextBlock Text="{Binding AssetMetadataLastCheckText}" Foreground="#666" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <Separator Margin="0,18,0,14"/>
+                    <TextBlock Text="Game Data 索引状态检测" FontWeight="SemiBold"/>
+                    <TextBlock Text="启动时只比较索引指纹；若索引缺失或过期，将记录任务提示，不会自动重建。" Foreground="#666" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                        <CheckBox Content="自动检测索引是否过期" IsChecked="{Binding AutoCheckGameDataIndex, Mode=TwoWay}" VerticalAlignment="Center"/>
+                        <TextBlock Text="周期" Margin="18,0,6,0" VerticalAlignment="Center"/>
+                        <ComboBox Width="120" SelectedValue="{Binding GameDataIndexCheckIntervalHours, Mode=TwoWay}" SelectedValuePath="Tag">
+                            <ComboBoxItem Content="每次启动" Tag="0"/>
+                            <ComboBoxItem Content="每 6 小时" Tag="6"/>
+                            <ComboBoxItem Content="每 1 天" Tag="24"/>
+                            <ComboBoxItem Content="每 7 天" Tag="168"/>
+                        </ComboBox>
+                        <TextBlock Text="{Binding GameDataIndexLastCheckText}" Foreground="#666" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <Button Content="查看资产索引" Command="{Binding ViewGameDataIndexCommand}" HorizontalAlignment="Left" Margin="0,14,0,0"/>
                 </StackPanel>
             </Border>
         </StackPanel>

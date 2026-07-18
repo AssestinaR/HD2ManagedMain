@@ -792,6 +792,7 @@ namespace HD2ModManager.ViewModels
     {
 		private readonly ProfileService _profiles;
 		private readonly ModLibraryService _library;
+                private readonly BackgroundTaskService? _backgroundTasks;
         public string Language
         {
             get => SettingsService.GetLanguage() ?? "";
@@ -831,6 +832,43 @@ namespace HD2ModManager.ViewModels
                 OnPropertyChanged(nameof(AutoUpdateAssetMetadata));
             }
         }
+
+        public int AssetMetadataCheckIntervalHours
+        {
+            get => SettingsService.GetAssetMetadataCheckIntervalHours();
+            set
+            {
+                SettingsService.SetAssetMetadataCheckIntervalHours(value);
+                OnPropertyChanged(nameof(AssetMetadataCheckIntervalHours));
+                OnPropertyChanged(nameof(AssetMetadataLastCheckText));
+            }
+        }
+
+        public string AssetMetadataLastCheckText => FormatLastCheck(SettingsService.GetLastAssetMetadataCheckUtc());
+
+        public bool AutoCheckGameDataIndex
+        {
+            get => SettingsService.GetAutoCheckGameDataIndex();
+            set
+            {
+                SettingsService.SetAutoCheckGameDataIndex(value);
+                OnPropertyChanged(nameof(AutoCheckGameDataIndex));
+                OnPropertyChanged(nameof(GameDataIndexLastCheckText));
+            }
+        }
+
+        public int GameDataIndexCheckIntervalHours
+        {
+            get => SettingsService.GetGameDataIndexCheckIntervalHours();
+            set
+            {
+                SettingsService.SetGameDataIndexCheckIntervalHours(value);
+                OnPropertyChanged(nameof(GameDataIndexCheckIntervalHours));
+                OnPropertyChanged(nameof(GameDataIndexLastCheckText));
+            }
+        }
+
+        public string GameDataIndexLastCheckText => FormatLastCheck(SettingsService.GetLastGameDataIndexCheckUtc());
 
         public string AssetMetadataRepository
         {
@@ -878,11 +916,12 @@ namespace HD2ModManager.ViewModels
         private bool _isLoadingGameDataIndex;
         public bool IsLoadingGameDataIndex { get => _isLoadingGameDataIndex; private set => SetField(ref _isLoadingGameDataIndex, value); }
 
-        public SettingsPageViewModel(ProfileService profiles, ModLibraryService library)
+        public SettingsPageViewModel(ProfileService profiles, ModLibraryService library, BackgroundTaskService? backgroundTasks = null)
         {
             Title = "设置";
 			_profiles = profiles;
 			_library = library;
+            _backgroundTasks = backgroundTasks;
             OpenModFolderCommand = new RelayCommand(() => OpenFolder(ModLibraryFolder));
             ResetModFolderCommand = new RelayCommand(() => ModLibraryFolder = SettingsService.GetDefaultModLibraryFolder());
             OpenGameDataFolderCommand = new RelayCommand(OpenGameDataFolder);
@@ -897,6 +936,11 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(AutoCleanup));
             OnPropertyChanged(nameof(EnableLibraryImages));
             OnPropertyChanged(nameof(AutoUpdateAssetMetadata));
+            OnPropertyChanged(nameof(AssetMetadataCheckIntervalHours));
+            OnPropertyChanged(nameof(AssetMetadataLastCheckText));
+            OnPropertyChanged(nameof(AutoCheckGameDataIndex));
+            OnPropertyChanged(nameof(GameDataIndexCheckIntervalHours));
+            OnPropertyChanged(nameof(GameDataIndexLastCheckText));
             OnPropertyChanged(nameof(AssetMetadataRepository));
             AssetMetadataStatus = BuildInitialAssetMetadataStatus();
             OnPropertyChanged(nameof(ModLibraryFolder));
@@ -989,27 +1033,37 @@ namespace HD2ModManager.ViewModels
         private async void UpdateAssetMetadata()
         {
             AssetMetadataStatus = "正在更新资产信息...";
+            var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.UpdateAssetMetadata, "更新资产元数据", "由设置页手动启动");
             try
             {
+                task?.MarkRunning("正在同步资产元数据");
                 var paths = SettingsService.CreateStoragePaths();
                 var sync = CoreServices.CreateAssetMetadataSyncService(paths);
                 var result = await sync.SyncAsync(AssetMetadataRepository);
                 if (!result.Success)
                 {
                     AssetMetadataStatus = $"更新失败：{result.ErrorMessage}";
+                    task?.MarkFailed(result.ErrorMessage ?? "未知错误");
                     System.Windows.MessageBox.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
                     return;
                 }
 
                 AssetMetadataStatus = $"更新成功：{result.UpdatedFiles.Count} 个文件，{result.UpdatedAtUtc?.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
+                SettingsService.SetLastAssetMetadataCheckUtc(DateTime.UtcNow);
+                task?.MarkCompleted();
+                OnPropertyChanged(nameof(AssetMetadataLastCheckText));
                 System.Windows.MessageBox.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
                 AssetMetadataStatus = $"更新失败：{ex.Message}";
+                task?.MarkFailed(ex.Message);
                 System.Windows.MessageBox.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
             }
         }
+
+        private static string FormatLastCheck(DateTime? value)
+            => value is null ? "尚未检查" : $"上次检查：{value.Value.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
 
         private static string BuildInitialAssetMetadataStatus()
         {
