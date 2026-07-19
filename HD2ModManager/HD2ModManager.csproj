@@ -8,15 +8,13 @@
     <UseWPF>true</UseWPF>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="SharpCompress" Version="0.40.0" />
-  </ItemGroup>
-  <ItemGroup>
     <ProjectReference Include="..\HD2ModCore\HD2ModCore.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Resource Include="Resources\helldivers2.ico" />
     <Resource Include="Resources\helldivers2.png" />
     <Content Include="..\tools\ref\HD2SDK-CommunityEdition\hashlists\bonehash.txt" Link="data\resources\bonehash.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="ThirdParty\7zip\**\*" Link="third_party\7zip\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   
   <!-- Rely on implicit ApplicationDefinition for App.xaml -->

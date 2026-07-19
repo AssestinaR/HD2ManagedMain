@@ -84,6 +84,32 @@ public sealed class PatchGroupAnalyzerTests
 	}
 
 	[Fact]
+	public async Task AnalyzeInventoryAsync_ListsAssetsWithoutReadingAdvancedReferences()
+	{
+		var directory = CreateTemporaryDirectory();
+		try
+		{
+			var tocPath = Path.Combine(directory, "inventory.patch_0");
+			await File.WriteAllBytesAsync(tocPath, CreatePatch(new Dictionary<AssetKey, byte[]>
+			{
+				[new AssetKey(PatchUnitMeshReader.UnitTypeId, 0x101)] = CreateUnitPayload(7, 0x202),
+				[new AssetKey(MaterialDependencyResolver.MaterialTypeId, 0x202)] = CreateMaterialPayload(0x303),
+			}));
+
+			var result = await new PatchGroupAnalyzer().AnalyzeInventoryAsync(new PatchGroupInput(tocPath));
+
+			Assert.True(result.IsSuccessful);
+			Assert.Equal(PatchAnalysisDepth.Inventory, result.Depth);
+			Assert.Equal(2, result.Assets.Count);
+			Assert.Empty(result.References);
+		}
+		finally
+		{
+			Directory.Delete(directory, recursive: true);
+		}
+	}
+
+	[Fact]
 	public async Task AnalyzeAsync_MissingTocReturnsStructuredIssue()
 	{
 		var result = await new PatchGroupAnalyzer().AnalyzeAsync(new PatchGroupInput(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".patch_0")));

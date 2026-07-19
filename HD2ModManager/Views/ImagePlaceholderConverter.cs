@@ -6,6 +6,7 @@ using System.Windows.Media.Imaging;
 
 namespace HD2ModManager.Views
 {
+    // 作用：按显示目标尺寸加载图片，避免列表图标解码完整原图。
     public class ImagePlaceholderConverter : IValueConverter
     {
         public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
@@ -13,7 +14,7 @@ namespace HD2ModManager.Views
             var s = value as string;
             if (!string.IsNullOrWhiteSpace(s))
             {
-                try { return LoadImageWithoutLock(s); } catch { }
+                try { return LoadImageWithoutLock(s, ParseDecodePixelWidth(parameter)); } catch { }
             }
             // fallback to embedded resource
             try
@@ -32,11 +33,15 @@ namespace HD2ModManager.Views
             throw new NotSupportedException();
         }
 
-        private static BitmapImage LoadImageWithoutLock(string path)
+        private static int ParseDecodePixelWidth(object parameter)
+            => parameter is not null && int.TryParse(parameter.ToString(), out var width) ? width : 0;
+
+        private static BitmapImage LoadImageWithoutLock(string path, int decodePixelWidth)
         {
             var bitmap = new BitmapImage();
             bitmap.BeginInit();
             bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            if (decodePixelWidth > 0) bitmap.DecodePixelWidth = decodePixelWidth;
             if (File.Exists(path))
             {
                 using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);

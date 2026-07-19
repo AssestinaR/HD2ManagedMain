@@ -23,6 +23,7 @@ namespace HD2ModManager.Services
     public enum BackgroundTaskKind
     {
         Import,
+		AnalyzeImportedMod,
         RefreshLibrary,
         UpdateAssetMetadata,
         BuildAssetIndex,
@@ -85,6 +86,7 @@ namespace HD2ModManager.Services
         public string KindIcon => Kind switch
         {
             BackgroundTaskKind.Import => "⇩",
+			BackgroundTaskKind.AnalyzeImportedMod => "⌕",
             BackgroundTaskKind.RefreshLibrary => "⟳",
             BackgroundTaskKind.UpdateAssetMetadata => "◇",
             BackgroundTaskKind.BuildAssetIndex => "⌕",

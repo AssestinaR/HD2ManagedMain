@@ -2,6 +2,8 @@ using HD2ModAdaptation.PatchReconstruction;
 
 namespace HD2ModAdaptation.Analysis;
 
+// 作用：定义 Patch 的基础资产清单与完整结构分析两种可缓存层级。
+
 // Purpose: Defines neutral read-only contracts for patch-group semantic analysis.
 public sealed record PatchGroupInput(
 	string PatchTocFilePath,
@@ -32,6 +34,13 @@ public enum PatchReferenceKind
 	MaterialTexture
 }
 
+public enum PatchAnalysisDepth
+{
+	Inventory,
+	DependencyGraph,
+	Full,
+}
+
 public sealed record PatchAssetReference(
 	AssetKey SourceAssetKey,
 	AssetKey TargetAssetKey,
@@ -48,7 +57,8 @@ public sealed record PatchGroupAnalysis(
 	IReadOnlyList<PatchAssetReference> References,
 	IReadOnlyList<PatchAnalysisIssue> Issues,
 	DateTimeOffset AnalyzedUtc,
-	string AnalyzerVersion)
+	string AnalyzerVersion,
+	PatchAnalysisDepth Depth = PatchAnalysisDepth.Full)
 {
 	public bool IsSuccessful => Issues.All(issue => issue.Code is not "InvalidToc" and not "MissingToc");
 }
@@ -56,4 +66,14 @@ public sealed record PatchGroupAnalysis(
 public interface IPatchGroupAnalyzer
 {
 	ValueTask<PatchGroupAnalysis> AnalyzeAsync(PatchGroupInput input, CancellationToken cancellationToken = default);
+}
+
+public interface IInventoryPatchGroupAnalyzer : IPatchGroupAnalyzer
+{
+	ValueTask<PatchGroupAnalysis> AnalyzeInventoryAsync(PatchGroupInput input, CancellationToken cancellationToken = default);
+}
+
+public interface IDependencyGraphPatchGroupAnalyzer : IPatchGroupAnalyzer
+{
+	ValueTask<PatchGroupAnalysis> AnalyzeDependencyGraphAsync(PatchGroupInput input, CancellationToken cancellationToken = default);
 }

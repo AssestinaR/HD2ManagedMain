@@ -5,6 +5,7 @@ using DomainAssetKey = HD2ModCore.Domain.AssetKey;
 
 namespace HD2ModCore.Infrastructure;
 
+// 作用：仅消费完整高级缓存生成 Profile 的材质依赖诊断。
 // Purpose: Resolves final profile winners before traversing Unit → Material → Texture references.
 public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnosticsService
 {
@@ -129,7 +130,8 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 		if (factsStore is not null)
 		{
 			var facts = await factsStore.TryLoadAsync(node.Id, cancellationToken).ConfigureAwait(false);
-			if (facts is not null && string.Equals(facts.RelativePath, node.RelativePath, StringComparison.OrdinalIgnoreCase))
+			if (facts is not null && facts.Version == 7 && string.Equals(facts.RelativePath, node.RelativePath, StringComparison.OrdinalIgnoreCase)
+				&& facts.Analyses.All(analysis => analysis.Depth is PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full))
 			{
 				return facts.Analyses;
 			}

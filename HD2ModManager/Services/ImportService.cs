@@ -13,6 +13,7 @@ namespace HD2ModManager.Services
     public class ImportService
     {
         private static readonly HashSet<string> ArchiveExtensions = new(StringComparer.OrdinalIgnoreCase) { ".zip", ".rar", ".7z" };
+		private static readonly SemaphoreSlim ImportAnalysisGate = new(1, 1);
 
         private readonly ModLibraryService _library;
         private readonly Action<string>? _onInfo;
@@ -41,7 +42,7 @@ namespace HD2ModManager.Services
             }
         }
 
-        public async Task<List<string>> ImportPathAsync(string path, CancellationToken ct)
+        public async Task<List<string>> ImportPathAsync(string path, CancellationToken ct, bool notifyLibraryChanged = true)
         {
             try
             {
@@ -71,15 +72,11 @@ namespace HD2ModManager.Services
                     .Where(node => !before.ContainsKey(node.Id))
                     .Select(node => node.Id.Value.ToString("N"))
                     .ToList();
-                await _library.RefreshDerivedDataAsync(importedGuids, ModContentChangeKind.Added, ct).ConfigureAwait(false);
                 var changedExistingNodeIds = _library.Snapshot.Nodes.Values
                     .Where(node => before.TryGetValue(node.Id, out var previous) && !Equals(previous, node))
                     .Select(node => node.Id)
                     .ToArray();
-                if (changedExistingNodeIds.Length != 0)
-                {
-                    await _library.RefreshDerivedDataAsync(changedExistingNodeIds.Select(nodeId => nodeId.Value.ToString("N")), ModContentChangeKind.Changed, ct).ConfigureAwait(false);
-                }
+                if (notifyLibraryChanged) _library.NotifyImportCompleted();
                 _onInfo?.Invoke($"Imported {result.SourceDisplayName}");
                 return importedGuids.Where(g => _library.Get(g) != null).ToList();
             }
@@ -87,6 +84,21 @@ namespace HD2ModManager.Services
             {
                 _onError?.Invoke(ex.Message);
                 throw;
+            }
+        }
+
+        public async Task AnalyzeImportedAsync(IEnumerable<string> importedGuids, CancellationToken ct)
+        {
+            var guids = importedGuids.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (guids.Length == 0) return;
+            await ImportAnalysisGate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await Task.Run(() => _library.RefreshDerivedDataAsync(guids, ModContentChangeKind.Added, ct), ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                ImportAnalysisGate.Release();
             }
         }
 

@@ -94,9 +94,15 @@
                 <StackPanel>
                     <TextBlock Text="更新 Unit 为当前版本（正式验证候选）" Style="{StaticResource SectionTitle}"/>
                     <TextBlock Text="{Binding SameKeyReconstructionSummary}" TextWrapping="Wrap" Foreground="#255A3A" Margin="0,8,0,12"/>
+					<TextBlock Text="{Binding AdvancedAnalysisSummary}" TextWrapping="Wrap" Foreground="#555" Margin="0,0,0,12"/>
+                    <TextBlock Text="{Binding DependencyGraphTestSummary}" TextWrapping="Wrap" Foreground="#555" Margin="0,0,0,12"/>
+                    <TextBlock Text="{Binding DependencyGraphComparisonSummary}" TextWrapping="Wrap" Foreground="#555" Margin="0,0,0,12"/>
                     <WrapPanel>
                         <Button Content="更新 Unit（保持其余资源）..." Command="{Binding RebuildSameKeyCommand}" Padding="12,7" Margin="0,0,8,8"/>
                         <Button Content="生成更换护甲 Mod（计划）..." Command="{Binding PlanCrossArmorTransferCommand}" Padding="12,7" Margin="0,0,8,8"/>
+						<Button Content="执行高级分析（测试）" Command="{Binding RunAdvancedAnalysisCommand}" Padding="12,7" Margin="0,0,8,8"/>
+                        <Button Content="测试轻量引用链" Command="{Binding RunDependencyGraphTestCommand}" Padding="12,7" Margin="0,0,8,8"/>
+                        <Button Content="对比轻量/完整引用链" Command="{Binding CompareDependencyGraphCommand}" Padding="12,7" Margin="0,0,8,8"/>
                     </WrapPanel>
                 </StackPanel>
             </Border>

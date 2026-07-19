@@ -19,12 +19,28 @@ public sealed class ModAssetSummaryProjector
 	{
 		ArgumentNullException.ThrowIfNull(node);
 		ArgumentNullException.ThrowIfNull(facts);
-		var sourceByKey = facts.PatchGroups
+		var sourceByKey = BuildSourceByKey(facts);
+		var mapping = await mappingFactsService.MapAsync(sourceByKey.Keys.ToHashSet(), cancellationToken).ConfigureAwait(false);
+		var catalog = await metadataCatalogProvider.LoadAsync(cancellationToken).ConfigureAwait(false);
+		return Project(node, sourceByKey, mapping, catalog);
+	}
+
+	public async ValueTask<IReadOnlyDictionary<ModNodeId, ModAssetSummary>> ProjectManyAsync(IReadOnlyDictionary<ModNode, ModContentFacts> factsByNode, CancellationToken cancellationToken = default)
+	{
+		var sourceByNode = factsByNode.ToDictionary(pair => pair.Key, pair => BuildSourceByKey(pair.Value));
+		var mapping = await mappingFactsService.MapAsync(sourceByNode.Values.SelectMany(value => value.Keys).ToHashSet(), cancellationToken).ConfigureAwait(false);
+		var catalog = await metadataCatalogProvider.LoadAsync(cancellationToken).ConfigureAwait(false);
+		return sourceByNode.ToDictionary(pair => pair.Key.Id, pair => Project(pair.Key, pair.Value, mapping, catalog));
+	}
+
+	private static Dictionary<AssetKey, SourceInfo> BuildSourceByKey(ModContentFacts facts)
+		=> facts.PatchGroups
 			.SelectMany(group => group.AssetKeys.Select(key => (key, group.Id.SourceArchiveHex, FileName: group.Files.FirstOrDefault(file => file.SidecarKind == PatchSidecarKind.Base)?.FileName ?? group.Id.ToString())))
 			.GroupBy(item => item.key)
 			.ToDictionary(group => group.Key, group => new SourceInfo(group.Select(item => item.SourceArchiveHex).First(), group.Select(item => item.FileName).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray()));
-		var mapping = await mappingFactsService.MapAsync(sourceByKey.Keys.ToHashSet(), cancellationToken).ConfigureAwait(false);
-		var catalog = await metadataCatalogProvider.LoadAsync(cancellationToken).ConfigureAwait(false);
+
+	private static ModAssetSummary Project(ModNode node, IReadOnlyDictionary<AssetKey, SourceInfo> sourceByKey, GameDataMappingFacts mapping, AssetMetadataCatalog catalog)
+	{
 		var assets = sourceByKey
 			.OrderBy(pair => pair.Key.TypeId)
 			.ThenBy(pair => pair.Key.FileId)

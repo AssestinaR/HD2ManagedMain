@@ -89,10 +89,10 @@ namespace HD2ModManager.Services
                 {
                     var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
                     foreach (var pair in rebuilt.Nodes) nodes[pair.Key] = pair.Value;
-                    var issues = nodes.Values.SelectMany(node => node.Issues).ToList();
+					var issues = _derivedData.Issues.Where(issue => issue.NodeId is null || !nodeIds!.Contains(issue.NodeId.Value)).Concat(rebuilt.Issues).ToList();
                     _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues);
                 }
-                RebuildEntityIndex();
+				if (nodeIds is null) RebuildEntityIndex(); else UpdateEntityIndex(nodeIds);
                 if (nodeIds is { Count: > 0 })
                 {
                     ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(nodeIds, changeKind));
@@ -183,6 +183,10 @@ namespace HD2ModManager.Services
         {
             _snapshot = snapshot ?? EmptySnapshot();
             RebuildIndex(buildDerivedData);
+        }
+
+        public void NotifyImportCompleted()
+        {
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
         }
 
@@ -202,6 +206,14 @@ namespace HD2ModManager.Services
             foreach (var node in _snapshot.Nodes.Values.OrderBy(n => n.Metadata.Name, StringComparer.OrdinalIgnoreCase))
             {
                 _byGuid[node.Id.Value.ToString("N")] = ToEntity(node);
+            }
+        }
+
+        private void UpdateEntityIndex(IEnumerable<ModNodeId> nodeIds)
+        {
+            foreach (var nodeId in nodeIds)
+            {
+                if (_snapshot.Nodes.TryGetValue(nodeId, out var node)) _byGuid[nodeId.Value.ToString("N")] = ToEntity(node);
             }
         }
 

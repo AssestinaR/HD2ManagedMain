@@ -24,6 +24,7 @@ namespace HD2ModManager
         private double _bottomBarAnimationStartWidth;
         private bool _bottomBarWidthUpdateQueued;
         private int _bottomBarAnimationVersion;
+        private bool _pageTransitionQueued;
         [StructLayout(LayoutKind.Sequential)]
         struct MARGINS
         {
@@ -142,6 +143,13 @@ namespace HD2ModManager
 
         private void MainWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
         {
+            if (DataContext is ShellViewModel { IsMessagePanelOpen: true } messageShell
+                && e.OriginalSource is DependencyObject messageSource
+                && !IsDescendantOf(messageSource, MessageCenterPanel)
+                && !IsDescendantOf(messageSource, MessageNavigationButton))
+            {
+                messageShell.CloseMessagePanel();
+            }
             if (DataContext is not ShellViewModel { BottomBar.HasTemporaryEditor: true } shell) return;
             if (e.OriginalSource is DependencyObject source && IsDescendantOf(source, BottomContextBar)) return;
             shell.CancelBottomBarEdit();
@@ -286,6 +294,16 @@ namespace HD2ModManager
         private void Shell_PropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
             if (sender is not ShellViewModel shell) return;
+            if (e.PropertyName == nameof(ShellViewModel.IsMessagePanelOpen))
+            {
+                AnimateMessagePanel(MessageCenterPanel, shell.IsMessagePanelOpen, 100, () => shell.IsMessagePanelOpen);
+                return;
+            }
+            if (e.PropertyName == nameof(ShellViewModel.IsMessagePreviewOpen))
+            {
+                AnimateMessagePanel(MessagePreviewPanel, shell.IsMessagePreviewOpen, 50, () => shell.IsMessagePreviewOpen);
+                return;
+            }
             if (e.PropertyName == nameof(ShellViewModel.BottomBarStateVersion))
             {
                 RequestBottomContextBarWidthUpdate();
@@ -293,11 +311,11 @@ namespace HD2ModManager
             }
             if (e.PropertyName == nameof(ShellViewModel.LeftPage))
             {
-                TransitionPage(LeftCurrentPageHost, LeftPreviousPageHost, shell.LeftPage);
+                QueuePageTransitions();
             }
             else if (e.PropertyName == nameof(ShellViewModel.RightPage))
             {
-                TransitionPage(RightCurrentPageHost, RightPreviousPageHost, shell.RightPage);
+                QueuePageTransitions();
             }
             else if (e.PropertyName is nameof(ShellViewModel.CurrentMode)
                 or nameof(ShellViewModel.IsHomeActive)
@@ -308,6 +326,59 @@ namespace HD2ModManager
             {
                 Dispatcher.BeginInvoke(UpdateWorkspaceNavigationIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
             }
+        }
+
+        private void AnimateMessagePanel(FrameworkElement panel, bool isOpen, double offset, Func<bool> isStillOpen)
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (panel.RenderTransform is not TranslateTransform translate) return;
+                panel.BeginAnimation(OpacityProperty, null);
+                translate.BeginAnimation(TranslateTransform.YProperty, null);
+
+                if (isOpen)
+                {
+                    panel.Visibility = Visibility.Visible;
+                    panel.Opacity = 0;
+                    translate.Y = -offset;
+                    translate.BeginAnimation(TranslateTransform.YProperty, CreateMessageAnimation(-offset, 0, 190));
+                    panel.BeginAnimation(OpacityProperty, CreateMessageAnimation(0, 1, 150));
+                    return;
+                }
+
+                if (panel.Visibility != Visibility.Visible) return;
+                var close = CreateMessageAnimation(panel.Opacity, 0, 150);
+                close.Completed += (_, _) =>
+                {
+                    if (!isStillOpen()) panel.Visibility = Visibility.Collapsed;
+                };
+                translate.BeginAnimation(TranslateTransform.YProperty, CreateMessageAnimation(translate.Y, -offset, 190));
+                panel.BeginAnimation(OpacityProperty, close);
+            }, System.Windows.Threading.DispatcherPriority.Render);
+        }
+
+        private static DoubleAnimation CreateMessageAnimation(double from, double to, int milliseconds) => new(from, to, TimeSpan.FromMilliseconds(milliseconds))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+
+        private void OnMessageListLoaded(object sender, RoutedEventArgs e)
+        {
+            if (sender is not ListBox listBox) return;
+            listBox.Items.CurrentChanged += (_, _) => ScrollMessagesToEnd(listBox);
+            ScrollMessagesToEnd(listBox);
+        }
+
+        private void OnMessagePreviewClick(object sender, MouseButtonEventArgs e)
+        {
+            if (DataContext is ShellViewModel shell) shell.OpenMessagePanel();
+            e.Handled = true;
+        }
+
+        private static void ScrollMessagesToEnd(ListBox listBox)
+        {
+            if (listBox.Items.Count == 0) return;
+            listBox.Dispatcher.BeginInvoke(() => listBox.ScrollIntoView(listBox.Items[listBox.Items.Count - 1]), System.Windows.Threading.DispatcherPriority.Background);
         }
 
         private void UpdateWorkspaceNavigationIndicator()
@@ -373,37 +444,114 @@ namespace HD2ModManager
             host.Opacity = 1;
         }
 
-        private static void TransitionPage(ContentControl currentHost, ContentControl previousHost, object? nextPage)
+        private void QueuePageTransitions()
+        {
+            if (_pageTransitionQueued) return;
+            _pageTransitionQueued = true;
+            _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, new Action(() =>
+            {
+                _pageTransitionQueued = false;
+                if (DataContext is not ShellViewModel shell) return;
+                TransitionPage(LeftCurrentPageHost, LeftPreviousPageHost, shell.LeftPage);
+                TransitionPage(RightCurrentPageHost, RightPreviousPageHost, shell.RightPage);
+            }));
+        }
+
+        private void TransitionPage(ContentControl currentHost, ContentControl previousHost, object? nextPage)
         {
             if (ReferenceEquals(currentHost.Content, nextPage)) return;
 
             var transitionStopwatch = Stopwatch.StartNew();
+            var previousMetrics = CaptureVisualMetrics(currentHost);
+            var currentMetricsBefore = CaptureVisualMetrics(currentHost);
+            var pageName = nextPage?.GetType().Name ?? "空页面";
+            var firstLayoutLogged = false;
+            var firstRenderLogged = false;
 
             currentHost.BeginAnimation(OpacityProperty, null);
             previousHost.BeginAnimation(OpacityProperty, null);
-
             previousHost.Content = currentHost.Content;
-            previousHost.Opacity = previousHost.Content == null ? 0 : 1;
+            previousHost.Opacity = previousHost.Content is null ? 0 : 1;
             currentHost.Content = nextPage;
             currentHost.Opacity = 0;
 
+            EventHandler? layoutUpdated = null;
+            layoutUpdated = (_, _) =>
+            {
+                if (firstLayoutLogged || !ReferenceEquals(currentHost.Content, nextPage)) return;
+                firstLayoutLogged = true;
+                var metrics = CaptureVisualMetrics(currentHost);
+                LogService.Info($"UI 观测：{pageName} 首次布局，耗时 {transitionStopwatch.ElapsedMilliseconds}ms；新页视觉={metrics.VisualCount}，ListBox={metrics.ListBoxCount}，列表项={metrics.ListItemCount}，图片={metrics.ImageCount}；旧页视觉={previousMetrics.VisualCount}，旧页列表项={previousMetrics.ListItemCount}，替换前视觉={currentMetricsBefore.VisualCount}。 ");
+                currentHost.LayoutUpdated -= layoutUpdated;
+            };
+            currentHost.LayoutUpdated += layoutUpdated;
+
+            EventHandler? rendering = null;
+            rendering = (_, _) =>
+            {
+                if (firstRenderLogged || !ReferenceEquals(currentHost.Content, nextPage)) return;
+                firstRenderLogged = true;
+                var metrics = CaptureVisualMetrics(currentHost);
+                LogService.Info($"UI 观测：{pageName} 首次 Rendering，耗时 {transitionStopwatch.ElapsedMilliseconds}ms；新页视觉={metrics.VisualCount}，ListBox={metrics.ListBoxCount}，列表项={metrics.ListItemCount}，图片={metrics.ImageCount}。 ");
+                CompositionTarget.Rendering -= rendering;
+            };
+            CompositionTarget.Rendering += rendering;
+
             _ = currentHost.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Render, new Action(() =>
             {
-                if (!ReferenceEquals(currentHost.Content, nextPage)) return;
-
-                LogService.Info($"UI 性能：{nextPage?.GetType().Name ?? "空页面"} 完成首帧布局后开始转场，等待耗时 {transitionStopwatch.ElapsedMilliseconds}ms。");
-                currentHost.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(240))
+                if (!ReferenceEquals(currentHost.Content, nextPage))
                 {
-                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-                });
-
-                if (previousHost.Content != null)
-                {
-                    var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(180));
-                    fadeOut.Completed += (_, _) => previousHost.Content = null;
-                    previousHost.BeginAnimation(OpacityProperty, fadeOut);
+                    currentHost.LayoutUpdated -= layoutUpdated;
+                    CompositionTarget.Rendering -= rendering;
+                    return;
                 }
+
+                var metrics = CaptureVisualMetrics(currentHost);
+                LogService.Info($"UI 性能：{pageName} 完成首帧布局后开始真实页面转场，等待耗时 {transitionStopwatch.ElapsedMilliseconds}ms；新页视觉={metrics.VisualCount}，ListBox={metrics.ListBoxCount}，列表项={metrics.ListItemCount}，图片={metrics.ImageCount}；旧页视觉={previousMetrics.VisualCount}，旧页列表项={previousMetrics.ListItemCount}。");
+                var duration = TimeSpan.FromMilliseconds(200);
+                var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+                currentHost.BeginAnimation(OpacityProperty, new DoubleAnimation(1, duration) { EasingFunction = easing });
+                if (previousHost.Content is null) return;
+                var fadeOut = new DoubleAnimation(0, duration) { EasingFunction = easing };
+                fadeOut.Completed += (_, _) =>
+                {
+                    if (ReferenceEquals(currentHost.Content, nextPage)) previousHost.Content = null;
+                };
+                previousHost.BeginAnimation(OpacityProperty, fadeOut);
             }));
+        }
+
+        private static VisualMetrics CaptureVisualMetrics(DependencyObject root)
+        {
+            var metrics = new VisualMetrics();
+            CountVisuals(root, metrics);
+            return metrics;
+        }
+
+        private static void CountVisuals(DependencyObject current, VisualMetrics metrics)
+        {
+            if (current is null) return;
+            metrics.VisualCount++;
+            if (current is ListBox listBox)
+            {
+                metrics.ListBoxCount++;
+                metrics.ListItemCount += listBox.Items.Count;
+            }
+            else if (current is Image)
+            {
+                metrics.ImageCount++;
+            }
+
+            var childCount = VisualTreeHelper.GetChildrenCount(current);
+            for (var index = 0; index < childCount; index++) CountVisuals(VisualTreeHelper.GetChild(current, index), metrics);
+        }
+
+        private sealed class VisualMetrics
+        {
+            public int VisualCount { get; set; }
+            public int ListBoxCount { get; set; }
+            public int ListItemCount { get; set; }
+            public int ImageCount { get; set; }
         }
 
         private static T? FindAncestor<T>(DependencyObject current) where T : DependencyObject

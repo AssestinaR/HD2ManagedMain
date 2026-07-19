@@ -55,7 +55,7 @@ public sealed class ModLibraryImporterTests
 	}
 
 	[Fact]
-	public async Task ImportFolderAsync_RollsBackStoredFiles_WhenStableFactsFail()
+	public async Task ImportFolderAsync_CommitsFiles_WithoutWaitingForStableFacts()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
 		var appRoot = Path.Combine(root, "app");
@@ -70,13 +70,12 @@ public sealed class ModLibraryImporterTests
 				paths,
 				new ObjectTreeImporter(new PatchFileNameParser()),
 				new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())),
-				new JsonModLibraryStore(paths),
-				new ThrowingFactsProvider());
+				new JsonModLibraryStore(paths));
 
-			await Assert.ThrowsAsync<InvalidDataException>(() => importer.ImportFolderAsync(source).AsTask());
+			var result = await importer.ImportFolderAsync(source);
 
-			Assert.False(File.Exists(paths.LibraryPath));
-			Assert.False(Directory.Exists(paths.ModsDirectory) && Directory.EnumerateFileSystemEntries(paths.ModsDirectory).Any());
+			Assert.True(File.Exists(paths.LibraryPath));
+			Assert.Single(result.Snapshot.Nodes);
 		}
 		finally
 		{
@@ -84,9 +83,4 @@ public sealed class ModLibraryImporterTests
 		}
 	}
 
-	private sealed class ThrowingFactsProvider : IPatchGroupAnalysisProvider
-	{
-		public ValueTask<IReadOnlyList<PatchGroupAnalysis>> AnalyzeNodeAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
-			=> ValueTask.FromException<IReadOnlyList<PatchGroupAnalysis>>(new InvalidDataException("stable facts failed"));
-	}
 }

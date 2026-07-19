@@ -1,11 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
@@ -25,8 +28,15 @@ namespace HD2ModManager.ViewModels
         private readonly IMaterialDeliveryFactsService _materialDeliveryFacts;
 		private readonly IModSameKeyReconstructionService _sameKeyReconstruction;
         private readonly IEquipmentUnitCatalogService _equipmentUnitCatalog;
+        private readonly IAdvancedModAnalysisService _advancedAnalysis;
+		private readonly IPatchGroupAnalysisProvider _dependencyGraphAnalysis;
+        private readonly IPatchGroupAnalysisProvider _fullPatchAnalysis;
         private ModMaterialPackagingState? _materialState;
 		private bool _sameKeyReconstructionRunning;
+        private bool _advancedAnalysisRunning;
+        private bool _advancedAnalysisReady;
+		private bool _dependencyGraphTestRunning;
+        private bool _dependencyGraphComparisonRunning;
         private readonly IAdvancedModAssetQueryService _advancedAssetQueryService;
         private readonly EventHandler<DerivedStateSnapshot> _snapshotChangedHandler;
         private CancellationTokenSource? _advancedDetailsCancellation;
@@ -52,14 +62,20 @@ namespace HD2ModManager.ViewModels
 		public string MaterialDiagnosticSummary { get; private set; } = "当前没有活动配置或材质诊断正在更新。";
         public string UserStatusTitle { get; private set; } = "状态未知";
         public string UserStatusSummary { get; private set; } = "正在读取状态。";
-        public string MaterialPackagingSummary { get; private set; } = "在高级详情中按需读取稳定材质事实。";
-        public string MaterialDeliverySummary { get; private set; } = "在高级详情中按需读取稳定材质交付事实。";
+        public string MaterialPackagingSummary { get; private set; } = "材质操作基于导入后的轻量引用图；无需执行高级分析。";
+        public string MaterialDeliverySummary { get; private set; } = "导入后的轻量引用图完成后即可读取材质交付事实。";
         public string SameKeyReconstructionSummary { get; private set; } = "仅更新失效 Unit，并将结果直接写入 Manager 的 Output 文件夹；不会自动导入或部署。";
-        public bool CanSplitEmbeddedMaterials => _materialState?.CanSplit == true;
-        public bool CanReplaceEmbeddedMaterials => _materialState?.HasEmbeddedMaterials == true;
-        public bool CanEmbedExternalMaterials => _materialState?.HasExternalMaterials == true;
-        public bool CanRebuildSameKey => !_disposed && !_sameKeyReconstructionRunning && TryGetCurrentNode(out _);
-		public bool CanPlanCrossArmorTransfer => !_disposed && TryGetCurrentNode(out _);
+		public string AdvancedAnalysisSummary { get; private set; } = "正在检查高级缓存。";
+        public string DependencyGraphTestSummary { get; private set; } = "仅读取 Unit 材质绑定表与 Material 贴图表；结果会写入 logs。";
+        public string DependencyGraphComparisonSummary { get; private set; } = "可用完整 Unit 解析对比轻量引用链的去重关系集合。";
+        public bool CanRunAdvancedAnalysis => !_disposed && !_advancedAnalysisRunning && TryGetCurrentNode(out _);
+		public bool CanRunDependencyGraphTest => !_disposed && !_dependencyGraphTestRunning && TryGetCurrentNode(out _);
+        public bool CanCompareDependencyGraph => !_disposed && !_dependencyGraphComparisonRunning && TryGetCurrentNode(out _);
+        public bool CanSplitEmbeddedMaterials => !_disposed && TryGetCurrentNode(out _);
+        public bool CanReplaceEmbeddedMaterials => !_disposed && TryGetCurrentNode(out _);
+        public bool CanEmbedExternalMaterials => !_disposed && TryGetCurrentNode(out _);
+		public bool CanRebuildSameKey => !_disposed && !_sameKeyReconstructionRunning && _advancedAnalysisReady && TryGetCurrentNode(out _);
+		public bool CanPlanCrossArmorTransfer => !_disposed && _advancedAnalysisReady && TryGetCurrentNode(out _);
         public ObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
         public bool AdvancedOnlyIssues { get => _advancedOnlyIssues; set { if (SetField(ref _advancedOnlyIssues, value)) ApplyAdvancedAssetFilter(); } }
@@ -78,6 +94,9 @@ namespace HD2ModManager.ViewModels
         public RelayCommand EmbedExternalMaterialsCommand { get; }
         public RelayCommand RebuildSameKeyCommand { get; }
 		public RelayCommand PlanCrossArmorTransferCommand { get; }
+        public RelayCommand RunAdvancedAnalysisCommand { get; }
+		public RelayCommand RunDependencyGraphTestCommand { get; }
+        public RelayCommand CompareDependencyGraphCommand { get; }
 
         public ModDetailsPageViewModel(ModLibraryService library, ProfileService profiles, DerivedStateCoordinator derivedState, string modId, NotificationService? notifications = null)
         {
@@ -90,6 +109,9 @@ namespace HD2ModManager.ViewModels
             _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(SettingsService.CreateStoragePaths());
 			_sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(SettingsService.CreateStoragePaths());
             _equipmentUnitCatalog = CoreServices.CreateEquipmentUnitCatalogService(SettingsService.CreateStoragePaths());
+			_advancedAnalysis = CoreServices.CreateAdvancedModAnalysisService(SettingsService.CreateStoragePaths());
+            _dependencyGraphAnalysis = CoreServices.CreateDependencyGraphAnalysisProvider();
+            _fullPatchAnalysis = CoreServices.CreateFullPatchAnalysisProvider();
             _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(SettingsService.CreateStoragePaths());
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
@@ -102,6 +124,9 @@ namespace HD2ModManager.ViewModels
             EmbedExternalMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: false, requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
             RebuildSameKeyCommand = new RelayCommand(async _ => await RebuildSameKeyAsync(), _ => CanRebuildSameKey);
 			PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
+            RunAdvancedAnalysisCommand = new RelayCommand(async _ => await RunAdvancedAnalysisAsync(), _ => CanRunAdvancedAnalysis);
+			RunDependencyGraphTestCommand = new RelayCommand(async _ => await RunDependencyGraphTestAsync(), _ => CanRunDependencyGraphTest);
+			CompareDependencyGraphCommand = new RelayCommand(async _ => await CompareDependencyGraphAsync(), _ => CanCompareDependencyGraph);
             _snapshotChangedHandler = (_, _) => RunOnUiThread(() =>
             {
                 if (_disposed) return;
@@ -110,6 +135,7 @@ namespace HD2ModManager.ViewModels
             });
             _derivedState.SnapshotChanged += _snapshotChangedHandler;
             Refresh();
+			_ = RefreshAdvancedAnalysisStateAsync();
         }
 
         public async Task RefreshAdvancedDetailsAsync()
@@ -124,7 +150,6 @@ namespace HD2ModManager.ViewModels
             {
                 await Task.WhenAll(
                     RefreshAdvancedAssetsAsync(cancellationToken),
-                    RefreshMaterialPackagingStateAsync(cancellationToken),
                     RefreshMaterialDeliveryFactsAsync(cancellationToken)).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -139,6 +164,306 @@ namespace HD2ModManager.ViewModels
             _advancedDetailsCancellation?.Cancel();
         }
 
+        private async Task RefreshAdvancedAnalysisStateAsync()
+        {
+            if (!TryGetCurrentNode(out var node)) return;
+            try
+            {
+                var state = await _advancedAnalysis.GetStateAsync(node, _library.ModsRootDirectory);
+                if (_disposed) return;
+                _advancedAnalysisReady = state.IsReady;
+                AdvancedAnalysisSummary = state.IsReady
+                    ? $"高级缓存已就绪：{state.BuiltUtc:yyyy-MM-dd HH:mm:ss}。"
+                    : "尚未执行高级分析。Unit 更新和更换护甲计划已禁用；材质操作可直接使用轻量引用图。";
+            }
+            catch (Exception exception)
+            {
+                _advancedAnalysisReady = false;
+                AdvancedAnalysisSummary = $"高级缓存状态读取失败：{exception.Message}";
+            }
+            RunOnUiThread(() =>
+            {
+                OnPropertyChanged(nameof(AdvancedAnalysisSummary));
+                OnPropertyChanged(nameof(CanRunAdvancedAnalysis));
+                RaiseMaterialCommandStates();
+                RaiseSameKeyReconstructionCommandState();
+            });
+        }
+
+        private async Task RunAdvancedAnalysisAsync()
+        {
+            if (!TryGetCurrentNode(out var node)) return;
+            _advancedAnalysisRunning = true;
+            AdvancedAnalysisSummary = "正在读取 Unit 完整结构、材质和贴图引用…";
+            OnPropertyChanged(nameof(AdvancedAnalysisSummary));
+            OnPropertyChanged(nameof(CanRunAdvancedAnalysis));
+            RunAdvancedAnalysisCommand.RaiseCanExecuteChanged();
+            try
+            {
+                var result = await Task.Run(() => _advancedAnalysis.AnalyzeAsync(node, _library.ModsRootDirectory).AsTask());
+                AdvancedAnalysisSummary = result.Issues.Count == 0
+                    ? $"高级分析完成：{result.BuiltUtc:yyyy-MM-dd HH:mm:ss}。"
+                    : $"高级分析完成，但发现 {result.Issues.Count} 项读取提醒。";
+                _advancedAnalysisReady = result.IsReady;
+                await RefreshAdvancedDetailsAsync();
+            }
+            catch (Exception exception)
+            {
+                _advancedAnalysisReady = false;
+                AdvancedAnalysisSummary = $"高级分析失败：{exception.Message}";
+                _notifications?.Show(AdvancedAnalysisSummary, NotificationLevel.Error, TimeSpan.FromSeconds(10));
+            }
+            finally
+            {
+                _advancedAnalysisRunning = false;
+                OnPropertyChanged(nameof(AdvancedAnalysisSummary));
+                OnPropertyChanged(nameof(CanRunAdvancedAnalysis));
+                RunAdvancedAnalysisCommand.RaiseCanExecuteChanged();
+                RaiseMaterialCommandStates();
+                RaiseSameKeyReconstructionCommandState();
+            }
+        }
+
+        private async Task RunDependencyGraphTestAsync()
+        {
+            if (!TryGetCurrentNode(out var node)) return;
+            _dependencyGraphTestRunning = true;
+            DependencyGraphTestSummary = "正在执行轻量引用链测试…";
+            OnPropertyChanged(nameof(DependencyGraphTestSummary));
+            OnPropertyChanged(nameof(CanRunDependencyGraphTest));
+            RunDependencyGraphTestCommand.RaiseCanExecuteChanged();
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var analyses = await Task.Run(() => _dependencyGraphAnalysis.AnalyzeNodeAsync(node, _library.ModsRootDirectory).AsTask());
+                stopwatch.Stop();
+                var assets = analyses.Sum(analysis => analysis.Assets.Count);
+                var unitMaterials = analyses.Sum(analysis => analysis.References.Count(reference => reference.Kind == HD2ModAdaptation.Analysis.PatchReferenceKind.UnitMaterial));
+                var materialTextures = analyses.Sum(analysis => analysis.References.Count(reference => reference.Kind == HD2ModAdaptation.Analysis.PatchReferenceKind.MaterialTexture));
+                var issues = analyses.SelectMany(analysis => analysis.Issues).ToArray();
+                var reportPath = WriteDependencyGraphTestReport(node, analyses, stopwatch.Elapsed, issues);
+                var health = AssessDependencyGraph(analyses);
+                DependencyGraphTestSummary = $"轻量引用链{(health.IsNormal ? "正常" : "发现异常")}：{assets} 个资源，Unit→Material {unitMaterials} 条，Material→Texture {materialTextures} 条，耗时 {stopwatch.ElapsedMilliseconds} ms。已写入 JSON 报告。";
+                LogService.Info($"轻量引用链测试：Mod={node.Metadata.Name} ({node.Id.Value:N})，Patch组={analyses.Count}，资源={assets}，Unit→Material={unitMaterials}，Material→Texture={materialTextures}，问题={issues.Length}，耗时={stopwatch.ElapsedMilliseconds}ms。JSON={reportPath}。详情页未写入缓存。" + (issues.Length == 0 ? string.Empty : $" 问题：{string.Join(" | ", issues.Take(10).Select(issue => $"{issue.Code}: {issue.Message}"))}"));
+            }
+            catch (Exception exception)
+            {
+                stopwatch.Stop();
+                DependencyGraphTestSummary = $"轻量引用链测试失败：{exception.Message}";
+                LogService.Error($"轻量引用链测试失败：Mod={node.Metadata.Name}，耗时={stopwatch.ElapsedMilliseconds}ms，错误={exception}");
+            }
+            finally
+            {
+                _dependencyGraphTestRunning = false;
+                OnPropertyChanged(nameof(DependencyGraphTestSummary));
+                OnPropertyChanged(nameof(CanRunDependencyGraphTest));
+                RunDependencyGraphTestCommand.RaiseCanExecuteChanged();
+            }
+        }
+
+        private async Task CompareDependencyGraphAsync()
+        {
+            if (!TryGetCurrentNode(out var node)) return;
+            _dependencyGraphComparisonRunning = true;
+            DependencyGraphComparisonSummary = "正在分别读取轻量与完整引用链并比较去重关系…";
+            OnPropertyChanged(nameof(DependencyGraphComparisonSummary));
+            try
+            {
+                var stopwatch = Stopwatch.StartNew();
+                var lightweight = await Task.Run(() => _dependencyGraphAnalysis.AnalyzeNodeAsync(node, _library.ModsRootDirectory).AsTask());
+                var full = await Task.Run(() => _fullPatchAnalysis.AnalyzeNodeAsync(node, _library.ModsRootDirectory).AsTask());
+                stopwatch.Stop();
+                var comparison = CompareReferenceSets(lightweight, full);
+                var reportPath = WriteDependencyGraphComparisonReport(node, lightweight, full, comparison, stopwatch.Elapsed);
+                DependencyGraphComparisonSummary = comparison.IsMatch
+                    ? $"轻量链与完整分析的去重引用集合一致，耗时 {stopwatch.ElapsedMilliseconds} ms。"
+                    : $"发现差异：仅轻量 {comparison.OnlyLightweight.Length} 条、仅完整 {comparison.OnlyFull.Length} 条；请查看 JSON。";
+                LogService.Info($"轻量/完整引用链对比：Mod={node.Metadata.Name}，一致={comparison.IsMatch}，仅轻量={comparison.OnlyLightweight.Length}，仅完整={comparison.OnlyFull.Length}，耗时={stopwatch.ElapsedMilliseconds}ms，JSON={reportPath}。");
+            }
+            catch (Exception exception)
+            {
+                DependencyGraphComparisonSummary = $"引用链对比失败：{exception.Message}";
+                LogService.Error($"轻量/完整引用链对比失败：Mod={node.Metadata.Name}，错误={exception}");
+            }
+            finally
+            {
+                _dependencyGraphComparisonRunning = false;
+                OnPropertyChanged(nameof(DependencyGraphComparisonSummary));
+                OnPropertyChanged(nameof(CanCompareDependencyGraph));
+                CompareDependencyGraphCommand.RaiseCanExecuteChanged();
+            }
+        }
+
+        private string WriteDependencyGraphTestReport<TAnalysis, TIssue>(ModNode node, IEnumerable<TAnalysis> analyses, TimeSpan elapsed, IReadOnlyList<TIssue> issues)
+        {
+            var serializedGroups = analyses
+                .Select((analysis, index) => new
+                {
+                    Index = index,
+                    Analysis = JsonSerializer.SerializeToElement(analysis)
+                })
+                .ToArray();
+
+            var resources = serializedGroups
+                .SelectMany(group => ReadJsonArrayProperty(group.Analysis, "Assets").Select(asset => new
+                {
+                    OwnerPatchGroup = ReadJsonStringProperty(group.Analysis, "Input", "PatchTocFilePath") ?? $"PatchGroup#{group.Index + 1}",
+                    Resource = asset
+                }))
+                .ToArray();
+
+            var referenceChains = serializedGroups
+                .SelectMany(group => ReadJsonArrayProperty(group.Analysis, "References").Select(reference => new
+                {
+                    OwnerPatchGroup = ReadJsonStringProperty(group.Analysis, "Input", "PatchTocFilePath") ?? $"PatchGroup#{group.Index + 1}",
+                    Reference = reference
+                }))
+                .GroupBy(item => item.Reference.GetRawText(), StringComparer.Ordinal)
+                .Select(group => new
+                {
+                    Reference = group.First().Reference,
+                    Owners = group.Select(item => item.OwnerPatchGroup).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                    DuplicateCount = group.Count()
+                })
+                .ToArray();
+
+            var issueDetails = issues
+                .Select(issue => JsonSerializer.SerializeToElement(issue))
+                .ToArray();
+			var health = AssessDependencyGraph(serializedGroups.Select(group => group.Analysis));
+            var isNormal = issueDetails.Length == 0 && health.IsNormal;
+            var report = new
+            {
+                GeneratedUtc = DateTime.UtcNow,
+                Mod = new
+                {
+                    Id = node.Id.Value,
+                    Name = node.Metadata.Name
+                },
+                ElapsedMilliseconds = elapsed.TotalMilliseconds,
+                Normality = new
+                {
+                    IsNormal = isNormal,
+                    Judgment = isNormal ? "正常" : "存在需要检查的引用链读取或语义问题",
+                    Explanation = isNormal
+                        ? "所有 Patch 组均已完成轻量引用链读取，引用类型与目标资源类型一致，且未返回诊断问题。"
+						: $"读取或语义校验发现问题：读取诊断 {issueDetails.Length} 项，引用语义问题 {health.Problems.Length} 项。"
+                },
+                Summary = new
+                {
+                    PatchGroupCount = serializedGroups.Length,
+                    ResourceCount = resources.Length,
+                    UniqueReferenceChainCount = referenceChains.Length,
+                    DuplicateReferenceCount = referenceChains.Sum(chain => chain.DuplicateCount - 1),
+                    IssueCount = issueDetails.Length
+                },
+                ResourceOwnership = resources,
+                DeduplicatedReferenceChains = referenceChains,
+				SemanticValidation = health,
+                Issues = issueDetails,
+                PatchGroups = serializedGroups.Select(group => group.Analysis).ToArray()
+            };
+
+            var reportDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+            Directory.CreateDirectory(reportDirectory);
+            var reportPath = Path.Combine(
+                reportDirectory,
+                $"DependencyGraph-{SanitizeFileName(node.Metadata.Name)}-{DateTime.Now:yyyyMMdd-HHmmssfff}.json");
+            File.WriteAllText(reportPath, JsonSerializer.Serialize(report, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            }), Encoding.UTF8);
+            return reportPath;
+        }
+
+        private static DependencyGraphHealth AssessDependencyGraph(IEnumerable<JsonElement> analyses)
+        {
+            var assets = analyses.SelectMany(analysis => ReadJsonArrayProperty(analysis, "Assets"))
+                .Select(asset => asset.GetProperty("AssetKey").GetRawText())
+                .ToHashSet(StringComparer.Ordinal);
+            var assetTypes = analyses.SelectMany(analysis => ReadJsonArrayProperty(analysis, "Assets"))
+                .ToDictionary(asset => asset.GetProperty("AssetKey").GetRawText(), asset => new
+                {
+                    IsUnit = asset.GetProperty("IsUnit").GetBoolean(),
+                    IsMaterial = asset.GetProperty("IsMaterial").GetBoolean(),
+                    IsTexture = asset.GetProperty("IsTexture").GetBoolean()
+                }, StringComparer.Ordinal);
+            var problems = new List<object>();
+            foreach (var reference in analyses.SelectMany(analysis => ReadJsonArrayProperty(analysis, "References")))
+            {
+                var kind = reference.GetProperty("Kind").GetInt32();
+                var source = reference.GetProperty("SourceAssetKey").GetRawText();
+                var target = reference.GetProperty("TargetAssetKey").GetRawText();
+                var sourceIsExpected = assetTypes.TryGetValue(source, out var sourceType) && (kind == 0 ? sourceType.IsUnit : sourceType.IsMaterial);
+                var targetIsEmbedded = assets.Contains(target);
+                var targetIsExpected = !targetIsEmbedded || (assetTypes.TryGetValue(target, out var targetType) && (kind == 0 ? targetType.IsMaterial : targetType.IsTexture));
+                if (!sourceIsExpected || !targetIsExpected)
+                {
+                    problems.Add(new { Kind = kind == 0 ? "UnitMaterial" : "MaterialTexture", Source = source, Target = target, SourceIsExpected = sourceIsExpected, TargetIsExpected = targetIsExpected, TargetIsEmbedded = targetIsEmbedded });
+                }
+            }
+            return new DependencyGraphHealth(problems.Count == 0, problems.ToArray());
+        }
+
+        private static DependencyGraphHealth AssessDependencyGraph<TAnalysis>(IEnumerable<TAnalysis> analyses)
+            => AssessDependencyGraph(analyses.Select(analysis => JsonSerializer.SerializeToElement(analysis)));
+
+        private static ReferenceSetComparison CompareReferenceSets<TAnalysis>(IEnumerable<TAnalysis> lightweight, IEnumerable<TAnalysis> full)
+        {
+            var light = BuildReferenceSet(lightweight);
+            var complete = BuildReferenceSet(full);
+            return new ReferenceSetComparison(
+                light.Except(complete, StringComparer.Ordinal).ToArray(),
+                complete.Except(light, StringComparer.Ordinal).ToArray());
+        }
+
+        private static HashSet<string> BuildReferenceSet<TAnalysis>(IEnumerable<TAnalysis> analyses)
+            => analyses.SelectMany(analysis => ReadJsonArrayProperty(JsonSerializer.SerializeToElement(analysis), "References"))
+                .Select(reference => $"{reference.GetProperty("Kind").GetInt32()}|{reference.GetProperty("SourceAssetKey").GetRawText()}|{reference.GetProperty("TargetAssetKey").GetRawText()}")
+                .ToHashSet(StringComparer.Ordinal);
+
+        private static string WriteDependencyGraphComparisonReport<TAnalysis>(ModNode node, IEnumerable<TAnalysis> lightweight, IEnumerable<TAnalysis> full, ReferenceSetComparison comparison, TimeSpan elapsed)
+        {
+            var reportDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+            Directory.CreateDirectory(reportDirectory);
+            var reportPath = Path.Combine(reportDirectory, $"DependencyGraphComparison-{SanitizeFileName(node.Metadata.Name)}-{DateTime.Now:yyyyMMdd-HHmmssfff}.json");
+            File.WriteAllText(reportPath, JsonSerializer.Serialize(new
+            {
+                GeneratedUtc = DateTime.UtcNow,
+                Mod = new { node.Id.Value, node.Metadata.Name },
+                ElapsedMilliseconds = elapsed.TotalMilliseconds,
+                IsMatch = comparison.IsMatch,
+                OnlyLightweight = comparison.OnlyLightweight,
+                OnlyFull = comparison.OnlyFull,
+                LightweightHealth = AssessDependencyGraph(lightweight),
+                FullHealth = AssessDependencyGraph(full)
+            }, new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
+            return reportPath;
+        }
+
+        private sealed record DependencyGraphHealth(bool IsNormal, object[] Problems);
+        private sealed record ReferenceSetComparison(string[] OnlyLightweight, string[] OnlyFull)
+        {
+            public bool IsMatch => OnlyLightweight.Length == 0 && OnlyFull.Length == 0;
+        }
+
+        private static IEnumerable<JsonElement> ReadJsonArrayProperty(JsonElement element, string propertyName)
+        {
+            return element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.Array
+                ? property.EnumerateArray().Select(item => item.Clone()).ToArray()
+                : Array.Empty<JsonElement>();
+        }
+
+        private static string? ReadJsonStringProperty(JsonElement element, string parentPropertyName, string propertyName)
+        {
+            return element.TryGetProperty(parentPropertyName, out var parent)
+                && parent.ValueKind == JsonValueKind.Object
+                && parent.TryGetProperty(propertyName, out var property)
+                && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null;
+        }
+
         private async Task RefreshAdvancedAssetsAsync(CancellationToken cancellationToken)
         {
             if (Mod is null || !TryParseNodeId(Mod.Guid, out var nodeId)) return;
@@ -149,7 +474,7 @@ namespace HD2ModManager.ViewModels
                 var diagnostics = active is null ? null : _derivedState.Snapshot.MaterialDiagnostics;
                 _allAdvancedAssets = await _advancedAssetQueryService.QueryAsync(nodeId, _library.Snapshot, graph, diagnostics, cancellationToken);
                 if (_disposed || cancellationToken.IsCancellationRequested) return;
-                AdvancedAssetState = _allAdvancedAssets.Count == 0 ? "尚未生成稳定资产事实；请等待导入分析完成。" : $"共 {_allAdvancedAssets.Count} 个 AssetKey（稳定事实）";
+                AdvancedAssetState = _allAdvancedAssets.Count == 0 ? "轻量引用图尚未完成；请等待导入后的后台分析。" : $"共 {_allAdvancedAssets.Count} 个 AssetKey（轻量引用图）";
                 ApplyAdvancedAssetFilter();
             }
             catch (OperationCanceledException) { throw; }
@@ -200,6 +525,8 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(MaterialPackagingSummary));
 			OnPropertyChanged(nameof(MaterialDeliverySummary));
             OnPropertyChanged(nameof(SameKeyReconstructionSummary));
+			OnPropertyChanged(nameof(AdvancedAnalysisSummary));
+			OnPropertyChanged(nameof(DependencyGraphTestSummary));
 			OnPropertyChanged(nameof(CanPlanCrossArmorTransfer));
             RaiseMaterialCommandStates();
             RaiseSameKeyReconstructionCommandState();
@@ -474,16 +801,15 @@ namespace HD2ModManager.ViewModels
             if (!TryGetCurrentNode(out var source)) return;
             try
             {
-                _notifications?.Show("正在读取当前 Mod 的 Unit 事实与装备目录…", NotificationLevel.Info, TimeSpan.FromSeconds(8));
-                var facts = await CoreServices.CreateModContentFactsService(SettingsService.CreateStoragePaths())
-                    .GetNodeFactsAsync(source, _library.ModsRootDirectory);
-                var unitKeys = facts.PatchGroups.SelectMany(group => group.AssetKeys)
-                    .Where(asset => asset.TypeId == 0xe0a48d0be9a7453f).ToHashSet();
+                _notifications?.Show("正在使用高级缓存中的 Unit 事实生成装备目录…", NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                var analyses = await _advancedAnalysis.GetRequiredAnalysesAsync(source, _library.ModsRootDirectory).ConfigureAwait(false);
+                var unitKeys = analyses.SelectMany(analysis => analysis.Assets)
+					.Where(asset => asset.AssetKey.TypeId == 0xe0a48d0be9a7453f)
+					.Select(asset => new AssetKey(asset.AssetKey.TypeId, asset.AssetKey.FileId))
+					.ToHashSet();
                 var sourceCatalogCandidates = await _equipmentUnitCatalog.GetEntriesAsync(unitKeys);
-                var sourcePatchPaths = facts.PatchGroups
-                    .SelectMany(group => group.Files)
-                    .Where(file => file.SidecarKind == PatchSidecarKind.Base)
-                    .Select(file => file.FilePath)
+				var sourcePatchPaths = analyses
+					.Select(analysis => analysis.Input.PatchTocFilePath)
                     .ToArray();
                 var sourceCandidates = await _equipmentUnitCatalog.FilterTransferableSourcePartsAsync(sourceCatalogCandidates, sourcePatchPaths);
                 var allCandidates = await _equipmentUnitCatalog.GetEntriesAsync();
@@ -545,13 +871,9 @@ namespace HD2ModManager.ViewModels
         private void AddToProfile()
         {
             if (Mod == null) return;
-            if (_profiles.AddModToSelected(Mod.Guid))
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
             {
-                _notifications?.Show($"已加入正在编辑的配置：{Mod.Name}");
-            }
-            else
-            {
-                _notifications?.Show("无法加入配置，可能尚未选择配置或该 Mod 已存在。", NotificationLevel.Info);
+                _ = shell.AddModToSelectedProfileAsync(Mod.Guid, Mod.Name);
             }
         }
 

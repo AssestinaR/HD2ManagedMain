@@ -38,12 +38,23 @@ public static class CoreServices
 		=> new GitHubAssetMetadataSyncService(new HttpClient(), paths);
 	public static IPatchGroupAnalysisProvider CreatePatchGroupAnalysisProvider(StoragePaths paths)
 		=> new CachedPatchGroupAnalysisProvider(
-			new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer()),
+			new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), PatchAnalysisDepth.DependencyGraph),
 			CreateModFactsStore(paths),
 			CreatePatchFileNameParser());
 	public static IModFactsStore CreateModFactsStore(StoragePaths paths) => new SqliteModFactsStore(paths);
 	public static IModContentFactsService CreateModContentFactsService(StoragePaths paths)
 		=> new ModContentFactsService(CreatePatchFileNameParser(), CreatePatchGroupAnalysisProvider(paths));
+	public static IAdvancedModAnalysisService CreateAdvancedModAnalysisService(StoragePaths paths)
+		=> new AdvancedModAnalysisService(
+			CreateModFactsStore(paths),
+			new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), HD2ModAdaptation.Analysis.PatchAnalysisDepth.Full),
+			CreatePatchFileNameParser());
+
+	public static IPatchGroupAnalysisProvider CreateDependencyGraphAnalysisProvider()
+		=> new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), HD2ModAdaptation.Analysis.PatchAnalysisDepth.DependencyGraph);
+
+	public static IPatchGroupAnalysisProvider CreateFullPatchAnalysisProvider()
+		=> new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), HD2ModAdaptation.Analysis.PatchAnalysisDepth.Full);
 	public static IGameDataMappingFactsService CreateGameDataMappingFactsService(StoragePaths paths)
 		=> new GameDataMappingFactsService(CreateAssetArchiveIndexService(paths), CreateAssetMetadataCatalogProvider(paths), paths);
 	public static IProfileOverrideGraphService CreateProfileOverrideGraphService(StoragePaths paths)

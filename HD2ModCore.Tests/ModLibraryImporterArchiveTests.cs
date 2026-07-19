@@ -34,6 +34,7 @@ public sealed class ModLibraryImporterArchiveTests
 
 			Assert.True(Directory.Exists(paths.ModsDirectory));
 			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, "library.json")));
+			Assert.False(Directory.Exists(paths.ImportTempDirectory) && Directory.EnumerateDirectories(paths.ImportTempDirectory, "import-*", SearchOption.TopDirectoryOnly).Any());
 
 			// The source archive should not be copied into the portable mods library.
 			Assert.False(Directory.EnumerateFiles(paths.ModsDirectory, "mod.zip", SearchOption.AllDirectories).Any());

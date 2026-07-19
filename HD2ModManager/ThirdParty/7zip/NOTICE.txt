@@ -1,0 +1,10 @@
+7-Zip 25.00 (x64)
+Copyright (c) 1999-2025 Igor Pavlov
+
+This directory contains the unmodified 7-Zip command-line runtime used by HD2ModManager for archive extraction:
+- 7z.exe
+- 7z.dll
+
+7-Zip is distributed under the GNU LGPL. The complete license text is provided in License.txt in this directory.
+
+Source code: https://www.7-zip.org/

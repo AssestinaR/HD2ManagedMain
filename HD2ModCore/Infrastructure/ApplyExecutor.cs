@@ -204,7 +204,15 @@ public sealed class ApplyExecutor : IApplyExecutor
 
 	private void CleanupControlledFiles(string gameDataDirectory)
 	{
-		foreach (var path in EnumerateControlledFiles(gameDataDirectory).ToList()) { try { File.Delete(path); } catch { } }
+		foreach (var path in EnumerateControlledFiles(gameDataDirectory).ToList())
+		{
+			try
+			{
+				ClearReadOnlyAttribute(path);
+				File.Delete(path);
+			}
+			catch { }
+		}
 	}
 
 	private async ValueTask DeleteActivationStateBestEffortAsync(string gameDataDirectory)
@@ -214,7 +222,19 @@ public sealed class ApplyExecutor : IApplyExecutor
 
 	private static ApplyOperationResult DeletePatch(ApplyOperation operation)
 	{
-		try { if (File.Exists(operation.TargetPath) || Directory.Exists(operation.TargetPath)) File.Delete(operation.TargetPath); return new ApplyOperationResult(operation, true, DeploymentMethod.Delete, null, null); }
+		try
+		{
+			if (File.Exists(operation.TargetPath))
+			{
+				ClearReadOnlyAttribute(operation.TargetPath);
+				File.Delete(operation.TargetPath);
+			}
+			else if (Directory.Exists(operation.TargetPath))
+			{
+				Directory.Delete(operation.TargetPath);
+			}
+			return new ApplyOperationResult(operation, true, DeploymentMethod.Delete, null, null);
+		}
 		catch (Exception exception) { return new ApplyOperationResult(operation, false, DeploymentMethod.Delete, "CannotDeleteExistingPatch", exception.Message); }
 	}
 
@@ -224,7 +244,15 @@ public sealed class ApplyExecutor : IApplyExecutor
 		{
 			var targetDirectory = Path.GetDirectoryName(operation.TargetPath);
 			if (!string.IsNullOrWhiteSpace(targetDirectory)) Directory.CreateDirectory(targetDirectory);
-			if (File.Exists(operation.TargetPath) || Directory.Exists(operation.TargetPath)) File.Delete(operation.TargetPath);
+			if (File.Exists(operation.TargetPath))
+			{
+				ClearReadOnlyAttribute(operation.TargetPath);
+				File.Delete(operation.TargetPath);
+			}
+			else if (Directory.Exists(operation.TargetPath))
+			{
+				Directory.Delete(operation.TargetPath);
+			}
 		}
 		catch (Exception exception) { return new ApplyOperationResult(operation, false, null, "CannotPrepareTarget", exception.Message); }
 		if (method == DeploymentMethod.HardLink)
@@ -249,6 +277,15 @@ public sealed class ApplyExecutor : IApplyExecutor
 	{
 		try { File.CreateSymbolicLink(linkPath, targetPath); error = null; return true; }
 		catch (Exception exception) { error = exception.Message; return false; }
+	}
+
+	private static void ClearReadOnlyAttribute(string path)
+	{
+		var attributes = File.GetAttributes(path);
+		if ((attributes & FileAttributes.ReadOnly) != 0)
+		{
+			File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+		}
 	}
 
 	private static bool TryCreateHardLink(string linkPath, string targetPath, out string? error)

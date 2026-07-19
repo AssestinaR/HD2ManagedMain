@@ -1,5 +1,6 @@
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using System.Diagnostics;
 
 namespace HD2ModManager.Services
 {
@@ -134,6 +135,28 @@ namespace HD2ModManager.Services
             return true;
         }
 
+        public async Task<bool> AddModToSelectedAsync(string nodeGuid, CancellationToken cancellationToken = default)
+        {
+            if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+            var stopwatch = Stopwatch.StartNew();
+            LogService.Info($"配置性能：开始加入配置。Profile={profileId.Value:N}，Mod={nodeId.Value:N}。");
+            var snapshot = await Task.Run(
+                () => _manager.AddProfileEntryAsync(profileId, nodeId, cancellationToken).AsTask(),
+                cancellationToken).ConfigureAwait(false);
+            LogService.Info($"配置性能：加入配置 Core 写入完成，耗时 {stopwatch.ElapsedMilliseconds}ms。Profile={profileId.Value:N}，Mod={nodeId.Value:N}。");
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is not null && !dispatcher.CheckAccess())
+            {
+                await dispatcher.InvokeAsync(() => ApplyAddedProfileSnapshot(snapshot, profileId));
+            }
+            else
+            {
+                ApplyAddedProfileSnapshot(snapshot, profileId);
+            }
+            LogService.Info($"配置性能：加入配置 UI 快照提交完成，总耗时 {stopwatch.ElapsedMilliseconds}ms。Profile={profileId.Value:N}，Mod={nodeId.Value:N}。");
+            return true;
+        }
+
         public bool RemoveModFromSelected(string nodeGuid)
         {
             if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
@@ -141,6 +164,28 @@ namespace HD2ModManager.Services
             RebuildIndex();
             NotifyIfActive(profileId);
             Changed?.Invoke(this, EventArgs.Empty);
+            return true;
+        }
+
+        public async Task<bool> RemoveModFromSelectedAsync(string nodeGuid, CancellationToken cancellationToken = default)
+        {
+            if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+            var stopwatch = Stopwatch.StartNew();
+            LogService.Info($"配置性能：开始从配置移除。Profile={profileId.Value:N}，Mod={nodeId.Value:N}。");
+            var snapshot = await Task.Run(
+                () => _manager.RemoveProfileEntryAsync(profileId, nodeId, cancellationToken).AsTask(),
+                cancellationToken).ConfigureAwait(false);
+            LogService.Info($"配置性能：配置移除 Core 写入完成，耗时 {stopwatch.ElapsedMilliseconds}ms。Profile={profileId.Value:N}，Mod={nodeId.Value:N}。");
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is not null && !dispatcher.CheckAccess())
+            {
+                await dispatcher.InvokeAsync(() => ApplyAddedProfileSnapshot(snapshot, profileId));
+            }
+            else
+            {
+                ApplyAddedProfileSnapshot(snapshot, profileId);
+            }
+            LogService.Info($"配置性能：配置移除 UI 快照提交完成，总耗时 {stopwatch.ElapsedMilliseconds}ms。Profile={profileId.Value:N}，Mod={nodeId.Value:N}。");
             return true;
         }
 
@@ -228,5 +273,13 @@ namespace HD2ModManager.Services
             SavedUtc: DateTimeOffset.UtcNow,
             Nodes: new Dictionary<ModNodeId, ModNode>(),
             Profiles: Array.Empty<Profile>());
+
+        private void ApplyAddedProfileSnapshot(LibrarySnapshot snapshot, ProfileId profileId)
+        {
+            _snapshot = snapshot;
+            RebuildIndex();
+            NotifyIfActive(profileId);
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
     }
 }

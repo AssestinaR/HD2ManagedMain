@@ -146,8 +146,8 @@
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
                     <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Border" Property="Background" Value="{StaticResource SurfaceInteractiveHover}"/><Setter TargetName="Border" Property="BorderBrush" Value="{StaticResource StrokeFocus}"/></Trigger>
-                        <Trigger Property="IsPressed" Value="True"><Setter TargetName="Border" Property="Background" Value="{StaticResource SurfaceSelected}"/></Trigger>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{StaticResource SurfaceInteractiveHover}"/><Setter Property="BorderBrush" Value="{StaticResource StrokeFocus}"/></Trigger>
+                        <Trigger Property="IsPressed" Value="True"><Setter Property="Background" Value="{StaticResource SurfaceSelected}"/></Trigger>
                         <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.55"/></Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -161,7 +161,7 @@
         <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
         <Style.Triggers>
             <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{StaticResource AccentHover}"/><Setter Property="BorderBrush" Value="{StaticResource AccentHover}"/></Trigger>
-            <Trigger Property="IsPressed" Value="True"><Setter Property="Background" Value="#10499F"/></Trigger>
+            <Trigger Property="IsPressed" Value="True"><Setter Property="Background" Value="#10499F"/><Setter Property="BorderBrush" Value="#10499F"/></Trigger>
         </Style.Triggers>
     </Style>
 

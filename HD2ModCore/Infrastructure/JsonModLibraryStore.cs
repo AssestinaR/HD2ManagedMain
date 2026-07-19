@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.Collections.Concurrent;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
@@ -10,6 +11,7 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Persists the mod library as a JSON file (portable and debuggable; can later migrate to SQLite).
 public sealed class JsonModLibraryStore : IModLibraryStore
 {
+	private static readonly ConcurrentDictionary<string, SemaphoreSlim> FileGates = new(StringComparer.OrdinalIgnoreCase);
 	private sealed record LibraryFileSnapshot(
 		int Version,
 		DateTimeOffset SavedUtc,
@@ -41,6 +43,20 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 
 	public async ValueTask<LibrarySnapshot?> TryLoadAsync(CancellationToken cancellationToken = default)
 	{
+		var gate = GetFileGate();
+		await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+		try
+		{
+			return await TryLoadCoreAsync(cancellationToken).ConfigureAwait(false);
+		}
+		finally
+		{
+			gate.Release();
+		}
+	}
+
+	private async ValueTask<LibrarySnapshot?> TryLoadCoreAsync(CancellationToken cancellationToken)
+	{
 		Directory.CreateDirectory(_paths.ModsDirectory);
 		if (!File.Exists(SnapshotPath))
 		{
@@ -50,7 +66,7 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 				return null;
 			}
 
-			await SaveAsync(legacySnapshot, cancellationToken).ConfigureAwait(false);
+			await SaveCoreAsync(legacySnapshot, cancellationToken).ConfigureAwait(false);
 			return legacySnapshot;
 		}
 
@@ -79,6 +95,20 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 
 	public async ValueTask SaveAsync(LibrarySnapshot snapshot, CancellationToken cancellationToken = default)
 	{
+		var gate = GetFileGate();
+		await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+		try
+		{
+			await SaveCoreAsync(snapshot, cancellationToken).ConfigureAwait(false);
+		}
+		finally
+		{
+			gate.Release();
+		}
+	}
+
+	private async ValueTask SaveCoreAsync(LibrarySnapshot snapshot, CancellationToken cancellationToken)
+	{
 		if (snapshot is null)
 		{
 			throw new ArgumentNullException(nameof(snapshot));
@@ -97,11 +127,20 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 
 		var fileSnapshot = new LibraryFileSnapshot(normalized.Version, normalized.SavedUtc, normalized.Nodes);
 		var json = JsonSerializer.Serialize(fileSnapshot, SerializerOptions);
-		var tmp = SnapshotPath + ".tmp";
-		await File.WriteAllTextAsync(tmp, json, cancellationToken).ConfigureAwait(false);
-		File.Copy(tmp, SnapshotPath, overwrite: true);
-		File.Delete(tmp);
+		var tmp = SnapshotPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+		try
+		{
+			await File.WriteAllTextAsync(tmp, json, cancellationToken).ConfigureAwait(false);
+			File.Move(tmp, SnapshotPath, overwrite: true);
+		}
+		finally
+		{
+			if (File.Exists(tmp)) File.Delete(tmp);
+		}
 	}
+
+	private SemaphoreSlim GetFileGate()
+		=> FileGates.GetOrAdd(Path.GetFullPath(SnapshotPath), static _ => new SemaphoreSlim(1, 1));
 
 	private async ValueTask<(IReadOnlyList<Profile> Profiles, ProfileId? ActiveProfileId)> LoadProfilesAsync(IReadOnlyList<Profile> legacyProfiles, CancellationToken cancellationToken)
 	{

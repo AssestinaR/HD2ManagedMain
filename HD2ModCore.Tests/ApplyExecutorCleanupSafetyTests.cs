@@ -40,6 +40,44 @@ public sealed class ApplyExecutorCleanupSafetyTests
 	}
 
 	[Fact]
+	public async Task ExecuteAsync_DeletePatch_RemovesReadOnlyHardLinkWithoutChangingSourceAttributes()
+	{
+		if (!OperatingSystem.IsWindows()) return;
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var gameData = Path.Combine(root, "game", "data");
+		var sourceDirectory = Path.Combine(root, "mods");
+		Directory.CreateDirectory(gameData);
+		Directory.CreateDirectory(sourceDirectory);
+		var source = Path.Combine(sourceDirectory, "9ba626afa44a3aa3.patch_4");
+		var target = Path.Combine(gameData, "9ba626afa44a3aa3.patch_0");
+		await File.WriteAllTextAsync(source, "LINKED");
+		File.SetAttributes(source, File.GetAttributes(source) | FileAttributes.ReadOnly);
+		try
+		{
+			var deployPlan = new ApplyPlan(gameData, ProfileId.New(), 1, DateTimeOffset.UtcNow,
+			[
+				new ApplyOperation(ApplyOperationKind.DeployPatch, target, source, "9ba626afa44a3aa3", 4, 0, PatchSidecarKind.Base, ModNodeId.New()),
+			], [], DeploymentMethod.HardLink);
+			var executor = new ApplyExecutor();
+			Assert.True((await executor.ExecuteAsync(deployPlan)).Success);
+			Assert.True((File.GetAttributes(target) & FileAttributes.ReadOnly) != 0);
+
+			var deletePlan = new ApplyPlan(gameData, ProfileId.New(), 2, DateTimeOffset.UtcNow,
+			[
+				new ApplyOperation(ApplyOperationKind.DeletePatch, target, null, null, null, null, null, null),
+			], []);
+			Assert.True((await executor.ExecuteAsync(deletePlan)).Success);
+			Assert.False(File.Exists(target));
+			Assert.True((File.GetAttributes(source) & FileAttributes.ReadOnly) != 0);
+		}
+		finally
+		{
+			try { File.SetAttributes(source, FileAttributes.Normal); } catch { }
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
 	public async Task ExecuteAsync_PreflightFailure_DoesNotChangeExistingData()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));

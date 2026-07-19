@@ -65,7 +65,18 @@
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <Border Width="36" Height="36" CornerRadius="{StaticResource RadiusControl}" ClipToBounds="True" VerticalAlignment="Center" Margin="0,0,9,0" Background="{StaticResource SurfaceMuted}">
-                                    <Image Source="{Binding ImagePath, Converter={StaticResource ImagePlaceholder}, ConverterParameter=72}" Stretch="UniformToFill"/>
+                                    <Image Stretch="UniformToFill">
+                                        <Image.Style>
+                                            <Style TargetType="Image">
+                                                <Setter Property="Source" Value="{x:Null}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding ShowImage}" Value="True">
+                                                        <Setter Property="Source" Value="{Binding ImagePath, Converter={StaticResource ImagePlaceholder}, ConverterParameter=72}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Image.Style>
+                                    </Image>
                                 </Border>
                                 <StackPanel x:Name="TextPanel" Grid.Column="1" VerticalAlignment="Center" Margin="0,0,0,0">
                                     <Grid>

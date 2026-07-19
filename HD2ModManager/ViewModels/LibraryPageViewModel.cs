@@ -24,8 +24,9 @@ namespace HD2ModManager.ViewModels
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private string? _selectionAnchorGuid;
         private CancellationTokenSource? _searchCancellation;
+        private CancellationTokenSource? _thumbnailCancellation;
 
-        public ObservableCollection<ModCardViewModel> Items { get; } = new();
+        public BulkObservableCollection<ModCardViewModel> Items { get; } = new();
 
         private string _query = string.Empty;
         public string Query
@@ -75,8 +76,8 @@ namespace HD2ModManager.ViewModels
             EditDescriptionCommand = new RelayCommand(_ => { });
             EditImageCommand = new RelayCommand(_ => { });
             RemoveCommand = new RelayCommand(parameter => RemoveMod(parameter as ModCardViewModel));
-            Refresh();
             QueueStatusRefresh();
+            QueueThumbnailRefresh();
         }
 
         public LibraryPageViewModel(ModLibraryService library, SelectionCoordinator? selection, ProfileService? profiles, NotificationService? notifications = null)
@@ -152,6 +153,7 @@ namespace HD2ModManager.ViewModels
             card.Mod.Image = destination;
             _notifications?.Show($"已更新图标：{card.Mod.Name}");
             Refresh();
+            QueueThumbnailRefresh();
         }
 
         public void Refresh()
@@ -167,13 +169,16 @@ namespace HD2ModManager.ViewModels
             {
                 all = all.Where(mod => ModSearchMatcher.IsMatch(mod.Name, mod.Description, _library.GetDerivedData(mod.Guid)?.AssetSummary, q)).ToList();
             }
-            Items.Clear();
-            foreach (var mod in all.OrderBy(m => m.Name, System.StringComparer.CurrentCultureIgnoreCase))
-            {
-                var derived = _library.GetDerivedData(mod.Guid);
-                _userStatuses.TryGetValue(mod.Guid, out var status);
-                Items.Add(new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, status));
-            }
+            var cards = all
+                .OrderBy(mod => mod.Name, System.StringComparer.CurrentCultureIgnoreCase)
+                .Select(mod =>
+                {
+                    var derived = _library.GetDerivedData(mod.Guid);
+                    _userStatuses.TryGetValue(mod.Guid, out var status);
+                    return new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, status);
+                })
+                .ToList();
+            Items.ReplaceWith(cards);
             OnPropertyChanged(nameof(EmptyMessage));
             OnPropertyChanged(nameof(ItemCountText));
         }
@@ -192,20 +197,32 @@ namespace HD2ModManager.ViewModels
             catch (OperationCanceledException) { }
         }
 
-        private async Task RefreshUserStatusesAsync()
+        private void RefreshUserStatuses()
         {
             if (_profiles is null || _derivedState is null) return;
-            await Task.Yield();
             var statuses = _derivedState.ProjectStatuses(_profiles.SelectedProfileId);
             _userStatuses.Clear();
             foreach (var pair in statuses) _userStatuses[pair.Key.Value.ToString("N")] = pair.Value;
-            Refresh();
         }
 
         private void QueueStatusRefresh()
         {
+            RefreshUserStatuses();
             Refresh();
-            _ = RefreshUserStatusesAsync();
+        }
+
+        private async void QueueThumbnailRefresh()
+        {
+            if (!SettingsService.GetEnableLibraryImages()) return;
+            _thumbnailCancellation?.Cancel();
+            _thumbnailCancellation?.Dispose();
+            _thumbnailCancellation = new CancellationTokenSource();
+            try
+            {
+                var generated = await ThumbnailService.EnsureThumbnailsAsync(_library.All().Select(mod => mod.Image), 72, _thumbnailCancellation.Token);
+                if (generated && !_thumbnailCancellation.IsCancellationRequested) Refresh();
+            }
+            catch (OperationCanceledException) { }
         }
 
         private static void RunOnUiThread(Action action)
@@ -237,13 +254,9 @@ namespace HD2ModManager.ViewModels
         private void AddToProfile(ModCardViewModel? card)
         {
             if (card == null || _profiles == null) return;
-            if (_profiles.AddModToSelected(card.Mod.Guid))
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
             {
-                _notifications?.Show($"已加入正在编辑的配置：{card.Mod.Name}");
-            }
-            else
-            {
-                _notifications?.Show("无法加入配置，可能尚未选择配置或该 Mod 已存在。", NotificationLevel.Info);
+                _ = shell.AddModToSelectedProfileAsync(card.Mod.Guid, card.Mod.Name);
             }
         }
 
@@ -293,6 +306,9 @@ namespace HD2ModManager.ViewModels
             _searchCancellation?.Cancel();
             _searchCancellation?.Dispose();
             _searchCancellation = null;
+            _thumbnailCancellation?.Cancel();
+            _thumbnailCancellation?.Dispose();
+            _thumbnailCancellation = null;
         }
     }
 
@@ -302,7 +318,8 @@ namespace HD2ModManager.ViewModels
         public ModAssetSummary? AssetSummary { get; }
         public string Name => Mod.Name;
         public string AssetSummaryText => ModAssetSummaryFormatter.Format(AssetSummary);
-        public string? ImagePath => Mod.Image;
+        public string? ImagePath => ThumbnailService.GetExistingThumbnailPath(Mod.Image, 72);
+        public bool ShowImage => SettingsService.GetEnableLibraryImages();
         public string? Description => Mod.Description;
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }

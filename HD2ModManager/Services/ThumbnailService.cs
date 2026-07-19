@@ -8,6 +8,7 @@ using System.Windows.Media.Imaging;
 
 namespace HD2ModManager.Services
 {
+    // 作用：在后台生成并提供库列表使用的小尺寸图片缓存，避免 UI 线程读取原始大图。
     public static class ThumbnailService
     {
         private static readonly string CacheDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cache", "thumbs");
@@ -47,6 +48,35 @@ namespace HD2ModManager.Services
                 _generationCancellation.Dispose();
                 _generationCancellation = new CancellationTokenSource();
             }
+        }
+
+        public static string? GetExistingThumbnailPath(string? originalPath, int decode)
+        {
+            if (string.IsNullOrWhiteSpace(originalPath) || !File.Exists(originalPath)) return null;
+            var thumbnail = GetThumbPath(originalPath, decode);
+            return File.Exists(thumbnail) ? thumbnail : null;
+        }
+
+        public static Task<bool> EnsureThumbnailsAsync(IEnumerable<string?> imagePaths, int decode, CancellationToken cancellationToken = default)
+        {
+            var paths = imagePaths
+                .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                .Select(path => path!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            return Task.Run(() =>
+            {
+                var generated = false;
+                foreach (var path in paths)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var thumbnail = GetThumbPath(path, decode);
+                    if (File.Exists(thumbnail)) continue;
+                    EnsureThumb(path, decode);
+                    generated = true;
+                }
+                return generated;
+            }, cancellationToken);
         }
 
         private static void EnsureThumb(string originalPath, int decode)

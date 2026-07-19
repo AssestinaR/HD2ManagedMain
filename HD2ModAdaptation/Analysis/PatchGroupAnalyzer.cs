@@ -3,10 +3,13 @@ using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 
 namespace HD2ModAdaptation.Analysis;
 
+// 作用：分别提供轻量 TOC 资产清单与完整 Unit/材质引用分析。
 // Purpose: Performs the first low-cost patch-group analysis using the canonical TOC scanner.
-public sealed class PatchGroupAnalyzer : IPatchGroupAnalyzer
+public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependencyGraphPatchGroupAnalyzer
 {
-	private const string AnalyzerVersion = "patch-group-v4-section-materials";
+	private const string FullAnalyzerVersion = "patch-group-v4-section-materials";
+	private const string InventoryAnalyzerVersion = "patch-group-v5-inventory";
+	private const string DependencyGraphAnalyzerVersion = "patch-group-v6-dependency-graph";
 	private readonly IPatchTocScanner tocScanner;
 	private readonly IPatchEntryPayloadReader payloadReader;
 	private readonly IUnitMaterialReferenceReader unitMaterialReader;
@@ -25,6 +28,15 @@ public sealed class PatchGroupAnalyzer : IPatchGroupAnalyzer
 	}
 
 	public async ValueTask<PatchGroupAnalysis> AnalyzeAsync(PatchGroupInput input, CancellationToken cancellationToken = default)
+		=> await AnalyzeCoreAsync(input, PatchAnalysisDepth.Full, cancellationToken).ConfigureAwait(false);
+
+	public async ValueTask<PatchGroupAnalysis> AnalyzeInventoryAsync(PatchGroupInput input, CancellationToken cancellationToken = default)
+		=> await AnalyzeCoreAsync(input, PatchAnalysisDepth.Inventory, cancellationToken).ConfigureAwait(false);
+
+	public async ValueTask<PatchGroupAnalysis> AnalyzeDependencyGraphAsync(PatchGroupInput input, CancellationToken cancellationToken = default)
+		=> await AnalyzeCoreAsync(input, PatchAnalysisDepth.DependencyGraph, cancellationToken).ConfigureAwait(false);
+
+	private async ValueTask<PatchGroupAnalysis> AnalyzeCoreAsync(PatchGroupInput input, PatchAnalysisDepth depth, CancellationToken cancellationToken)
 	{
 		ArgumentNullException.ThrowIfNull(input);
 		var issues = new List<PatchAnalysisIssue>();
@@ -49,19 +61,34 @@ public sealed class PatchGroupAnalyzer : IPatchGroupAnalyzer
 					typeId == PatchUnitMeshReader.CompositeUnitTypeId,
 					typeId == MaterialDependencyResolver.MaterialTypeId,
 					typeId == MaterialDependencyResolver.TextureTypeId));
-				if (entry.AssetKey.TypeId != PatchUnitMeshReader.UnitTypeId)
+				if ((depth is PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full) && entry.AssetKey.TypeId != PatchUnitMeshReader.UnitTypeId)
 				{
 					await ReadReferencesAsync(entry, references, issues, cancellationToken).ConfigureAwait(false);
 				}
 			}
-			await ReadUnitMaterialReferencesAsync(entries, references, issues, cancellationToken).ConfigureAwait(false);
+			if (depth == PatchAnalysisDepth.DependencyGraph)
+			{
+				await ReadDirectUnitMaterialReferencesAsync(entries, references, issues, cancellationToken).ConfigureAwait(false);
+			}
+			else if (depth == PatchAnalysisDepth.Full)
+			{
+				await ReadUnitMaterialReferencesAsync(entries, references, issues, cancellationToken).ConfigureAwait(false);
+			}
 		}
 		catch (Exception exception) when (exception is InvalidDataException or EndOfStreamException or IOException)
 		{
 			issues.Add(new PatchAnalysisIssue("InvalidToc", exception.Message, tocPath));
 		}
 
-		return CreateResult(input, assets, references, issues);
+		return CreateResult(input, assets, references, issues, depth);
+	}
+
+	private async ValueTask ReadDirectUnitMaterialReferencesAsync(IReadOnlyList<PatchTocEntry> entries, ICollection<PatchAssetReference> references, ICollection<PatchAnalysisIssue> issues, CancellationToken cancellationToken)
+	{
+		foreach (var entry in entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
+		{
+			await ReadLegacyUnitMaterialReferencesAsync(entry, references, issues, cancellationToken).ConfigureAwait(false);
+		}
 	}
 
 	private async ValueTask ReadReferencesAsync(PatchTocEntry entry, ICollection<PatchAssetReference> references, ICollection<PatchAnalysisIssue> issues, CancellationToken cancellationToken)
@@ -146,6 +173,11 @@ public sealed class PatchGroupAnalyzer : IPatchGroupAnalyzer
 		}
 	}
 
-	private static PatchGroupAnalysis CreateResult(PatchGroupInput input, IReadOnlyList<PatchAssetFact> assets, IReadOnlyList<PatchAssetReference> references, IReadOnlyList<PatchAnalysisIssue> issues)
-		=> new(input, assets, references, issues, DateTimeOffset.UtcNow, AnalyzerVersion);
+	private static PatchGroupAnalysis CreateResult(PatchGroupInput input, IReadOnlyList<PatchAssetFact> assets, IReadOnlyList<PatchAssetReference> references, IReadOnlyList<PatchAnalysisIssue> issues, PatchAnalysisDepth depth = PatchAnalysisDepth.Full)
+		=> new(input, assets, references, issues, DateTimeOffset.UtcNow, depth switch
+		{
+			PatchAnalysisDepth.Inventory => InventoryAnalyzerVersion,
+			PatchAnalysisDepth.DependencyGraph => DependencyGraphAnalyzerVersion,
+			_ => FullAnalyzerVersion
+		}, depth);
 }

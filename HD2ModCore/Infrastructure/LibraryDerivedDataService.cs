@@ -25,9 +25,12 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 
 		var contentFacts = await _contentFactsService.GetLibraryFactsAsync(snapshot, modsRootDirectory, nodeIds, cancellationToken).ConfigureAwait(false);
 		var issues = new List<CoreIssue>(contentFacts.Values.SelectMany(facts => facts.Issues));
+		var selectedNodes = snapshot.Nodes.Values.Where(node => nodeIds is null || nodeIds.Contains(node.Id)).ToArray();
+		var factsByNode = selectedNodes.Where(node => contentFacts.ContainsKey(node.Id)).ToDictionary(node => node, node => contentFacts[node.Id]);
+		var summaries = await _assetSummaryProjector.ProjectManyAsync(factsByNode, cancellationToken).ConfigureAwait(false);
 		var nodes = new Dictionary<ModNodeId, DerivedModNodeData>();
 
-		foreach (var node in snapshot.Nodes.Values)
+		foreach (var node in selectedNodes)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			if (nodeIds is not null && !nodeIds.Contains(node.Id))
@@ -42,15 +45,7 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 			}
 			var patchFiles = nodeContentFacts.ToPatchFileIndex();
 
-			ModAssetSummary? assetSummary = null;
-			try
-			{
-				assetSummary = await _assetSummaryProjector.ProjectAsync(node, nodeContentFacts, cancellationToken);
-			}
-			catch (Exception ex)
-			{
-				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "AssetSummaryProjectionFailed", $"Failed to project stable mod facts: {ex.Message}", directory, node.Id));
-			}
+			summaries.TryGetValue(node.Id, out var assetSummary);
 
 			var nodeIssues = issues.Where(i => i.NodeId == node.Id).ToList();
 			nodes[node.Id] = new DerivedModNodeData(

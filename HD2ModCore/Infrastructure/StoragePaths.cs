@@ -6,6 +6,7 @@ public sealed record StoragePaths(string AppRootDirectory, string? ModsRootDirec
 	// Purpose: Keeps configuration/cache under the app root while allowing an authoritative external Mod library.
 	public string DataDirectory => Path.Combine(AppRootDirectory, "data");
 	public string LibraryDirectory => ModsDirectory;
+	public string ImportTempDirectory => Path.Combine(Directory.GetParent(ModsDirectory)?.FullName ?? AppRootDirectory, "tmp");
 	public string ModsDirectory => string.IsNullOrWhiteSpace(ModsRootDirectory) ? Path.Combine(AppRootDirectory, "mods") : Path.GetFullPath(ModsRootDirectory);
 	public string LibraryPath => Path.Combine(ModsDirectory, "library.json");
 	public string ProfilesPath => Path.Combine(DataDirectory, "profiles.json");

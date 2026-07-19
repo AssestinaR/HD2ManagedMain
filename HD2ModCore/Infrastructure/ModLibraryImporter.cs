@@ -1,7 +1,6 @@
 ﻿using HD2ModCore.Application;
 using HD2ModCore.Domain;
-using SharpCompress.Archives;
-using SharpCompress.Common;
+using System.Runtime.InteropServices;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -15,9 +14,10 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	private readonly IObjectTreeImporter _folderImporter;
 	private readonly IArchiveObjectTreeImporter _archiveImporter;
 	private readonly IModLibraryStore _store;
-	private readonly IPatchGroupAnalysisProvider? _patchFactsProvider;
 	private readonly IModFactsStore? _modFactsStore;
 	private readonly PatchFileNormalizer _normalizer;
+	private readonly SevenZipArchiveExtractor _archiveExtractor;
+	private readonly ImportTemporaryDirectoryManager _temporaryDirectories;
 
 	public ModLibraryImporter(
 		StoragePaths paths,
@@ -31,9 +31,10 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		_folderImporter = folderImporter ?? throw new ArgumentNullException(nameof(folderImporter));
 		_archiveImporter = archiveImporter ?? throw new ArgumentNullException(nameof(archiveImporter));
 		_store = store ?? throw new ArgumentNullException(nameof(store));
-		_patchFactsProvider = patchFactsProvider;
 		_modFactsStore = modFactsStore;
 		_normalizer = new PatchFileNormalizer(new PatchFileNameParser());
+		_archiveExtractor = new SevenZipArchiveExtractor();
+		_temporaryDirectories = new ImportTemporaryDirectoryManager(_paths);
 	}
 
 	public async ValueTask<ImportResult> ImportFolderAsync(string folderPath, CancellationToken cancellationToken = default)
@@ -46,7 +47,8 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 
 		var sourceName = new DirectoryInfo(full).Name;
 		var tree = await _folderImporter.ImportFolderAsync(full, cancellationToken).ConfigureAwait(false);
-		var (storedTree, snapshot) = await CommitImportAsync(tree, full, sourceName, cancellationToken).ConfigureAwait(false);
+		var (storedTree, snapshot) = await CommitImportAsync(tree, full, sourceName, preferHardLinks: false, cancellationToken).ConfigureAwait(false);
+		SetStoredTreeReadOnly(storedTree);
 
 		return new ImportResult(snapshot, storedTree.RootId, sourceName);
 	}
@@ -60,32 +62,31 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 
 		var sourceName = Path.GetFileNameWithoutExtension(full);
-		var extractRoot = Path.Combine(Path.GetTempPath(), "HD2ModCore", "import", Guid.NewGuid().ToString("N"));
-		Directory.CreateDirectory(extractRoot);
+		var extractRoot = _temporaryDirectories.Create();
 
 		ImportedObjectTree storedTree;
 		LibrarySnapshot snapshot;
 		try
 		{
-			await Task.Run(() => ExtractToDirectory(full, extractRoot, cancellationToken), cancellationToken).ConfigureAwait(false);
+			await _archiveExtractor.ExtractAsync(full, extractRoot, cancellationToken).ConfigureAwait(false);
 			var tree = await _folderImporter.ImportFolderAsync(extractRoot, cancellationToken).ConfigureAwait(false);
-			(storedTree, snapshot) = await CommitImportAsync(tree, extractRoot, sourceName, cancellationToken).ConfigureAwait(false);
+			(storedTree, snapshot) = await CommitImportAsync(tree, extractRoot, sourceName, preferHardLinks: true, cancellationToken).ConfigureAwait(false);
 		}
 		finally
 		{
-			try { Directory.Delete(extractRoot, recursive: true); } catch { }
+			try { _temporaryDirectories.Delete(extractRoot); } catch { }
 		}
+		SetStoredTreeReadOnly(storedTree);
 
 		return new ImportResult(snapshot, storedTree.RootId, sourceName);
 	}
 
-	private async ValueTask<(ImportedObjectTree Tree, LibrarySnapshot Snapshot)> CommitImportAsync(ImportedObjectTree tree, string sourceRoot, string sourceName, CancellationToken cancellationToken)
+	private async ValueTask<(ImportedObjectTree Tree, LibrarySnapshot Snapshot)> CommitImportAsync(ImportedObjectTree tree, string sourceRoot, string sourceName, bool preferHardLinks, CancellationToken cancellationToken)
 	{
 		ImportedObjectTree? storedTree = null;
 		try
 		{
-			storedTree = PersistFlattenedTree(tree, sourceRoot, sourceName, cancellationToken);
-			await PersistStableFactsAsync(storedTree, cancellationToken).ConfigureAwait(false);
+			storedTree = PersistFlattenedTree(tree, sourceRoot, sourceName, preferHardLinks, cancellationToken);
 			var snapshot = await MergeIntoSnapshotAsync(storedTree, cancellationToken).ConfigureAwait(false);
 			await _store.SaveAsync(snapshot, cancellationToken).ConfigureAwait(false);
 			return (storedTree, snapshot);
@@ -94,16 +95,6 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		{
 			if (storedTree is not null) await RollbackStoredTreeAsync(storedTree).ConfigureAwait(false);
 			throw;
-		}
-	}
-
-	private async ValueTask PersistStableFactsAsync(ImportedObjectTree storedTree, CancellationToken cancellationToken)
-	{
-		if (_patchFactsProvider is null) return;
-		foreach (var node in storedTree.Nodes.Values)
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-			await _patchFactsProvider.AnalyzeNodeAsync(node, _paths.ModsDirectory, cancellationToken).ConfigureAwait(false);
 		}
 	}
 
@@ -134,25 +125,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 	}
 
-	private static void ExtractToDirectory(string archiveFilePath, string destinationDirectory, CancellationToken cancellationToken)
-	{
-		using var archive = ArchiveFactory.Open(archiveFilePath);
-		foreach (var entry in archive.Entries)
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-			if (entry.IsDirectory)
-			{
-				continue;
-			}
-			entry.WriteToDirectory(destinationDirectory, new ExtractionOptions
-			{
-				ExtractFullPath = true,
-				Overwrite = true,
-			});
-		}
-	}
-
-	private ImportedObjectTree PersistFlattenedTree(ImportedObjectTree imported, string sourceRoot, string sourceDisplayName, CancellationToken cancellationToken)
+	private ImportedObjectTree PersistFlattenedTree(ImportedObjectTree imported, string sourceRoot, string sourceDisplayName, bool preferHardLinks, CancellationToken cancellationToken)
 	{
 		Directory.CreateDirectory(_paths.ModsDirectory);
 		var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -169,9 +142,8 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			var displayName = BuildDisplayName(sourceDisplayName, node.RelativePath);
 			var flatDirName = CreateUniqueDirectoryName(_paths.ModsDirectory, displayName, usedNames);
 			var destDir = Path.Combine(_paths.ModsDirectory, flatDirName);
-			CopyTopLevelFiles(sourceNodeDir, destDir, cancellationToken);
+			CopyTopLevelFiles(sourceNodeDir, destDir, preferHardLinks, cancellationToken);
 			NormalizePatchDirectories(destDir, cancellationToken);
-			SetReadOnlyRecursive(destDir);
 
 			nodes[kvp.Key] = node with
 			{
@@ -211,15 +183,38 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			ActiveProfileId: current?.ActiveProfileId);
 	}
 
-	private static void CopyTopLevelFiles(string sourceDir, string destDir, CancellationToken cancellationToken)
+	private void SetStoredTreeReadOnly(ImportedObjectTree storedTree)
+	{
+		foreach (var node in storedTree.Nodes.Values)
+		{
+			SetReadOnlyRecursive(Path.Combine(_paths.ModsDirectory, node.RelativePath));
+		}
+	}
+
+	private static void CopyTopLevelFiles(string sourceDir, string destDir, bool preferHardLinks, CancellationToken cancellationToken)
 	{
 		Directory.CreateDirectory(destDir);
 		foreach (var file in Directory.EnumerateFiles(sourceDir))
 		{
 			cancellationToken.ThrowIfCancellationRequested();
-			File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)), overwrite: true);
+			var destination = Path.Combine(destDir, Path.GetFileName(file));
+			if (preferHardLinks)
+			{
+				try
+				{
+					if (!CreateHardLink(destination, file, IntPtr.Zero)) throw new IOException("Unable to create hard link.");
+					continue;
+				}
+				catch (IOException) { }
+				catch (UnauthorizedAccessException) { }
+			}
+			File.Copy(file, destination, overwrite: true);
 		}
 	}
+
+	[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static extern bool CreateHardLink(string fileName, string existingFileName, IntPtr securityAttributes);
 
 	private static string BuildDisplayName(string sourceDisplayName, string relativePath)
 	{

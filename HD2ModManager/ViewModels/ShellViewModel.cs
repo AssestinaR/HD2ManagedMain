@@ -22,11 +22,13 @@ namespace HD2ModManager.ViewModels
         private readonly ApplyStatusService _applyStatus;
         private readonly DerivedStateCoordinator _derivedState;
         private readonly NotificationService _notificationService;
+        private readonly MessageCenterService _messageCenter;
         private readonly IProfileDeploymentCoordinator _deploymentCoordinator;
         private BackgroundTaskItem? _deploymentTask;
         private readonly SelectionCoordinator _selection = new();
         private readonly BottomBarCoordinator _bottomBar;
         private readonly SemaphoreSlim _importProcessGate = new(1, 1);
+        private int _pageRefreshQueued;
 
         private PageViewModel? _leftPage;
         private PageViewModel? _rightPage;
@@ -34,7 +36,9 @@ namespace HD2ModManager.ViewModels
         private WorkspacePageType _leftPageType;
         private WorkspacePageType _rightPageType;
         private string? _selectedModId;
-        private bool _isTaskHubOpen;
+        private bool _isMessagePanelOpen;
+        private bool _isMessagePreviewOpen;
+        private System.Threading.CancellationTokenSource? _messagePreviewCancellation;
         private int _bottomBarStateVersion;
 
         public PageViewModel? CurrentPage => LeftPage;
@@ -71,12 +75,12 @@ namespace HD2ModManager.ViewModels
         public WorkspacePageType LeftPageType { get => _leftPageType; private set { if (SetField(ref _leftPageType, value)) RaiseSlotFlags(); } }
         public WorkspacePageType RightPageType { get => _rightPageType; private set { if (SetField(ref _rightPageType, value)) RaiseSlotFlags(); } }
         public string? SelectedModId { get => _selectedModId; private set => SetField(ref _selectedModId, value); }
-        public bool IsTaskHubOpen { get => _isTaskHubOpen; private set => SetField(ref _isTaskHubOpen, value); }
-        public ReadOnlyObservableCollection<NotificationItem> Notifications { get; }
-        public ReadOnlyObservableCollection<NotificationItem> EventHistory => _notificationService.History;
-        public ReadOnlyObservableCollection<BackgroundTaskItem> TaskHubTasks => _backgroundTasks.Tasks;
+        public bool IsMessagePanelOpen { get => _isMessagePanelOpen; private set => SetField(ref _isMessagePanelOpen, value); }
+        public ReadOnlyObservableCollection<MessageCenterItem> MessageItems => _messageCenter.Items;
+        public MessageCenterItem? LatestMessageItem => _messageCenter.Items.LastOrDefault();
         public int ActiveTaskCount => _backgroundTasks.CountQueued + _backgroundTasks.CountRunning;
-        public bool HasUnreadTaskHubEvents => EventHistory.Any(item => item.IsUnread);
+        public bool HasUnreadTaskHubEvents => false;
+        public bool IsMessagePreviewOpen { get => _isMessagePreviewOpen; private set => SetField(ref _isMessagePreviewOpen, value); }
 
         public RelayCommand ShowHomeCommand { get; }
         public RelayCommand ShowProfileCommand { get; }
@@ -89,7 +93,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand CancelSelectionCommand { get; }
         public RelayCommand SelectionPrimaryCommand { get; }
         public RelayCommand SelectionDeleteCommand { get; }
-        public RelayCommand ToggleTaskHubCommand { get; }
+        public RelayCommand ToggleMessagePanelCommand { get; }
         public RelayCommand CancelTaskCommand { get; }
         public RelayCommand RetryTaskCommand { get; }
 
@@ -147,13 +151,13 @@ namespace HD2ModManager.ViewModels
             _backgroundTasks = new BackgroundTaskService();
             _applyStatus = new ApplyStatusService();
             _notificationService = new NotificationService();
+            _messageCenter = new MessageCenterService(_notificationService, _backgroundTasks);
             _bottomBar = new BottomBarCoordinator(_selection, _libraryService, _notificationService, RefreshCurrentPage);
             _bottomBar.PropertyChanged += (_, _) =>
             {
                 _bottomBarStateVersion++;
                 OnPropertyChanged(nameof(BottomBarStateVersion));
             };
-            Notifications = _notificationService.Items;
             _deploymentCoordinator = CoreServices.CreateProfileDeploymentCoordinator(
                 SettingsService.CreateStoragePaths(),
                 SettingsService.GetGameDataFolder);
@@ -163,21 +167,28 @@ namespace HD2ModManager.ViewModels
             _libraryService.ModContentFactsChanged += (_, change) =>
             {
                 var active = _profileService.ActiveProfile;
-                if (active is not null && change.NodeIds.Any(nodeId => active.Entries.Any(entry => entry.NodeId == nodeId)))
+                var affectsActiveProfile = active is not null && change.NodeIds.Any(nodeId => active.Entries.Any(entry => entry.NodeId == nodeId));
+                LogService.Info($"部署触发检查：库内容{change.Kind}，节点数={change.NodeIds.Count}，影响活动配置={affectsActiveProfile}。");
+                if (affectsActiveProfile)
                 {
                     _profileService.NotifyActiveModContentChanged();
                 }
             };
             _libraryService.SnapshotChanged += (_, _) => RefreshOnUiThread(HandleLibrarySnapshotChanged);
-            _profileService.Changed += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
-            _derivedState.SnapshotChanged += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
+            _profileService.Changed += (_, _) => QueueCurrentPageRefresh("配置变更");
+            _derivedState.SnapshotChanged += (_, _) => QueueCurrentPageRefresh("派生状态变更");
             _backgroundTasks.Changed += (_, _) => RefreshOnUiThread(() =>
             {
                 RefreshTaskHubState();
-                RefreshPage(LeftPage);
-                if (IsSplitView) RefreshPage(RightPage);
+                ShowMessagePreview();
             });
             _notificationService.Changed += (_, _) => RefreshOnUiThread(RefreshTaskHubState);
+            _messageCenter.Changed += (_, _) => RefreshOnUiThread(() =>
+            {
+                OnPropertyChanged(nameof(LatestMessageItem));
+                ShowMessagePreview();
+            });
+			_ = Task.Run(() => new ImportTemporaryDirectoryManager(SettingsService.CreateStoragePaths()).CleanupStaleDirectories());
 
             RunStartupChecks(configDir);
 
@@ -190,9 +201,9 @@ namespace HD2ModManager.ViewModels
             ImportCommand = new RelayCommand(BrowseAndImport);
             RefreshCommand = new RelayCommand(RefreshCurrentPage);
             CancelSelectionCommand = new RelayCommand(_selection.Clear);
-            SelectionPrimaryCommand = new RelayCommand(ExecuteSelectionPrimary);
-            SelectionDeleteCommand = new RelayCommand(ExecuteSelectionDelete);
-            ToggleTaskHubCommand = new RelayCommand(ToggleTaskHub);
+            SelectionPrimaryCommand = new RelayCommand(async _ => await ExecuteSelectionPrimaryAsync());
+            SelectionDeleteCommand = new RelayCommand(async _ => await ExecuteSelectionDeleteAsync());
+            ToggleMessagePanelCommand = new RelayCommand(ToggleMessagePanel);
             CancelTaskCommand = new RelayCommand(CancelTask, task => task is BackgroundTaskItem { CanCancel: true });
             RetryTaskCommand = new RelayCommand(async task => await RetryTaskAsync(task), task => task is BackgroundTaskItem { CanRetry: true });
             _selection.SelectionChanged += (_, _) => RaiseSelectionFlags();
@@ -264,34 +275,73 @@ namespace HD2ModManager.ViewModels
         public void Navigate(WorkspaceMode mode)
         {
             ClearTransientSelection();
-            CurrentMode = mode;
-            switch (mode)
+            var (left, right) = mode switch
             {
-                case WorkspaceMode.ProfileLibrarySplit:
-                    OpenPage(WorkspacePageType.Profile, leftSlot: true);
-                    OpenPage(WorkspacePageType.Library, leftSlot: false);
-                    break;
-                case WorkspaceMode.ProfileOnly:
-                    OpenSinglePage(WorkspacePageType.Profile);
-                    break;
-                case WorkspaceMode.LibraryOnly:
-                    OpenSinglePage(WorkspacePageType.Library);
-                    break;
-                case WorkspaceMode.Settings:
-                    OpenSinglePage(WorkspacePageType.Settings);
-                    break;
-                case WorkspaceMode.Home:
-                default:
-                    OpenSinglePage(WorkspacePageType.Home);
-                    break;
-            }
+                WorkspaceMode.ProfileLibrarySplit => (WorkspacePageType.Profile, (WorkspacePageType?)WorkspacePageType.Library),
+                WorkspaceMode.ProfileOnly => (WorkspacePageType.Profile, null),
+                WorkspaceMode.LibraryOnly => (WorkspacePageType.Library, null),
+                WorkspaceMode.Settings => (WorkspacePageType.Settings, null),
+                _ => (WorkspacePageType.Home, null),
+            };
+            CommitNavigation(left, right, mode);
         }
 
-        public void OpenTaskHub()
+        private void CommitNavigation(WorkspacePageType leftType, WorkspacePageType? rightType, WorkspaceMode mode)
         {
-            IsTaskHubOpen = true;
+            var oldLeft = _leftPage;
+            var oldRight = _rightPage;
+            _leftPageType = leftType;
+            _rightPageType = rightType ?? leftType;
+            var nextLeft = CreatePage(leftType);
+            var nextRight = rightType is { } type ? CreatePage(type) : null;
+            _leftPage = nextLeft;
+            _rightPage = nextRight;
+            _currentMode = mode;
+
+            if (!ReferenceEquals(oldLeft, oldRight)) (oldLeft as IDisposable)?.Dispose();
+            if (!ReferenceEquals(oldRight, nextLeft)) (oldRight as IDisposable)?.Dispose();
+
+            OnPropertyChanged(nameof(LeftPageType));
+            OnPropertyChanged(nameof(RightPageType));
+            OnPropertyChanged(nameof(LeftPage));
+            OnPropertyChanged(nameof(RightPage));
+            OnPropertyChanged(nameof(CurrentPage));
+            OnPropertyChanged(nameof(CurrentMode));
+            RaiseModeFlags();
+            RaiseSlotFlags();
+        }
+
+        public void OpenMessagePanel()
+        {
+            IsMessagePanelOpen = true;
+            IsMessagePreviewOpen = false;
+            _messagePreviewCancellation?.Cancel();
             _notificationService.MarkAllRead();
             RefreshTaskHubState();
+        }
+
+        public void CloseMessagePanel()
+        {
+            if (!IsMessagePanelOpen) return;
+            IsMessagePanelOpen = false;
+            if (ActiveTaskCount > 0) ShowMessagePreview();
+        }
+
+        private async void ShowMessagePreview()
+        {
+            if (IsMessagePanelOpen) return;
+            IsMessagePreviewOpen = true;
+            _messagePreviewCancellation?.Cancel();
+            _messagePreviewCancellation?.Dispose();
+            _messagePreviewCancellation = new System.Threading.CancellationTokenSource();
+            var token = _messagePreviewCancellation.Token;
+            try
+            {
+                await System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(5), token);
+                if (!token.IsCancellationRequested && ActiveTaskCount == 0) IsMessagePreviewOpen = false;
+                else if (!token.IsCancellationRequested) ShowMessagePreview();
+            }
+            catch (OperationCanceledException) { }
         }
 
         public void OpenSinglePage(WorkspacePageType pageType)
@@ -428,6 +478,9 @@ namespace HD2ModManager.ViewModels
             await _importProcessGate.WaitAsync();
             try
             {
+                var libraryChanged = false;
+                var importedModIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var importedSources = new List<string>();
                 ImportTaskItem? item;
                 while ((item = _importQueue.DequeueNextQueued()) != null)
                 {
@@ -436,14 +489,18 @@ namespace HD2ModManager.ViewModels
                     try
                     {
                         task.MarkRunning("正在解压缩");
-                        var created = await import.ImportPathAsync(item.Path, task.CancellationToken);
-                        task.UpdateStage("正在保存模组库");
-                        LogService.Info($"Import created {created.Count} mods from {item.Path}");
-                        _libraryService.Save();
+                        var created = await import.ImportPathAsync(item.Path, task.CancellationToken, notifyLibraryChanged: false);
+                        libraryChanged = true;
+                        task.UpdateStage("模组库已更新");
+                        LogService.Info($"快速导入完成：来源={item.Path}，新增 Mod 数={created.Count}。导入仅写入模组库；除非后续显式加入活动配置，否则不会部署。");
                         _importQueue.MarkDone(item);
                         task.MarkCompleted();
-                        RefreshCurrentPage();
                         _notificationService.Show(string.Format(HD2ModManager.Resources.Strings.Notification_ImportComplete, item.Path));
+                        if (created.Count > 0)
+                        {
+                            importedModIds.UnionWith(created);
+                            importedSources.Add(item.Path);
+                        }
                     }
                     catch (OperationCanceledException)
                     {
@@ -459,10 +516,40 @@ namespace HD2ModManager.ViewModels
                         _notificationService.Show(string.Format(HD2ModManager.Resources.Strings.Notification_ImportFailed, item.Path), NotificationLevel.Error);
                     }
                 }
+
+                if (libraryChanged)
+                {
+                    _libraryService.NotifyImportCompleted();
+                }
+                if (importedModIds.Count > 0)
+                {
+                    StartImportedModAnalysis(importedModIds, importedSources);
+                }
             }
             finally
             {
                 _importProcessGate.Release();
+            }
+        }
+
+        private async void StartImportedModAnalysis(IReadOnlyCollection<string> created, IReadOnlyCollection<string> sourcePaths)
+        {
+            var sourceDescription = sourcePaths.Count == 1 ? sourcePaths.First() : $"{sourcePaths.Count} 个导入来源";
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.AnalyzeImportedMod, $"分析 {created.Count} 个导入 Mod", sourceDescription);
+            try
+            {
+                task.MarkRunning("正在建立内容索引");
+                var import = new ImportService(_libraryService);
+                await import.AnalyzeImportedAsync(created, task.CancellationToken);
+                task.MarkCompleted();
+                LogService.Info($"导入内容分析完成：来源数={sourcePaths.Count}，Mod 数={created.Count}。已合并为一次库内容变更通知。");
+				QueueCurrentPageRefresh("导入内容分析完成");
+            }
+            catch (OperationCanceledException) { task.MarkCanceled(); }
+            catch (Exception ex)
+            {
+                task.MarkFailed(ex.Message);
+                LogService.Error($"导入内容分析失败：来源数={sourcePaths.Count}，错误={ex}");
             }
         }
 
@@ -603,6 +690,27 @@ namespace HD2ModManager.ViewModels
             if (IsSplitView) RefreshPage(RightPage);
         }
 
+        private void QueueCurrentPageRefresh(string reason)
+        {
+            if (Interlocked.Exchange(ref _pageRefreshQueued, 1) != 0) return;
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null)
+            {
+                Interlocked.Exchange(ref _pageRefreshQueued, 0);
+                RefreshCurrentPage();
+                return;
+            }
+
+            _ = dispatcher.InvokeAsync(async () =>
+            {
+                await Task.Delay(80);
+                Interlocked.Exchange(ref _pageRefreshQueued, 0);
+                var stopwatch = Stopwatch.StartNew();
+                RefreshCurrentPage();
+                LogService.Info($"UI 性能：合并页面刷新，原因={reason}，耗时 {stopwatch.ElapsedMilliseconds}ms。");
+            });
+        }
+
         private void RefreshPage(PageViewModel? page)
         {
             switch (page)
@@ -641,11 +749,9 @@ namespace HD2ModManager.ViewModels
             RefreshCurrentPage();
         }
 
-        private void ToggleTaskHub()
+        private void ToggleMessagePanel()
         {
-            IsTaskHubOpen = !IsTaskHubOpen;
-            if (IsTaskHubOpen) _notificationService.MarkAllRead();
-            RefreshTaskHubState();
+            if (IsMessagePanelOpen) CloseMessagePanel(); else OpenMessagePanel();
         }
 
         private static void CancelTask(object? parameter)
@@ -661,8 +767,7 @@ namespace HD2ModManager.ViewModels
 
         private void RefreshTaskHubState()
         {
-            OnPropertyChanged(nameof(TaskHubTasks));
-            OnPropertyChanged(nameof(EventHistory));
+            OnPropertyChanged(nameof(MessageItems));
             OnPropertyChanged(nameof(ActiveTaskCount));
             OnPropertyChanged(nameof(HasUnreadTaskHubEvents));
             CancelTaskCommand.RaiseCanExecuteChanged();
@@ -699,27 +804,124 @@ namespace HD2ModManager.ViewModels
             OpenSinglePage(WorkspacePageType.Library);
         }
 
-        private void ExecuteSelectionPrimary(object? _)
+        private async Task ExecuteSelectionPrimaryAsync()
         {
             if (!_selection.HasSelection) return;
             if (string.Equals(_selection.Scope, "Library", StringComparison.OrdinalIgnoreCase))
             {
-                foreach (var guid in _selection.SelectedIds.ToList()) _profileService.AddModToSelected(guid);
-                _notificationService.Show($"已加入正在编辑的配置：{_selection.SelectedIds.Count} 个 Mod");
+                var ids = _selection.SelectedIds.ToList();
+                var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "加入配置", $"{ids.Count} 个 Mod");
+                task.MarkRunning("正在写入配置");
+                try
+                {
+                    var added = 0;
+                    foreach (var guid in ids)
+                    {
+                        task.CancellationToken.ThrowIfCancellationRequested();
+                        if (await _profileService.AddModToSelectedAsync(guid, task.CancellationToken)) added++;
+                    }
+                    task.MarkCompleted();
+                    _notificationService.Show($"已加入正在编辑的配置：{added} 个 Mod");
+                }
+                catch (OperationCanceledException)
+                {
+                    task.MarkCanceled();
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    task.MarkFailed(exception.Message);
+                    return;
+                }
                 _selection.Clear();
                 RefreshCurrentPage();
             }
             else if (string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase))
             {
                 var ids = _selection.SelectedIds.ToList();
-                foreach (var guid in ids) _profileService.RemoveModFromSelected(guid);
-                _notificationService.Show($"已从配置移除：{ids.Count} 个 Mod");
+                var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "从配置移除", $"{ids.Count} 个 Mod");
+                task.MarkRunning("正在写入配置");
+                try
+                {
+                    var removed = 0;
+                    foreach (var guid in ids)
+                    {
+                        task.CancellationToken.ThrowIfCancellationRequested();
+                        if (await _profileService.RemoveModFromSelectedAsync(guid, task.CancellationToken)) removed++;
+                    }
+                    task.MarkCompleted();
+                    _notificationService.Show($"已从配置移除：{removed} 个 Mod");
+                }
+                catch (OperationCanceledException)
+                {
+                    task.MarkCanceled();
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    task.MarkFailed(exception.Message);
+                    return;
+                }
                 _selection.Clear();
                 RefreshCurrentPage();
             }
         }
 
-        private void ExecuteSelectionDelete(object? _)
+        public async Task AddModToSelectedProfileAsync(string modId, string modName)
+        {
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "加入配置", modName);
+            task.MarkRunning("正在写入配置");
+            try
+            {
+                if (await _profileService.AddModToSelectedAsync(modId, task.CancellationToken))
+                {
+                    task.MarkCompleted();
+                    _notificationService.Show($"已加入正在编辑的配置：{modName}");
+                    RefreshCurrentPage();
+                }
+                else
+                {
+                    task.MarkFailed("可能尚未选择配置或该 Mod 已存在。");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                task.MarkCanceled();
+            }
+            catch (Exception exception)
+            {
+                task.MarkFailed(exception.Message);
+            }
+        }
+
+        public async Task RemoveModFromSelectedProfileAsync(string modId, string modName)
+        {
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "从配置移除", modName);
+            task.MarkRunning("正在写入配置");
+            try
+            {
+                if (await _profileService.RemoveModFromSelectedAsync(modId, task.CancellationToken))
+                {
+                    task.MarkCompleted();
+                    _notificationService.Show($"已从配置移除：{modName}");
+                    RefreshCurrentPage();
+                }
+                else
+                {
+                    task.MarkFailed("可能尚未选择配置或该 Mod 已不存在。");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                task.MarkCanceled();
+            }
+            catch (Exception exception)
+            {
+                task.MarkFailed(exception.Message);
+            }
+        }
+
+        private async Task ExecuteSelectionDeleteAsync()
         {
             if (!_selection.HasSelection) return;
             var ids = _selection.SelectedIds.ToList();
@@ -733,8 +935,29 @@ namespace HD2ModManager.ViewModels
             }
             else if (string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase))
             {
-                foreach (var guid in ids) _profileService.RemoveModFromSelected(guid);
-                _notificationService.Show($"已从配置移除：{ids.Count} 个 Mod");
+                var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "从配置移除", $"{ids.Count} 个 Mod");
+                task.MarkRunning("正在写入配置");
+                try
+                {
+                    var removed = 0;
+                    foreach (var guid in ids)
+                    {
+                        task.CancellationToken.ThrowIfCancellationRequested();
+                        if (await _profileService.RemoveModFromSelectedAsync(guid, task.CancellationToken)) removed++;
+                    }
+                    task.MarkCompleted();
+                    _notificationService.Show($"已从配置移除：{removed} 个 Mod");
+                }
+                catch (OperationCanceledException)
+                {
+                    task.MarkCanceled();
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    task.MarkFailed(exception.Message);
+                    return;
+                }
             }
 
             _selection.Clear();

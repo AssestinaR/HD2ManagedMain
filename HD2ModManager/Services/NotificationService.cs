@@ -36,7 +36,7 @@ namespace HD2ModManager.Services
             RunOnUi(() =>
             {
                 _items.Add(item);
-                _history.Insert(0, item);
+                _history.Add(item);
                 if (item.Duration.HasValue) _ = AutoDismissAsync(item);
                 Changed?.Invoke(this, EventArgs.Empty);
             });

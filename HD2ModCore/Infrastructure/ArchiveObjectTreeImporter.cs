@@ -1,15 +1,13 @@
 ﻿using HD2ModCore.Application;
 using HD2ModCore.Domain;
-using SharpCompress.Archives;
-using SharpCompress.Common;
 
 namespace HD2ModCore.Infrastructure;
 
-// 作用：使用 SharpCompress 从 zip/7z/rar 解包到临时目录，然后复用文件夹导入生成对象树。
-// Purpose: Uses SharpCompress to extract zip/7z/rar archives to a temp directory, then reuses folder import to build an object tree.
+// 作用：使用随程序分发的 7-Zip 解包到临时目录，然后复用文件夹导入生成对象树。
 public sealed class ArchiveObjectTreeImporter : IArchiveObjectTreeImporter
 {
 	private readonly IObjectTreeImporter _folderImporter;
+	private readonly SevenZipArchiveExtractor _archiveExtractor = new();
 
 	public ArchiveObjectTreeImporter(IObjectTreeImporter folderImporter)
 	{
@@ -34,7 +32,7 @@ public sealed class ArchiveObjectTreeImporter : IArchiveObjectTreeImporter
 
 		try
 		{
-			await Task.Run(() => ExtractToDirectory(fullPath, extractRoot, cancellationToken), cancellationToken).ConfigureAwait(false);
+			await _archiveExtractor.ExtractAsync(fullPath, extractRoot, cancellationToken).ConfigureAwait(false);
 			var tree = await _folderImporter.ImportFolderAsync(extractRoot, cancellationToken).ConfigureAwait(false);
 			return tree with { SourceDisplayName = Path.GetFileName(fullPath) };
 		}
@@ -44,23 +42,4 @@ public sealed class ArchiveObjectTreeImporter : IArchiveObjectTreeImporter
 		}
 	}
 
-	private static void ExtractToDirectory(string archiveFilePath, string destinationDirectory, CancellationToken cancellationToken)
-	{
-		using var archive = ArchiveFactory.Open(archiveFilePath);
-		foreach (var entry in archive.Entries)
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-
-			if (entry.IsDirectory)
-			{
-				continue;
-			}
-
-			entry.WriteToDirectory(destinationDirectory, new ExtractionOptions
-			{
-				ExtractFullPath = true,
-				Overwrite = true,
-			});
-		}
-	}
 }

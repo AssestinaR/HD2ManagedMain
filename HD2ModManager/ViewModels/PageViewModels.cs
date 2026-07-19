@@ -116,7 +116,7 @@ namespace HD2ModManager.ViewModels
 
         private static void OpenTaskHub()
         {
-            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenTaskHub();
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenMessagePanel();
         }
 
         private async void MoveLibraryToRecommended()
@@ -190,7 +190,7 @@ namespace HD2ModManager.ViewModels
         private string _query = string.Empty;
         private CancellationTokenSource? _searchCancellation;
 
-        public ObservableCollection<ProfileListItemViewModel> Items { get; } = new();
+        public BulkObservableCollection<ProfileListItemViewModel> Items { get; } = new();
         public ObservableCollection<string> Profiles { get; } = new();
         public string Query
         {
@@ -360,8 +360,11 @@ namespace HD2ModManager.ViewModels
         {
             var guid = parameter as string;
             if (string.IsNullOrWhiteSpace(guid)) return;
-            _profiles.RemoveModFromSelected(guid);
-            Refresh();
+            var modName = _library.Get(guid)?.Name ?? guid;
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
+            {
+                _ = shell.RemoveModFromSelectedProfileAsync(guid, modName);
+            }
         }
 
         private void MoveMod(object? parameter, int direction)
@@ -387,9 +390,13 @@ namespace HD2ModManager.ViewModels
             _switchAction?.SyncFromPage();
             _renameAction?.SyncFromPage();
 
-            Items.Clear();
             var profile = _profiles.SelectedProfile;
-            if (profile == null) return;
+            if (profile == null)
+            {
+                Items.ReplaceWith(Array.Empty<ProfileListItemViewModel>());
+                return;
+            }
+            var items = new List<ProfileListItemViewModel>();
             foreach (var entry in _profiles.GetSortedEntries(profile))
             {
                 var guid = entry.NodeId.Value.ToString("N");
@@ -397,8 +404,9 @@ namespace HD2ModManager.ViewModels
                 var assetSummary = _library.GetDerivedData(guid)?.AssetSummary;
                 if (!ModSearchMatcher.IsMatch(mod?.Name, mod?.Description, assetSummary, Query)) continue;
                 _userStatuses.TryGetValue(guid, out var status);
-                Items.Add(new ProfileListItemViewModel(guid, mod?.Name ?? guid, mod?.Description, mod?.Image, ModAssetSummaryFormatter.Format(assetSummary), entry.LoadOrder, entry.AddedUtc, IsSelected(guid), status));
+                items.Add(new ProfileListItemViewModel(guid, mod?.Name ?? guid, mod?.Description, mod?.Image, ModAssetSummaryFormatter.Format(assetSummary), entry.LoadOrder, entry.AddedUtc, IsSelected(guid), status));
             }
+            Items.ReplaceWith(items);
             OnPropertyChanged(nameof(ItemCountText));
         }
 

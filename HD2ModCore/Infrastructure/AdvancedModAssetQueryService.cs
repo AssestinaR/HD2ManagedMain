@@ -22,7 +22,7 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 	{
 		ArgumentNullException.ThrowIfNull(librarySnapshot);
 		var snapshot = await factsStore.TryLoadAsync(nodeId, cancellationToken).ConfigureAwait(false);
-		if (snapshot is null) return Array.Empty<AdvancedModAssetRow>();
+		if (snapshot is null || snapshot.Version != 7 || snapshot.Analyses.Any(analysis => analysis.Depth is not (PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full))) return Array.Empty<AdvancedModAssetRow>();
 		var assets = snapshot.Analyses.SelectMany(analysis => analysis.Assets.Select(asset => (analysis, asset))).GroupBy(item => item.asset.AssetKey).ToArray();
 		var domainKeys = assets.Select(group => new AssetKey(group.Key.TypeId, group.Key.FileId)).ToHashSet();
 		var mapping = await mappingService.MapAsync(domainKeys, cancellationToken).ConfigureAwait(false);
