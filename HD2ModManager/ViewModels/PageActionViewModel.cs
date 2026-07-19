@@ -9,7 +9,7 @@ namespace HD2ModManager.ViewModels
         private bool _isVisible = true;
         private bool _isEnabled = true;
 
-        public PageActionViewModel(object icon, string label, ICommand command, object? commandParameter = null, Brush? background = null, Brush? foreground = null, object? expandedContent = null, int order = 0, string? group = null, string? kind = null)
+        public PageActionViewModel(object icon, string label, ICommand command, object? commandParameter = null, Brush? background = null, Brush? foreground = null, object? expandedContent = null, double expandedWidth = 168d, int order = 0, string? group = null, string? kind = null)
         {
             Icon = icon;
             Label = label;
@@ -18,6 +18,7 @@ namespace HD2ModManager.ViewModels
             Background = background ?? new SolidColorBrush(Color.FromRgb(30, 99, 214));
             Foreground = foreground ?? Brushes.White;
             ExpandedContent = expandedContent;
+            ExpandedWidth = expandedWidth;
             Order = order;
             Group = group ?? string.Empty;
             Kind = kind ?? string.Empty;
@@ -30,6 +31,7 @@ namespace HD2ModManager.ViewModels
         public Brush Background { get; }
         public Brush Foreground { get; }
         public object? ExpandedContent { get; }
+        public double ExpandedWidth { get; }
         public int Order { get; }
         public string Group { get; }
         public string Kind { get; }

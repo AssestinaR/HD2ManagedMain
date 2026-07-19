@@ -5,8 +5,8 @@
         <StackPanel Margin="0,0,0,12">
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
                 <StackPanel>
-                    <TextBlock Text="{Binding Name}" FontSize="22" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                    <TextBlock Text="稳定资产事实只读展示；Profile 状态和诊断为当前配置投影。" Foreground="#6C7280" Margin="0,4,0,0"/>
+                    <TextBlock Text="{Binding Name}" Style="{StaticResource AppPageTitle}" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="稳定资产事实只读展示；Profile 状态和诊断为当前配置投影。" Style="{StaticResource AppSupportingText}" Margin="0,4,0,0"/>
                 </StackPanel>
             </Border>
 
@@ -18,10 +18,10 @@
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="{Binding AdvancedAssetState}" Foreground="#6C7280" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding AdvancedAssetState}" Style="{StaticResource AppSupportingText}" VerticalAlignment="Center"/>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBox Width="220" Text="{Binding AdvancedAssetQuery, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="搜索类型、AssetKey、名称或目标" Padding="7,3"/>
-                            <CheckBox Content="仅异常" IsChecked="{Binding AdvancedOnlyIssues, Mode=TwoWay}" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                            <TextBox Style="{StaticResource AppSearchBox}" Width="220" Text="{Binding AdvancedAssetQuery, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="搜索类型、AssetKey、名称或目标"/>
+                            <CheckBox Style="{StaticResource AppCheckBox}" Content="仅异常" IsChecked="{Binding AdvancedOnlyIssues, Mode=TwoWay}" VerticalAlignment="Center" Margin="10,0,0,0"/>
                         </StackPanel>
                     </Grid>
                 </Border>

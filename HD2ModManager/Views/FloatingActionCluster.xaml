@@ -12,7 +12,7 @@
             <Setter Property="Height" Value="{Binding ButtonDiameter, ElementName=Root}"/>
             <Setter Property="MinWidth" Value="{Binding ButtonDiameter, ElementName=Root}"/>
             <Setter Property="Padding" Value="0"/>
-            <Setter Property="Background" Value="#1E63D6"/>
+            <Setter Property="Background" Value="{StaticResource Accent}"/>
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
@@ -27,10 +27,10 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#164FB1"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentHover}"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#123F8E"/>
+                                <Setter TargetName="Bd" Property="Background" Value="#10499F"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -40,43 +40,51 @@
 
         <DataTemplate x:Key="ActionItemTemplate">
             <Grid x:Name="ItemRoot"
-                  Width="{Binding ExpandedOuterWidth, ElementName=Root}"
+                        Width="{Binding ExpandedOuterWidth, ElementName=Root}"
                   HorizontalAlignment="Right"
                   Height="{Binding ButtonDiameter, ElementName=Root}">
                 <Border x:Name="ExpandedRail"
                         Height="{Binding ExpandedHeight, ElementName=Root}"
-                        Width="{Binding ExpandedWidth, ElementName=Root}"
+                        Width="{Binding ExpandedWidth}"
                         HorizontalAlignment="Right"
                         Margin="8,0,8,0"
                         CornerRadius="{Binding ExpandedCornerRadius, ElementName=Root}"
-                        Background="White"
-                        BorderBrush="#D9DEE8"
+                        Background="{StaticResource SurfaceElevated}"
+                        BorderBrush="{StaticResource StrokeSubtle}"
                         BorderThickness="1"
+                        Effect="{StaticResource ElevatedPanelShadow}"
                         Opacity="0"
                         IsHitTestVisible="False"
                         RenderTransformOrigin="1,0.5">
                     <Border.RenderTransform>
                         <ScaleTransform ScaleX="0.55" ScaleY="0.96"/>
                     </Border.RenderTransform>
-                    <Border.Effect>
-                        <DropShadowEffect BlurRadius="14" ShadowDepth="2" Opacity="0.16"/>
-                    </Border.Effect>
                     <Grid x:Name="RailContentHost" Margin="12,0,52,0" VerticalAlignment="Center">
                         <ContentControl x:Name="ExpandedContentHost" Content="{Binding ExpandedContent}"/>
-                        <TextBlock x:Name="LabelText" Text="{Binding Label}" FontWeight="SemiBold" Foreground="#263246" VerticalAlignment="Center" Visibility="Collapsed"/>
+                        <TextBlock x:Name="LabelText" Text="{Binding Label}" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" Visibility="Collapsed"/>
                     </Grid>
                 </Border>
 
                 <Button x:Name="ActionButton"
                         HorizontalAlignment="Right"
-                        Content="{Binding Icon}"
                         Command="{Binding Command}"
                         CommandParameter="{Binding CommandParameter}"
                         IsEnabled="{Binding IsEnabled}"
                         ToolTip="{Binding Label}"
                         Style="{StaticResource ClusterRoundButton}"
                         Background="{Binding Background}"
-                        Foreground="{Binding Foreground}"/>
+                        Foreground="{Binding Foreground}">
+                    <Grid Width="16" Height="16">
+                        <Path x:Name="DefaultIcon" Data="M8,2 L8,14 M2,8 L14,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" Visibility="Collapsed"/>
+                        <Path x:Name="CreateProfileIcon" Data="M8,2 L8,14 M2,8 L14,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" Visibility="Collapsed"/>
+                        <Path x:Name="SwitchProfileIcon" Data="M2,5 L11,5 M8,2 L11,5 L8,8 M14,11 L5,11 M8,8 L5,11 L8,14" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
+                        <Path x:Name="ActivateIcon" Data="M3,8 L6.5,11.5 L13,4.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Visibility="Collapsed"/>
+                        <Path x:Name="DeactivateIcon" Data="M3,3 L13,13 M13,3 L3,13" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.7" StrokeStartLineCap="Round" Visibility="Collapsed"/>
+                        <Path x:Name="RenameIcon" Data="M3,12.5 L3,14 L4.5,14 L13,5.5 L10.5,3 Z M9.5,4 L12,6.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round" Visibility="Collapsed"/>
+                        <Path x:Name="DeleteIcon" Data="M3,5 L13,5 M6,5 L6,3 L10,3 L10,5 M4.5,5 L5,14 L11,14 L11.5,5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeStartLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
+                        <Path x:Name="RefreshIcon" Data="M12.5,6 A5.5,5.5 0 1 0 13,10 M12.5,2.5 L12.5,6 L9,6" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
+                    </Grid>
+                </Button>
             </Grid>
             <DataTemplate.Triggers>
                 <DataTrigger Binding="{Binding LabelDirection, ElementName=Root}" Value="Right">
@@ -90,6 +98,20 @@
                     <Setter TargetName="LabelText" Property="Visibility" Value="Visible"/>
                     <Setter TargetName="ExpandedContentHost" Property="Visibility" Value="Collapsed"/>
                 </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="CreateProfile"><Setter TargetName="CreateProfileIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="Import"><Setter TargetName="CreateProfileIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="SwitchProfile"><Setter TargetName="SwitchProfileIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="ActivateProfile"><Setter TargetName="ActivateIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="ScheduleDeployment"><Setter TargetName="ActivateIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="DeactivateProfile"><Setter TargetName="DeactivateIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="RenameProfile"><Setter TargetName="RenameIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="RemoveProfile"><Setter TargetName="DeleteIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="RefreshProfile"><Setter TargetName="RefreshIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="Refresh"><Setter TargetName="RefreshIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <MultiDataTrigger>
+                    <MultiDataTrigger.Conditions><Condition Binding="{Binding Kind}" Value=""/></MultiDataTrigger.Conditions>
+                    <Setter TargetName="DefaultIcon" Property="Visibility" Value="Visible"/>
+                </MultiDataTrigger>
                 <Trigger SourceName="ItemRoot" Property="IsMouseOver" Value="True">
                     <Setter TargetName="ExpandedRail" Property="Opacity" Value="1"/>
                     <Setter TargetName="ExpandedRail" Property="IsHitTestVisible" Value="True"/>
@@ -154,20 +176,27 @@
                         </BeginStoryboard>
                     </Trigger.ExitActions>
                 </Trigger>
+                <Trigger SourceName="ItemRoot" Property="IsKeyboardFocusWithin" Value="True">
+                    <Setter TargetName="ExpandedRail" Property="Opacity" Value="1"/>
+                    <Setter TargetName="ExpandedRail" Property="IsHitTestVisible" Value="True"/>
+                    <Setter TargetName="ExpandedRail" Property="RenderTransform">
+                        <Setter.Value><ScaleTransform ScaleX="1" ScaleY="1"/></Setter.Value>
+                    </Setter>
+                </Trigger>
             </DataTemplate.Triggers>
         </DataTemplate>
 
         <DataTemplate DataType="{x:Type vm:ProfileSwitchActionViewModel}">
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <ComboBox Width="60" ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile, Mode=TwoWay}"/>
-                <Button Content="切换" Command="{Binding ConfirmCommand}" Padding="4,2" Margin="4,0,0,0"/>
+                <TextBlock Text="切换配置：" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"/>
+                <ComboBox Style="{StaticResource AppCompactComboBox}" Width="112" ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile, Mode=TwoWay}"/>
             </StackPanel>
         </DataTemplate>
 
         <DataTemplate DataType="{x:Type vm:ProfileRenameActionViewModel}">
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBox Width="62" Text="{Binding NewName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                <Button Content="确认" Command="{Binding ConfirmCommand}" Padding="4,2" Margin="4,0,0,0"/>
+                <TextBlock Text="重命名为：" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"/>
+                <TextBox Style="{StaticResource AppTextBox}" Width="118" Text="{Binding NewName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
             </StackPanel>
         </DataTemplate>
     </UserControl.Resources>
@@ -195,7 +224,7 @@
             </ItemsControl.ItemContainerStyle>
         </ItemsControl>
 
-        <Button Content="{Binding MainContent, ElementName=Root}"
+        <Button
                 HorizontalAlignment="{Binding ClusterHorizontalAlignment, ElementName=Root}"
                 VerticalAlignment="Bottom"
                 Panel.ZIndex="10"
@@ -203,6 +232,8 @@
                 Style="{StaticResource ClusterRoundButton}"
                 Background="{Binding MainBackground, ElementName=Root}"
                 Foreground="{Binding MainForeground, ElementName=Root}"
-                Click="OnMainButtonClick"/>
+                Click="OnMainButtonClick">
+            <Path Width="18" Height="18" Data="M3,5 L15,5 M3,9 L15,9 M3,13 L15,13" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.7" StrokeStartLineCap="Round"/>
+        </Button>
     </Grid>
 </UserControl>

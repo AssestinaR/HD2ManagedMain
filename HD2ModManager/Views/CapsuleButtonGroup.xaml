@@ -11,6 +11,7 @@
             <Setter Property="Foreground" Value="#333"/>
             <Setter Property="BorderBrush" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Panel.ZIndex" Value="1"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="HorizontalContentAlignment" Value="Center"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
@@ -31,19 +32,16 @@
                                     <Condition Binding="{Binding IsMouseOver, RelativeSource={RelativeSource TemplatedParent}}" Value="True"/>
                                     <Condition Binding="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}" Value="False"/>
                                 </MultiDataTrigger.Conditions>
-                                <Setter TargetName="Bd" Property="Background" Value="#E8EEF8"/>
+                                <Setter Property="Foreground" Value="{StaticResource Accent}"/>
                             </MultiDataTrigger>
                             <MultiDataTrigger>
                                 <MultiDataTrigger.Conditions>
                                     <Condition Binding="{Binding IsPressed, RelativeSource={RelativeSource TemplatedParent}}" Value="True"/>
                                     <Condition Binding="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}" Value="False"/>
                                 </MultiDataTrigger.Conditions>
-                                <Setter TargetName="Bd" Property="Background" Value="#D7E2F8"/>
+                                <Setter Property="Foreground" Value="{StaticResource AccentHover}"/>
                             </MultiDataTrigger>
-                            <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#1E63D6"/>
-                                <Setter Property="Foreground" Value="White"/>
-                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}" Value="True"><Setter Property="Foreground" Value="White"/></DataTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -52,12 +50,9 @@
 
         <Style x:Key="CapsuleMiddleButton" TargetType="Button" BasedOn="{StaticResource CapsuleButtonBase}">
             <Setter Property="Padding" Value="44,0"/>
-            <Setter Property="Background" Value="{Binding CapsuleBackground, ElementName=Root}"/>
+            <Setter Property="Background" Value="Transparent"/>
             <Style.Triggers>
-                <DataTrigger Binding="{Binding MiddleIsActive, ElementName=Root}" Value="True">
-                    <Setter Property="Background" Value="#1E63D6"/>
-                    <Setter Property="Foreground" Value="White"/>
-                </DataTrigger>
+                <DataTrigger Binding="{Binding MiddleIsActive, ElementName=Root}" Value="True"><Setter Property="Foreground" Value="White"/></DataTrigger>
             </Style.Triggers>
         </Style>
 
@@ -67,10 +62,7 @@
             <Setter Property="Height" Value="{Binding SideButtonSize, ElementName=Root}"/>
             <Setter Property="Padding" Value="0"/>
             <Style.Triggers>
-                <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource Self}}" Value="True">
-                    <Setter Property="Background" Value="#1E63D6"/>
-                    <Setter Property="Foreground" Value="White"/>
-                </DataTrigger>
+                <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource Self}}" Value="True"><Setter Property="Foreground" Value="White"/></DataTrigger>
                 <DataTrigger Binding="{Binding MiddleIsActive, ElementName=Root}" Value="True">
                     <Setter Property="Foreground" Value="White"/>
                 </DataTrigger>
@@ -97,21 +89,29 @@
 
             <Button x:Name="LeftButton"
                     HorizontalAlignment="Left"
-                    Content="{Binding LeftContent, ElementName=Root}"
                     Command="{Binding LeftCommand, ElementName=Root}"
                     CommandParameter="{Binding LeftCommandParameter, ElementName=Root}"
                     ToolTip="{Binding LeftToolTip, ElementName=Root}"
                     Tag="{Binding LeftIsActive, ElementName=Root}"
-                    Style="{StaticResource CapsuleSideButton}"/>
+                    Style="{StaticResource CapsuleSideButton}">
+                <Path Width="16" Height="16"
+                      Data="M3,2.5 L12,2.5 L14,5 L14,13.5 L2,13.5 L2,5 Z M5,7 L11,7 M5,10 L9,10"
+                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                      StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+            </Button>
 
             <Button x:Name="RightButton"
                     HorizontalAlignment="Right"
-                    Content="{Binding RightContent, ElementName=Root}"
                     Command="{Binding RightCommand, ElementName=Root}"
                     CommandParameter="{Binding RightCommandParameter, ElementName=Root}"
                     ToolTip="{Binding RightToolTip, ElementName=Root}"
                     Tag="{Binding RightIsActive, ElementName=Root}"
-                    Style="{StaticResource CapsuleSideButton}"/>
+                    Style="{StaticResource CapsuleSideButton}">
+                <Path Width="16" Height="16"
+                      Data="M2,4 L14,4 L14,13 L2,13 Z M2,7 L14,7 M6,4 L6,13"
+                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                      StrokeThickness="1.35" StrokeLineJoin="Round"/>
+            </Button>
         </Grid>
     </Border>
 </UserControl>

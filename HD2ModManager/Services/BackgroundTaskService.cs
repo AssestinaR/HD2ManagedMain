@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Collections.Specialized;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 
 namespace HD2ModManager.Services
@@ -35,6 +36,7 @@ namespace HD2ModManager.Services
         private BackgroundTaskStatus _status;
         private string _stage = "等待执行";
         private string? _error;
+        private double? _progress;
         private bool _isSelected;
         private readonly CancellationTokenSource _cancellation = new();
 
@@ -42,15 +44,35 @@ namespace HD2ModManager.Services
         public BackgroundTaskKind Kind { get; }
         public string Name { get; }
         public string? Detail { get; }
+        public string Origin { get; }
+        public string? UserVisibleReason { get; }
+        public string? SuggestedAction { get; private set; }
         public DateTime CreatedAt { get; } = DateTime.UtcNow;
+        public DateTime? StartedAt { get; private set; }
         public DateTime? FinishedAt { get; private set; }
         public BackgroundTaskStatus Status { get => _status; private set => SetField(ref _status, value); }
         public string Stage { get => _stage; private set => SetField(ref _stage, value); }
         public string? Error { get => _error; private set => SetField(ref _error, value); }
+        public double? Progress
+        {
+            get => _progress;
+            private set
+            {
+                if (Equals(_progress, value)) return;
+                _progress = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(ProgressText));
+                OnPropertyChanged(nameof(HasProgress));
+            }
+        }
+        public string ProgressText => Progress is null ? string.Empty : $"{Progress.Value:P0}";
+        public bool HasProgress => Progress is not null;
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
         public bool IsActive => Status is BackgroundTaskStatus.Queued or BackgroundTaskStatus.Running;
         public CancellationToken CancellationToken => _cancellation.Token;
         public bool CanCancel => IsActive;
+        public bool CanRetry => Retry is not null && !IsActive;
+        public Func<Task>? Retry { get; }
         public string StatusText => Status switch
         {
             BackgroundTaskStatus.Queued => "排队中",
@@ -73,21 +95,34 @@ namespace HD2ModManager.Services
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
-        public BackgroundTaskItem(BackgroundTaskKind kind, string name, string? detail = null)
+        public BackgroundTaskItem(
+            BackgroundTaskKind kind,
+            string name,
+            string? detail = null,
+            string? origin = null,
+            string? userVisibleReason = null,
+            string? suggestedAction = null,
+            Func<Task>? retry = null)
         {
             Kind = kind;
             Name = name;
             Detail = detail;
+            Origin = string.IsNullOrWhiteSpace(origin) ? "管理器" : origin;
+            UserVisibleReason = userVisibleReason;
+            SuggestedAction = suggestedAction;
+            Retry = retry;
             _status = BackgroundTaskStatus.Queued;
         }
 
         public void MarkRunning(string stage)
         {
             Status = BackgroundTaskStatus.Running;
+            StartedAt = DateTime.UtcNow;
             UpdateStage(stage);
             OnPropertyChanged(nameof(IsActive));
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(CanCancel));
+            OnPropertyChanged(nameof(CanRetry));
         }
 
         public void UpdateStage(string stage)
@@ -95,14 +130,27 @@ namespace HD2ModManager.Services
             Stage = string.IsNullOrWhiteSpace(stage) ? "处理中" : stage;
         }
 
+        public void UpdateProgress(double? progress)
+        {
+            Progress = progress is null ? null : Math.Clamp(progress.Value, 0d, 1d);
+        }
+
+        public void SetSuggestedAction(string? suggestedAction)
+        {
+            SuggestedAction = suggestedAction;
+            OnPropertyChanged(nameof(SuggestedAction));
+        }
+
         public void MarkCompleted()
         {
             Status = BackgroundTaskStatus.Completed;
             FinishedAt = DateTime.UtcNow;
+            Progress = 1d;
             UpdateStage("已完成");
             OnPropertyChanged(nameof(IsActive));
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(CanCancel));
+            OnPropertyChanged(nameof(CanRetry));
         }
 
         public void MarkFailed(string error)
@@ -114,6 +162,7 @@ namespace HD2ModManager.Services
             OnPropertyChanged(nameof(IsActive));
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(CanCancel));
+            OnPropertyChanged(nameof(CanRetry));
         }
 
         public void MarkCanceled()
@@ -124,6 +173,7 @@ namespace HD2ModManager.Services
             OnPropertyChanged(nameof(IsActive));
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(CanCancel));
+            OnPropertyChanged(nameof(CanRetry));
         }
 
         public void Cancel()
@@ -164,9 +214,16 @@ namespace HD2ModManager.Services
 
         public event EventHandler? Changed;
 
-        public BackgroundTaskItem Enqueue(BackgroundTaskKind kind, string name, string? detail = null)
+        public BackgroundTaskItem Enqueue(
+            BackgroundTaskKind kind,
+            string name,
+            string? detail = null,
+            string? origin = null,
+            string? userVisibleReason = null,
+            string? suggestedAction = null,
+            Func<Task>? retry = null)
         {
-            var task = new BackgroundTaskItem(kind, name, detail);
+            var task = new BackgroundTaskItem(kind, name, detail, origin, userVisibleReason, suggestedAction, retry);
             RunOnUi(() => _tasks.Add(task));
             task.PropertyChanged += OnTaskPropertyChanged;
             return task;

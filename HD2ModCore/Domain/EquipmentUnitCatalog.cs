@@ -67,7 +67,10 @@ public sealed record CrossArmorTransferMapping(
 	IReadOnlyList<string> UsedByArchiveIds,
 	IReadOnlyList<string> UsedByDisplayNames,
 	bool IsManual,
-	bool IsSuppressed);
+	bool IsSuppressed)
+{
+	public int HitCount { get; init; }
+}
 
 // Purpose: Explains another indexed equipment archive affected because it shares a Unit that will be written.
 public sealed record CrossArmorTransferImpact(

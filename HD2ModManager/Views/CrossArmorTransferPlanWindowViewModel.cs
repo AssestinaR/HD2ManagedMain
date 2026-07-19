@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -13,8 +14,9 @@ namespace HD2ModManager.Views;
 // Purpose: Presents a no-write source-to-target equipment transfer preview before cross-armor Patch output is implemented.
 public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 {
-	private EquipmentUnitCatalogEntry? selectedSource;
-	private UnitMeshBodyVariant? selectedSourceBodyVariant;
+	private EquipmentUnitCatalogEntry? selectedSourceArmor;
+	private EquipmentUnitCatalogEntry? selectedSourceHelmet;
+	private UnitMeshBodyVariant? selectedSourceBodyVariant = UnitMeshBodyVariant.Any;
 	private CrossArmorBodyVariantPreference bodyVariantPreference = CrossArmorBodyVariantPreference.Slim;
 	private CrossArmorLayerPreference layerPreference = CrossArmorLayerPreference.Armor;
 	private bool allowManualMappings;
@@ -28,9 +30,26 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private string planState = "正在准备跨护甲计划。";
 	private CrossArmorTransferMapping? selectedTargetMapping;
 	private EquipmentUnitPart? selectedManualSource;
+	private CrossArmorTargetArchiveFilterOption? selectedTargetArchiveFilter;
+	private CrossArmorCandidateOutputPageViewModel? candidateOutput;
+	private bool autoSelectSharedParts = true;
+	private bool autoSelectMatchingHelmet = true;
+	private bool applyingTargetSelection;
 
-	public IReadOnlyList<CrossArmorTransferEquipmentRow> SourceChoices { get; }
+	public IReadOnlyList<CrossArmorTransferEquipmentRow> SourceArmorChoices { get; }
+	public IReadOnlyList<CrossArmorTransferEquipmentRow> SourceHelmetChoices { get; }
+	public CrossArmorCandidateOutputPageViewModel? CandidateOutput { get => candidateOutput; private set { if (ReferenceEquals(candidateOutput, value)) return; candidateOutput = value; OnPropertyChanged(); } }
 	public IReadOnlyList<CrossArmorTransferEquipmentRow> TargetChoices { get; }
+	public bool AutoSelectSharedParts
+	{
+		get => autoSelectSharedParts;
+		set { if (autoSelectSharedParts == value) return; autoSelectSharedParts = value; OnPropertyChanged(); }
+	}
+	public bool AutoSelectMatchingHelmet
+	{
+		get => autoSelectMatchingHelmet;
+		set { if (autoSelectMatchingHelmet == value) return; autoSelectMatchingHelmet = value; OnPropertyChanged(); }
+	}
 	public string SourcePatchTocPath { get; }
 	public string GameDataDirectory { get; }
 	public RelayCommand RefreshPlanCommand { get; }
@@ -61,7 +80,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	public IReadOnlyList<EquipmentUnitPart> ManualSourceChoices => SelectedTargetMapping is null
 		? Array.Empty<EquipmentUnitPart>()
 		: SourceParts.Where(part => part.PartKind == SelectedTargetMapping.Target.PartKind).ToArray();
-	public bool CanEditSelectedMapping => AllowManualMappings && SelectedTargetMapping is not null;
+	public bool CanEditSelectedMapping => SelectedTargetMapping is not null;
 	public CrossArmorBodyVariantPreference BodyVariantPreference
 	{
 		get => bodyVariantPreference;
@@ -79,27 +98,40 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		{
 			if (allowManualMappings == value) return;
 			allowManualMappings = value;
-			if (!value)
-			{
-				manualMappings.Clear();
-				suppressedTargets.Clear();
-			}
 			OnPropertyChanged();
 			RaiseManualMappingCommandStates();
 			QueueRefreshPlan();
 		}
 	}
-	public EquipmentUnitCatalogEntry? SelectedSource
+	public EquipmentUnitCatalogEntry? SelectedSourceArmor
 	{
-		get => selectedSource;
+		get => selectedSourceArmor;
 		set
 		{
-			if (ReferenceEquals(selectedSource, value)) return;
-			selectedSource = value;
+			if (ReferenceEquals(selectedSourceArmor, value)) return;
+			selectedSourceArmor = value;
 			OnPropertyChanged();
+			OnPropertyChanged(nameof(SelectedSource));
+			OnPropertyChanged(nameof(SourceParts));
+			OnPropertyChanged(nameof(ManualSourceChoices));
 			QueueRefreshPlan();
 		}
 	}
+	public EquipmentUnitCatalogEntry? SelectedSourceHelmet
+	{
+		get => selectedSourceHelmet;
+		set
+		{
+			if (ReferenceEquals(selectedSourceHelmet, value)) return;
+			selectedSourceHelmet = value;
+			OnPropertyChanged();
+			OnPropertyChanged(nameof(SelectedSource));
+			OnPropertyChanged(nameof(SourceParts));
+			OnPropertyChanged(nameof(ManualSourceChoices));
+			QueueRefreshPlan();
+		}
+	}
+	public EquipmentUnitCatalogEntry? SelectedSource => SelectedSourceArmor ?? SelectedSourceHelmet;
 	public UnitMeshBodyVariant? SelectedSourceBodyVariant
 	{
 		get => selectedSourceBodyVariant;
@@ -108,10 +140,12 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			if (selectedSourceBodyVariant == value) return;
 			selectedSourceBodyVariant = value;
 			OnPropertyChanged();
+			OnPropertyChanged(nameof(SourceParts));
+			OnPropertyChanged(nameof(ManualSourceChoices));
 			QueueRefreshPlan();
 		}
 	}
-	public IReadOnlyList<EquipmentUnitPart> SourceParts => plan?.SelectedSource?.Parts
+	public IReadOnlyList<EquipmentUnitPart> SourceParts => new[] { SelectedSourceArmor, SelectedSourceHelmet }.Where(source => source is not null).SelectMany(source => source!.Parts)
 		.Where(part => SelectedSourceBodyVariant is null or UnitMeshBodyVariant.Unknown or UnitMeshBodyVariant.Any || part.BodyVariant == SelectedSourceBodyVariant || part.BodyVariant == UnitMeshBodyVariant.Any)
 		.OrderBy(part => part.PartKind).ThenBy(part => part.Layer).ThenBy(part => part.MeshInfoIndex).ToArray()
 		?? Array.Empty<EquipmentUnitPart>();
@@ -123,6 +157,15 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		.ThenBy(mapping => mapping.PhysicalTarget.MeshInfoIndex)
 		.ToArray()
 		?? Array.Empty<CrossArmorTransferMapping>();
+	public ObservableCollection<CrossArmorTargetArchiveFilterOption> TargetArchiveFilters { get; } = new();
+	public CrossArmorTargetArchiveFilterOption? SelectedTargetArchiveFilter
+	{
+		get => selectedTargetArchiveFilter;
+		set { if (selectedTargetArchiveFilter == value) return; selectedTargetArchiveFilter = value; OnPropertyChanged(); OnPropertyChanged(nameof(FilteredTargetMappings)); }
+	}
+	public IReadOnlyList<CrossArmorTransferMapping> FilteredTargetMappings => TargetMappings
+		.Where(mapping => SelectedTargetArchiveFilter?.ArchiveId is null || mapping.UsedByArchiveIds.Contains(SelectedTargetArchiveFilter.ArchiveId, StringComparer.OrdinalIgnoreCase))
+		.ToArray();
 	public IReadOnlyList<CrossArmorTransferImpact> Impacts => plan?.Impacts ?? Array.Empty<CrossArmorTransferImpact>();
 	public bool CanGenerateCandidate => plan?.CanContinue == true && !candidateGenerationRunning;
 	public bool CandidateGenerationRunning
@@ -132,7 +175,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	}
 	public string Summary => plan is null
 		? "请选择来源装备和至少一个目标装备。"
-		: $"来源目录候选 {SourceParts.Count}；物理目标 mesh {TargetMappings.Count}（已按 Unit + mesh 去重）；预计替换 {TargetMappings.Count(mapping => mapping.WillReplace)}；预计极小化 {TargetMappings.Count(mapping => !mapping.WillReplace)}；受影响装备 {Impacts.Select(impact => impact.ArchiveId).Distinct().Count()}。";
+		: $"来源目录候选 {SourceParts.Count}；物理目标 mesh {TargetMappings.Count}（已按 Unit + mesh 去重）；预计命中 {TargetMappings.Sum(mapping => mapping.HitCount)} 次，替换 {TargetMappings.Count(mapping => mapping.WillReplace)} 个 mesh；预计极小化 {TargetMappings.Count(mapping => !mapping.WillReplace)}；受影响装备 {Impacts.Select(impact => impact.ArchiveId).Distinct().Count()}。";
 	public string Issues => plan is null ? string.Empty : string.Join(Environment.NewLine, plan.Issues.Select(issue => $"{issue.Severity}: {issue.Message}"));
 
 	private readonly IEquipmentUnitCatalogService catalogService;
@@ -152,15 +195,65 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		Title = "跨护甲计划";
 		SourcePatchTocPath = sourcePatchTocPath;
 		GameDataDirectory = gameDataDirectory;
-		SourceChoices = sourceCandidates.Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
+		SourceArmorChoices = sourceCandidates.Where(entry => string.Equals(entry.Category, "Armor", StringComparison.OrdinalIgnoreCase)).Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
+		SourceHelmetChoices = sourceCandidates.Where(entry => string.Equals(entry.Category, "Helmet", StringComparison.OrdinalIgnoreCase)).Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
 		TargetChoices = targetCandidates.Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
-		foreach (var target in TargetChoices) target.PropertyChanged += (_, _) => QueueRefreshPlan();
+		foreach (var target in TargetChoices) target.PropertyChanged += OnTargetChoicePropertyChanged;
 		RefreshPlanCommand = new RelayCommand(_ => QueueRefreshPlan(), _ => !IsPlanning);
 		ApplyManualMappingCommand = new RelayCommand(_ => { if (SelectedTargetMapping is not null && SelectedManualSource is not null) SetManualMapping(SelectedTargetMapping, SelectedManualSource); }, _ => CanEditSelectedMapping && SelectedManualSource is not null);
 		SuppressSelectedMappingCommand = new RelayCommand(_ => { if (SelectedTargetMapping is not null) SuppressAutomaticMapping(SelectedTargetMapping); }, _ => CanEditSelectedMapping);
 		RestoreSelectedMappingCommand = new RelayCommand(_ => { if (SelectedTargetMapping is not null) RestoreAutomaticMapping(SelectedTargetMapping); }, _ => CanEditSelectedMapping);
-		SelectedSource = sourceCandidates.FirstOrDefault();
+		SelectedSourceArmor = SourceArmorChoices.FirstOrDefault()?.Entry;
+		SelectedSourceHelmet = SourceHelmetChoices.FirstOrDefault()?.Entry;
 	}
+
+	private void OnTargetChoicePropertyChanged(object? sender, PropertyChangedEventArgs eventArgs)
+	{
+		if (eventArgs.PropertyName != nameof(CrossArmorTransferEquipmentRow.IsSelected)) return;
+		if (applyingTargetSelection) return;
+		if (sender is CrossArmorTransferEquipmentRow changed) ApplyAutomaticTargetSelection(changed);
+		QueueRefreshPlan();
+	}
+
+	private void ApplyAutomaticTargetSelection(CrossArmorTransferEquipmentRow changed)
+	{
+		if (!AutoSelectSharedParts && !AutoSelectMatchingHelmet) return;
+		applyingTargetSelection = true;
+		try
+		{
+			var pending = new Queue<CrossArmorTransferEquipmentRow>();
+			var visited = new HashSet<CrossArmorTransferEquipmentRow>();
+			pending.Enqueue(changed);
+			while (pending.Count > 0)
+			{
+				var current = pending.Dequeue();
+				if (!visited.Add(current)) continue;
+				foreach (var related in RelatedTargetChoices(current))
+				{
+					if (related.IsSelected == current.IsSelected) continue;
+					related.IsSelected = current.IsSelected;
+					pending.Enqueue(related);
+				}
+			}
+		}
+		finally { applyingTargetSelection = false; }
+	}
+
+	private IEnumerable<CrossArmorTransferEquipmentRow> RelatedTargetChoices(CrossArmorTransferEquipmentRow current)
+	{
+		if (AutoSelectSharedParts && IsArmor(current.Entry))
+		{
+			var units = current.Entry.Parts.Select(part => part.UnitAssetKey).ToHashSet();
+			foreach (var candidate in TargetChoices.Where(row => !ReferenceEquals(row, current) && IsArmor(row.Entry) && row.Entry.Parts.Any(part => units.Contains(part.UnitAssetKey)))) yield return candidate;
+		}
+		if (AutoSelectMatchingHelmet)
+		{
+			var counterpartCategory = IsArmor(current.Entry) ? "Helmet" : "Armor";
+			foreach (var candidate in TargetChoices.Where(row => string.Equals(row.Entry.Category, counterpartCategory, StringComparison.OrdinalIgnoreCase) && string.Equals(row.Entry.DisplayName, current.Entry.DisplayName, StringComparison.OrdinalIgnoreCase))) yield return candidate;
+		}
+	}
+
+	private static bool IsArmor(EquipmentUnitCatalogEntry entry) => string.Equals(entry.Category, "Armor", StringComparison.OrdinalIgnoreCase);
 
 	public void ExportJson(string outputPath)
 	{
@@ -177,7 +270,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			layerPreference = LayerPreference.ToString(),
 			manualSuppressions = suppressedTargets.Select(target => new { unitAssetKey = ToAssetKeyExport(target.UnitAssetKey), target.MeshInfoIndex }).ToArray(),
 			selectedTargetArchiveIds = TargetChoices.Where(row => row.IsSelected).Select(row => row.Entry.ArchiveId).ToArray(),
-			sourceChoices = SourceChoices.Select(row => ToChoiceExport(row)).ToArray(),
+			sourceArmorChoices = SourceArmorChoices.Select(row => ToChoiceExport(row)).ToArray(),
+			sourceHelmetChoices = SourceHelmetChoices.Select(row => ToChoiceExport(row)).ToArray(),
 			targetChoices = TargetChoices.Select(row => ToChoiceExport(row)).ToArray(),
 			plan = plan is null ? null : new
 			{
@@ -189,6 +283,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 					target = ToPartExport(mapping.Target),
 					source = mapping.Source is null ? null : ToPartExport(mapping.Source),
 					mapping.WillReplace,
+					mapping.HitCount,
 					mapping.IsManual,
 					mapping.IsSuppressed,
 					mapping.UsedByArchiveIds,
@@ -212,6 +307,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
 		}));
 	}
+
+	public void AttachCandidateOutput(CrossArmorCandidateOutputPageViewModel output) => CandidateOutput = output;
 
 	public void SetManualMapping(CrossArmorTransferMapping target, EquipmentUnitPart source)
 	{
@@ -260,12 +357,15 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		var targetIds = TargetChoices.Where(row => row.IsSelected).Select(row => row.Entry.ArchiveId).ToArray();
 		try
 		{
-			var nextPlan = await Task.Run(() => catalogService.CreatePlanAsync(sourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray(), cancellationToken).AsTask(), cancellationToken);
+			var additionalSources = new[] { SelectedSourceArmor, SelectedSourceHelmet }.Where(source => source is not null && !ReferenceEquals(source, SelectedSource)).Select(source => source!.ArchiveId).ToArray();
+			var nextPlan = await Task.Run(() => catalogService.CreatePlanAsync(sourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray(), AllowManualMappings, additionalSources, cancellationToken).AsTask(), cancellationToken);
 			if (cancellationToken.IsCancellationRequested || generation != planGeneration) return;
 			plan = nextPlan;
 			PlanState = "计划已更新。";
 			OnPropertyChanged(nameof(SourceParts));
 			OnPropertyChanged(nameof(TargetMappings));
+			RefreshTargetArchiveFilters();
+			OnPropertyChanged(nameof(FilteredTargetMappings));
 			OnPropertyChanged(nameof(Impacts));
 			OnPropertyChanged(nameof(Summary));
 			OnPropertyChanged(nameof(Issues));
@@ -302,6 +402,25 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		ApplyManualMappingCommand?.RaiseCanExecuteChanged();
 		SuppressSelectedMappingCommand?.RaiseCanExecuteChanged();
 		RestoreSelectedMappingCommand?.RaiseCanExecuteChanged();
+	}
+
+	private void RefreshTargetArchiveFilters()
+	{
+		var selectedArchiveIds = TargetChoices.Where(row => row.IsSelected).Select(row => row.Entry.ArchiveId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		TargetArchiveFilters.Clear();
+		TargetArchiveFilters.Add(new CrossArmorTargetArchiveFilterOption("全部", null));
+		foreach (var archive in TargetMappings
+			.Where(mapping => mapping.UsedByArchiveIds.Any(selectedArchiveIds.Contains))
+			.SelectMany(mapping => mapping.UsedByArchiveIds)
+			.Where(selectedArchiveIds.Contains)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.Order(StringComparer.OrdinalIgnoreCase))
+		{
+			var friendlyName = TargetChoices.FirstOrDefault(choice => string.Equals(choice.Entry.ArchiveId, archive, StringComparison.OrdinalIgnoreCase))?.Entry.DisplayName ?? archive;
+			TargetArchiveFilters.Add(new CrossArmorTargetArchiveFilterOption(friendlyName, archive));
+		}
+		selectedTargetArchiveFilter = TargetArchiveFilters[0];
+		OnPropertyChanged(nameof(SelectedTargetArchiveFilter));
 	}
 
 	private static object ToEquipmentExport(EquipmentUnitCatalogEntry entry) => new
@@ -360,6 +479,9 @@ public sealed class CrossArmorTransferEquipmentRow : INotifyPropertyChanged
 	}
 	public CrossArmorTransferEquipmentRow(EquipmentUnitCatalogEntry entry) => Entry = entry;
 }
+
+// Purpose: Keeps a friendly selected-target label separate from the archive ID required for plan filtering.
+public sealed record CrossArmorTargetArchiveFilterOption(string DisplayName, string? ArchiveId);
 
 // Purpose: Formats one Unit mesh fact for the simplified source list.
 public sealed class CrossArmorSourcePartRow

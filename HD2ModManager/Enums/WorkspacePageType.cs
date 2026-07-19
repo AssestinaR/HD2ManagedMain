@@ -12,6 +12,6 @@ namespace HD2ModManager.Enums
         GameDataBrowser,
         GameDataArchiveDetails,
         CrossArmorPlan,
-        CrossArmorCandidateOutput,
+        MaterialPackaging,
     }
 }

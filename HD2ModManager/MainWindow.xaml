@@ -16,6 +16,10 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <localViews:BoolToStarLengthConverter x:Key="BoolToStarLength"/>
 
+        <Style x:Key="WorkspacePageHost" TargetType="ContentControl">
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+        </Style>
+
         <DataTemplate DataType="{x:Type localVM:HomePageViewModel}">
             <views:HomePageView/>
         </DataTemplate>
@@ -43,19 +47,19 @@
         <DataTemplate DataType="{x:Type views:CrossArmorTransferPlanWindowViewModel}">
             <views:CrossArmorPlanPageView/>
         </DataTemplate>
-        <DataTemplate DataType="{x:Type localVM:CrossArmorCandidateOutputPageViewModel}">
-            <views:CrossArmorCandidateOutputPageView/>
+        <DataTemplate DataType="{x:Type localVM:MaterialPackagingPageViewModel}">
+            <views:MaterialPackagingPageView/>
         </DataTemplate>
-
         <Style x:Key="TopNavButton" TargetType="Button">
             <Setter Property="Height" Value="32"/>
             <Setter Property="Padding" Value="16,0"/>
             <Setter Property="Margin" Value="4,0"/>
-            <Setter Property="Foreground" Value="#333"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderBrush" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Panel.ZIndex" Value="1"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -64,10 +68,9 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#E8EEF8"/>
+                                <Setter Property="Foreground" Value="{StaticResource Accent}"/>
                             </Trigger>
                             <Trigger Property="Tag" Value="Active">
-                                <Setter TargetName="Bd" Property="Background" Value="#1E63D6"/>
                                 <Setter Property="Foreground" Value="White"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -140,7 +143,7 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0" Background="White" shell:WindowChrome.IsHitTestVisibleInChrome="True" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+        <Grid Grid.Row="0" Background="{StaticResource SurfaceCard}" shell:WindowChrome.IsHitTestVisibleInChrome="True" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
@@ -148,16 +151,24 @@
             </Grid.ColumnDefinitions>
             <TextBlock Text="HD2 Mod Manager" VerticalAlignment="Center" FontSize="16" FontWeight="SemiBold" Margin="16,0,18,0"/>
 
-            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center">
-                <Button Content="🏠 首页" Command="{Binding ShowHomeCommand}">
+            <Grid x:Name="WorkspaceNavigationHost" Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Canvas IsHitTestVisible="False">
+                    <Border x:Name="WorkspaceNavigationIndicator" Height="32" Background="{StaticResource Accent}" CornerRadius="16"/>
+                </Canvas>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center">
+                <Button x:Name="HomeNavigationButton" Command="{Binding ShowHomeCommand}">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Path Width="15" Height="15" Margin="0,0,6,0" Data="M2,7 L8,2 L14,7 L14,14 L10,14 L10,10 L6,10 L6,14 L2,14 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
+                        <TextBlock Text="首页" VerticalAlignment="Center"/>
+                    </StackPanel>
                     <Button.Style>
                         <Style TargetType="Button" BasedOn="{StaticResource TopNavButton}">
                             <Style.Triggers><DataTrigger Binding="{Binding IsHomeActive}" Value="True"><Setter Property="Tag" Value="Active"/></DataTrigger></Style.Triggers>
                         </Style>
                     </Button.Style>
                 </Button>
-                <localViews:CapsuleButtonGroup Width="168" Height="40" Margin="10,0"
-                                               LeftContent="📄" MiddleContent="配置页  |  模组库" RightContent="📦"
+                <localViews:CapsuleButtonGroup x:Name="WorkspaceCapsuleGroup" Width="168" Height="40" Margin="10,0"
+                                               MiddleContent="配置页  |  模组库"
                                                LeftToolTip="只打开配置页" MiddleToolTip="合并为左右双页" RightToolTip="只打开模组库"
                                                LeftCommand="{Binding ShowProfileCommand}"
                                                MiddleCommand="{Binding ShowSplitCommand}"
@@ -165,17 +176,26 @@
                                                LeftIsActive="{Binding IsProfileActive}"
                                                MiddleIsActive="{Binding IsSplitActive}"
                                                RightIsActive="{Binding IsLibraryActive}"/>
-                <Button Content="⚙️ 设置" Command="{Binding ShowSettingsCommand}">
+                <Button x:Name="SettingsNavigationButton" Command="{Binding ShowSettingsCommand}">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Path Width="15" Height="15" Margin="0,0,6,0" Data="M8,4.5 A3.5,3.5 0 1 0 8,11.5 A3.5,3.5 0 1 0 8,4.5 M8,1.5 L8,3 M8,13 L8,14.5 M1.5,8 L3,8 M13,8 L14.5,8 M3.4,3.4 L4.5,4.5 M11.5,11.5 L12.6,12.6 M12.6,3.4 L11.5,4.5 M4.5,11.5 L3.4,12.6" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeStartLineCap="Round"/>
+                        <TextBlock Text="设置" VerticalAlignment="Center"/>
+                    </StackPanel>
                     <Button.Style>
                         <Style TargetType="Button" BasedOn="{StaticResource TopNavButton}">
                             <Style.Triggers><DataTrigger Binding="{Binding IsSettingsActive}" Value="True"><Setter Property="Tag" Value="Active"/></DataTrigger></Style.Triggers>
                         </Style>
                     </Button.Style>
                 </Button>
-            </StackPanel>
+                </StackPanel>
+            </Grid>
 
             <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button Style="{StaticResource TopNavButton}" Content="任务中心" Command="{Binding ToggleTaskHubCommand}" Margin="0,8,6,8" Padding="12,0">
+                <Button Style="{StaticResource TopNavButton}" Command="{Binding ToggleTaskHubCommand}" Margin="0,8,6,8" Padding="12,0">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Path Width="15" Height="15" Margin="0,0,6,0" Data="M3,4 L13,4 L13,14 L3,14 Z M5,7 L11,7 M5,10 L9,10" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                        <TextBlock Text="任务中心" VerticalAlignment="Center"/>
+                    </StackPanel>
                     <Button.ToolTip>
                         <TextBlock Text="查看进行中的后台任务与最近消息"/>
                     </Button.ToolTip>
@@ -196,7 +216,8 @@
 
                 <Border Grid.Column="0" Background="Transparent" BorderThickness="0" ClipToBounds="True">
                     <Grid>
-                        <ContentControl Content="{Binding LeftPage}"/>
+                        <ContentControl x:Name="LeftPreviousPageHost" Style="{StaticResource WorkspacePageHost}" IsHitTestVisible="False"/>
+                        <ContentControl x:Name="LeftCurrentPageHost" Style="{StaticResource WorkspacePageHost}"/>
                         <views:FloatingActionCluster HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="18" LabelDirection="Right" Actions="{Binding LeftSlotActions}" Visibility="{Binding ShowSplitLeftSlotActions, Converter={StaticResource BoolToVis}}"/>
                         <views:FloatingActionCluster HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="18" Actions="{Binding LeftSlotActions}" Visibility="{Binding ShowFullScreenActions, Converter={StaticResource BoolToVis}}"/>
                     </Grid>
@@ -206,23 +227,31 @@
 
                 <Border Grid.Column="2" Background="Transparent" BorderThickness="0" ClipToBounds="True" Visibility="{Binding ShowRightSlot, Converter={StaticResource BoolToVis}}">
                     <Grid>
-                        <ContentControl Content="{Binding RightPage}"/>
+                        <ContentControl x:Name="RightPreviousPageHost" Style="{StaticResource WorkspacePageHost}" IsHitTestVisible="False"/>
+                        <ContentControl x:Name="RightCurrentPageHost" Style="{StaticResource WorkspacePageHost}"/>
                         <views:FloatingActionCluster HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="18" Actions="{Binding RightSlotActions}" Visibility="{Binding ShowRightSlotActions, Converter={StaticResource BoolToVis}}"/>
                     </Grid>
                 </Border>
             </Grid>
 
-            <Border HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,22"
-                    Padding="14,10" CornerRadius="18" Background="White" BorderBrush="#D9DEE8" BorderThickness="1"
-                    Visibility="{Binding HasSelection, Converter={StaticResource BoolToVis}}">
-                <Border.Effect>
-                    <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.18"/>
-                </Border.Effect>
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding SelectionSummary}" VerticalAlignment="Center" Foreground="#1E63D6" FontWeight="SemiBold" Margin="2,0,14,0"/>
-                    <Button Content="{Binding SelectionPrimaryText}" Command="{Binding SelectionPrimaryCommand}" Padding="12,5" Margin="0,0,8,0"/>
-                    <Button Content="{Binding SelectionDeleteText}" Command="{Binding SelectionDeleteCommand}" Padding="12,5" Margin="0,0,8,0" Foreground="#B3261E"/>
-                    <Button Content="取消选择" Command="{Binding CancelSelectionCommand}" Padding="12,5"/>
+            <Border x:Name="BottomContextBar" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,22"
+                    Padding="14,10" CornerRadius="18" RenderTransformOrigin="0.5,0.5"
+                    Visibility="Collapsed">
+                <Border.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></Border.RenderTransform>
+                <Border.Style>
+                    <Style TargetType="Border" BasedOn="{StaticResource AppElevatedPanel}">
+                    </Style>
+                </Border.Style>
+                <StackPanel x:Name="BottomContextBarContent" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding BottomBar.EditLabel}" VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}" Margin="0,0,6,0" Visibility="{Binding BottomBar.HasTemporaryEditor, Converter={StaticResource BoolToVis}}"/>
+                    <TextBox Style="{StaticResource AppTextBox}" Width="220" Text="{Binding BottomBar.EditText, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding BottomBar.HasTemporaryEditor, Converter={StaticResource BoolToVis}}"/>
+                    <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding BottomBar.EditConfirmText}" Command="{Binding BottomBar.ConfirmEditCommand}" Margin="8,0,0,0" Visibility="{Binding BottomBar.HasTemporaryEditor, Converter={StaticResource BoolToVis}}"/>
+                    <Button Style="{StaticResource AppSecondaryButton}" Content="取消编辑" Command="{Binding BottomBar.CancelEditCommand}" Margin="8,0,14,0" Visibility="{Binding BottomBar.HasTemporaryEditor, Converter={StaticResource BoolToVis}}"/>
+                    <TextBlock Text="{Binding BottomBar.SelectionSummary}" VerticalAlignment="Center" Foreground="{StaticResource Accent}" FontWeight="SemiBold" Margin="2,0,14,0" Visibility="{Binding BottomBar.HasSelection, Converter={StaticResource BoolToVis}}"/>
+                    <Button Style="{StaticResource AppPrimaryButton}" Content="加入配置" Command="{Binding SelectionPrimaryCommand}" Margin="0,0,8,0" Visibility="{Binding BottomBar.ShowAddToProfile, Converter={StaticResource BoolToVis}}"/>
+                    <Button Style="{StaticResource AppDangerButton}" Content="删除" Command="{Binding SelectionDeleteCommand}" Margin="0,0,8,0" Visibility="{Binding BottomBar.ShowDelete, Converter={StaticResource BoolToVis}}"/>
+                    <Button Style="{StaticResource AppDangerButton}" Content="移除" Command="{Binding SelectionDeleteCommand}" Margin="0,0,8,0" Visibility="{Binding BottomBar.ShowRemove, Converter={StaticResource BoolToVis}}"/>
+                    <Button Style="{StaticResource AppSecondaryButton}" Content="取消选择" Command="{Binding CancelSelectionCommand}" Visibility="{Binding BottomBar.HasSelection, Converter={StaticResource BoolToVis}}"/>
                 </StackPanel>
             </Border>
 
@@ -239,13 +268,9 @@
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
 
-            <Border HorizontalAlignment="Right" VerticalAlignment="Stretch" Width="360" Margin="0,12,12,12"
-                    Background="{StaticResource CardBackgroundBrush}" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1"
-                    CornerRadius="14" Padding="14" Panel.ZIndex="20"
+            <Border Style="{StaticResource AppElevatedPanel}" HorizontalAlignment="Right" VerticalAlignment="Stretch" Width="360" Margin="0,12,12,12"
+                    Padding="14" Panel.ZIndex="20"
                     Visibility="{Binding IsTaskHubOpen, Converter={StaticResource BoolToVis}}">
-                <Border.Effect>
-                    <DropShadowEffect BlurRadius="20" ShadowDepth="3" Opacity="0.18"/>
-                </Border.Effect>
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -255,31 +280,41 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
                     <DockPanel>
-                        <TextBlock Text="任务与信息中心" Style="{StaticResource SectionTitle}" DockPanel.Dock="Left"/>
-                        <Button Content="关闭" Command="{Binding ToggleTaskHubCommand}" DockPanel.Dock="Right" Padding="8,3"/>
+                        <TextBlock Text="任务与信息中心" Style="{StaticResource AppCardTitle}" DockPanel.Dock="Left"/>
+                        <Button Style="{StaticResource AppQuietButton}" Content="关闭" Command="{Binding ToggleTaskHubCommand}" DockPanel.Dock="Right"/>
                     </DockPanel>
-                    <TextBlock Grid.Row="1" Text="{Binding ActiveTaskCount, StringFormat=进行中或排队：{0}}" Foreground="#6C7280" Margin="0,5,0,8"/>
+                    <TextBlock Grid.Row="1" Text="{Binding ActiveTaskCount, StringFormat=进行中或排队：{0}}" Style="{StaticResource AppSupportingText}" Margin="0,5,0,8"/>
                     <ListBox Grid.Row="2" ItemsSource="{Binding TaskHubTasks}" Style="{StaticResource ModListBox}" MaxHeight="260">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <Border Style="{StaticResource ModListRowContainer}" Height="Auto" Padding="8">
                                     <StackPanel>
-                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                                        <TextBlock Text="{Binding Stage}" Foreground="#6C7280" FontSize="12" TextTrimming="CharacterEllipsis"/>
-                                        <TextBlock Text="{Binding Error}" Foreground="#B3261E" FontSize="11" TextWrapping="Wrap"/>
+                                        <DockPanel>
+                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" DockPanel.Dock="Left"/>
+                                            <TextBlock Text="{Binding StatusText}" Foreground="{StaticResource TextSecondary}" FontSize="11" DockPanel.Dock="Right"/>
+                                        </DockPanel>
+                                        <TextBlock Text="{Binding UserVisibleReason}" Style="{StaticResource AppSupportingText}" FontSize="11"/>
+                                        <TextBlock Text="{Binding Stage}" Style="{StaticResource AppSupportingText}" TextTrimming="CharacterEllipsis"/>
+                                        <ProgressBar Height="4" Minimum="0" Maximum="1" Value="{Binding Progress}" Visibility="{Binding HasProgress, Converter={StaticResource BoolToVis}}" Margin="0,4,0,0"/>
+                                        <TextBlock Text="{Binding Error}" Foreground="{StaticResource StatusDanger}" FontSize="11" TextWrapping="Wrap"/>
+                                        <TextBlock Text="{Binding SuggestedAction}" Foreground="{StaticResource StatusWarning}" FontSize="11" TextWrapping="Wrap"/>
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,5,0,0">
+                                            <Button Style="{StaticResource AppQuietButton}" Content="取消" Command="{Binding DataContext.CancelTaskCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}"/>
+                                            <Button Style="{StaticResource AppSecondaryButton}" Content="重试" Command="{Binding DataContext.RetryTaskCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" Visibility="{Binding CanRetry, Converter={StaticResource BoolToVis}}"/>
+                                        </StackPanel>
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>
-                    <TextBlock Grid.Row="3" Text="最近消息" Style="{StaticResource SectionTitle}" FontSize="14" Margin="0,12,0,6"/>
+                    <TextBlock Grid.Row="3" Text="最近消息" Style="{StaticResource AppCardTitle}" FontSize="14" Margin="0,12,0,6"/>
                     <ListBox Grid.Row="4" ItemsSource="{Binding EventHistory}" Style="{StaticResource ModListBox}">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <Border Style="{StaticResource ModListRowContainer}" Height="Auto" Padding="8">
                                     <StackPanel>
                                         <TextBlock Text="{Binding Message}" TextWrapping="Wrap"/>
-                                        <TextBlock Text="{Binding CreatedAt, StringFormat={}{0:HH:mm:ss}}" Foreground="#6C7280" FontSize="11" Margin="0,3,0,0"/>
+                                        <TextBlock Text="{Binding CreatedAt, StringFormat={}{0:HH:mm:ss}}" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,3,0,0"/>
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>

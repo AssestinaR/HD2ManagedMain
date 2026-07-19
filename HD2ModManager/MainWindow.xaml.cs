@@ -1,12 +1,17 @@
 ﻿using System;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using System.Windows.Interop;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Shell;
 using HD2ModManager.Enums;
+using HD2ModManager.Services;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager
@@ -16,6 +21,9 @@ namespace HD2ModManager
     /// </summary>
     public partial class MainWindow : Window
     {
+        private double _bottomBarAnimationStartWidth;
+        private bool _bottomBarWidthUpdateQueued;
+        private int _bottomBarAnimationVersion;
         [StructLayout(LayoutKind.Sequential)]
         struct MARGINS
         {
@@ -77,6 +85,9 @@ namespace HD2ModManager
         {
             DataContext = new ShellViewModel();
             InitializeComponent();
+            Loaded += MainWindow_Loaded;
+            DataContextChanged += MainWindow_DataContextChanged;
+            Closed += MainWindow_Closed;
             SourceInitialized += MainWindow_SourceInitialized;
             StateChanged += MainWindow_StateChanged; // 处理最大化时的阴影切换
             Title = HD2ModManager.Resources.Strings.App_Title;
@@ -84,6 +95,7 @@ namespace HD2ModManager
             DragOver += MainWindow_DragOver;
             Drop += MainWindow_Drop;
             PreviewKeyDown += MainWindow_PreviewKeyDown;
+            PreviewMouseDown += MainWindow_PreviewMouseDown;
         }
 
         private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -104,6 +116,294 @@ namespace HD2ModManager
             {
                 DragMove();
             }
+        }
+
+        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        {
+            SubscribeToShell(DataContext as ShellViewModel);
+            ShowInitialPage(LeftCurrentPageHost, (DataContext as ShellViewModel)?.LeftPage);
+            ShowInitialPage(RightCurrentPageHost, (DataContext as ShellViewModel)?.RightPage);
+            Dispatcher.BeginInvoke(UpdateWorkspaceNavigationIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
+            RequestBottomContextBarWidthUpdate();
+        }
+
+        private void MainWindow_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
+        {
+            SubscribeToShell(e.NewValue as ShellViewModel);
+        }
+
+        private void MainWindow_Closed(object? sender, EventArgs e)
+        {
+            if (DataContext is ShellViewModel shell)
+            {
+                shell.PropertyChanged -= Shell_PropertyChanged;
+            }
+        }
+
+        private void MainWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (DataContext is not ShellViewModel { BottomBar.HasTemporaryEditor: true } shell) return;
+            if (e.OriginalSource is DependencyObject source && IsDescendantOf(source, BottomContextBar)) return;
+            shell.CancelBottomBarEdit();
+        }
+
+        private static bool IsDescendantOf(DependencyObject source, DependencyObject ancestor)
+        {
+            while (source != null)
+            {
+                if (ReferenceEquals(source, ancestor)) return true;
+                source = VisualTreeHelper.GetParent(source);
+            }
+            return false;
+        }
+
+        private void SubscribeToShell(ShellViewModel? shell)
+        {
+            if (shell == null) return;
+            shell.PropertyChanged -= Shell_PropertyChanged;
+            shell.PropertyChanged += Shell_PropertyChanged;
+            shell.BottomBar.PropertyChanged -= BottomBar_PropertyChanged;
+            shell.BottomBar.PropertyChanged += BottomBar_PropertyChanged;
+            shell.Selection.SelectionChanged -= Selection_SelectionChanged;
+            shell.Selection.SelectionChanged += Selection_SelectionChanged;
+        }
+
+        private void Selection_SelectionChanged(object? sender, EventArgs e)
+        {
+            RequestBottomContextBarWidthUpdate();
+        }
+
+        private void BottomBar_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName is nameof(BottomBarCoordinator.HasContent)
+                or nameof(BottomBarCoordinator.HasSelection)
+                or nameof(BottomBarCoordinator.HasTemporaryEditor)
+                or nameof(BottomBarCoordinator.ShowAddToProfile)
+                or nameof(BottomBarCoordinator.ShowDelete)
+                or nameof(BottomBarCoordinator.ShowRemove))
+            {
+                RequestBottomContextBarWidthUpdate();
+            }
+        }
+
+        private void RequestBottomContextBarWidthUpdate()
+        {
+            if (BottomContextBar.Visibility == Visibility.Visible && BottomContextBar.ActualWidth > 0)
+            {
+                _bottomBarAnimationStartWidth = BottomContextBar.ActualWidth;
+                BottomContextBar.BeginAnimation(FrameworkElement.WidthProperty, null);
+                BottomContextBar.Width = _bottomBarAnimationStartWidth;
+            }
+
+            if (_bottomBarWidthUpdateQueued) return;
+            _bottomBarWidthUpdateQueued = true;
+            Dispatcher.BeginInvoke(UpdateBottomContextBar, System.Windows.Threading.DispatcherPriority.Render);
+        }
+
+        private async void UpdateBottomContextBar()
+        {
+            _bottomBarWidthUpdateQueued = false;
+            var version = ++_bottomBarAnimationVersion;
+            if (DataContext is not ShellViewModel { BottomBar.HasContent: true })
+            {
+                if (BottomContextBar.Visibility != Visibility.Visible) return;
+                await AnimateBottomBarAsync(BottomContextBarContent, OpacityProperty, BottomContextBarContent.Opacity, 0, 110);
+                if (version != _bottomBarAnimationVersion) return;
+                var currentWidth = BottomContextBar.ActualWidth;
+                await AnimateBottomBarAsync(BottomContextBar, FrameworkElement.WidthProperty, currentWidth, 0, 180);
+                if (version != _bottomBarAnimationVersion) return;
+                BottomContextBar.BeginAnimation(FrameworkElement.WidthProperty, null);
+                BottomContextBar.Width = double.NaN;
+                BottomContextBar.Visibility = Visibility.Collapsed;
+                BottomContextBarContent.Opacity = 1;
+                _bottomBarAnimationStartWidth = 0;
+                return;
+            }
+
+            var isAppearing = BottomContextBar.Visibility != Visibility.Visible;
+            if (isAppearing)
+            {
+                BottomContextBar.Visibility = Visibility.Visible;
+                BottomContextBarContent.Opacity = 0;
+                BottomContextBar.Width = double.NaN;
+                BottomContextBar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                var appearanceTargetWidth = BottomContextBar.DesiredSize.Width;
+                if (appearanceTargetWidth <= 0) return;
+                BottomContextBar.Width = 0;
+                await AnimateBottomBarAsync(BottomContextBar, FrameworkElement.WidthProperty, 0, appearanceTargetWidth, 190);
+                if (version != _bottomBarAnimationVersion) return;
+                BottomContextBar.Width = double.NaN;
+                _bottomBarAnimationStartWidth = appearanceTargetWidth;
+                await AnimateBottomBarAsync(BottomContextBarContent, OpacityProperty, 0, 1, 130);
+                return;
+            }
+
+            await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+            if (version != _bottomBarAnimationVersion || BottomContextBar.Visibility != Visibility.Visible) return;
+
+            var startWidth = _bottomBarAnimationStartWidth > 0 ? _bottomBarAnimationStartWidth : BottomContextBar.ActualWidth;
+            BottomContextBar.Width = double.NaN;
+            BottomContextBar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            var targetWidth = BottomContextBar.DesiredSize.Width;
+            if (targetWidth <= 0) return;
+
+            BottomContextBar.Width = startWidth;
+            await AnimateBottomBarAsync(BottomContextBar, FrameworkElement.WidthProperty, startWidth, targetWidth, 220);
+            if (version != _bottomBarAnimationVersion) return;
+
+            _bottomBarAnimationStartWidth = targetWidth;
+            BottomContextBar.BeginAnimation(FrameworkElement.WidthProperty, null);
+            BottomContextBar.Width = double.NaN;
+        }
+
+        private static Task AnimateBottomBarAsync(DependencyObject target, DependencyProperty property, double from, double to, int milliseconds)
+        {
+            if (milliseconds <= 0 || Math.Abs(from - to) < 0.01)
+            {
+                target.SetValue(property, to);
+                return Task.CompletedTask;
+            }
+
+            var completion = new TaskCompletionSource();
+            var animation = new DoubleAnimation(from, to, TimeSpan.FromMilliseconds(milliseconds))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            animation.Completed += (_, _) => completion.TrySetResult();
+            if (target is IAnimatable animatable)
+            {
+                animatable.BeginAnimation(property, animation);
+            }
+            else
+            {
+                target.SetValue(property, to);
+                completion.TrySetResult();
+            }
+            return completion.Task;
+        }
+
+
+        private void Shell_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (sender is not ShellViewModel shell) return;
+            if (e.PropertyName == nameof(ShellViewModel.BottomBarStateVersion))
+            {
+                RequestBottomContextBarWidthUpdate();
+                return;
+            }
+            if (e.PropertyName == nameof(ShellViewModel.LeftPage))
+            {
+                TransitionPage(LeftCurrentPageHost, LeftPreviousPageHost, shell.LeftPage);
+            }
+            else if (e.PropertyName == nameof(ShellViewModel.RightPage))
+            {
+                TransitionPage(RightCurrentPageHost, RightPreviousPageHost, shell.RightPage);
+            }
+            else if (e.PropertyName is nameof(ShellViewModel.CurrentMode)
+                or nameof(ShellViewModel.IsHomeActive)
+                or nameof(ShellViewModel.IsProfileActive)
+                or nameof(ShellViewModel.IsLibraryActive)
+                or nameof(ShellViewModel.IsSplitActive)
+                or nameof(ShellViewModel.IsSettingsActive))
+            {
+                Dispatcher.BeginInvoke(UpdateWorkspaceNavigationIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
+            }
+        }
+
+        private void UpdateWorkspaceNavigationIndicator()
+        {
+            if (DataContext is not ShellViewModel shell || !WorkspaceNavigationHost.IsLoaded) return;
+
+            FrameworkElement? target = shell.CurrentMode switch
+            {
+                WorkspaceMode.Home => HomeNavigationButton,
+                WorkspaceMode.Settings => SettingsNavigationButton,
+                WorkspaceMode.ProfileOnly or WorkspaceMode.LibraryOnly or WorkspaceMode.ProfileLibrarySplit => WorkspaceCapsuleGroup.GetActiveButton(),
+                _ => null
+            };
+            if (target is null || target.ActualWidth <= 0 || target.ActualHeight <= 0) return;
+
+            var targetPoint = target.TransformToAncestor(WorkspaceNavigationHost).Transform(new Point(0, 0));
+            var targetHeight = target.ActualHeight;
+            var targetRadius = targetHeight / 2d;
+            var isInitialPlacement = WorkspaceNavigationIndicator.ActualWidth <= 0;
+
+            var currentPoint = WorkspaceNavigationIndicator.TransformToAncestor(WorkspaceNavigationHost).Transform(new Point(0, 0));
+            var currentWidth = WorkspaceNavigationIndicator.ActualWidth;
+            var currentHeight = WorkspaceNavigationIndicator.ActualHeight;
+
+            WorkspaceNavigationIndicator.BeginAnimation(WidthProperty, null);
+            WorkspaceNavigationIndicator.BeginAnimation(HeightProperty, null);
+            WorkspaceNavigationIndicator.BeginAnimation(Canvas.LeftProperty, null);
+            WorkspaceNavigationIndicator.BeginAnimation(Canvas.TopProperty, null);
+            WorkspaceNavigationIndicator.BeginAnimation(OpacityProperty, null);
+
+            if (!isInitialPlacement)
+            {
+                WorkspaceNavigationIndicator.Width = currentWidth;
+                WorkspaceNavigationIndicator.Height = currentHeight;
+                Canvas.SetLeft(WorkspaceNavigationIndicator, currentPoint.X);
+                Canvas.SetTop(WorkspaceNavigationIndicator, currentPoint.Y);
+            }
+
+            if (isInitialPlacement)
+            {
+                WorkspaceNavigationIndicator.Width = target.ActualWidth;
+                WorkspaceNavigationIndicator.Height = targetHeight;
+                WorkspaceNavigationIndicator.CornerRadius = new CornerRadius(targetRadius);
+                Canvas.SetLeft(WorkspaceNavigationIndicator, targetPoint.X);
+                Canvas.SetTop(WorkspaceNavigationIndicator, targetPoint.Y);
+                WorkspaceNavigationIndicator.Opacity = 1;
+                return;
+            }
+
+            var duration = TimeSpan.FromMilliseconds(240);
+            var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+            WorkspaceNavigationIndicator.BeginAnimation(Canvas.LeftProperty, new DoubleAnimation(targetPoint.X, duration) { EasingFunction = easing });
+            WorkspaceNavigationIndicator.BeginAnimation(Canvas.TopProperty, new DoubleAnimation(targetPoint.Y, duration) { EasingFunction = easing });
+            WorkspaceNavigationIndicator.BeginAnimation(WidthProperty, new DoubleAnimation(target.ActualWidth, duration) { EasingFunction = easing });
+            WorkspaceNavigationIndicator.BeginAnimation(HeightProperty, new DoubleAnimation(targetHeight, duration) { EasingFunction = easing });
+            WorkspaceNavigationIndicator.CornerRadius = new CornerRadius(targetRadius);
+            WorkspaceNavigationIndicator.Opacity = 1;
+        }
+
+        private static void ShowInitialPage(ContentControl host, object? page)
+        {
+            host.Content = page;
+            host.Opacity = 1;
+        }
+
+        private static void TransitionPage(ContentControl currentHost, ContentControl previousHost, object? nextPage)
+        {
+            if (ReferenceEquals(currentHost.Content, nextPage)) return;
+
+            var transitionStopwatch = Stopwatch.StartNew();
+
+            currentHost.BeginAnimation(OpacityProperty, null);
+            previousHost.BeginAnimation(OpacityProperty, null);
+
+            previousHost.Content = currentHost.Content;
+            previousHost.Opacity = previousHost.Content == null ? 0 : 1;
+            currentHost.Content = nextPage;
+            currentHost.Opacity = 0;
+
+            _ = currentHost.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Render, new Action(() =>
+            {
+                if (!ReferenceEquals(currentHost.Content, nextPage)) return;
+
+                LogService.Info($"UI 性能：{nextPage?.GetType().Name ?? "空页面"} 完成首帧布局后开始转场，等待耗时 {transitionStopwatch.ElapsedMilliseconds}ms。");
+                currentHost.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(240))
+                {
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                });
+
+                if (previousHost.Content != null)
+                {
+                    var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(180));
+                    fadeOut.Completed += (_, _) => previousHost.Content = null;
+                    previousHost.BeginAnimation(OpacityProperty, fadeOut);
+                }
+            }));
         }
 
         private static T? FindAncestor<T>(DependencyObject current) where T : DependencyObject
@@ -237,7 +537,18 @@ namespace HD2ModManager
             {
                 if (DataContext is HD2ModManager.ViewModels.ShellViewModel shell)
                 {
-                    shell.Navigate(WorkspaceMode.Home);
+                    if (shell.BottomBar.HasTemporaryEditor)
+                    {
+                        shell.CancelBottomBarEdit();
+                    }
+                    else if (shell.HasSelection)
+                    {
+                        shell.ClearTransientSelection();
+                    }
+                    else
+                    {
+                        shell.Navigate(WorkspaceMode.Home);
+                    }
                     e.Handled = true;
                 }
             }

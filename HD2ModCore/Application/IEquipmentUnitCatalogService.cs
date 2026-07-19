@@ -25,5 +25,7 @@ public interface IEquipmentUnitCatalogService
 		IReadOnlyCollection<string> selectedTargetArchiveIds,
 		IReadOnlyList<CrossArmorManualMapping>? manualMappings = null,
 		IReadOnlyList<CrossArmorManualSuppression>? manualSuppressions = null,
+		bool manualMode = false,
+		IReadOnlyCollection<string>? additionalSourceArchiveIds = null,
 		CancellationToken cancellationToken = default);
 }

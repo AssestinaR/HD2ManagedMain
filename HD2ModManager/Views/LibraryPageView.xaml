@@ -11,19 +11,44 @@
         <local:CompactMinHeightConverter x:Key="CompactToMinHeight"/>
         <local:StringNotEmptyToVisibilityConverter x:Key="StrNotEmptyToVis"/>
         <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
+        <DataTemplate x:Key="DetailsIcon">
+            <Path Width="16" Height="16" Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 M8,6 L8,11 M8,4 L8,4.2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
+        </DataTemplate>
+        <DataTemplate x:Key="AddIcon">
+            <Path Width="16" Height="16" Data="M8,2 L8,14 M2,8 L14,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round"/>
+        </DataTemplate>
+        <DataTemplate x:Key="FolderIcon">
+            <Path Width="16" Height="16" Data="M1.5,5 L6.5,5 L8,3 L14.5,3 L14.5,13 L1.5,13 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
+        </DataTemplate>
+        <DataTemplate x:Key="DeleteIcon">
+            <Path Width="16" Height="16" Data="M3,5 L13,5 M6,5 L6,3 L10,3 L10,5 M4.5,5 L5,14 L11,14 L11.5,5 M7,7.5 L7,11.5 M9,7.5 L9,11.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeStartLineCap="Round"/>
+        </DataTemplate>
     </UserControl.Resources>
     <DockPanel Background="Transparent">
         <Border DockPanel.Dock="Top" Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
-            <DockPanel LastChildFill="False">
-                <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center">
-                    <TextBlock Text="模组库" FontSize="20" FontWeight="SemiBold"/>
-                    <TextBlock Text="{Binding ItemCountText}" Foreground="#6C7280" FontSize="12" Margin="0,3,0,0"/>
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="32"/>
+                    <RowDefinition Height="22"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="HeaderTitle" Text="模组库" Style="{StaticResource AppCardTitle}" VerticalAlignment="Center"/>
+                <TextBox x:Name="HeaderSearchBox" Style="{StaticResource AppSearchBox}" Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Center" Visibility="Collapsed" Opacity="0" Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}" ToolTip="搜索名称、备注、资产标签或资产名称"/>
+                <Button Grid.Column="1" Style="{StaticResource AppSearchToggleButton}" ToolTip="显示或隐藏搜索" Click="OnToggleSearchClick"/>
+                <StackPanel x:Name="HeaderSummary" Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" VerticalAlignment="Center" Height="22">
+                    <TextBlock Text="{Binding ItemCountText}" Style="{StaticResource AppSupportingText}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 </StackPanel>
-                <TextBox DockPanel.Dock="Right" Width="240" Margin="16,0,0,0" VerticalAlignment="Center" Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}" ToolTip="搜索名称、备注、资产标签或资产名称"/>
-            </DockPanel>
+                <StackPanel x:Name="HeaderActionPanel" Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" VerticalAlignment="Center" Height="22" Visibility="Collapsed">
+                    <Button Style="{StaticResource AppHeaderTextButton}" Content="筛选（占位）"/>
+                    <Button Style="{StaticResource AppHeaderTextButton}" Content="排序（占位）" Margin="4,0,0,0"/>
+                </StackPanel>
+            </Grid>
         </Border>
         <Border Style="{StaticResource CardContainer}" Padding="0">
-            <ListBox ItemsSource="{Binding Items}">
+            <ListBox ItemsSource="{Binding Items}" PreviewMouseLeftButtonDown="OnListBackgroundMouseDown">
                 <ListBox.ItemTemplate>
                     <DataTemplate>
                         <Border x:Name="RowBack" Style="{StaticResource ModListRowContainer}" MouseLeftButtonUp="OnModRowClick">
@@ -39,7 +64,7 @@
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <Border Width="36" Height="36" CornerRadius="7" ClipToBounds="True" VerticalAlignment="Center" Margin="0,0,9,0" Background="#EEF1F6">
+                                <Border Width="36" Height="36" CornerRadius="{StaticResource RadiusControl}" ClipToBounds="True" VerticalAlignment="Center" Margin="0,0,9,0" Background="{StaticResource SurfaceMuted}">
                                     <Image Source="{Binding ImagePath, Converter={StaticResource ImagePlaceholder}, ConverterParameter=72}" Stretch="UniformToFill"/>
                                 </Border>
                                 <StackPanel x:Name="TextPanel" Grid.Column="1" VerticalAlignment="Center" Margin="0,0,0,0">
@@ -56,9 +81,9 @@
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="{Binding UserStatusTitle}" Foreground="#1E63D6" FontSize="12" TextWrapping="NoWrap"/>
-                                        <TextBlock Grid.Column="1" Text=" · " Foreground="#6C7280" FontSize="12"/>
-                                        <TextBlock Grid.Column="2" Text="{Binding AssetSummaryText}" Foreground="#6C7280" FontSize="12" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Grid.Column="0" Text="{Binding UserStatusTitle}" Foreground="{StaticResource Accent}" FontSize="12" TextWrapping="NoWrap"/>
+                                        <TextBlock Grid.Column="1" Text=" · " Foreground="{StaticResource TextSecondary}" FontSize="12"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding AssetSummaryText}" Foreground="{StaticResource TextSecondary}" FontSize="12" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                                     </Grid>
                                 </StackPanel>
                                 <Border x:Name="ActionScrim" Grid.Column="1" HorizontalAlignment="Right" Width="220" Margin="0,3,2,3" CornerRadius="10" Opacity="0" IsHitTestVisible="False">
@@ -71,10 +96,10 @@
                                     </Border.Background>
                                 </Border>
                                 <StackPanel x:Name="ActionPanel" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right" Opacity="0" IsHitTestVisible="False">
-                                    <Button Style="{StaticResource RowIconButton}" ToolTip="查看详情" Content="ⓘ" Click="OnOpenDetailsClick"/>
-                                    <Button Style="{StaticResource RowIconButton}" ToolTip="加入正在编辑的配置" Content="＋" Command="{Binding DataContext.AddToProfileCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}"/>
-                                    <Button Style="{StaticResource RowIconButton}" ToolTip="打开文件夹" Content="📁" Command="{Binding DataContext.OpenFolderCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}"/>
-                                    <Button Style="{StaticResource RowIconButton}" ToolTip="删除" Content="🗑" Command="{Binding DataContext.RemoveCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Foreground="#B3261E"/>
+                                    <Button Style="{StaticResource RowIconButton}" ToolTip="查看详情" ContentTemplate="{StaticResource DetailsIcon}" Click="OnOpenDetailsClick" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
+                                    <Button Style="{StaticResource RowIconButton}" ToolTip="加入正在编辑的配置" ContentTemplate="{StaticResource AddIcon}" Command="{Binding DataContext.AddToProfileCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
+                                    <Button Style="{StaticResource RowIconButton}" ToolTip="打开文件夹" ContentTemplate="{StaticResource FolderIcon}" Command="{Binding DataContext.OpenFolderCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
+                                    <Button Style="{StaticResource RowIconButton}" ToolTip="删除" ContentTemplate="{StaticResource DeleteIcon}" Command="{Binding DataContext.RemoveCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Foreground="{StaticResource StatusDanger}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
                                 </StackPanel>
                             </Grid>
                             <Border.ContextMenu>
@@ -95,12 +120,35 @@
                                 <Setter TargetName="ActionPanel" Property="Opacity" Value="1"/>
                                 <Setter TargetName="ActionPanel" Property="IsHitTestVisible" Value="True"/>
                                 <Setter TargetName="ActionScrim" Property="Opacity" Value="1"/>
-                                <Setter TargetName="RowBack" Property="Background" Value="White"/>
-                                <Setter TargetName="RowBack" Property="BorderBrush" Value="#D9DEE8"/>
+                                <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceInteractiveHover}"/>
+                                <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="ActionPanel" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="ActionScrim" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="ActionPanel" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
+                                            <DoubleAnimation Storyboard.TargetName="ActionScrim" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
+                            </Trigger>
+                            <Trigger SourceName="RowBack" Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="ActionPanel" Property="Opacity" Value="1"/>
+                                <Setter TargetName="ActionPanel" Property="IsHitTestVisible" Value="True"/>
+                                <Setter TargetName="ActionScrim" Property="Opacity" Value="1"/>
+                                <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceInteractiveHover}"/>
+                                <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
                             </Trigger>
                             <DataTrigger Binding="{Binding IsSelected}" Value="True">
-                                <Setter TargetName="RowBack" Property="Background" Value="#EAF1FF"/>
-                                <Setter TargetName="RowBack" Property="BorderBrush" Value="#1E63D6"/>
+                                <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceSelected}"/>
+                                <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
                             </DataTrigger>
                         </DataTemplate.Triggers>
                     </DataTemplate>

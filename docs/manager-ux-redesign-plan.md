@@ -50,6 +50,8 @@ PCL 的可借鉴点是：先定义颜色 token 与控件状态，再统一文本
 
 应新增 `Themes/` 资源字典和少量可复用自定义控件（如 `AppButton`、`AppTextBox`、`AppComboBox`、`AppToggleSwitch`、`TaskHub`），而不是继续在每个 XAML 局部复制 `ControlTemplate`。
 
+纯 UI 的 token、控件族、页面迁移批次和回归标准已独立固化为 [manager-ui-design-language-implementation-plan.md](manager-ui-design-language-implementation-plan.md)。该计划不参与业务功能、重建链路或自动维护改造，后续视觉工作以其为准。
+
 new-api 默认 Web 前端提供了卡片和数据表的第二份参考：其有效模式是 token → 基础控件 → 数据表页面编排、首次 loading 与后台 refresh 区分、全宽宽表的固定表头和横向滚动、列预设/显示控制。WPF 的具体迁移和不照搬边界见 [new-api-ui-table-reference-analysis.md](new-api-ui-table-reference-analysis.md)。
 
 ## 新页面与导航模型
@@ -80,8 +82,10 @@ new-api 默认 Web 前端提供了卡片和数据表的第二份参考：其有�
 | `AdvancedModDetailsWindow` | 开启高级模式后的 Mod 详情双槽页，或独立高级详情页；资产大表格横跨全部槽位 |
 | `CrossArmorTransferPlanWindow`、手动 source picker、candidate output | cross-armor 固定双槽工具页中的分步内容 |
 | `GameDataIndexWindow`、`GameDataArchiveDetailsWindow` | Game Data 资产浏览固定双槽页 |
-| `MaterialCandidateWindow`、Material / same-key 输出窗口 | Mod 详情工具页中的分步候选/输出面板 |
+| `MaterialCandidateWindow`、Material 输出窗口 | Mod 详情工具页中的分步候选/输出面板 |
 | `BackgroundTasksWindow` | 非模态任务中心浮层 / 页面抽屉 |
+
+Same-key 不再占用独立输出页：单 Mod 手动操作直接生成到 Manager 的 `Output` 根目录下，并且不允许自动导入或部署。其长期定位是自动修复流水线中的底层能力，而不是需要用户配置输出参数的独立工具。
 
 系统文件选择器和最终删除确认仍是合理的原生对话框，不纳入该迁移。
 
@@ -107,8 +111,11 @@ new-api 默认 Web 前端提供了卡片和数据表的第二份参考：其有�
 3. **在线资产索引源**：仓库地址、重置默认源、立即检查 / 更新；显示最近成功、失败原因、版本/时间。
 4. **自动更新在线资产**：开关 + 周期枚举（例如每启动、6 小时、1 天、7 天）；仅当距离上次成功检查超过周期时，启动时允许检查。
 5. **自动检测 Game Data 过期**：开关 + 周期枚举；“检测”只做指纹比较，不能默认立刻触发完整重建。
-6. **立即操作**：立即检查在线资产、立即检查 Game Data 是否过期、重新建立资产索引、查看资产索引。
-7. **索引状态**：当前/过期/缺失/建立中、上次建立时间、Archive/AssetKey 数量、下一步建议。
+6. **检测更新后自动重建损坏 Mod**：跟随 Game Data 状态检测设置；检测到更新后，依次重建 Game Data 资产缓存、比较全库 Mod 完整性，并修复所有护甲类损坏 Mod。该开关后续实现，本轮仅保留产品需求。
+7. **立即操作**：立即检查在线资产、立即检查 Game Data 是否过期、重新建立资产索引、查看资产索引，以及“重建所有损坏的 Mod”。后者启动一次全量后台任务：重建 Game Data 资产缓存 → 比较所有损坏 Mod → 修复所有护甲类损坏 Mod。
+8. **索引状态**：当前/过期/缺失/建立中、上次建立时间、Archive/AssetKey 数量、下一步建议。
+
+“重建所有损坏的 Mod”在自动重建能力完成前仅作为临时手动入口，修复结果统一导出到 Manager 的 `Output` 文件夹，不自动导入、不自动部署。完整实现必须接入任务中心，报告三个阶段的进度、损坏清单、逐 Mod 修复结果与失败原因。
 
 新增设置需要记录：`LastAssetMetadataCheckUtc`、`AssetMetadataCheckInterval`、`LastGameDataIndexCheckUtc`、`GameDataIndexCheckInterval`。启动自动检查必须进入后台任务系统并受周期限制；“索引过期”只提示用户或等待用户明确启动重建，不能与启动时的其他重任务无条件并发。
 
@@ -209,9 +216,20 @@ new-api 默认 Web 前端提供了卡片和数据表的第二份参考：其有�
 
 ### 批次 5：弹窗迁入页面系统
 
-- 先迁入高级 Mod 详情（默认详情保持单槽；高级模式转为双槽，资产大表格全宽）和 Game Data 浏览；再迁入 Material、same-key、cross-armor 分步工具。
+- 先迁入高级 Mod 详情（默认详情保持单槽；高级模式转为双槽，资产大表格全宽）和 Game Data 浏览；再迁入 Material、cross-armor 分步工具。Same-key 直接输出，不建立独立页面。
 - 每个工具先建立 page view model 和 loading/cancellation，再删除对应弹窗。
 - cross-armor 计划刷新改为后台、防抖、可取消，禁止 UI 线程 `GetAwaiter().GetResult()`。
+
+#### 2026-07-19 实施进度
+
+- [x] 首页已收敛为配置、Game Data、在线资产与后台任务的精简健康摘要，并可直达任务中心。
+- [x] 建立 `Themes/Controls.xaml` 基础控件资源，并在设置页、材质工作区页面及库/配置页顶部搜索试点统一主/次按钮与文本输入状态。
+- [x] 任务中心基础协议扩展：任务现可展示来源、用户可读原因、开始时间、可选进度、建议操作，并支持取消与可选重试入口；启动与设置页的在线资产/索引维护已接入该协议。
+- [x] 高级 Mod 详情迁入工作区并使用全宽数据表。
+- [x] Game Data archive 浏览与详情迁入左右工作区。
+- [x] cross-armor 计划、手动映射与候选输出整合为全宽工作区工具；计划刷新已异步且可取消。
+- [x] same-key 改为从 Mod 详情直接输出到 Manager `Output`，不显示输出页、不自动导入或部署。
+- [x] Material 候选选择与包装输出迁入 Mod 详情相邻工作区页面，旧模态窗口已移除。
 
 ## 验收标准
 

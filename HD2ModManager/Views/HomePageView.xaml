@@ -5,28 +5,34 @@
         <StackPanel HorizontalAlignment="Left" VerticalAlignment="Top">
         <Border Style="{StaticResource CardContainer}" MinWidth="560" Padding="22">
             <StackPanel>
-                <TextBlock Text="HD2 Mod Manager" FontSize="26" FontWeight="SemiBold"/>
-                <TextBlock Text="新版工作区已启用：顶部切换页面，配置页与模组库可左右并排。" Foreground="#666" Margin="0,8,0,18"/>
-                <UniformGrid Columns="2" Rows="6">
-                    <TextBlock Text="当前配置" Foreground="#666" Margin="0,0,12,10"/>
-                    <TextBlock Text="{Binding ActiveProfile}" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                    <TextBlock Text="配置条目" Foreground="#666" Margin="0,0,12,10"/>
-                    <TextBlock Text="{Binding ActiveProfileModSummary}" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                    <TextBlock Text="模组数量" Foreground="#666" Margin="0,0,12,10"/>
-                    <TextBlock Text="{Binding ModCount}" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                    <TextBlock Text="配置数量" Foreground="#666" Margin="0,0,12,10"/>
-                    <TextBlock Text="{Binding ProfileCount}" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                    <TextBlock Text="导入队列" Foreground="#666" Margin="0,0,12,10"/>
-                    <TextBlock Text="{Binding QueueSummary}" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                    <TextBlock Text="最近应用" Foreground="#666" Margin="0,0,12,10"/>
-                    <TextBlock Text="{Binding ApplySummary}" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                <TextBlock Text="HD2 Mod Manager" Style="{StaticResource AppPageTitle}"/>
+                <TextBlock Text="新版工作区已启用：顶部切换页面，配置页与模组库可左右并排。" Style="{StaticResource AppSupportingText}" Margin="0,8,0,18"/>
+                <UniformGrid Columns="2" Rows="9">
+                    <TextBlock Text="当前配置" Style="{StaticResource AppSupportingText}" Margin="0,0,12,10"/>
+                    <TextBlock Text="{Binding ActiveProfile}" Style="{StaticResource AppStatusValue}" Margin="0,0,0,10"/>
+                    <TextBlock Text="配置条目" Style="{StaticResource AppSupportingText}" Margin="0,0,12,10"/>
+                    <TextBlock Text="{Binding ActiveProfileModSummary}" Style="{StaticResource AppStatusValue}" Margin="0,0,0,10"/>
+                    <TextBlock Text="模组数量" Style="{StaticResource AppSupportingText}" Margin="0,0,12,10"/>
+                    <TextBlock Text="{Binding ModCount}" Style="{StaticResource AppStatusValue}" Margin="0,0,0,10"/>
+                    <TextBlock Text="配置数量" Style="{StaticResource AppSupportingText}" Margin="0,0,12,10"/>
+                    <TextBlock Text="{Binding ProfileCount}" Style="{StaticResource AppStatusValue}" Margin="0,0,0,10"/>
+                    <TextBlock Text="导入队列" Style="{StaticResource AppSupportingText}" Margin="0,0,12,10"/>
+                    <TextBlock Text="{Binding QueueSummary}" Style="{StaticResource AppStatusValue}" Margin="0,0,0,10"/>
+                    <TextBlock Text="最近应用" Style="{StaticResource AppSupportingText}" Margin="0,0,12,10"/>
+                    <TextBlock Text="{Binding ApplySummary}" Style="{StaticResource AppStatusValue}" Margin="0,0,0,10"/>
+                    <TextBlock Text="Game Data" Style="{StaticResource AppSupportingText}" Margin="0,0,12,10"/>
+                    <TextBlock Text="{Binding GameDataHealth}" Style="{StaticResource AppStatusValue}" Margin="0,0,0,10"/>
+                    <TextBlock Text="在线资产" Style="{StaticResource AppSupportingText}" Margin="0,0,12,10"/>
+                    <TextBlock Text="{Binding AssetMetadataHealth}" Style="{StaticResource AppStatusValue}" Margin="0,0,0,10"/>
+                    <TextBlock Text="后台任务" Style="{StaticResource AppSupportingText}" Margin="0,0,12,0"/>
+                    <StackPanel Orientation="Horizontal"><Border Style="{StaticResource AppBadge}"><TextBlock Text="{Binding TaskHealth}" Foreground="{StaticResource Accent}" FontWeight="SemiBold"/></Border><Button Style="{StaticResource AppQuietButton}" Content="打开任务中心" Command="{Binding OpenTaskHubCommand}" Margin="6,-2,0,0"/></StackPanel>
                 </UniformGrid>
             </StackPanel>
         </Border>
         <Border Style="{StaticResource CardContainer}" Margin="0,12,0,0" Padding="18">
             <StackPanel>
-                <TextBlock Text="部署能力" FontSize="17" FontWeight="SemiBold"/>
-                <TextBlock Text="{Binding DeploymentCapabilityText}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                <TextBlock Text="部署能力" Style="{StaticResource AppCardTitle}"/>
+                <Border Style="{StaticResource AppInlineNotice}" Margin="0,8,0,0"><TextBlock Text="{Binding DeploymentCapabilityText}" Style="{StaticResource AppSupportingText}"/></Border>
                 <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                     <StackPanel.Style>
                         <Style TargetType="StackPanel">
@@ -34,9 +40,9 @@
                             <Style.Triggers><DataTrigger Binding="{Binding IsDeploymentBlocked}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
                         </Style>
                     </StackPanel.Style>
-                    <Button Content="使用推荐 Mod 库" Command="{Binding MoveLibraryToRecommendedCommand}"/>
-                    <Button Content="打开开发者设置" Command="{Binding OpenDeveloperSettingsCommand}" Margin="8,0,0,0"/>
-                    <Button Content="以管理员身份重启" Command="{Binding RestartAsAdministratorCommand}" Margin="8,0,0,0"/>
+                    <Button Style="{StaticResource AppPrimaryButton}" Content="使用推荐 Mod 库" Command="{Binding MoveLibraryToRecommendedCommand}"/>
+                    <Button Style="{StaticResource AppSecondaryButton}" Content="打开开发者设置" Command="{Binding OpenDeveloperSettingsCommand}" Margin="8,0,0,0"/>
+                    <Button Style="{StaticResource AppSecondaryButton}" Content="以管理员身份重启" Command="{Binding RestartAsAdministratorCommand}" Margin="8,0,0,0"/>
                 </StackPanel>
             </StackPanel>
         </Border>

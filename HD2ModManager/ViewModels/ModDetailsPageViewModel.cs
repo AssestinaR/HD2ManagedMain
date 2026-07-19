@@ -26,7 +26,6 @@ namespace HD2ModManager.ViewModels
 		private readonly IModSameKeyReconstructionService _sameKeyReconstruction;
         private readonly IEquipmentUnitCatalogService _equipmentUnitCatalog;
         private ModMaterialPackagingState? _materialState;
-        private bool _materialOperationRunning;
 		private bool _sameKeyReconstructionRunning;
         private readonly IAdvancedModAssetQueryService _advancedAssetQueryService;
         private readonly EventHandler<DerivedStateSnapshot> _snapshotChangedHandler;
@@ -55,11 +54,11 @@ namespace HD2ModManager.ViewModels
         public string UserStatusSummary { get; private set; } = "正在读取状态。";
         public string MaterialPackagingSummary { get; private set; } = "在高级详情中按需读取稳定材质事实。";
         public string MaterialDeliverySummary { get; private set; } = "在高级详情中按需读取稳定材质交付事实。";
-        public string SameKeyReconstructionSummary { get; private set; } = "仅更新失效 Unit：删除旧 Unit/关联旧 Composite，写入 current target Unit，并原样保留其余资源与 sidecar。不分析或重组材质。";
-        public bool CanSplitEmbeddedMaterials => !_materialOperationRunning && _materialState?.CanSplit == true;
-        public bool CanReplaceEmbeddedMaterials => !_materialOperationRunning && _materialState?.HasEmbeddedMaterials == true;
-        public bool CanEmbedExternalMaterials => !_materialOperationRunning && _materialState?.HasExternalMaterials == true;
-        public bool CanRebuildSameKey => !_sameKeyReconstructionRunning && !_disposed && TryGetCurrentNode(out _);
+        public string SameKeyReconstructionSummary { get; private set; } = "仅更新失效 Unit，并将结果直接写入 Manager 的 Output 文件夹；不会自动导入或部署。";
+        public bool CanSplitEmbeddedMaterials => _materialState?.CanSplit == true;
+        public bool CanReplaceEmbeddedMaterials => _materialState?.HasEmbeddedMaterials == true;
+        public bool CanEmbedExternalMaterials => _materialState?.HasExternalMaterials == true;
+        public bool CanRebuildSameKey => !_disposed && !_sameKeyReconstructionRunning && TryGetCurrentNode(out _);
 		public bool CanPlanCrossArmorTransfer => !_disposed && TryGetCurrentNode(out _);
         public ObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
@@ -98,9 +97,9 @@ namespace HD2ModManager.ViewModels
             AddToProfileCommand = new RelayCommand(AddToProfile);
             DeleteCommand = new RelayCommand(Delete);
             OpenAdvancedDetailsCommand = new RelayCommand(OpenAdvancedDetails);
-            SplitEmbeddedMaterialsCommand = new RelayCommand(async _ => await SplitEmbeddedMaterialsAsync(), _ => CanSplitEmbeddedMaterials);
-            ReplaceEmbeddedMaterialsCommand = new RelayCommand(async _ => await MergeMaterialCandidateAsync(requireAllExternalMaterials: false), _ => CanReplaceEmbeddedMaterials);
-            EmbedExternalMaterialsCommand = new RelayCommand(async _ => await MergeMaterialCandidateAsync(requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
+            SplitEmbeddedMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: true), _ => CanSplitEmbeddedMaterials);
+            ReplaceEmbeddedMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: false, requireAllExternalMaterials: false), _ => CanReplaceEmbeddedMaterials);
+            EmbedExternalMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: false, requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
             RebuildSameKeyCommand = new RelayCommand(async _ => await RebuildSameKeyAsync(), _ => CanRebuildSameKey);
 			PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
             _snapshotChangedHandler = (_, _) => RunOnUiThread(() =>
@@ -434,32 +433,38 @@ namespace HD2ModManager.ViewModels
         private async Task RebuildSameKeyAsync()
         {
             if (!TryGetCurrentNode(out var source)) return;
-            var output = new HD2ModManager.Views.SameKeyReconstructionOutputWindow { Owner = System.Windows.Application.Current?.MainWindow };
-            if (output.ShowDialog() != true) return;
+            var outputRoot = Path.Combine(AppContext.BaseDirectory, "Output");
+            var destination = Path.Combine(outputRoot, $"{SanitizeFileName(source.Metadata.Name)}+{DateTime.Now:yyyyMMdd-HHmmssfff}+SameKey重建");
             _sameKeyReconstructionRunning = true;
+            SameKeyReconstructionSummary = "正在读取 Payload 并生成 Same-key 重建结果…";
+            OnPropertyChanged(nameof(SameKeyReconstructionSummary));
             RaiseSameKeyReconstructionCommandState();
             try
             {
-                _notifications?.Show("正在读取写出所需 Payload 并生成 current-target 验证候选，请勿关闭程序…", NotificationLevel.Info, TimeSpan.FromSeconds(20));
-                var result = await Task.Run(() => _sameKeyReconstruction.GenerateCandidateAsync(source, _library.ModsRootDirectory, SettingsService.GetGameDataFolder(), output.OutputDirectory).AsTask());
+                var result = await Task.Run(() => _sameKeyReconstruction.GenerateCandidateAsync(
+                    source,
+                    _library.ModsRootDirectory,
+                    SettingsService.GetGameDataFolder(),
+                    destination).AsTask());
                 if (!result.IsSuccessful)
                 {
-                    _notifications?.Show(string.Join("；", result.Issues.Select(issue => issue.Message).Take(3)), NotificationLevel.Error, TimeSpan.FromSeconds(10));
+                    SameKeyReconstructionSummary = $"重建失败：{string.Join("；", result.Issues.Select(issue => issue.Message).Take(3))}";
+                    _notifications?.Show(SameKeyReconstructionSummary, NotificationLevel.Error, TimeSpan.FromSeconds(12));
                     return;
                 }
-                if (output.ImportToLibrary && result.OutputDirectory is not null)
-                {
-                    await new ImportService(_library).ImportPathAsync(result.OutputDirectory, default);
-                }
-                _notifications?.Show($"正式验证候选已生成：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。其余资源与 sidecar 已保留。输出目录包含 formal-validation-checklist.md。{(output.ImportToLibrary ? "已导入 Mod 库。" : "已写出到目标文件夹。")}", NotificationLevel.Info, TimeSpan.FromSeconds(10));
+
+                SameKeyReconstructionSummary = $"重建完成：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。输出：{result.OutputDirectory}";
+                _notifications?.Show("Same-key 重建结果已写入 Output 文件夹。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
             }
-			catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException or KeyNotFoundException)
-			{
-				_notifications?.Show($"生成验证候选失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(12));
-			}
+            catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException or KeyNotFoundException)
+            {
+                SameKeyReconstructionSummary = $"重建失败：{exception.Message}";
+                _notifications?.Show(SameKeyReconstructionSummary, NotificationLevel.Error, TimeSpan.FromSeconds(12));
+            }
             finally
             {
                 _sameKeyReconstructionRunning = false;
+                OnPropertyChanged(nameof(SameKeyReconstructionSummary));
                 RaiseSameKeyReconstructionCommandState();
             }
         }
@@ -501,75 +506,24 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        private async Task SplitEmbeddedMaterialsAsync()
-        {
-            if (!TryGetCurrentNode(out var node) || !TryChooseOutput(out var output)) return;
-            await ExecuteMaterialOperationAsync(
-                () => _materialPackaging.SplitAsync(node, _library.ModsRootDirectory, output.OutputDirectory).AsTask(),
-                output.ImportToLibrary);
-        }
-
-        private async Task MergeMaterialCandidateAsync(bool requireAllExternalMaterials)
+        private void OpenMaterialPackaging(bool splitEmbeddedMaterials, bool requireAllExternalMaterials = false)
         {
             if (!TryGetCurrentNode(out var source)) return;
-            _materialOperationRunning = true; RaiseMaterialCommandStates();
-            try
-            {
-                var candidates = await _materialPackaging.FindCandidatesAsync(source, _library.Snapshot.Nodes.Values.ToArray(), _library.ModsRootDirectory, requireAllExternalMaterials);
-                var items = candidates.Select(candidate => new HD2ModManager.Views.MaterialCandidateItem(candidate)).ToArray();
-                if (items.Length == 0)
-                {
-                    _notifications?.Show("Mod 库中没有精确匹配此模型 Material AssetKey 的材质包。", NotificationLevel.Info);
-                    return;
-                }
-                var picker = new HD2ModManager.Views.MaterialCandidateWindow { Owner = System.Windows.Application.Current?.MainWindow, DataContext = items };
-                if (picker.ShowDialog() != true || picker.SelectedCandidate is null) return;
-                if (!_library.Snapshot.Nodes.TryGetValue(picker.SelectedCandidate.NodeId, out var candidate)) return;
-                if (!TryChooseOutput(out var output)) return;
-                var destination = System.IO.Path.Combine(output.OutputDirectory, SanitizeFileName($"{source.Metadata.Name}-{candidate.Metadata.Name}-内嵌版"));
-                await ExecuteMaterialOperationAsync(() => _materialPackaging.MergeAsync(source, candidate, _library.ModsRootDirectory, destination, requireAllExternalMaterials).AsTask(), output.ImportToLibrary, operationAlreadyRunning: true);
-            }
-            finally
-            {
-                _materialOperationRunning = false; RaiseMaterialCommandStates();
-            }
-        }
-
-        private async Task ExecuteMaterialOperationAsync(Func<Task<MaterialPackagingOperationResult>> operation, bool importToLibrary, bool operationAlreadyRunning = false)
-        {
-            if (!operationAlreadyRunning) { _materialOperationRunning = true; RaiseMaterialCommandStates(); }
-            try
-            {
-                var result = await operation();
-                if (!result.IsSuccessful)
-                {
-                    _notifications?.Show(string.Join("；", result.Issues.Select(issue => issue.Message)), NotificationLevel.Error, TimeSpan.FromSeconds(8));
-                    return;
-                }
-                if (importToLibrary)
-                {
-                    var importer = new ImportService(_library);
-                    foreach (var directory in result.OutputDirectories) await importer.ImportPathAsync(directory, default);
-                }
-                _notifications?.Show($"材质打包完成：{result.AssetCount} 个资源，{result.GraphEdgeCount} 条引用；{(importToLibrary ? "已导入 Mod 库" : "已写出到目标文件夹")}。", NotificationLevel.Info, TimeSpan.FromSeconds(6));
-                await RefreshAdvancedDetailsAsync();
-            }
-            finally
-            {
-                if (!operationAlreadyRunning) { _materialOperationRunning = false; RaiseMaterialCommandStates(); }
-            }
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is not ShellViewModel shell) return;
+            shell.OpenMaterialPackaging(this, new MaterialPackagingPageViewModel(
+                source,
+                _library.ModsRootDirectory,
+                _materialPackaging,
+                _library,
+                _notifications,
+                splitEmbeddedMaterials,
+                requireAllExternalMaterials));
         }
 
         private bool TryGetCurrentNode(out ModNode node)
         {
             node = default!;
             return Mod != null && TryParseNodeId(Mod.Guid, out var nodeId) && _library.Snapshot.Nodes.TryGetValue(nodeId, out node!);
-        }
-
-        private static bool TryChooseOutput(out HD2ModManager.Views.MaterialPackagingOutputWindow output)
-        {
-            output = new HD2ModManager.Views.MaterialPackagingOutputWindow { Owner = System.Windows.Application.Current?.MainWindow };
-            return output.ShowDialog() == true;
         }
 
         private void RaiseMaterialCommandStates()

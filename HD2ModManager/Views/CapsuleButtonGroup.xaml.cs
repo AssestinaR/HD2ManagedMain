@@ -8,7 +8,7 @@ namespace HD2ModManager.Views
     // 作用：封装三段式胶囊按钮，统一控制整体圆角与两侧圆形按钮尺寸。
     public partial class CapsuleButtonGroup : UserControl
     {
-        public static readonly DependencyProperty CapsuleBackgroundProperty = DependencyProperty.Register(nameof(CapsuleBackground), typeof(Brush), typeof(CapsuleButtonGroup), new PropertyMetadata(new SolidColorBrush(Color.FromRgb(238, 241, 246))));
+        public static readonly DependencyProperty CapsuleBackgroundProperty = DependencyProperty.Register(nameof(CapsuleBackground), typeof(Brush), typeof(CapsuleButtonGroup), new PropertyMetadata(Brushes.Transparent));
         public static readonly DependencyProperty CapsuleBorderBrushProperty = DependencyProperty.Register(nameof(CapsuleBorderBrush), typeof(Brush), typeof(CapsuleButtonGroup), new PropertyMetadata(new SolidColorBrush(Color.FromRgb(217, 222, 232))));
         public static readonly DependencyProperty CapsuleBorderThicknessProperty = DependencyProperty.Register(nameof(CapsuleBorderThickness), typeof(Thickness), typeof(CapsuleButtonGroup), new PropertyMetadata(new Thickness(1)));
         public static readonly DependencyProperty CapsulePaddingProperty = DependencyProperty.Register(nameof(CapsulePadding), typeof(Thickness), typeof(CapsuleButtonGroup), new PropertyMetadata(new Thickness(3)));
@@ -70,6 +70,13 @@ namespace HD2ModManager.Views
         public bool LeftIsActive { get => (bool)GetValue(LeftIsActiveProperty); set => SetValue(LeftIsActiveProperty, value); }
         public bool MiddleIsActive { get => (bool)GetValue(MiddleIsActiveProperty); set => SetValue(MiddleIsActiveProperty, value); }
         public bool RightIsActive { get => (bool)GetValue(RightIsActiveProperty); set => SetValue(RightIsActiveProperty, value); }
+
+        public FrameworkElement? GetActiveButton()
+        {
+            if (LeftIsActive) return LeftButton;
+            if (MiddleIsActive) return MiddleButton;
+            return RightIsActive ? RightButton : null;
+        }
 
         private void UpdateShapeMetrics()
         {

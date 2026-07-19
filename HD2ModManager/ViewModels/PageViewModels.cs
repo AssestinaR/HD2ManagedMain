@@ -36,6 +36,7 @@ namespace HD2ModManager.ViewModels
         private readonly ModLibraryService _library;
         private readonly ImportQueueService _queue;
         private readonly ApplyStatusService _applyStatus;
+        private readonly BackgroundTaskService _backgroundTasks;
         private DeploymentCapability _deploymentCapability = DeploymentCapability.Unavailable("尚未检测。");
 
         public string ActiveProfile => _profiles.ActiveKey ?? "未启用";
@@ -44,6 +45,11 @@ namespace HD2ModManager.ViewModels
         public string ActiveProfileModSummary => BuildActiveProfileModSummary(_profiles.ActiveProfile);
         public string QueueSummary => $"总计 {_queue.Tasks.Count}，完成 {_queue.CountDone}，待处理 {_queue.CountQueued + _queue.CountRunning}";
         public string ApplySummary => _applyStatus.Summary;
+        public string GameDataHealth => BuildGameDataHealth();
+        public string AssetMetadataHealth => BuildAssetMetadataHealth();
+        public string TaskHealth => _backgroundTasks.CountQueued + _backgroundTasks.CountRunning is var active && active > 0
+            ? $"{active} 项任务进行中或排队"
+            : "当前没有进行中的任务";
         public DeploymentCapability DeploymentCapability => _deploymentCapability;
         public bool IsDeploymentBlocked => !DeploymentCapability.IsAvailable;
         public string DeploymentCapabilityText => DeploymentCapability.IsAvailable
@@ -52,18 +58,21 @@ namespace HD2ModManager.ViewModels
         public RelayCommand MoveLibraryToRecommendedCommand { get; }
         public RelayCommand OpenDeveloperSettingsCommand { get; }
         public RelayCommand RestartAsAdministratorCommand { get; }
+        public RelayCommand OpenTaskHubCommand { get; }
 
-        public HomePageViewModel(ProfileService profiles, ModLibraryService library, ImportQueueService queue, ApplyStatusService applyStatus)
+        public HomePageViewModel(ProfileService profiles, ModLibraryService library, ImportQueueService queue, ApplyStatusService applyStatus, BackgroundTaskService backgroundTasks)
         {
             Title = "首页";
             _profiles = profiles;
             _library = library;
             _queue = queue;
             _applyStatus = applyStatus;
+            _backgroundTasks = backgroundTasks;
             RefreshDeploymentCapability();
             MoveLibraryToRecommendedCommand = new RelayCommand(MoveLibraryToRecommended);
             OpenDeveloperSettingsCommand = new RelayCommand(() => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:developers") { UseShellExecute = true }));
             RestartAsAdministratorCommand = new RelayCommand(RestartAsAdministrator);
+            OpenTaskHubCommand = new RelayCommand(OpenTaskHub);
         }
 
         public void Refresh()
@@ -74,6 +83,9 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ActiveProfileModSummary));
             OnPropertyChanged(nameof(QueueSummary));
             OnPropertyChanged(nameof(ApplySummary));
+            OnPropertyChanged(nameof(GameDataHealth));
+            OnPropertyChanged(nameof(AssetMetadataHealth));
+            OnPropertyChanged(nameof(TaskHealth));
             RefreshDeploymentCapability();
             OnPropertyChanged(nameof(DeploymentCapability));
             OnPropertyChanged(nameof(IsDeploymentBlocked));
@@ -84,6 +96,27 @@ namespace HD2ModManager.ViewModels
         {
             if (profile == null) return "无活动配置";
             return $"已启用 {profile.Entries.Count} 个 Mod";
+        }
+
+        private static string BuildGameDataHealth()
+        {
+            var folder = SettingsService.GetGameDataFolder();
+            if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) return "未设置或路径不可用";
+            var lastCheck = SettingsService.GetLastGameDataIndexCheckUtc();
+            return lastCheck is null ? "已设置，尚未检查索引" : $"已设置，上次检查 {lastCheck.Value.ToLocalTime():yyyy-MM-dd HH:mm}";
+        }
+
+        private static string BuildAssetMetadataHealth()
+        {
+            var lastCheck = SettingsService.GetLastAssetMetadataCheckUtc();
+            return lastCheck is null
+                ? "尚未检查在线资产"
+                : $"上次检查 {lastCheck.Value.ToLocalTime():yyyy-MM-dd HH:mm}（{(SettingsService.GetAutoUpdateAssetMetadata() ? "自动检查已启用" : "自动检查已关闭")}）";
+        }
+
+        private static void OpenTaskHub()
+        {
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenTaskHub();
         }
 
         private async void MoveLibraryToRecommended()
@@ -228,11 +261,11 @@ namespace HD2ModManager.ViewModels
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
             PageActions.Add(new PageActionViewModel("＋", "新建配置", CreateProfileCommand, order: 10, kind: "CreateProfile"));
             _switchAction = new ProfileSwitchActionViewModel(this);
-            PageActions.Add(new PageActionViewModel("⇄", "切换当前配置", new RelayCommand(_ => { }), expandedContent: _switchAction, order: 12, kind: "SwitchProfile"));
+            PageActions.Add(new PageActionViewModel("⇄", "切换当前配置", _switchAction.ConfirmCommand, expandedContent: _switchAction, expandedWidth: 245d, order: 12, kind: "SwitchProfile"));
             PageActions.Add(new PageActionViewModel("▶", "设为活动配置", ActivateProfileCommand, background: new SolidColorBrush(Color.FromRgb(26, 127, 75)), order: 15, kind: "ActivateProfile"));
             PageActions.Add(new PageActionViewModel("■", "停用活动配置", DeactivateProfileCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 16, kind: "DeactivateProfile"));
             _renameAction = new ProfileRenameActionViewModel(this);
-            PageActions.Add(new PageActionViewModel("✎", "重命名配置", new RelayCommand(_ => { }), background: new SolidColorBrush(Color.FromRgb(30, 99, 214)), expandedContent: _renameAction, order: 20, kind: "RenameProfile"));
+            PageActions.Add(new PageActionViewModel("✎", "重命名配置", _renameAction.ConfirmCommand, background: new SolidColorBrush(Color.FromRgb(30, 99, 214)), expandedContent: _renameAction, expandedWidth: 245d, order: 20, kind: "RenameProfile"));
             PageActions.Add(new PageActionViewModel("🗑", "删除当前配置", RemoveSelectedProfileCommand, background: new SolidColorBrush(Color.FromRgb(179, 38, 30)), order: 30, kind: "RemoveProfile"));
             PageActions.Add(new PageActionViewModel("⟳", "刷新配置", RefreshCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 40, kind: "RefreshProfile"));
             Refresh();
@@ -805,7 +838,14 @@ namespace HD2ModManager.ViewModels
             IsBuildingAssetIndex = true;
             BuildAssetIndexCommand.RaiseCanExecuteChanged();
             RefreshAssetIndexStatusCommand.RaiseCanExecuteChanged();
-            var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.BuildAssetIndex, "建立资产索引", gameData);
+            var task = _backgroundTasks?.Enqueue(
+                BackgroundTaskKind.BuildAssetIndex,
+                "建立资产索引",
+                gameData,
+                origin: "设置与资产",
+                userVisibleReason: "用户手动请求建立或重建 Game Data 资产索引。",
+                suggestedAction: "完成后可在此页面确认索引状态，或打开资产浏览器。",
+                retry: BuildAssetIndexAsync);
             try
             {
                 task?.MarkRunning("正在准备资产索引");
@@ -816,6 +856,7 @@ namespace HD2ModManager.ViewModels
                 var progress = new Progress<IndexBuildProgress>(item =>
                 {
                     task?.UpdateStage($"正在索引 Archive {item.Current}/{item.Total}");
+                    task?.UpdateProgress(item.Total <= 0 ? null : (double)item.Current / item.Total);
                     AssetIndexCounts = $"Archive {item.Current}/{item.Total}";
                 });
                 await Task.Run(() => index.BuildOrRebuildAsync(gameData, archiveHashes, progress, task?.CancellationToken ?? CancellationToken.None).AsTask());
@@ -887,7 +928,13 @@ namespace HD2ModManager.ViewModels
         private async void UpdateAssetMetadata()
         {
             AssetMetadataStatus = "正在更新资产信息...";
-            var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.UpdateAssetMetadata, "更新资产元数据", "由设置页手动启动");
+            var task = _backgroundTasks?.Enqueue(
+                BackgroundTaskKind.UpdateAssetMetadata,
+                "更新资产元数据",
+                "由设置页手动启动",
+                origin: "设置与资产",
+                userVisibleReason: "用户手动检查在线资产索引源。",
+                suggestedAction: "失败时请检查仓库地址、网络连接与访问权限。");
             try
             {
                 task?.MarkRunning("正在同步资产元数据");

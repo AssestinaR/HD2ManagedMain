@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views
 {
@@ -33,6 +34,11 @@ namespace HD2ModManager.Views
         {
             InitializeComponent();
             UpdateShapeMetrics();
+            PreviewMouseDown += (_, _) =>
+            {
+                if (Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
+                    shell.ClearTransientSelection();
+            };
         }
 
         public IEnumerable? Actions { get => (IEnumerable?)GetValue(ActionsProperty); set => SetValue(ActionsProperty, value); }
@@ -96,7 +102,7 @@ namespace HD2ModManager.Views
         {
             ButtonCornerRadius = new CornerRadius(Math.Max(0, ButtonDiameter / 2d));
             ExpandedCornerRadius = new CornerRadius(Math.Max(0, ExpandedHeight / 2d));
-            ExpandedOuterWidth = Math.Max(ExpandedWidth + 16d, ButtonDiameter + 16d);
+            ExpandedOuterWidth = Math.Max(GetRequiredExpandedWidth() + 16d, ButtonDiameter + 16d);
             ClusterHeight = GetExpandedActionsHeight() + ButtonDiameter;
         }
 
@@ -130,6 +136,12 @@ namespace HD2ModManager.Views
         {
             var count = GetActionCount();
             return count <= 0 ? 0d : count * (ButtonDiameter + ActionSpacing);
+        }
+
+        private double GetRequiredExpandedWidth()
+        {
+            var requestedWidth = Actions?.OfType<PageActionViewModel>().Select(action => action.ExpandedWidth).DefaultIfEmpty(ExpandedWidth).Max() ?? ExpandedWidth;
+            return Math.Max(ExpandedWidth, requestedWidth);
         }
 
         private int AnimateActionItems(bool expand)

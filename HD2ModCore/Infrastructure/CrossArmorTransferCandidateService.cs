@@ -41,8 +41,6 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		if (!request.Plan.CanContinue) return Failure("PlanNotReady", "当前计划尚不可写出；请先选择来源、目标并排除所有错误。", issues);
 		if (!File.Exists(request.SourcePatchTocPath)) return Failure("SourcePatchMissing", "源 Patch 主文件不存在。", issues);
 		if (!Directory.Exists(request.GameDataDirectory)) return Failure("GameDataMissing", "Game Data 文件夹不存在。", issues);
-		if (Directory.Exists(request.OutputDirectory) && Directory.EnumerateFileSystemEntries(request.OutputDirectory).Any()) return Failure("OutputNotEmpty", "输出文件夹必须为空。", issues);
-
 		try
 		{
 			var unsafeBoneMappings = new List<string>();

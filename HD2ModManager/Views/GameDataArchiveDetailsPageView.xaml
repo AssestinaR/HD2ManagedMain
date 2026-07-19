@@ -7,20 +7,20 @@
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="86"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                <TextBlock Text="对象" Foreground="#666"/><TextBlock Grid.Column="1" Text="{Binding DisplayName}" FontWeight="SemiBold" TextWrapping="Wrap"/>
-                <TextBlock Grid.Row="1" Text="Package" Foreground="#666" Margin="0,5,0,0"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PackageName}" Margin="0,5,0,0" TextWrapping="Wrap"/>
-                <TextBlock Grid.Row="2" Text="分类" Foreground="#666" Margin="0,5,0,0"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Category}" Margin="0,5,0,0"/>
-                <TextBlock Grid.Row="3" Text="替换状态" Foreground="#666" Margin="0,5,0,0"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding ReplacementStatus}" Margin="0,5,0,0"/>
-                <TextBlock Grid.Row="4" Text="生效组" Foreground="#666" Margin="0,5,0,0"/><TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding EffectivePatchGroup}" Margin="0,5,0,0"/>
-                <TextBlock Grid.Row="5" Text="生效 Mod" Foreground="#666" Margin="0,5,0,0"/><TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding EffectiveMod}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                <TextBlock Text="对象" Style="{StaticResource AppSupportingText}"/><TextBlock Grid.Column="1" Text="{Binding DisplayName}" Style="{StaticResource AppStatusValue}" TextWrapping="Wrap"/>
+                <TextBlock Grid.Row="1" Text="Package" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PackageName}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                <TextBlock Grid.Row="2" Text="分类" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Category}" Margin="0,5,0,0"/>
+                <TextBlock Grid.Row="3" Text="替换状态" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding ReplacementStatus}" Margin="0,5,0,0"/>
+                <TextBlock Grid.Row="4" Text="生效组" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0"/><TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding EffectivePatchGroup}" Margin="0,5,0,0"/>
+                <TextBlock Grid.Row="5" Text="生效 Mod" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0"/><TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding EffectiveMod}" Margin="0,5,0,0" TextWrapping="Wrap"/>
                 <StackPanel Grid.Row="6" Grid.ColumnSpan="2" Margin="0,8,0,0">
                     <TextBlock Text="{Binding ContentSummary}" FontWeight="SemiBold" TextWrapping="Wrap"/>
                     <TextBlock Text="{Binding CopyStatus}" Foreground="#166534" Margin="0,3,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Row="6" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom">
-                    <TextBox Width="145" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Padding="7,3" ToolTip="搜索类型、Hash、对象、部件、生效 Mod 或共享项"/>
-                    <ComboBox Width="96" ItemsSource="{Binding TypeFilters}" SelectedItem="{Binding TypeFilter}" Margin="8,0,0,0"/>
-                    <ComboBox Width="88" ItemsSource="{Binding ReplacementFilters}" SelectedItem="{Binding ReplacementFilter}" Margin="8,0,0,0"/>
+                    <TextBox Style="{StaticResource AppSearchBox}" Width="145" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" ToolTip="搜索类型、Hash、对象、部件、生效 Mod 或共享项"/>
+                    <ComboBox Style="{StaticResource AppCompactComboBox}" Width="96" ItemsSource="{Binding TypeFilters}" SelectedItem="{Binding TypeFilter}" Margin="8,0,0,0"/>
+                    <ComboBox Style="{StaticResource AppCompactComboBox}" Width="88" ItemsSource="{Binding ReplacementFilters}" SelectedItem="{Binding ReplacementFilter}" Margin="8,0,0,0"/>
                 </StackPanel>
             </Grid>
         </Border>

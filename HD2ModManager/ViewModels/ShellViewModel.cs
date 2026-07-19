@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,6 +25,7 @@ namespace HD2ModManager.ViewModels
         private readonly IProfileDeploymentCoordinator _deploymentCoordinator;
         private BackgroundTaskItem? _deploymentTask;
         private readonly SelectionCoordinator _selection = new();
+        private readonly BottomBarCoordinator _bottomBar;
         private readonly SemaphoreSlim _importProcessGate = new(1, 1);
 
         private PageViewModel? _leftPage;
@@ -33,6 +35,7 @@ namespace HD2ModManager.ViewModels
         private WorkspacePageType _rightPageType;
         private string? _selectedModId;
         private bool _isTaskHubOpen;
+        private int _bottomBarStateVersion;
 
         public PageViewModel? CurrentPage => LeftPage;
         public PageViewModel? LeftPage
@@ -87,6 +90,8 @@ namespace HD2ModManager.ViewModels
         public RelayCommand SelectionPrimaryCommand { get; }
         public RelayCommand SelectionDeleteCommand { get; }
         public RelayCommand ToggleTaskHubCommand { get; }
+        public RelayCommand CancelTaskCommand { get; }
+        public RelayCommand RetryTaskCommand { get; }
 
         public bool IsHomeActive => CurrentMode == WorkspaceMode.Home;
         public bool IsProfileActive => CurrentMode == WorkspaceMode.ProfileOnly;
@@ -114,6 +119,8 @@ namespace HD2ModManager.ViewModels
         public ImportQueueService ImportQueue => _importQueue;
         public BackgroundTaskService BackgroundTasks => _backgroundTasks;
         public SelectionCoordinator Selection => _selection;
+        public BottomBarCoordinator BottomBar => _bottomBar;
+        public int BottomBarStateVersion => _bottomBarStateVersion;
         public bool HasSelection => _selection.HasSelection;
         public string SelectionSummary => _selection.Summary;
         public string SelectionPrimaryText => string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase) ? "移除" : "加入配置";
@@ -140,6 +147,12 @@ namespace HD2ModManager.ViewModels
             _backgroundTasks = new BackgroundTaskService();
             _applyStatus = new ApplyStatusService();
             _notificationService = new NotificationService();
+            _bottomBar = new BottomBarCoordinator(_selection, _libraryService, _notificationService, RefreshCurrentPage);
+            _bottomBar.PropertyChanged += (_, _) =>
+            {
+                _bottomBarStateVersion++;
+                OnPropertyChanged(nameof(BottomBarStateVersion));
+            };
             Notifications = _notificationService.Items;
             _deploymentCoordinator = CoreServices.CreateProfileDeploymentCoordinator(
                 SettingsService.CreateStoragePaths(),
@@ -158,7 +171,12 @@ namespace HD2ModManager.ViewModels
             _libraryService.SnapshotChanged += (_, _) => RefreshOnUiThread(HandleLibrarySnapshotChanged);
             _profileService.Changed += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
             _derivedState.SnapshotChanged += (_, _) => RefreshOnUiThread(RefreshCurrentPage);
-            _backgroundTasks.Changed += (_, _) => RefreshOnUiThread(RefreshTaskHubState);
+            _backgroundTasks.Changed += (_, _) => RefreshOnUiThread(() =>
+            {
+                RefreshTaskHubState();
+                RefreshPage(LeftPage);
+                if (IsSplitView) RefreshPage(RightPage);
+            });
             _notificationService.Changed += (_, _) => RefreshOnUiThread(RefreshTaskHubState);
 
             RunStartupChecks(configDir);
@@ -175,6 +193,8 @@ namespace HD2ModManager.ViewModels
             SelectionPrimaryCommand = new RelayCommand(ExecuteSelectionPrimary);
             SelectionDeleteCommand = new RelayCommand(ExecuteSelectionDelete);
             ToggleTaskHubCommand = new RelayCommand(ToggleTaskHub);
+            CancelTaskCommand = new RelayCommand(CancelTask, task => task is BackgroundTaskItem { CanCancel: true });
+            RetryTaskCommand = new RelayCommand(async task => await RetryTaskAsync(task), task => task is BackgroundTaskItem { CanRetry: true });
             _selection.SelectionChanged += (_, _) => RaiseSelectionFlags();
 
             Navigate(WorkspaceMode.Home);
@@ -206,7 +226,13 @@ namespace HD2ModManager.ViewModels
             var paths = SettingsService.CreateStoragePaths();
             if (string.IsNullOrWhiteSpace(gameData) || !System.IO.Directory.Exists(gameData) || !System.IO.File.Exists(paths.ArchiveHashesPath)) return;
 
-            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.BuildAssetIndex, "检查游戏资产索引", gameData);
+            var task = _backgroundTasks.Enqueue(
+                BackgroundTaskKind.BuildAssetIndex,
+                "检查游戏资产索引",
+                gameData,
+                origin: "启动维护",
+                userVisibleReason: "按设置的周期比较 Game Data 与现有资产索引。",
+                suggestedAction: "若检测到过期，请在“设置与资产”中明确启动索引重建。");
             try
             {
                 task.MarkRunning("正在检查索引指纹");
@@ -220,7 +246,8 @@ namespace HD2ModManager.ViewModels
                     return;
                 }
 
-                task.UpdateStage("索引缺失或已过期；请在设置与资产中明确启动重建");
+                task.UpdateStage("索引缺失或已过期");
+                task.SetSuggestedAction("请在“设置与资产”中明确启动“建立 / 重建资产索引”。");
                 task.MarkCompleted();
             }
             catch (OperationCanceledException)
@@ -236,7 +263,7 @@ namespace HD2ModManager.ViewModels
 
         public void Navigate(WorkspaceMode mode)
         {
-            _selection.Clear();
+            ClearTransientSelection();
             CurrentMode = mode;
             switch (mode)
             {
@@ -258,6 +285,13 @@ namespace HD2ModManager.ViewModels
                     OpenSinglePage(WorkspacePageType.Home);
                     break;
             }
+        }
+
+        public void OpenTaskHub()
+        {
+            IsTaskHubOpen = true;
+            _notificationService.MarkAllRead();
+            RefreshTaskHubState();
         }
 
         public void OpenSinglePage(WorkspacePageType pageType)
@@ -290,13 +324,24 @@ namespace HD2ModManager.ViewModels
         public void OpenModDetails(string modId, bool preferRightSlot = true)
         {
             if (string.IsNullOrWhiteSpace(modId)) return;
+            ClearTransientSelection();
             SelectedModId = modId;
             OpenSecondaryPage(WorkspacePageType.ModDetails, preferRightSlot ? LeftPage : RightPage);
+        }
+
+        public void BeginBottomBarNameEdit(string modId, string currentValue) => _bottomBar.BeginNameEdit(modId, currentValue);
+        public void BeginBottomBarDescriptionEdit(string modId, string currentValue) => _bottomBar.BeginDescriptionEdit(modId, currentValue);
+        public void CancelBottomBarEdit() => _bottomBar.CancelEdit();
+        public void ClearTransientSelection()
+        {
+            _bottomBar.CancelEdit();
+            _selection.Clear();
         }
 
         public void OpenModDetailsFromPage(PageViewModel? sourcePage, string modId)
         {
             if (string.IsNullOrWhiteSpace(modId)) return;
+            ClearTransientSelection();
             SelectedModId = modId;
             OpenSecondaryPage(WorkspacePageType.ModDetails, sourcePage);
         }
@@ -304,6 +349,7 @@ namespace HD2ModManager.ViewModels
         public void OpenAdvancedModDetails(string modId)
         {
             if (string.IsNullOrWhiteSpace(modId)) return;
+            ClearTransientSelection();
             SelectedModId = modId;
             OpenSinglePage(WorkspacePageType.AdvancedModDetails);
         }
@@ -321,9 +367,26 @@ namespace HD2ModManager.ViewModels
         public void OpenCrossArmorPlan(HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel plan)
         {
             LeftPageType = WorkspacePageType.CrossArmorPlan;
-            RightPageType = WorkspacePageType.CrossArmorCandidateOutput;
+            RightPageType = WorkspacePageType.CrossArmorPlan;
             LeftPage = plan;
-            RightPage = new CrossArmorCandidateOutputPageViewModel(plan, _notificationService);
+            plan.AttachCandidateOutput(new CrossArmorCandidateOutputPageViewModel(plan, _notificationService));
+            RightPage = null;
+            UpdateModeFromSlots();
+            RaiseSlotFlags();
+        }
+
+        public void OpenMaterialPackaging(ModDetailsPageViewModel sourcePage, MaterialPackagingPageViewModel packagingPage)
+        {
+            if (ReferenceEquals(sourcePage, RightPage))
+            {
+                LeftPageType = WorkspacePageType.MaterialPackaging;
+                LeftPage = packagingPage;
+            }
+            else
+            {
+                RightPageType = WorkspacePageType.MaterialPackaging;
+                RightPage = packagingPage;
+            }
             UpdateModeFromSlots();
             RaiseSlotFlags();
         }
@@ -435,7 +498,13 @@ namespace HD2ModManager.ViewModels
                     SettingsService.GetLastAssetMetadataCheckUtc(),
                     SettingsService.GetAssetMetadataCheckIntervalHours())) return;
 
-            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.UpdateAssetMetadata, "更新资产元数据", "启动检查");
+            var task = _backgroundTasks.Enqueue(
+                BackgroundTaskKind.UpdateAssetMetadata,
+                "更新资产元数据",
+                "启动检查",
+                origin: "启动维护",
+                userVisibleReason: "已达到在线资产自动检查周期。",
+                suggestedAction: "失败时请检查在线资产索引源与网络连接。");
             try
             {
                 task.MarkRunning("正在同步资产元数据");
@@ -579,12 +648,25 @@ namespace HD2ModManager.ViewModels
             RefreshTaskHubState();
         }
 
+        private static void CancelTask(object? parameter)
+        {
+            if (parameter is BackgroundTaskItem task) task.Cancel();
+        }
+
+        private static async Task RetryTaskAsync(object? parameter)
+        {
+            if (parameter is not BackgroundTaskItem { Retry: { } retry }) return;
+            await retry();
+        }
+
         private void RefreshTaskHubState()
         {
             OnPropertyChanged(nameof(TaskHubTasks));
             OnPropertyChanged(nameof(EventHistory));
             OnPropertyChanged(nameof(ActiveTaskCount));
             OnPropertyChanged(nameof(HasUnreadTaskHubEvents));
+            CancelTaskCommand.RaiseCanExecuteChanged();
+            RetryTaskCommand.RaiseCanExecuteChanged();
         }
 
         private void CloseDeletedModDetails()
@@ -680,9 +762,10 @@ namespace HD2ModManager.ViewModels
 
         private PageViewModel CreatePage(WorkspacePageType pageType)
         {
-            return pageType switch
+            var stopwatch = Stopwatch.StartNew();
+            PageViewModel page = pageType switch
             {
-                WorkspacePageType.Home => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
+                WorkspacePageType.Home => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
                 WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection),
                 WorkspacePageType.Library => CreateLibraryPage(),
                 WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _backgroundTasks),
@@ -691,9 +774,11 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.GameDataBrowser => new GameDataBrowserPageViewModel(_libraryService, _profileService),
                 WorkspacePageType.GameDataArchiveDetails => new GameDataArchiveDetailsHostPageViewModel(null),
                 WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),
-                WorkspacePageType.CrossArmorCandidateOutput => throw new InvalidOperationException("跨护甲输出必须通过专用路由创建。"),
-                _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus),
+                WorkspacePageType.MaterialPackaging => throw new InvalidOperationException("材质打包必须通过 Mod 详情创建。"),
+                _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
             };
+            LogService.Info($"UI 性能：创建 {pageType} ViewModel 耗时 {stopwatch.ElapsedMilliseconds}ms。");
+            return page;
         }
 
         private LibraryPageViewModel CreateLibraryPage()
@@ -735,7 +820,7 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.GameDataBrowser => "Game Data 资产",
             WorkspacePageType.GameDataArchiveDetails => "Archive 详情",
             WorkspacePageType.CrossArmorPlan => "跨护甲计划",
-            WorkspacePageType.CrossArmorCandidateOutput => "验证候选输出",
+            WorkspacePageType.MaterialPackaging => "材质候选与输出",
             _ => "页面",
         };
 
@@ -755,6 +840,9 @@ namespace HD2ModManager.ViewModels
 
         private void UpdateLibraryCompanionContext()
         {
+            _bottomBar.SetLibraryProfileCompanionVisible(IsSplitView
+                && ((LeftPageType == WorkspacePageType.Library && RightPageType == WorkspacePageType.Profile)
+                    || (RightPageType == WorkspacePageType.Library && LeftPageType == WorkspacePageType.Profile)));
             if (LeftPage is LibraryPageViewModel leftLibrary)
                 leftLibrary.SetProfileCompanionVisible(IsSplitView && RightPageType == WorkspacePageType.Profile);
             if (RightPage is LibraryPageViewModel rightLibrary)

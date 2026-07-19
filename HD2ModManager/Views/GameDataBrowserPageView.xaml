@@ -12,17 +12,17 @@
         </Grid.RowDefinitions>
         <Border Grid.Row="0" Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
             <StackPanel>
-                <TextBlock Text="Game Data 资产" FontSize="20" FontWeight="SemiBold"/>
-                <TextBlock Text="选择 archive 后，在右侧按需读取 AssetKey 详情。" Foreground="#6C7280" Margin="0,3,0,0"/>
-                <TextBlock Text="{Binding Summary}" Foreground="#555" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                <TextBlock Text="{Binding BuiltText}" Foreground="#777" Margin="0,3,0,0"/>
-                <TextBlock Text="{Binding SourceText}" Foreground="#777" TextTrimming="CharacterEllipsis" Margin="0,3,0,0" ToolTip="{Binding SourceText}"/>
-                <TextBlock Text="{Binding ProfileText}" Foreground="#777" Margin="0,3,0,0"/>
+                <TextBlock Text="Game Data 资产" Style="{StaticResource AppCardTitle}"/>
+                <TextBlock Text="选择 archive 后，在右侧按需读取 AssetKey 详情。" Style="{StaticResource AppSupportingText}" Margin="0,3,0,0"/>
+                <TextBlock Text="{Binding Summary}" Style="{StaticResource AppSupportingText}" Margin="0,8,0,0"/>
+                <TextBlock Text="{Binding BuiltText}" Style="{StaticResource AppSupportingText}" Margin="0,3,0,0"/>
+                <TextBlock Text="{Binding SourceText}" Style="{StaticResource AppSupportingText}" TextTrimming="CharacterEllipsis" Margin="0,3,0,0" ToolTip="{Binding SourceText}"/>
+                <TextBlock Text="{Binding ProfileText}" Style="{StaticResource AppSupportingText}" Margin="0,3,0,0"/>
                 <Border Style="{StaticResource DataTableToolbar}" Margin="0,8,0,0" Padding="0">
                 <StackPanel Orientation="Horizontal">
-                    <TextBox Width="180" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Padding="7,3" ToolTip="搜索显示名、Package、Category 或 Mod"/>
-                    <ComboBox Width="120" ItemsSource="{Binding CategoryFilters}" SelectedItem="{Binding CategoryFilter}" Margin="8,0,0,0"/>
-                    <ComboBox Width="120" ItemsSource="{Binding StatusFilters}" SelectedItem="{Binding StatusFilter}" Margin="8,0,0,0"/>
+                    <TextBox Style="{StaticResource AppSearchBox}" Width="180" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" ToolTip="搜索显示名、Package、Category 或 Mod"/>
+                    <ComboBox Style="{StaticResource AppCompactComboBox}" Width="120" ItemsSource="{Binding CategoryFilters}" SelectedItem="{Binding CategoryFilter}" Margin="8,0,0,0"/>
+                    <ComboBox Style="{StaticResource AppCompactComboBox}" Width="120" ItemsSource="{Binding StatusFilters}" SelectedItem="{Binding StatusFilter}" Margin="8,0,0,0"/>
                 </StackPanel>
                 </Border>
             </StackPanel>

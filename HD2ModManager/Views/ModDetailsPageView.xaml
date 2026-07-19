@@ -16,9 +16,14 @@
                     <Border Width="96" Height="96" CornerRadius="14" ClipToBounds="True" Background="#EEF1F6" Margin="0,0,16,0">
                         <Image Source="{Binding Image, Converter={StaticResource ImagePlaceholder}, ConverterParameter=160}" Stretch="UniformToFill"/>
                     </Border>
-                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                        <TextBlock Text="{Binding Name}" FontSize="22" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                    </StackPanel>
+                    <Grid Grid.Column="1" Height="96" ClipToBounds="True">
+                        <TextBlock Text="{Binding Name}"
+                                   FontSize="22"
+                                   FontWeight="SemiBold"
+                                   TextWrapping="Wrap"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Top"/>
+                    </Grid>
                 </Grid>
             </Border>
 
@@ -30,19 +35,26 @@
             </Border>
 
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
-                <StackPanel>
-                    <DockPanel>
-                        <TextBlock Text="当前状态" Style="{StaticResource SectionTitle}" DockPanel.Dock="Left"/>
-                    </DockPanel>
-                        <TextBlock Text="{Binding UserStatusTitle}" Foreground="#1E63D6" FontWeight="SemiBold" FontSize="16" Margin="0,8,0,0"/>
-                        <TextBlock Text="{Binding UserStatusSummary}" Foreground="#555" TextWrapping="Wrap" Margin="0,4,0,0"/>
-                </StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Button Grid.Column="0" Style="{StaticResource AppSecondaryButton}" Content="高级" ToolTip="查看 Patch、AssetKey 与诊断信息" Command="{Binding OpenAdvancedDetailsCommand}" Padding="14,6"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="打开文件夹" Command="{Binding OpenFolderCommand}" Padding="14,6"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="修改图像" Click="OnSelectImageClick" Padding="14,6" Margin="8,0,0,0"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="修改名称" Click="OnEditNameClick" Padding="14,6" Margin="8,0,0,0"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="修改备注" Click="OnEditDescriptionClick" Padding="14,6" Margin="8,0,0,0"/>
+                    </StackPanel>
+                </Grid>
             </Border>
 
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
                 <StackPanel>
-                    <TextBlock Text="当前配置状态" Style="{StaticResource SectionTitle}"/>
-                    <TextBlock Text="{Binding ProfileStatus}" Foreground="#444" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                    <TextBlock Text="当前状态" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="{Binding UserStatusTitle}" Foreground="#1E63D6" FontWeight="SemiBold" FontSize="16" Margin="0,8,0,0"/>
+                    <TextBlock Text="{Binding UserStatusSummary}" Foreground="#555" TextWrapping="Wrap" Margin="0,4,0,0"/>
                 </StackPanel>
             </Border>
 
@@ -52,14 +64,6 @@
                     <TextBlock Text="{Binding AssetTagsString}" FontFamily="Consolas" Foreground="#444" TextWrapping="Wrap" Margin="0,8,0,0"/>
                 </StackPanel>
             </Border>
-
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-                <Button Content="加入配置" Command="{Binding AddToProfileCommand}" Padding="14,6"/>
-                <Button Content="查看高级详情" ToolTip="查看 Patch、AssetKey 与诊断信息" Command="{Binding OpenAdvancedDetailsCommand}" Padding="14,6" Margin="8,0,0,0"/>
-                <Button Content="删除" Command="{Binding DeleteCommand}" Padding="14,6" Margin="8,0,0,0" Foreground="#B3261E"/>
-                <Button Content="打开文件夹" Command="{Binding OpenFolderCommand}" Padding="14,6"/>
-                <Button Content="刷新" Command="{Binding RefreshCommand}" Padding="14,6" Margin="8,0,0,0"/>
-            </StackPanel>
         </StackPanel>
     </ScrollViewer>
 </UserControl>
