@@ -42,6 +42,8 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 		var issues = new List<PatchAnalysisIssue>();
 		var assets = new List<PatchAssetFact>();
 		var references = new List<PatchAssetReference>();
+		var preparedSourceUnits = new List<SourceUnitPreparation>();
+		IReadOnlyList<PatchTocEntry> entries = Array.Empty<PatchTocEntry>();
 		var tocPath = Path.GetFullPath(input.PatchTocFilePath);
 		if (!File.Exists(tocPath))
 		{
@@ -51,7 +53,7 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 
 		try
 		{
-			var entries = await tocScanner.ScanEntriesAsync(tocPath, cancellationToken).ConfigureAwait(false);
+			entries = await tocScanner.ScanEntriesAsync(tocPath, cancellationToken).ConfigureAwait(false);
 			foreach (var entry in entries)
 			{
 				cancellationToken.ThrowIfCancellationRequested();
@@ -72,7 +74,7 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 			}
 			else if (depth == PatchAnalysisDepth.Full)
 			{
-				await ReadUnitMaterialReferencesAsync(entries, references, issues, cancellationToken).ConfigureAwait(false);
+				preparedSourceUnits.AddRange(await ReadUnitMaterialReferencesAsync(entries, references, issues, cancellationToken).ConfigureAwait(false));
 			}
 		}
 		catch (Exception exception) when (exception is InvalidDataException or EndOfStreamException or IOException)
@@ -80,7 +82,7 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 			issues.Add(new PatchAnalysisIssue("InvalidToc", exception.Message, tocPath));
 		}
 
-		return CreateResult(input, assets, references, issues, depth);
+		return CreateResult(input, assets, references, issues, depth, entries, preparedSourceUnits);
 	}
 
 	private async ValueTask ReadDirectUnitMaterialReferencesAsync(IReadOnlyList<PatchTocEntry> entries, ICollection<PatchAssetReference> references, ICollection<PatchAnalysisIssue> issues, CancellationToken cancellationToken)
@@ -122,8 +124,9 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 		}
 	}
 
-	private async ValueTask ReadUnitMaterialReferencesAsync(IReadOnlyList<PatchTocEntry> entries, ICollection<PatchAssetReference> references, ICollection<PatchAnalysisIssue> issues, CancellationToken cancellationToken)
+	private async ValueTask<IReadOnlyList<SourceUnitPreparation>> ReadUnitMaterialReferencesAsync(IReadOnlyList<PatchTocEntry> entries, ICollection<PatchAssetReference> references, ICollection<PatchAnalysisIssue> issues, CancellationToken cancellationToken)
 	{
+		var prepared = new List<SourceUnitPreparation>();
 		var reader = new PatchUnitMeshReader(tocScanner: tocScanner);
 		foreach (var entry in entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
 		{
@@ -145,12 +148,38 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 						references.Add(new PatchAssetReference(entry.AssetKey, new AssetKey(MaterialDependencyResolver.MaterialTypeId, materialIds[0]), PatchReferenceKind.UnitMaterial, 0, section.MaterialSlotId, sectionIndex, mesh.Index, isPlaceholder));
 					}
 				}
+				prepared.Add(CreateSourceUnitPreparation(entry, unit));
 			}
 			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException)
 			{
 				await ReadLegacyUnitMaterialReferencesAsync(entry, references, issues, cancellationToken).ConfigureAwait(false);
+				prepared.Add(new SourceUnitPreparation(entry, null, Array.Empty<SourceMeshPreparation>(), exception.Message));
 			}
 		}
+		return prepared;
+	}
+
+	private static SourceUnitPreparation CreateSourceUnitPreparation(PatchTocEntry entry, PatchUnitMesh unit)
+	{
+		var materialIdsBySlot = unit.Model.Materials
+			.Where(binding => binding.MaterialId != 0)
+			.GroupBy(binding => binding.SectionId)
+			.ToDictionary(group => group.Key, group => group.Select(binding => binding.MaterialId).Distinct().OrderBy(id => id).ToArray());
+		var meshes = unit.Model.Meshes.Select(mesh =>
+		{
+			var raw = unit.Model.RawMeshData.FirstOrDefault(candidate => candidate.MeshInfoIndex == mesh.Index);
+			var stream = raw is null ? null : unit.Model.Streams.FirstOrDefault(candidate => candidate.Index == raw.StreamIndex);
+			var semantic = mesh.SemanticInfo;
+			var isPlaceholder = raw is not null && raw.Vertices.Count <= 3 && raw.Triangles.Count <= 1;
+			var slots = mesh.MaterialSlotIds.Distinct().ToArray();
+			var materialIds = slots.Where(materialIdsBySlot.ContainsKey).SelectMany(slot => materialIdsBySlot[slot]).Distinct().OrderBy(id => id).ToArray();
+			return new SourceMeshPreparation(mesh.Index, mesh.MeshId, mesh.LodIndex, semantic.IsVisualMesh,
+				raw is not null && semantic.IsVisualMesh && !semantic.IsLod && !isPlaceholder && raw.Vertices.Count > 3 && raw.Triangles.Count > 1,
+				semantic.Name, semantic.BodyType, semantic.Slot, semantic.PieceType,
+				raw is null ? 0U : checked((uint)raw.Vertices.Count), raw is null ? 0U : checked((uint)raw.Triangles.Count),
+				checked((uint)mesh.Sections.Count), stream?.VertexStride ?? 0, slots, materialIds);
+		}).ToArray();
+		return new SourceUnitPreparation(entry, unit.Model.CompositeRef == 0 ? null : new AssetKey(PatchUnitMeshReader.CompositeUnitTypeId, unit.Model.CompositeRef), meshes);
 	}
 
 	private async ValueTask ReadLegacyUnitMaterialReferencesAsync(PatchTocEntry entry, ICollection<PatchAssetReference> references, ICollection<PatchAnalysisIssue> issues, CancellationToken cancellationToken)
@@ -173,11 +202,11 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 		}
 	}
 
-	private static PatchGroupAnalysis CreateResult(PatchGroupInput input, IReadOnlyList<PatchAssetFact> assets, IReadOnlyList<PatchAssetReference> references, IReadOnlyList<PatchAnalysisIssue> issues, PatchAnalysisDepth depth = PatchAnalysisDepth.Full)
+	private static PatchGroupAnalysis CreateResult(PatchGroupInput input, IReadOnlyList<PatchAssetFact> assets, IReadOnlyList<PatchAssetReference> references, IReadOnlyList<PatchAnalysisIssue> issues, PatchAnalysisDepth depth = PatchAnalysisDepth.Full, IReadOnlyList<PatchTocEntry>? entries = null, IReadOnlyList<SourceUnitPreparation>? sourceUnits = null)
 		=> new(input, assets, references, issues, DateTimeOffset.UtcNow, depth switch
 		{
 			PatchAnalysisDepth.Inventory => InventoryAnalyzerVersion,
 			PatchAnalysisDepth.DependencyGraph => DependencyGraphAnalyzerVersion,
 			_ => FullAnalyzerVersion
-		}, depth);
+		}, depth, entries, sourceUnits);
 }

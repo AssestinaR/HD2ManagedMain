@@ -7,7 +7,7 @@ namespace HD2ModCore.Infrastructure;
 // 作用：集中执行完整 Patch 结构分析，并以基础文件指纹校验 SQLite 高级缓存。
 public sealed class AdvancedModAnalysisService : IAdvancedModAnalysisService
 {
-	private const int CacheVersion = 7;
+	private const int CacheVersion = 8;
 	private const string AnalyzerVersion = "patch-group-v4-section-materials";
 	private readonly IPatchGroupAnalysisCacheStore _cacheStore;
 	private readonly IPatchGroupAnalysisProvider _fullAnalysisProvider;
@@ -25,7 +25,7 @@ public sealed class AdvancedModAnalysisService : IAdvancedModAnalysisService
 		var cached = await _cacheStore.TryLoadAsync(node.Id, cancellationToken).ConfigureAwait(false);
 		var currentFiles = BuildFingerprints(node, modsRootDirectory);
 		var isReady = cached is not null && cached.Version == CacheVersion && string.Equals(cached.RelativePath, node.RelativePath, StringComparison.OrdinalIgnoreCase)
-			&& cached.Analyses.All(analysis => analysis.Depth == PatchAnalysisDepth.Full && string.Equals(analysis.AnalyzerVersion, AnalyzerVersion, StringComparison.Ordinal))
+			&& cached.Analyses.All(analysis => analysis.Depth == PatchAnalysisDepth.Full && string.Equals(analysis.AnalyzerVersion, AnalyzerVersion, StringComparison.Ordinal) && analysis.Entries.Count != 0)
 			&& cached.SourceFiles.SequenceEqual(currentFiles);
 		return new AdvancedModAnalysisState(node.Id, isReady, isReady, cached?.BuiltAtUtc, Array.Empty<CoreIssue>());
 	}

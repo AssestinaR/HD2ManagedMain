@@ -25,7 +25,8 @@ public static class CoreServices
 			CreatePatchFileNameParser(),
 			CreateSameKeyReconstructionPlanningService(paths),
 			CreateAssetArchiveIndexService(paths),
-			CreateFileSystemArchiveHashesProvider(paths));
+			CreateFileSystemArchiveHashesProvider(paths),
+			CreateAdvancedModAnalysisService(paths));
    public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths)
 		=> new AssetArchiveIndexService(paths);
 	public static IGameDataLocator CreateGameDataLocator(IGameDataSettings settings)

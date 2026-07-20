@@ -69,8 +69,8 @@ public sealed class CachedPatchGroupAnalysisProviderTests
 					Array.Empty<PatchAssetReference>(),
                     Array.Empty<PatchAnalysisIssue>(),
                     DateTimeOffset.UtcNow,
-					"patch-group-v5-inventory",
-					PatchAnalysisDepth.Inventory)
+                    "patch-group-v6-dependency-graph",
+                    PatchAnalysisDepth.DependencyGraph)
             ]);
         }
     }

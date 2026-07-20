@@ -808,12 +808,21 @@ namespace HD2ModManager.ViewModels
 					.Select(asset => new AssetKey(asset.AssetKey.TypeId, asset.AssetKey.FileId))
 					.ToHashSet();
                 var sourceCatalogCandidates = await _equipmentUnitCatalog.GetEntriesAsync(unitKeys);
-				var sourcePatchPaths = analyses
+                var sourcePatchPaths = analyses
 					.Select(analysis => analysis.Input.PatchTocFilePath)
                     .ToArray();
-                var sourceCandidates = await _equipmentUnitCatalog.FilterTransferableSourcePartsAsync(sourceCatalogCandidates, sourcePatchPaths);
+                var preparedTransferableMeshes = analyses
+                    .SelectMany(analysis => analysis.PreparedSourceUnits)
+                    .Where(unit => unit.IsReadable)
+                    .SelectMany(unit => unit.Meshes.Where(mesh => mesh.IsTransferable)
+                        .Select(mesh => (new AssetKey(unit.Entry.AssetKey.TypeId, unit.Entry.AssetKey.FileId), mesh.MeshInfoIndex)))
+                    .ToHashSet();
+                var sourceCandidates = sourceCatalogCandidates
+                    .Select(entry => entry with { Parts = entry.Parts.Where(part => preparedTransferableMeshes.Contains((part.UnitAssetKey, part.MeshInfoIndex))).ToArray() })
+                    .Where(entry => entry.Parts.Count != 0)
+                    .ToArray();
                 var allCandidates = await _equipmentUnitCatalog.GetEntriesAsync();
-                if (sourceCandidates.Count == 0)
+                if (sourceCandidates.Length == 0)
                 {
                     _notifications?.Show("当前 Mod 没有可转移的真实 Unit 几何：索引未匹配、Unit 无法读取或所有匹配 mesh 均已极小化。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
                     return;

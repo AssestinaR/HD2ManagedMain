@@ -42,7 +42,9 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 		if (!File.Exists(sourcePath)) throw new FileNotFoundException("Source patch TOC does not exist.", sourcePath);
 		if (!Directory.Exists(gameDataDirectory)) throw new DirectoryNotFoundException($"Game data directory does not exist: {gameDataDirectory}");
 
-		var sourceEntries = await new AdaptationPatchTocScanner().ScanEntriesAsync(sourcePath, cancellationToken).ConfigureAwait(false);
+		var sourceEntries = request.PreparedSourceEntries is { Count: > 0 }
+			? request.PreparedSourceEntries.Select(ToAdaptationEntry).ToArray()
+			: await new AdaptationPatchTocScanner().ScanEntriesAsync(sourcePath, cancellationToken).ConfigureAwait(false);
 		var sourceUnits = sourceEntries
 			.Where(entry => entry.AssetKey.TypeId == AdaptationPatchUnitMeshReader.UnitTypeId)
 			.GroupBy(entry => entry.AssetKey)
@@ -139,6 +141,11 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 
 	private static IReadOnlyList<ArchiveMetadata> OrderArchives(IReadOnlyList<ArchiveMetadata> archives)
 		=> archives.OrderBy(archive => archive.CategoryOrder).ThenBy(archive => archive.ArchiveOrder).ThenBy(archive => archive.ArchiveId, StringComparer.OrdinalIgnoreCase).ToArray();
+
+	private static AdaptationPatchTocEntry ToAdaptationEntry(PatchTocEntry entry)
+		=> new(new AdaptationAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), entry.SourceFilePath, entry.SourceFileName,
+			entry.TocDataOffset, entry.StreamOffset, entry.GpuResourceOffset, entry.Unknown1, entry.Unknown2,
+			entry.TocDataSize, entry.StreamSize, entry.GpuResourceSize, entry.Unknown3, entry.Unknown4, entry.EntryIndex);
 
 	private UnitMeshAdaptationPlan CreateCorePlan(
 		AdaptationPatchTocEntry sourceEntry,

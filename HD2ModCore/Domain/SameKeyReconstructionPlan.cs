@@ -5,7 +5,8 @@ public sealed record SameKeyReconstructionRequest(
 	string SourcePatchTocPath,
 	string GameDataDirectory,
 	bool AllowExperimentalCandidates = false,
-	int? MaxSourceUnitCount = null)
+	int? MaxSourceUnitCount = null,
+	IReadOnlyList<PatchTocEntry>? PreparedSourceEntries = null)
 {
 	public void Validate()
 	{

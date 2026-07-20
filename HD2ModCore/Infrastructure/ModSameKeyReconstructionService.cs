@@ -18,6 +18,7 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 	private readonly ISameKeyReconstructionPlanningService planningService;
 	private readonly IAssetArchiveIndexService assetIndex;
 	private readonly IArchiveHashesProvider archiveHashes;
+	private readonly IAdvancedModAnalysisService advancedAnalysis;
 	private readonly AdaptationSameKeyTargetShellReconstructionOperation reconstructionOperation;
 
 	public ModSameKeyReconstructionService(
@@ -25,12 +26,14 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 		ISameKeyReconstructionPlanningService planningService,
 		IAssetArchiveIndexService assetIndex,
 		IArchiveHashesProvider archiveHashes,
+		IAdvancedModAnalysisService advancedAnalysis,
 		AdaptationSameKeyTargetShellReconstructionOperation? reconstructionOperation = null)
 	{
 		this.fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
 		this.planningService = planningService ?? throw new ArgumentNullException(nameof(planningService));
 		this.assetIndex = assetIndex ?? throw new ArgumentNullException(nameof(assetIndex));
 		this.archiveHashes = archiveHashes ?? throw new ArgumentNullException(nameof(archiveHashes));
+		this.advancedAnalysis = advancedAnalysis ?? throw new ArgumentNullException(nameof(advancedAnalysis));
 		this.reconstructionOperation = reconstructionOperation ?? new AdaptationSameKeyTargetShellReconstructionOperation();
 	}
 
@@ -72,7 +75,7 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 
 		try
 		{
-			var plan = await planningService.CreatePlanAsync(new SameKeyReconstructionRequest(patchPaths[0], gameDataDirectory), cancellationToken).ConfigureAwait(false);
+			var plan = await CreatePlanAsync(source, patchPaths[0], gameDataDirectory, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 			issues.AddRange(plan.Issues);
 			foreach (var unit in plan.Units)
 			{
@@ -130,7 +133,7 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 		SameKeyReconstructionPlan plan;
 		try
 		{
-			plan = await planningService.CreatePlanAsync(new SameKeyReconstructionRequest(patchPaths[0], gameDataDirectory), cancellationToken).ConfigureAwait(false);
+			plan = await CreatePlanAsync(source, patchPaths[0], gameDataDirectory, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 			issues.AddRange(plan.Issues);
 			foreach (var unit in plan.Units)
 			{
@@ -176,6 +179,18 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 		{
 			return Failure(state.Issues.Concat(new[] { Error("SameKeyWriteFailed", exception.Message, source.Id, exception) }).ToArray(), outputDirectory);
 		}
+	}
+
+	private async ValueTask<SameKeyReconstructionPlan> CreatePlanAsync(ModNode source, string sourcePatchPath, string gameDataDirectory, string modsRootDirectory, CancellationToken cancellationToken)
+	{
+		var analyses = await advancedAnalysis.GetRequiredAnalysesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+		var entries = analyses
+			.Where(analysis => string.Equals(Path.GetFullPath(analysis.Input.PatchTocFilePath), Path.GetFullPath(sourcePatchPath), StringComparison.OrdinalIgnoreCase))
+			.SelectMany(analysis => analysis.Entries)
+			.Select(ToCoreEntry)
+			.ToArray();
+		if (entries.Length == 0) throw new InvalidOperationException("高级缓存不包含来源 Patch 的 TOC entry 目录；请重新执行高级分析。");
+		return await planningService.CreatePlanAsync(new SameKeyReconstructionRequest(sourcePatchPath, gameDataDirectory, PreparedSourceEntries: entries), cancellationToken).ConfigureAwait(false);
 	}
 
 	private static async ValueTask<(string JsonPath, string MarkdownPath)> WriteReportAsync(string outputDirectory, ModNode source, ModSameKeyReconstructionState state, HD2ModAdaptation.PatchReconstruction.PatchArchiveFileWriteResult write, CancellationToken cancellationToken)
@@ -276,6 +291,11 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 
 	private static CoreIssue Error(string code, string message, ModNodeId nodeId, Exception? exception = null)
 		=> new(CoreIssueSeverity.Error, code, message, NodeId: nodeId, ExceptionMessage: exception?.ToString());
+
+	private static PatchTocEntry ToCoreEntry(HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry)
+		=> new(new AssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), entry.SourceFilePath, entry.SourceFileName,
+			entry.TocDataOffset, entry.StreamOffset, entry.GpuResourceOffset, entry.Unknown1, entry.Unknown2,
+			entry.TocDataSize, entry.StreamSize, entry.GpuResourceSize, entry.Unknown3, entry.Unknown4, entry.EntryIndex);
 
 	private static string CreateOutputDirectory(string root, string sourceName)
 		=> Path.Combine(Path.GetFullPath(root), $"{Sanitize(sourceName)}-same-key-rebuilt-{DateTime.Now:yyyyMMdd-HHmmss}");

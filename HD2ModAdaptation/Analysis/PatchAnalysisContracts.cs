@@ -51,6 +51,34 @@ public sealed record PatchAssetReference(
 	int? MeshInfoIndex = null,
 	bool IsPlaceholderMesh = false);
 
+// Purpose: Identifies a readable source Unit and summarizes its rebuild-relevant mesh structure without retaining vertex or GPU payload bytes.
+public sealed record SourceUnitPreparation(
+	PatchTocEntry Entry,
+	AssetKey? CompositeAssetKey,
+	IReadOnlyList<SourceMeshPreparation> Meshes,
+	string? ReadError = null)
+{
+	public bool IsReadable => string.IsNullOrWhiteSpace(ReadError);
+}
+
+// Purpose: Stores the stable source mesh facts needed to offer transfer candidates before payload is read again for output.
+public sealed record SourceMeshPreparation(
+	int MeshInfoIndex,
+	uint MeshId,
+	int LodIndex,
+	bool IsVisual,
+	bool IsTransferable,
+	string SemanticName,
+	string BodyType,
+	string Slot,
+	string PieceType,
+	uint VertexCount,
+	uint TriangleCount,
+	uint SectionCount,
+	uint VertexStride,
+	IReadOnlyList<uint> MaterialSlotIds,
+	IReadOnlyList<ulong> MaterialIds);
+
 public sealed record PatchGroupAnalysis(
 	PatchGroupInput Input,
 	IReadOnlyList<PatchAssetFact> Assets,
@@ -58,9 +86,13 @@ public sealed record PatchGroupAnalysis(
 	IReadOnlyList<PatchAnalysisIssue> Issues,
 	DateTimeOffset AnalyzedUtc,
 	string AnalyzerVersion,
-	PatchAnalysisDepth Depth = PatchAnalysisDepth.Full)
+	PatchAnalysisDepth Depth = PatchAnalysisDepth.Full,
+	IReadOnlyList<PatchTocEntry>? EntryCatalog = null,
+	IReadOnlyList<SourceUnitPreparation>? SourceUnits = null)
 {
 	public bool IsSuccessful => Issues.All(issue => issue.Code is not "InvalidToc" and not "MissingToc");
+	public IReadOnlyList<PatchTocEntry> Entries => EntryCatalog ?? Array.Empty<PatchTocEntry>();
+	public IReadOnlyList<SourceUnitPreparation> PreparedSourceUnits => SourceUnits ?? Array.Empty<SourceUnitPreparation>();
 }
 
 public interface IPatchGroupAnalyzer
