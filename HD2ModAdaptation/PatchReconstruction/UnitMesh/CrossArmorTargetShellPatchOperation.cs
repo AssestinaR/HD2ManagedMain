@@ -26,7 +26,9 @@ public sealed class CrossArmorTargetShellPatchOperation
 	{
 		ArgumentNullException.ThrowIfNull(request);
 		request.Validate();
-		var entries = await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
+		var entries = request.PreparedSourceEntries is { Count: > 0 }
+			? request.PreparedSourceEntries
+			: await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
 		var outputBuilder = new SdkStyleTargetShellPatchOutputBuilder(
 			new SdkStyleTargetShellUnitReconstructor(
 				reencoder: new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true),
@@ -87,7 +89,8 @@ public sealed record CrossArmorTargetShellPatchOperationRequest(
 	IReadOnlyList<SdkStyleTargetShellPatchWorkItem> WorkItems,
 	IReadOnlyCollection<PatchArchiveAdditionalEntry> MaterialDependencies,
 	bool IncludeResolvedMaterialDependencies,
-	IReadOnlySet<ulong>? AllowedSourceMaterialIds)
+	IReadOnlySet<ulong>? AllowedSourceMaterialIds,
+	IReadOnlyList<PatchTocEntry>? PreparedSourceEntries = null)
 {
 	public void Validate()
 	{

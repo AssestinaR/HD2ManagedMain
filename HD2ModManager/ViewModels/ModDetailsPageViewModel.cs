@@ -832,7 +832,11 @@ namespace HD2ModManager.ViewModels
                     _notifications?.Show("跨护甲验证候选目前仅支持源 Mod 含一个 Patch 主文件组。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
                     return;
                 }
-                var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(_equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder());
+                var preparedSourceEntries = analyses
+                    .Where(analysis => string.Equals(analysis.Input.PatchTocFilePath, sourcePatchPaths[0], StringComparison.OrdinalIgnoreCase))
+                    .SelectMany(analysis => analysis.Entries)
+                    .ToArray();
+                var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(_equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(), preparedSourceEntries);
                 if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenCrossArmorPlan(viewModel);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)

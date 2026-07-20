@@ -33,6 +33,15 @@ public sealed class SdkStyleMeshReencoder
 		ArgumentNullException.ThrowIfNull(sourceModel);
 		var targetRawMesh = FindRawMesh(targetModel, targetMeshInfoIndex, "target");
 		var sourceRawMesh = FindRawMesh(sourceModel, sourceMeshInfoIndex, "source");
+		// Game Data commonly retains an empty trailing source section for an optional
+		// material. Ignore it only when the original layouts differ and the remaining
+		// source sections exactly match the target. Equal-count layouts must retain
+		// their positional section correspondence even when one section is empty.
+		if (sourceRawMesh.Sections.Count != targetRawMesh.Sections.Count)
+		{
+			var effectiveSourceMesh = RemoveEmptySourceSections(sourceRawMesh);
+			if (effectiveSourceMesh.Sections.Count == targetRawMesh.Sections.Count) sourceRawMesh = effectiveSourceMesh;
+		}
 		var meshSpaceTransform = transformMeshSpace || rebuildTargetInverseJointMatrices
 			? BuildMeshSpaceTransform(targetModel, targetMeshInfoIndex, sourceModel, sourceMeshInfoIndex)
 			: Matrix4x4.Identity;
@@ -241,6 +250,18 @@ public sealed class SdkStyleMeshReencoder
 	private static UnitRawMeshData FindRawMesh(UnitMeshModel model, int meshInfoIndex, string role)
 		=> model.RawMeshData.FirstOrDefault(mesh => mesh.MeshInfoIndex == meshInfoIndex)
 			?? throw new KeyNotFoundException($"The {role} Unit does not contain mesh {meshInfoIndex}.");
+
+	private static UnitRawMeshData RemoveEmptySourceSections(UnitRawMeshData sourceMesh)
+	{
+		var nonEmptySections = sourceMesh.Sections.Where(section => section.Triangles.Count != 0).ToArray();
+		return nonEmptySections.Length == sourceMesh.Sections.Count
+			? sourceMesh
+			: sourceMesh with
+			{
+				Sections = nonEmptySections,
+				Triangles = nonEmptySections.SelectMany(section => section.Triangles).ToArray()
+			};
+	}
 
 	private static UnitStreamInfo FindStream(UnitMeshModel model, UnitRawMeshData mesh, string role)
 		=> model.Streams.FirstOrDefault(stream => stream.Index == mesh.StreamIndex)

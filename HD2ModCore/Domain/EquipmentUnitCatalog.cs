@@ -93,7 +93,8 @@ public sealed record CrossArmorTransferCandidateRequest(
 	string GameDataDirectory,
 	string OutputDirectory,
 	CrossArmorTransferPlan Plan,
-	CrossArmorMaterialBindingMode MaterialBindingMode = CrossArmorMaterialBindingMode.PreserveSourceReferences);
+	CrossArmorMaterialBindingMode MaterialBindingMode = CrossArmorMaterialBindingMode.PreserveSourceReferences,
+	IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>? PreparedSourceEntries = null);
 
 // Purpose: Reports the independent cross-armor candidate output without changing the source Mod or any profile.
 public sealed record CrossArmorTransferCandidateResult(

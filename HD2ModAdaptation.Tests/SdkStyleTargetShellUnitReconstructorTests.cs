@@ -153,6 +153,55 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 	}
 
 	[Fact]
+	public void Reconstruct_IgnoresEmptySourceSectionWhenEffectiveSectionCountMatchesTarget()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1);
+		var sourceRawMesh = sourceModel.RawMeshData[0];
+		var source = CreatePatchUnit(SourceKey, sourceModel with
+		{
+			RawMeshData = [sourceRawMesh with
+			{
+				Sections = [sourceRawMesh.Sections[0], sourceRawMesh.Sections[0] with { MaterialIndex = 1, MaterialSlotId = 21, Triangles = Array.Empty<UnitTriangleIndices>() }]
+			}]
+		});
+		var target = CreateTargetUnit(CreateModel(vertexSeed: 1, meshCount: 1));
+
+		var result = new SdkStyleTargetShellUnitReconstructor().Reconstruct(
+			target,
+			[source],
+			[new TargetShellMeshMapping(SourceKey, 0, 0)]);
+
+		var rebuilt = Assert.Single(result.Model.RawMeshData);
+		Assert.Single(rebuilt.Sections);
+		Assert.Equal(sourceRawMesh.Sections[0].Triangles.Count, rebuilt.Sections[0].Triangles.Count);
+	}
+
+	[Fact]
+	public void Reconstruct_PreservesEmptySourceSectionWhenOriginalCountMatchesTarget()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1);
+		var sourceRawMesh = sourceModel.RawMeshData[0];
+		var sections = new[]
+		{
+			sourceRawMesh.Sections[0],
+			sourceRawMesh.Sections[0] with { MaterialIndex = 1, MaterialSlotId = 21, Triangles = Array.Empty<UnitTriangleIndices>() }
+		};
+		var source = CreatePatchUnit(SourceKey, sourceModel with { RawMeshData = [sourceRawMesh with { Sections = sections }] });
+		var baseTarget = CreateTargetUnit(CreateModel(vertexSeed: 1, meshCount: 1));
+		var targetRawMesh = baseTarget.Model.RawMeshData[0];
+		var target = baseTarget with { Model = baseTarget.Model with { RawMeshData = [targetRawMesh with { Sections = sections }] } };
+
+		var result = new SdkStyleTargetShellUnitReconstructor().Reconstruct(
+			target,
+			[source],
+			[new TargetShellMeshMapping(SourceKey, 0, 0)]);
+
+		var rebuilt = Assert.Single(result.Model.RawMeshData);
+		Assert.Equal(2, rebuilt.Sections.Count);
+		Assert.Empty(rebuilt.Sections[1].Triangles);
+	}
+
+	[Fact]
 	public void Reconstruct_WithSectionRebuild_PropagatesOnlyAllowedSourceMaterials()
 	{
 		const ulong sourceMaterial = 0x200;
@@ -205,7 +254,7 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 		};
 		var target = CreateTargetUnit(CreateModel(vertexSeed: 1, meshCount: 1), CreateToc(materialBindingCount: 1));
 
-		var result = new SdkStyleTargetShellUnitReconstructor().Reconstruct(
+		var result = new SdkStyleTargetShellUnitReconstructor(planSourceStreamLayout: true).Reconstruct(
 			target,
 			[new PatchUnitMesh(new PatchTocEntry(SourceKey, "source.patch", "source.patch"), new PatchEntryPayload(new PatchTocEntry(SourceKey, "source.patch", "source.patch"), CreateToc(), Array.Empty<byte>(), Array.Empty<byte>()), sourceModel)],
 			[new TargetShellMeshMapping(SourceKey, 0, 0)]);
@@ -217,6 +266,34 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 		Assert.Equal(0x123456789abcdef0ul, BitConverter.ToUInt64(result.WriteResult.TocData, 128));
 		Assert.Equal(16u, BitConverter.ToUInt32(result.WriteResult.TocData, 128 + 8 + 320 + 28));
 		Assert.Equal(2ul, BitConverter.ToUInt64(result.WriteResult.TocData, 128 + 8 + 320));
+	}
+
+	[Fact]
+	public void Reconstruct_DefaultsToCurrentTargetStreamLayout()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with
+		{
+			Streams = [new UnitStreamInfo(0, 128, 0x123456789abcdef0, 2, 0, 3, 16, 0, 3, 0, 0, 0, 0, 0,
+			[
+				new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+				new UnitStreamComponentInfo(5, "color", 4, "rgba_r8g8b8a8", 0, 0, 4)
+			])]
+		};
+		var targetModel = CreateModel(vertexSeed: 1, meshCount: 1) with
+		{
+			Streams = [new UnitStreamInfo(0, 128, 0xabcdef0123456789, 1, 0, 3, 12, 0, 3, 0, 0, 0, 0, 0,
+			[
+				new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12)
+			])]
+		};
+		var target = CreateTargetUnit(targetModel, CreateToc(materialBindingCount: 1));
+
+		var result = new SdkStyleTargetShellUnitReconstructor().Reconstruct(target, [CreatePatchUnit(SourceKey, sourceModel)], [new TargetShellMeshMapping(SourceKey, 0, 0)]);
+
+		var stream = Assert.Single(result.Model.Streams);
+		Assert.Equal(0xabcdef0123456789ul, stream.ComponentInfoId);
+		Assert.Equal(12u, stream.VertexStride);
+		Assert.Single(stream.Components);
 	}
 
 	[Fact]

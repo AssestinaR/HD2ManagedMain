@@ -7,6 +7,7 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 	private readonly SdkStyleVertexStreamPlanner streamPlanner;
 	private readonly SdkStyleMeshReencoder reencoder;
 	private readonly UnitMeshWriter writer;
+	private readonly bool planSourceStreamLayout;
 
 	public SdkStyleTargetShellUnitReconstructor(
 		PlaceholderUnitMeshMinifier? minifier = null,
@@ -15,10 +16,12 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 		UnitMeshWriter? writer = null,
 		bool allowSectionRebuild = false,
 		bool propagateSourceMaterials = true,
-		IReadOnlySet<ulong>? allowedSourceMaterialIds = null)
+		IReadOnlySet<ulong>? allowedSourceMaterialIds = null,
+		bool planSourceStreamLayout = false)
 	{
 		this.minifier = minifier ?? new PlaceholderUnitMeshMinifier();
 		this.streamPlanner = streamPlanner ?? new SdkStyleVertexStreamPlanner();
+		this.planSourceStreamLayout = planSourceStreamLayout;
 		this.reencoder = reencoder ?? new SdkStyleMeshReencoder(
 			allowSectionRebuild: allowSectionRebuild,
 			propagateSourceMaterials: propagateSourceMaterials,
@@ -45,10 +48,16 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 			if (!targetUnit.Model.RawMeshData.Any(mesh => mesh.MeshInfoIndex == mapping.TargetMeshInfoIndex)) throw new KeyNotFoundException($"Target Unit does not contain mesh {mapping.TargetMeshInfoIndex}.");
 		}
 
-		var plannedTargetModel = streamPlanner.Plan(targetUnit.Model, mappings.Select(mapping => new SdkStyleStreamReplacement(
-			mapping.TargetMeshInfoIndex,
-			sourceByKey[mapping.SourceUnitAssetKey].Model,
-			mapping.SourceMeshInfoIndex)).ToArray());
+		// A source patch can use a legacy Unit format table. Its numeric vertex-format IDs
+		// cannot be copied into a current target Unit: the same ID has different semantics
+		// between versions. Keep the current target declaration unless a caller explicitly
+		// opts into a version-aware stream migration.
+		var plannedTargetModel = planSourceStreamLayout
+			? streamPlanner.Plan(targetUnit.Model, mappings.Select(mapping => new SdkStyleStreamReplacement(
+				mapping.TargetMeshInfoIndex,
+				sourceByKey[mapping.SourceUnitAssetKey].Model,
+				mapping.SourceMeshInfoIndex)).ToArray())
+			: targetUnit.Model;
 		var model = targetIndexes.Count == 0
 			? minifier.MinifyAll(targetUnit.Model)
 			: minifier.MinifyExcept(plannedTargetModel, targetIndexes);

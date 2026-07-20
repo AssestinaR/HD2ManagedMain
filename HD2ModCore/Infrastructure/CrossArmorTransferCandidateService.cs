@@ -1,4 +1,5 @@
 using System.Text.Json;
+using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
@@ -16,6 +17,7 @@ using AdaptationCrossArmorBoneDiagnosticAnalyzer = HD2ModAdaptation.PatchReconst
 using AdaptationCrossArmorTransformInfoExpander = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.CrossArmorTransformInfoExpander;
 using AdaptationCrossArmorSkinningDiagnosticAnalyzer = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.CrossArmorSkinningDiagnosticAnalyzer;
 using AdaptationSdkStyleAvatarRigReader = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleAvatarRigReader;
+using AdaptationTargetBakeCompatibilityAnalyzer = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.TargetBakeCompatibilityAnalyzer;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -28,6 +30,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 	private readonly AdaptationCrossArmorBoneDiagnosticAnalyzer boneDiagnosticAnalyzer = new();
 	private readonly AdaptationCrossArmorTransformInfoExpander transformInfoExpander = new();
 	private readonly AdaptationCrossArmorSkinningDiagnosticAnalyzer skinningDiagnosticAnalyzer = new();
+	private readonly AdaptationTargetBakeCompatibilityAnalyzer targetBakeCompatibilityAnalyzer = new();
 	private readonly AdaptationMaterialDependencyResolver materialDependencyResolver = new();
 
 	public async ValueTask<CrossArmorTransferCandidateResult> GenerateCandidateAsync(CrossArmorTransferCandidateRequest request, CancellationToken cancellationToken = default)
@@ -36,6 +39,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		var issues = new List<CoreIssue>();
 		var boneDiagnostics = new List<object>();
 		var skinningDiagnostics = new List<object>();
+		var targetBakeDiagnostics = new List<object>();
 		var transferLayoutDiagnostics = new List<object>();
 		var outputTransferLayoutDiagnostics = new List<object>();
 		if (!request.Plan.CanContinue) return Failure("PlanNotReady", "当前计划尚不可写出；请先选择来源、目标并排除所有错误。", issues);
@@ -44,8 +48,12 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		try
 		{
 			var unsafeBoneMappings = new List<string>();
-			var sourceEntries = await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
+			var sourceEntries = request.PreparedSourceEntries is { Count: > 0 }
+				? request.PreparedSourceEntries
+				: await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
 			var mappings = request.Plan.Mappings.Where(mapping => mapping.WillReplace).ToArray();
+			Directory.CreateDirectory(request.OutputDirectory);
+			await WritePlanAuditAsync(request.OutputDirectory, request.Plan, cancellationToken).ConfigureAwait(false);
 			var sourceKeys = mappings.Select(mapping => ToAdaptationKey(mapping.Source!.UnitAssetKey)).ToHashSet();
 			var sourceUnits = new Dictionary<AdaptationAssetKey, AdaptationPatchUnitMesh>();
 			foreach (var entry in sourceEntries.Where(entry => sourceKeys.Contains(entry.AssetKey)))
@@ -88,6 +96,15 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 				targetUnit = targetUnit with { Model = expandedTargetModel };
 				foreach (var mapping in effectiveUnitMappings)
 				{
+					var targetBake = targetBakeCompatibilityAnalyzer.Analyze(targetUnit.Model, mapping.TargetMeshInfoIndex, sourceUnits[mapping.SourceUnitAssetKey].Model, mapping.SourceMeshInfoIndex, avatarRig);
+					targetBakeDiagnostics.Add(new
+					{
+						TargetUnit = $"0x{targetKey.FileId:x16}",
+						mapping.TargetMeshInfoIndex,
+						SourceUnit = $"0x{mapping.SourceUnitAssetKey.FileId:x16}",
+						mapping.SourceMeshInfoIndex,
+						Diagnostic = targetBake
+					});
 					transferLayoutDiagnostics.Add(CreateTransferLayoutDiagnostic(
 						targetKey,
 						mapping.TargetMeshInfoIndex,
@@ -127,7 +144,6 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			var headerArchiveId = request.Plan.SelectedTargets.First().ArchiveId;
 			var headerTemplate = await resolver.GetPackageTocAsync(headerArchiveId, cancellationToken).ConfigureAwait(false)
 				?? throw new FileNotFoundException("无法读取所选目标 archive 的 current TOC。", headerArchiveId);
-			Directory.CreateDirectory(request.OutputDirectory);
 			var execution = await patchOperation.ExecuteAsync(new AdaptationCrossArmorTargetShellPatchOperationRequest(
 				request.SourcePatchTocPath,
 				request.OutputDirectory,
@@ -135,7 +151,8 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 				workItems,
 				materialDependencies.Entries,
 				request.MaterialBindingMode == CrossArmorMaterialBindingMode.RequireCompleteSourceClosure,
-				allowedMaterialIds), cancellationToken).ConfigureAwait(false);
+				allowedMaterialIds,
+				sourceEntries), cancellationToken).ConfigureAwait(false);
 			var outputEntries = await scanner.ScanEntriesAsync(execution.WriteResult.TocFilePath, cancellationToken).ConfigureAwait(false);
 			foreach (var mapping in mappings)
 			{
@@ -152,7 +169,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 					outputUnit.Model,
 					sourceUnits[ToAdaptationKey(mapping.Source.UnitAssetKey)].Model));
 			}
-			var reportPath = await WriteReportAsync(request, execution.WriteResult.TocFilePath, execution.Output, boneDiagnostics, skinningDiagnostics, transferLayoutDiagnostics, outputTransferLayoutDiagnostics, requestedMaterialIds, materialDependencies, cancellationToken).ConfigureAwait(false);
+			var reportPath = await WriteReportAsync(request, execution.WriteResult.TocFilePath, execution.Output, boneDiagnostics, skinningDiagnostics, targetBakeDiagnostics, transferLayoutDiagnostics, outputTransferLayoutDiagnostics, requestedMaterialIds, materialDependencies, cancellationToken).ConfigureAwait(false);
 			return new CrossArmorTransferCandidateResult(true, request.OutputDirectory, reportPath, execution.Output.UnitResults.Count, execution.Output.UnitResults.Sum(result => result.ReplacementCount), execution.Output.UnitResults.Sum(result => result.MinifiedCount), issues);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException or OverflowException)
@@ -160,7 +177,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			if (boneDiagnostics.Count != 0 && !string.IsNullOrWhiteSpace(request.OutputDirectory))
 			{
 				Directory.CreateDirectory(request.OutputDirectory);
-				await WriteFailureDiagnosticAsync(request.OutputDirectory, exception, boneDiagnostics, cancellationToken).ConfigureAwait(false);
+				await WriteFailureDiagnosticAsync(request.OutputDirectory, exception, boneDiagnostics, skinningDiagnostics, targetBakeDiagnostics, transferLayoutDiagnostics, request.Plan, cancellationToken).ConfigureAwait(false);
 			}
 			return Failure("CrossArmorWriteFailed", exception.Message, issues, request.OutputDirectory);
 		}
@@ -250,6 +267,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellPatchOutput output,
 		IReadOnlyList<object> boneDiagnostics,
 		IReadOnlyList<object> skinningDiagnostics,
+		IReadOnlyList<object> targetBakeDiagnostics,
 		IReadOnlyList<object> transferLayoutDiagnostics,
 		IReadOnlyList<object> outputTransferLayoutDiagnostics,
 		IReadOnlyCollection<ulong> requestedMaterialIds,
@@ -278,6 +296,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			},
 			BoneDiagnostics = boneDiagnostics,
 			SkinningDiagnostics = skinningDiagnostics,
+			TargetBakeDiagnostics = targetBakeDiagnostics,
 			TransferLayoutDiagnostics = transferLayoutDiagnostics,
 			OutputTransferLayoutDiagnostics = outputTransferLayoutDiagnostics,
 			SkinningRisks = skinningDiagnostics
@@ -404,7 +423,61 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 
 	private sealed record TransferSectionDiagnostic(int Index, uint MaterialIndex, uint MaterialSlot, uint RawMaterialSlot, int TriangleCount, string? MaterialId, IReadOnlyList<string> MaterialIds);
 
-	private static async ValueTask WriteFailureDiagnosticAsync(string outputDirectory, Exception exception, IReadOnlyList<object> boneDiagnostics, CancellationToken cancellationToken)
+	private static async ValueTask WritePlanAuditAsync(string outputDirectory, CrossArmorTransferPlan plan, CancellationToken cancellationToken)
+	{
+		var path = Path.Combine(outputDirectory, "cross-armor-plan-audit.json");
+		var audit = new
+		{
+			Format = "hd2-cross-armor-plan-audit-v2",
+			GeneratedUtc = DateTimeOffset.UtcNow,
+			SelectedTargets = plan.SelectedTargets.Select(target => new { target.ArchiveId, target.DisplayName, target.Category }).ToArray(),
+			Summary = new
+			{
+				PhysicalTargetCount = plan.Mappings.Count,
+				ReplacementCount = plan.Mappings.Count(mapping => mapping.WillReplace),
+				HitCount = plan.Mappings.Sum(mapping => mapping.HitCount),
+				SharedPhysicalTargetCount = plan.Mappings.Count(mapping => mapping.UsedByArchiveIds.Count > 1)
+			},
+			Mappings = plan.Mappings.Select(mapping => new
+			{
+				PhysicalTarget = new { Unit = $"0x{mapping.PhysicalTarget.UnitAssetKey.FileId:x16}", mapping.PhysicalTarget.MeshInfoIndex },
+				Target = DescribePart(mapping.Target),
+				Source = mapping.Source is null ? null : DescribePart(mapping.Source),
+				mapping.WillReplace,
+				mapping.HitCount,
+				mapping.IsManual,
+				mapping.IsSuppressed,
+				mapping.Reason,
+				mapping.UsedByArchiveIds,
+				mapping.UsedByDisplayNames,
+				SharedPhysicalTarget = mapping.UsedByArchiveIds.Count > 1,
+				BodyVariantExact = mapping.Source?.BodyVariant == mapping.Target.BodyVariant,
+				UsesAnyBodyVariant = mapping.Source?.BodyVariant == UnitMeshBodyVariant.Any || mapping.Target.BodyVariant == UnitMeshBodyVariant.Any,
+				LayerExact = mapping.Source?.Layer == mapping.Target.Layer
+			}).ToArray()
+		};
+		await File.WriteAllTextAsync(path, JsonSerializer.Serialize(audit, new JsonSerializerOptions { WriteIndented = true }), cancellationToken).ConfigureAwait(false);
+	}
+
+	private static object DescribePart(EquipmentUnitPart part) => new
+	{
+		Unit = $"0x{part.UnitAssetKey.FileId:x16}",
+		part.MeshInfoIndex,
+		PartKind = part.PartKind.ToString(),
+		Layer = part.Layer.ToString(),
+		BodyVariant = part.BodyVariant.ToString(),
+		part.SemanticName
+	};
+
+	private static async ValueTask WriteFailureDiagnosticAsync(
+		string outputDirectory,
+		Exception exception,
+		IReadOnlyList<object> boneDiagnostics,
+		IReadOnlyList<object> skinningDiagnostics,
+		IReadOnlyList<object> targetBakeDiagnostics,
+		IReadOnlyList<object> transferLayoutDiagnostics,
+		CrossArmorTransferPlan plan,
+		CancellationToken cancellationToken)
 	{
 		var path = Path.Combine(outputDirectory, "cross-armor-bone-diagnostic.json");
 		var report = new
@@ -412,7 +485,21 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			GeneratedUtc = DateTimeOffset.UtcNow,
 			WriteSucceeded = false,
 			Failure = exception.Message,
-			BoneDiagnostics = boneDiagnostics
+			BoneDiagnostics = boneDiagnostics,
+			SkinningDiagnostics = skinningDiagnostics,
+			TargetBakeDiagnostics = targetBakeDiagnostics,
+			TransferLayoutDiagnostics = transferLayoutDiagnostics,
+			Mappings = plan.Mappings.Select(mapping => new
+			{
+				TargetUnit = $"0x{mapping.PhysicalTarget.UnitAssetKey.FileId:x16}",
+				mapping.PhysicalTarget.MeshInfoIndex,
+				SourceUnit = mapping.Source is null ? null : $"0x{mapping.Source.UnitAssetKey.FileId:x16}",
+				SourceMeshInfoIndex = mapping.Source?.MeshInfoIndex,
+				mapping.WillReplace,
+				mapping.HitCount,
+				mapping.Reason,
+				mapping.UsedByArchiveIds
+			}).ToArray()
 		};
 		await File.WriteAllTextAsync(path, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }), cancellationToken).ConfigureAwait(false);
 	}

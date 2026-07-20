@@ -52,6 +52,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	}
 	public string SourcePatchTocPath { get; }
 	public string GameDataDirectory { get; }
+	public IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> PreparedSourceEntries { get; }
 	public RelayCommand RefreshPlanCommand { get; }
 	public RelayCommand ApplyManualMappingCommand { get; }
 	public RelayCommand SuppressSelectedMappingCommand { get; }
@@ -187,7 +188,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		IReadOnlyList<EquipmentUnitCatalogEntry> sourceCandidates,
 		IReadOnlyList<EquipmentUnitCatalogEntry> targetCandidates,
 		string sourcePatchTocPath,
-		string gameDataDirectory)
+		string gameDataDirectory,
+		IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> preparedSourceEntries)
 	{
 		this.catalogService = catalogService;
 		this.sourceCandidates = sourceCandidates;
@@ -195,6 +197,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		Title = "跨护甲计划";
 		SourcePatchTocPath = sourcePatchTocPath;
 		GameDataDirectory = gameDataDirectory;
+		PreparedSourceEntries = preparedSourceEntries ?? throw new ArgumentNullException(nameof(preparedSourceEntries));
 		SourceArmorChoices = sourceCandidates.Where(entry => string.Equals(entry.Category, "Armor", StringComparison.OrdinalIgnoreCase)).Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
 		SourceHelmetChoices = sourceCandidates.Where(entry => string.Equals(entry.Category, "Helmet", StringComparison.OrdinalIgnoreCase)).Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
 		TargetChoices = targetCandidates.Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
@@ -306,6 +309,42 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			WriteIndented = true,
 			Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
 		}));
+	}
+
+	public void ExportAuditJson(string outputPath)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
+		if (plan is null) throw new InvalidOperationException("请先生成跨护甲计划。");
+		var audit = new
+		{
+			format = "hd2-cross-armor-plan-audit-v1",
+			exportedAtUtc = DateTimeOffset.UtcNow,
+			selectedTargets = plan.SelectedTargets.Select(target => new { target.ArchiveId, target.DisplayName, target.Category }).ToArray(),
+			summary = new
+			{
+				physicalTargetCount = plan.Mappings.Count,
+				replacementCount = plan.Mappings.Count(mapping => mapping.WillReplace),
+				hitCount = plan.Mappings.Sum(mapping => mapping.HitCount),
+				sharedPhysicalTargetCount = plan.Mappings.Count(mapping => mapping.UsedByArchiveIds.Count > 1)
+			},
+			mappings = plan.Mappings.Select(mapping => new
+			{
+				physicalTarget = new { unitAssetKey = ToAssetKeyExport(mapping.PhysicalTarget.UnitAssetKey), mapping.PhysicalTarget.MeshInfoIndex },
+				target = ToPartExport(mapping.Target),
+				source = mapping.Source is null ? null : ToPartExport(mapping.Source),
+				mapping.WillReplace,
+				mapping.HitCount,
+				mapping.Reason,
+				mapping.UsedByArchiveIds,
+				mapping.UsedByDisplayNames,
+				sharedPhysicalTarget = mapping.UsedByArchiveIds.Count > 1,
+				bodyVariantExact = mapping.Source?.BodyVariant == mapping.Target.BodyVariant,
+				usesAnyBodyVariant = mapping.Source?.BodyVariant == UnitMeshBodyVariant.Any || mapping.Target.BodyVariant == UnitMeshBodyVariant.Any,
+				layerExact = mapping.Source?.Layer == mapping.Target.Layer,
+				semanticFamilyExact = mapping.Source is not null && SemanticFamily(mapping.Source.SemanticName) == SemanticFamily(mapping.Target.SemanticName)
+			}).ToArray()
+		};
+		File.WriteAllText(outputPath, JsonSerializer.Serialize(audit, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
 	}
 
 	public void AttachCandidateOutput(CrossArmorCandidateOutputPageViewModel output) => CandidateOutput = output;
@@ -452,6 +491,24 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		part.Confidence,
 		part.SharedArchiveIds
 	};
+
+	private static string SemanticFamily(string semanticName)
+	{
+		var name = semanticName.Trim().ToLowerInvariant();
+		if (name.StartsWith("g_torso_arm_l_", StringComparison.Ordinal)) return "torso-arm-l";
+		if (name.StartsWith("g_torso_arm_r_", StringComparison.Ordinal)) return "torso-arm-r";
+		if (name.StartsWith("g_arm_l", StringComparison.Ordinal)) return "arm-l";
+		if (name.StartsWith("g_arm_r", StringComparison.Ordinal)) return "arm-r";
+		if (name.StartsWith("g_legs_hips_undergarment", StringComparison.Ordinal)) return "hips-undergarment";
+		if (name.StartsWith("g_legs_hips", StringComparison.Ordinal)) return "hips";
+		if (name.StartsWith("g_leg_undergarment_l", StringComparison.Ordinal)) return "leg-undergarment-l";
+		if (name.StartsWith("g_leg_undergarment_r", StringComparison.Ordinal)) return "leg-undergarment-r";
+		if (name.StartsWith("g_leg_l", StringComparison.Ordinal)) return "leg-l";
+		if (name.StartsWith("g_leg_r", StringComparison.Ordinal)) return "leg-r";
+		if (name.StartsWith("g_torso_undergarment", StringComparison.Ordinal)) return "torso-undergarment";
+		if (name.StartsWith("g_torso", StringComparison.Ordinal)) return "torso";
+		return name;
+	}
 
 	private static object ToAssetKeyExport(AssetKey key) => new
 	{

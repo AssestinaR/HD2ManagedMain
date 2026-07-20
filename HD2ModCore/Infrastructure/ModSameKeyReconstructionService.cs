@@ -156,6 +156,7 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 		try
 		{
 			Directory.CreateDirectory(outputDirectory);
+			var preparedEntries = await GetPreparedSourceEntriesAsync(source, sourcePath, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 			var request = new AdaptationSameKeyTargetShellReconstructionRequest(
 				sourcePath,
 				gameDataDirectory,
@@ -169,7 +170,8 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 						.Select(step => new AdaptationTargetShellMeshMapping(unitKey, step.SourceMeshInfoIndex ?? throw new InvalidDataException("Replacement step lacks source mesh index."), step.TargetMeshInfoIndex))
 						.ToArray();
 					return new AdaptationSameKeyTargetShellReconstructionUnit(unitKey, targetArchive.ArchiveId, mappings);
-				}).ToArray());
+				}).ToArray(),
+			preparedEntries.Select(ToAdaptationEntry).ToArray());
 			var execution = await reconstructionOperation.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
 			var report = await WriteReportAsync(outputDirectory, source, state, execution.WriteResult, cancellationToken).ConfigureAwait(false);
 			await WriteFormalValidationChecklistAsync(outputDirectory, source, state, cancellationToken).ConfigureAwait(false);
@@ -183,15 +185,16 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 
 	private async ValueTask<SameKeyReconstructionPlan> CreatePlanAsync(ModNode source, string sourcePatchPath, string gameDataDirectory, string modsRootDirectory, CancellationToken cancellationToken)
 	{
-		var analyses = await advancedAnalysis.GetRequiredAnalysesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false);
-		var entries = analyses
-			.Where(analysis => string.Equals(Path.GetFullPath(analysis.Input.PatchTocFilePath), Path.GetFullPath(sourcePatchPath), StringComparison.OrdinalIgnoreCase))
-			.SelectMany(analysis => analysis.Entries)
-			.Select(ToCoreEntry)
-			.ToArray();
+		var entries = (await GetPreparedSourceEntriesAsync(source, sourcePatchPath, modsRootDirectory, cancellationToken).ConfigureAwait(false))
+			.Select(ToCoreEntry).ToArray();
 		if (entries.Length == 0) throw new InvalidOperationException("高级缓存不包含来源 Patch 的 TOC entry 目录；请重新执行高级分析。");
 		return await planningService.CreatePlanAsync(new SameKeyReconstructionRequest(sourcePatchPath, gameDataDirectory, PreparedSourceEntries: entries), cancellationToken).ConfigureAwait(false);
 	}
+
+	private async ValueTask<IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>> GetPreparedSourceEntriesAsync(ModNode source, string sourcePatchPath, string modsRootDirectory, CancellationToken cancellationToken)
+		=> (await advancedAnalysis.GetRequiredAnalysesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false))
+			.Where(analysis => string.Equals(Path.GetFullPath(analysis.Input.PatchTocFilePath), Path.GetFullPath(sourcePatchPath), StringComparison.OrdinalIgnoreCase))
+			.SelectMany(analysis => analysis.Entries).ToArray();
 
 	private static async ValueTask<(string JsonPath, string MarkdownPath)> WriteReportAsync(string outputDirectory, ModNode source, ModSameKeyReconstructionState state, HD2ModAdaptation.PatchReconstruction.PatchArchiveFileWriteResult write, CancellationToken cancellationToken)
 	{
@@ -296,6 +299,8 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 		=> new(new AssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), entry.SourceFilePath, entry.SourceFileName,
 			entry.TocDataOffset, entry.StreamOffset, entry.GpuResourceOffset, entry.Unknown1, entry.Unknown2,
 			entry.TocDataSize, entry.StreamSize, entry.GpuResourceSize, entry.Unknown3, entry.Unknown4, entry.EntryIndex);
+
+	private static HD2ModAdaptation.PatchReconstruction.PatchTocEntry ToAdaptationEntry(HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry) => entry;
 
 	private static string CreateOutputDirectory(string root, string sourceName)
 		=> Path.Combine(Path.GetFullPath(root), $"{Sanitize(sourceName)}-same-key-rebuilt-{DateTime.Now:yyyyMMdd-HHmmss}");

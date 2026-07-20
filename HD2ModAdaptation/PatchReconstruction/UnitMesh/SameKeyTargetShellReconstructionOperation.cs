@@ -33,7 +33,9 @@ public sealed class SameKeyTargetShellReconstructionOperation
 	{
 		ArgumentNullException.ThrowIfNull(request);
 		request.Validate();
-		var sourceEntries = await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
+		var sourceEntries = request.PreparedSourceEntries is { Count: > 0 }
+			? request.PreparedSourceEntries
+			: await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
 		var expectedSourceKeys = request.Units.Select(unit => unit.UnitAssetKey).ToHashSet();
 		var sourceUnits = new Dictionary<AssetKey, PatchUnitMesh>();
 		foreach (var entry in sourceEntries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
@@ -107,9 +109,12 @@ public sealed class SameKeyTargetShellReconstructionOperation
 		var unitKeys = entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
 		if (!unitKeys.SetEquals(output.UnitResults.Select(result => result.TargetUnitAssetKey))) errors.Add("输出 Unit 集合与批准的 current target Unit 集合不一致。");
 		var outputKeys = entries.Select(entry => entry.AssetKey).ToHashSet();
+		var rebuiltUnitKeys = output.UnitResults.Select(result => result.TargetUnitAssetKey).ToHashSet();
 		foreach (var removed in removals)
 		{
-			if (outputKeys.Contains(removed.AssetKey)) errors.Add($"输出仍包含应删除的旧资源 0x{removed.AssetKey.FileId:x16}。");
+			// A same-key target Unit intentionally replaces an old source Unit in place.
+			// Composite and every other removed resource must still be absent.
+			if (outputKeys.Contains(removed.AssetKey) && !rebuiltUnitKeys.Contains(removed.AssetKey)) errors.Add($"输出仍包含应删除的旧资源 0x{removed.AssetKey.FileId:x16}。");
 		}
 		if (entries.GroupBy(entry => entry.AssetKey).Any(group => group.Count() != 1)) errors.Add("输出包含重复 AssetKey。");
 		var streamLength = File.Exists(outputTocPath + ".stream") ? new FileInfo(outputTocPath + ".stream").Length : 0;
@@ -141,7 +146,8 @@ public sealed record SameKeyTargetShellReconstructionRequest(
 	string SourcePatchTocPath,
 	string GameDataDirectory,
 	string OutputDirectory,
-	IReadOnlyList<SameKeyTargetShellReconstructionUnit> Units)
+	IReadOnlyList<SameKeyTargetShellReconstructionUnit> Units,
+	IReadOnlyList<PatchTocEntry>? PreparedSourceEntries = null)
 {
 	public void Validate()
 	{
