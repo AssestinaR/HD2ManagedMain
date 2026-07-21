@@ -10,11 +10,13 @@ public sealed class ModContentFactsService : IModContentFactsService
 {
 	private readonly IPatchFileNameParser _fileNameParser;
 	private readonly IPatchGroupAnalysisProvider _analysisProvider;
+	private readonly IUnitVersionProbe _unitVersionProbe;
 
-	public ModContentFactsService(IPatchFileNameParser fileNameParser, IPatchGroupAnalysisProvider analysisProvider)
+	public ModContentFactsService(IPatchFileNameParser fileNameParser, IPatchGroupAnalysisProvider analysisProvider, IUnitVersionProbe? unitVersionProbe = null)
 	{
 		_fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
 		_analysisProvider = analysisProvider ?? throw new ArgumentNullException(nameof(analysisProvider));
+		_unitVersionProbe = unitVersionProbe ?? new UnitVersionProbe();
 	}
 
 	public async ValueTask<ModContentFacts> GetNodeFactsAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
@@ -51,9 +53,11 @@ public sealed class ModContentFactsService : IModContentFactsService
 			cancellationToken.ThrowIfCancellationRequested();
 			var groupIssues = new List<CoreIssue>(discoveredGroup.Issues);
 			var assetKeys = new HashSet<AssetKey>();
+			HD2ModAdaptation.Analysis.PatchGroupAnalysis? analysis = null;
 			var baseFile = discoveredGroup.Files.FirstOrDefault(file => file.SidecarKind == PatchSidecarKind.Base);
-			if (baseFile is not null && analysisByBasePath.TryGetValue(Path.GetFullPath(baseFile.FilePath), out var analysis))
+			if (baseFile is not null && analysisByBasePath.TryGetValue(Path.GetFullPath(baseFile.FilePath), out var resolvedAnalysis))
 			{
+				analysis = resolvedAnalysis;
 				foreach (var asset in analysis.Assets)
 				{
 					assetKeys.Add(new AssetKey(asset.AssetKey.TypeId, asset.AssetKey.FileId));
@@ -74,7 +78,10 @@ public sealed class ModContentFactsService : IModContentFactsService
 			}
 
 			issues.AddRange(groupIssues);
-			groups.Add(new ModPatchGroupFact(discoveredGroup.Id, discoveredGroup.NormalizedOrder, discoveredGroup.Files, assetKeys, groupIssues));
+			var unitVersions = analysis is null
+				? Array.Empty<UnitVersionEvidence>()
+				: await _unitVersionProbe.ProbeAsync(analysis, cancellationToken).ConfigureAwait(false);
+			groups.Add(new ModPatchGroupFact(discoveredGroup.Id, discoveredGroup.NormalizedOrder, discoveredGroup.Files, assetKeys, groupIssues, unitVersions));
 		}
 
 		var allFiles = groups.SelectMany(group => group.Files).ToList();

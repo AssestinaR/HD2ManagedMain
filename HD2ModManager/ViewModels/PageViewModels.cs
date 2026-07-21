@@ -37,6 +37,9 @@ namespace HD2ModManager.ViewModels
         private readonly ImportQueueService _queue;
         private readonly ApplyStatusService _applyStatus;
         private readonly BackgroundTaskService _backgroundTasks;
+        private readonly IModRepairBatchService _repairBatch;
+        private readonly StoragePaths _paths;
+        private bool _isRepairingOutdatedMods;
         private DeploymentCapability _deploymentCapability = DeploymentCapability.Unavailable("尚未检测。");
 
         public string ActiveProfile => _profiles.ActiveKey ?? "未启用";
@@ -47,6 +50,11 @@ namespace HD2ModManager.ViewModels
         public string ApplySummary => _applyStatus.Summary;
         public string GameDataHealth => BuildGameDataHealth();
         public string AssetMetadataHealth => BuildAssetMetadataHealth();
+        public int EnabledModCount => _profiles.ActiveProfile?.Entries.Count ?? 0;
+        public int OutdatedModCount => _library.Snapshot.Nodes.Values.Count(node => _library.GetDerivedData(node.Id.Value.ToString("N"))?.UnitCompatibility.IsOutdated == true);
+        public string OutdatedModSummary => OutdatedModCount == 0 ? "未发现过时 Mod" : $"{OutdatedModCount} 个过时";
+        public bool CanRepairOutdatedMods => !_isRepairingOutdatedMods && OutdatedModCount > 0;
+        public bool IsRepairingOutdatedMods { get => _isRepairingOutdatedMods; private set { if (SetField(ref _isRepairingOutdatedMods, value)) { OnPropertyChanged(nameof(CanRepairOutdatedMods)); RepairOutdatedModsCommand.RaiseCanExecuteChanged(); } } }
         public string TaskHealth => _backgroundTasks.CountQueued + _backgroundTasks.CountRunning is var active && active > 0
             ? $"{active} 项任务进行中或排队"
             : "当前没有进行中的任务";
@@ -59,6 +67,8 @@ namespace HD2ModManager.ViewModels
         public RelayCommand OpenDeveloperSettingsCommand { get; }
         public RelayCommand RestartAsAdministratorCommand { get; }
         public RelayCommand OpenTaskHubCommand { get; }
+        public RelayCommand RepairOutdatedModsCommand { get; }
+        public RelayCommand LaunchGameCommand { get; }
 
         public HomePageViewModel(ProfileService profiles, ModLibraryService library, ImportQueueService queue, ApplyStatusService applyStatus, BackgroundTaskService backgroundTasks)
         {
@@ -68,11 +78,15 @@ namespace HD2ModManager.ViewModels
             _queue = queue;
             _applyStatus = applyStatus;
             _backgroundTasks = backgroundTasks;
+            _paths = SettingsService.CreateStoragePaths();
+            _repairBatch = CoreServices.CreateModRepairBatchService(_paths);
             RefreshDeploymentCapability();
             MoveLibraryToRecommendedCommand = new RelayCommand(MoveLibraryToRecommended);
             OpenDeveloperSettingsCommand = new RelayCommand(() => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:developers") { UseShellExecute = true }));
             RestartAsAdministratorCommand = new RelayCommand(RestartAsAdministrator);
             OpenTaskHubCommand = new RelayCommand(OpenTaskHub);
+            RepairOutdatedModsCommand = new RelayCommand(async _ => await RepairOutdatedModsAsync(), _ => CanRepairOutdatedMods);
+            LaunchGameCommand = new RelayCommand(LaunchGame);
         }
 
         public void Refresh()
@@ -85,6 +99,11 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ApplySummary));
             OnPropertyChanged(nameof(GameDataHealth));
             OnPropertyChanged(nameof(AssetMetadataHealth));
+            OnPropertyChanged(nameof(EnabledModCount));
+            OnPropertyChanged(nameof(OutdatedModCount));
+            OnPropertyChanged(nameof(OutdatedModSummary));
+            OnPropertyChanged(nameof(CanRepairOutdatedMods));
+            RepairOutdatedModsCommand.RaiseCanExecuteChanged();
             OnPropertyChanged(nameof(TaskHealth));
             RefreshDeploymentCapability();
             OnPropertyChanged(nameof(DeploymentCapability));
@@ -117,6 +136,56 @@ namespace HD2ModManager.ViewModels
         private static void OpenTaskHub()
         {
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenMessagePanel();
+        }
+
+        private static void LaunchGame()
+            => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("steam://run/553850") { UseShellExecute = true });
+
+        private async Task RepairOutdatedModsAsync()
+        {
+            var gameData = SettingsService.GetGameDataFolder();
+            if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
+            {
+                System.Windows.MessageBox.Show("请先配置有效的 Game Data 文件夹。", "一键修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                return;
+            }
+
+            var nodes = _library.Snapshot.Nodes.Values
+                .Where(node => _library.GetDerivedData(node.Id.Value.ToString("N"))?.UnitCompatibility.IsOutdated == true)
+                .ToArray();
+            if (nodes.Length == 0) return;
+            var confirm = System.Windows.MessageBox.Show($"将为 {nodes.Length} 个检测为旧版 Unit 的 Mod 生成当前版本候选，并仅在候选完整通过内部检查后替换原 Patch。\n\n原 Patch 与 sidecar 会独立备份到管理器目录 backups。是否继续？", "一键修复过时 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
+            if (confirm != System.Windows.MessageBoxResult.Yes) return;
+
+            IsRepairingOutdatedMods = true;
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.RepairMods, "批量修复过时 Mod", $"共 {nodes.Length} 个 Mod", origin: "首页维护", userVisibleReason: "重建过时 Unit，并在验证成功后安全替换原始 Patch。", suggestedAction: "完成后将重新分析并重新部署活动配置。");
+            try
+            {
+                task.MarkRunning("正在生成并验证重构候选");
+                var result = await _repairBatch.RepairAsync(nodes, _library.ModsRootDirectory, gameData, task.CancellationToken);
+                task.UpdateStage($"已修复 {result.RepairedModCount}；跳过 {result.SkippedModCount}；失败 {result.FailedModCount}");
+                task.MarkCompleted();
+                if (result.HasRepairs)
+                {
+                    await _library.RefreshDerivedDataAsync(result.Mods.Where(item => item.Status == ModRepairBatchModStatus.Repaired).Select(item => item.NodeId.Value.ToString("N")), task.CancellationToken);
+                    if (_profiles.ActiveProfile is not null) _profiles.NotifyActiveModContentChanged();
+                }
+                System.Windows.MessageBox.Show($"批次完成。\n已修复：{result.RepairedModCount}\n跳过：{result.SkippedModCount}\n失败：{result.FailedModCount}\n\n备份与审计清单：{result.BatchDirectory}", "一键修复", System.Windows.MessageBoxButton.OK, result.FailedModCount == 0 ? System.Windows.MessageBoxImage.Information : System.Windows.MessageBoxImage.Warning);
+            }
+            catch (OperationCanceledException)
+            {
+                task.MarkCanceled();
+            }
+            catch (Exception exception)
+            {
+                task.MarkFailed(exception.Message);
+                System.Windows.MessageBox.Show($"批量修复失败：{exception.Message}", "一键修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+            }
+            finally
+            {
+                IsRepairingOutdatedMods = false;
+                Refresh();
+            }
         }
 
         private async void MoveLibraryToRecommended()
@@ -202,6 +271,18 @@ namespace HD2ModManager.ViewModels
         }
         public string CurrentProfileTitle => _profiles.SelectedKey ?? "未选择配置";
         public string ItemCountText => $"显示 {Items.Count} / {_profiles.SelectedProfile?.Entries.Count ?? 0} 个 Mod";
+        private bool _showOnlyOutdated;
+        public bool ShowOnlyOutdated
+        {
+            get => _showOnlyOutdated;
+            set
+            {
+                if (!SetField(ref _showOnlyOutdated, value)) return;
+                OnPropertyChanged(nameof(OutdatedFilterText));
+                Refresh();
+            }
+        }
+        public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
 
         private string? _selectedProfileKey;
         private string _renameText = string.Empty;
@@ -401,10 +482,12 @@ namespace HD2ModManager.ViewModels
             {
                 var guid = entry.NodeId.Value.ToString("N");
                 var mod = _library.Get(guid);
-                var assetSummary = _library.GetDerivedData(guid)?.AssetSummary;
+				var derived = _library.GetDerivedData(guid);
+				var assetSummary = derived?.AssetSummary;
                 if (!ModSearchMatcher.IsMatch(mod?.Name, mod?.Description, assetSummary, Query)) continue;
+				if (ShowOnlyOutdated && derived?.UnitCompatibility.IsOutdated != true) continue;
                 _userStatuses.TryGetValue(guid, out var status);
-                items.Add(new ProfileListItemViewModel(guid, mod?.Name ?? guid, mod?.Description, mod?.Image, ModAssetSummaryFormatter.Format(assetSummary), entry.LoadOrder, entry.AddedUtc, IsSelected(guid), status));
+                items.Add(new ProfileListItemViewModel(guid, mod?.Name ?? guid, mod?.Description, mod?.Image, ModAssetSummaryFormatter.Format(assetSummary), entry.LoadOrder, entry.AddedUtc, IsSelected(guid), derived?.UnitCompatibility, status));
             }
             Items.ReplaceWith(items);
             OnPropertyChanged(nameof(ItemCountText));
@@ -550,12 +633,15 @@ namespace HD2ModManager.ViewModels
         public int LoadOrder { get; }
         public DateTimeOffset AddedUtc { get; }
         public ModUserStatus? UserStatus { get; }
+        public ModUnitCompatibilityReport? UnitCompatibility { get; }
+        public bool IsModelOutdated => UnitCompatibility?.IsOutdated == true;
+        public string ModelCompatibilitySummary => UnitCompatibility?.Summary ?? "模型版本尚未检测。";
         public string StatusText => UserStatus is null ? $"配置成员 · 顺序 {LoadOrder}" : $"{UserStatus.Title} · 顺序 {LoadOrder}";
         public string SecondaryDetailText => string.Join(" · ", new[] { Description, AssetSummary }.Where(value => !string.IsNullOrWhiteSpace(value)));
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
 
-        public ProfileListItemViewModel(string guid, string name, string? description, string? imagePath, string assetSummary, int loadOrder, DateTimeOffset addedUtc, bool isSelected = false, ModUserStatus? userStatus = null)
+        public ProfileListItemViewModel(string guid, string name, string? description, string? imagePath, string assetSummary, int loadOrder, DateTimeOffset addedUtc, bool isSelected = false, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null)
         {
             Guid = guid;
             Name = name;
@@ -565,6 +651,7 @@ namespace HD2ModManager.ViewModels
             LoadOrder = loadOrder;
             AddedUtc = addedUtc;
             _isSelected = isSelected;
+			UnitCompatibility = unitCompatibility;
             UserStatus = userStatus;
         }
     }
@@ -858,7 +945,7 @@ namespace HD2ModManager.ViewModels
             {
                 task?.MarkRunning("正在准备资产索引");
                 AssetIndexState = "建立中";
-                AssetIndexSummary = "正在解析 Game Data。";
+                AssetIndexSummary = "正在快速扫描 Archive TOC 与资源映射；跨护甲 Unit 数据会在首次使用时按需建立。";
                 var archiveHashes = await File.ReadAllTextAsync(_paths.ArchiveHashesPath);
                 var index = CoreServices.CreateAssetArchiveIndexService(_paths);
 				var lastProgressUpdate = 0L;
@@ -873,7 +960,7 @@ namespace HD2ModManager.ViewModels
                 });
                 await Task.Run(() => index.BuildOrRebuildAsync(gameData, archiveHashes, progress, task?.CancellationToken ?? CancellationToken.None).AsTask());
                 task?.MarkCompleted();
-                AssetIndexHint = "索引已重建；稳定资产事实会在需要时更新。";
+                AssetIndexHint = "基础索引已重建；跨护甲护甲/头盔数据会在首次使用该功能时单独建立。";
                 await RefreshAssetIndexStatusAsync();
             }
             catch (OperationCanceledException)

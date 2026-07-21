@@ -156,6 +156,12 @@ namespace HD2ModManager.Views
             HeaderSearchBox.Focus();
         }
 
+        private void OnToggleOutdatedFilterClick(object sender, RoutedEventArgs e)
+        {
+            EnsureVM();
+            if (VM is not null) VM.ShowOnlyOutdated = !VM.ShowOnlyOutdated;
+        }
+
         private void OnModRowClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
             if (e.OriginalSource is DependencyObject source && FindAncestor<Button>(source) != null) return;

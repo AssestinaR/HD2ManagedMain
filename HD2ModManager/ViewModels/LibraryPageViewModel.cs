@@ -42,6 +42,18 @@ namespace HD2ModManager.ViewModels
         }
         public string ItemCountText => $"显示 {Items.Count} / {_library.All().Count()} 个 Mod";
         public string EmptyMessage => _hideSelectedProfileMembers && _profiles?.SelectedProfile is not null ? "所有 Mod 都已加入此配置。" : "模组库中没有可显示的 Mod。";
+        private bool _showOnlyOutdated;
+        public bool ShowOnlyOutdated
+        {
+            get => _showOnlyOutdated;
+            set
+            {
+                if (!SetField(ref _showOnlyOutdated, value)) return;
+                OnPropertyChanged(nameof(OutdatedFilterText));
+                Refresh();
+            }
+        }
+        public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
 
         public RelayCommand RefreshCommand { get; }
         public RelayCommand RemoveModCommand { get; }
@@ -169,13 +181,17 @@ namespace HD2ModManager.ViewModels
             {
                 all = all.Where(mod => ModSearchMatcher.IsMatch(mod.Name, mod.Description, _library.GetDerivedData(mod.Guid)?.AssetSummary, q)).ToList();
             }
+			if (ShowOnlyOutdated)
+			{
+				all = all.Where(mod => _library.GetDerivedData(mod.Guid)?.UnitCompatibility.IsOutdated == true).ToList();
+			}
             var cards = all
                 .OrderBy(mod => mod.Name, System.StringComparer.CurrentCultureIgnoreCase)
                 .Select(mod =>
                 {
                     var derived = _library.GetDerivedData(mod.Guid);
                     _userStatuses.TryGetValue(mod.Guid, out var status);
-                    return new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, status);
+                    return new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, derived?.UnitCompatibility, status);
                 })
                 .ToList();
             Items.ReplaceWith(cards);
@@ -324,14 +340,18 @@ namespace HD2ModManager.ViewModels
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
         public ModUserStatus? UserStatus { get; }
+        public ModUnitCompatibilityReport? UnitCompatibility { get; }
+        public bool IsModelOutdated => UnitCompatibility?.IsOutdated == true;
+        public string ModelCompatibilitySummary => UnitCompatibility?.Summary ?? "模型版本尚未检测。";
         public string UserStatusTitle => UserStatus?.Title ?? "状态未知";
         public string UserStatusSummary => UserStatus?.Summary ?? "正在读取状态。";
         public bool HasUserStatus => UserStatus is not null;
 
-        public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUserStatus? userStatus = null)
+        public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null)
         {
             Mod = mod;
             AssetSummary = assetSummary;
+			UnitCompatibility = unitCompatibility;
             UserStatus = userStatus;
             _isSelected = isSelected;
         }

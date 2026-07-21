@@ -51,45 +51,63 @@ public sealed class PatchArchiveWriter
 		var useTemplateTypesOnly = !ReferenceEquals(headerTemplate, originalToc);
 		var sources = OrderSources(headerTemplate, headerLayout, BuildSources(source, retained, additions));
 		var header = BuildHeader(headerTemplate, headerLayout, sources.Select(item => item.Entry).ToArray(), useTemplateTypesOnly);
-		var entryOffset = header.Length;
-		using var toc = new MemoryStream(Math.Max(originalToc.Length, entryOffset + sources.Count * EntrySize));
-		toc.Write(header); toc.SetLength(entryOffset + sources.Count * EntrySize); toc.Position = toc.Length;
-		var originalStream = preserveOriginalStream
-			? await ReadOptionalAsync(source + ".stream", cancellationToken).ConfigureAwait(false)
-			: Array.Empty<byte>();
-		using var stream = new MemoryStream(originalStream.Length); stream.Write(originalStream);
-		using var gpu = new MemoryStream();
-		var written = new List<PatchTocEntry>(sources.Count);
-		foreach (var item in sources)
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-			var entry = item.Entry;
-			var hasUnitEdit = editMap.TryGetValue(Key(entry), out var edit);
-			var hasCompositeEdit = item.Addition is null && !hasUnitEdit && compositeMap.TryGetValue(entry.AssetKey, out edit);
-			var original = item.Addition is null
-				? hasUnitEdit ? edit!.OriginalPayload : await payloadReader.ReadPayloadAsync(entry, cancellationToken).ConfigureAwait(false)
-				: new PatchEntryPayload(entry, item.Addition.TocData, item.Addition.StreamData, item.Addition.GpuResourceData);
-			var tocData = item.Addition?.TocData ?? (hasUnitEdit ? edit!.TocData : hasCompositeEdit ? edit!.CompositeTocData! : original.TocData);
-			var streamData = item.Addition?.StreamData ?? original.StreamData;
-			var gpuData = item.Addition?.GpuResourceData ?? (hasUnitEdit ? edit!.GpuResourceData : hasCompositeEdit ? edit!.CompositeGpuResourceData! : original.GpuResourceData);
-			var tocDataOffset = (ulong)toc.Position; toc.Write(tocData);
-			var streamOffset = entry.StreamOffset;
-			if (item.Addition is not null && streamData.Length > 0) { Pad(stream); streamOffset = (ulong)stream.Position; stream.Write(streamData); }
-			var gpuOffset = 0UL;
-			if (gpuData.Length > 0) { Pad(gpu); gpuOffset = (ulong)gpu.Position; gpu.Write(gpuData); }
-			var updated = entry with { TocDataOffset = tocDataOffset, StreamOffset = streamOffset, GpuResourceOffset = gpuOffset, TocDataSize = checked((uint)tocData.Length), StreamSize = checked((uint)streamData.Length), GpuResourceSize = checked((uint)gpuData.Length), EntryIndex = checked((uint)written.Count + 1) };
-			written.Add(updated); WriteEntry(toc.GetBuffer(), entryOffset + (written.Count - 1) * EntrySize, updated);
-		}
-		if (toc.Length < sources.Count * 256) toc.SetLength(sources.Count * 256);
+		var entryOffset = (long)header.Length;
 		Directory.CreateDirectory(output);
 		var tocPath = Path.Combine(output, Path.GetFileName(source));
 		var streamPath = tocPath + ".stream";
 		var gpuPath = tocPath + ".gpu_resources";
 		EnsureWritable(tocPath, overwriteExisting); EnsureWritable(streamPath, overwriteExisting); EnsureWritable(gpuPath, overwriteExisting);
-		await File.WriteAllBytesAsync(tocPath, toc.ToArray(), cancellationToken).ConfigureAwait(false);
-		if (stream.Length > 0) await File.WriteAllBytesAsync(streamPath, stream.ToArray(), cancellationToken).ConfigureAwait(false);
-		if (gpu.Length > 0) await File.WriteAllBytesAsync(gpuPath, gpu.ToArray(), cancellationToken).ConfigureAwait(false);
-		return new PatchArchiveFileWriteResult(output, tocPath, streamPath, gpuPath, toc.Length, stream.Length, gpu.Length);
+		long tocLength;
+		long streamLength;
+		long gpuLength;
+		await using (var toc = new FileStream(tocPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 65536, useAsync: true))
+		await using (var stream = new FileStream(streamPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true))
+		await using (var gpu = new FileStream(gpuPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true))
+		{
+			await toc.WriteAsync(header, cancellationToken).ConfigureAwait(false);
+			var tocAppendPosition = entryOffset + (long)sources.Count * EntrySize;
+			toc.SetLength(tocAppendPosition);
+			if (preserveOriginalStream && File.Exists(source + ".stream"))
+			{
+				await using var originalStream = new FileStream(source + ".stream", FileMode.Open, FileAccess.Read, FileShare.Read, 65536, useAsync: true);
+				await originalStream.CopyToAsync(stream, 65536, cancellationToken).ConfigureAwait(false);
+			}
+			var written = new List<PatchTocEntry>(sources.Count);
+			foreach (var item in sources)
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				var entry = item.Entry;
+				var hasUnitEdit = editMap.TryGetValue(Key(entry), out var edit);
+				var hasCompositeEdit = item.Addition is null && !hasUnitEdit && compositeMap.TryGetValue(entry.AssetKey, out edit);
+				var original = item.Addition is null
+					? hasUnitEdit ? edit!.OriginalPayload : await payloadReader.ReadPayloadAsync(entry, cancellationToken).ConfigureAwait(false)
+					: new PatchEntryPayload(entry, item.Addition.TocData, item.Addition.StreamData, item.Addition.GpuResourceData);
+				var tocData = item.Addition?.TocData ?? (hasUnitEdit ? edit!.TocData : hasCompositeEdit ? edit!.CompositeTocData! : original.TocData);
+				var streamData = item.Addition?.StreamData ?? original.StreamData;
+				var gpuData = item.Addition?.GpuResourceData ?? (hasUnitEdit ? edit!.GpuResourceData : hasCompositeEdit ? edit!.CompositeGpuResourceData! : original.GpuResourceData);
+				toc.Position = tocAppendPosition;
+				await toc.WriteAsync(tocData, cancellationToken).ConfigureAwait(false);
+				tocAppendPosition = toc.Position;
+				var streamOffset = entry.StreamOffset;
+				if (item.Addition is not null && streamData.Length > 0) { Pad(stream); streamOffset = (ulong)stream.Position; await stream.WriteAsync(streamData, cancellationToken).ConfigureAwait(false); }
+				var gpuOffset = 0UL;
+				if (gpuData.Length > 0) { Pad(gpu); gpuOffset = (ulong)gpu.Position; await gpu.WriteAsync(gpuData, cancellationToken).ConfigureAwait(false); }
+				var updated = entry with { TocDataOffset = (ulong)(tocAppendPosition - tocData.Length), StreamOffset = streamOffset, GpuResourceOffset = gpuOffset, TocDataSize = checked((uint)tocData.Length), StreamSize = checked((uint)streamData.Length), GpuResourceSize = checked((uint)gpuData.Length), EntryIndex = checked((uint)written.Count + 1) };
+				written.Add(updated);
+				var entryData = new byte[EntrySize];
+				WriteEntry(entryData, 0, updated);
+				toc.Position = entryOffset + (written.Count - 1) * EntrySize;
+				await toc.WriteAsync(entryData, cancellationToken).ConfigureAwait(false);
+			}
+			if (tocAppendPosition < sources.Count * 256L) tocAppendPosition = sources.Count * 256L;
+			toc.SetLength(tocAppendPosition);
+			tocLength = tocAppendPosition;
+			streamLength = stream.Length;
+			gpuLength = gpu.Length;
+		}
+		if (streamLength == 0) File.Delete(streamPath);
+		if (gpuLength == 0) File.Delete(gpuPath);
+		return new PatchArchiveFileWriteResult(output, tocPath, streamPath, gpuPath, tocLength, streamLength, gpuLength);
 	}
 
 	private static List<Source> BuildSources(string path, IReadOnlyList<PatchTocEntry> retained, IReadOnlyCollection<PatchArchiveAdditionalEntry> additions)

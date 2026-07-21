@@ -461,8 +461,40 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 		Assert.Equal(35u, weights.Format);
 		Assert.Equal("vec4_half", weights.FormatName);
 		Assert.Equal(8u, weights.Size);
-		Assert.Equal(32u, stream.VertexStride);
+		Assert.Equal(36u, stream.VertexStride);
+		Assert.Contains(stream.Components, component => component.Type == 4 && component.Format == 1 && component.FormatName == "vec2_float");
 		Assert.Single(stream.Components, component => component.Type == 6);
+	}
+
+	[Fact]
+	public void CanonicalSkinningPlanner_UsesSdkStyleFallbackWhenSourceAddsVertexColor()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with
+		{
+			Streams = [new UnitStreamInfo(0, 128, 0, 4, 0, 3, 32, 0, 3, 0, 0, 0, 0, 0,
+			[
+				new UnitStreamComponentInfo(5, "color", 4, "rgba_r8g8b8a8", 0, 0, 4),
+				new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+				new UnitStreamComponentInfo(4, "uv", 1, "vec2_float", 0, 0, 8),
+				new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4)
+			])]
+		};
+		var targetModel = sourceModel with
+		{
+			Streams = [new UnitStreamInfo(0, 128, 0, 3, 0, 3, 24, 0, 3, 0, 0, 0, 0, 0,
+			[
+				new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+				new UnitStreamComponentInfo(4, "uv", 1, "vec2_float", 0, 0, 8),
+				new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4)
+			])]
+		};
+
+		var stream = Assert.Single(new SdkStyleVertexStreamPlanner().PlanCanonicalSkinning(targetModel, [new SdkStyleStreamReplacement(0, sourceModel, 0)]).Streams);
+
+		Assert.Contains(stream.Components, component => component.Type == 5 && component.Format == 4);
+		Assert.Contains(stream.Components, component => component.Type == 7 && component.Format == 35);
+		Assert.Contains(stream.Components, component => component.Type == 6 && component.Format == 28);
+		Assert.Equal(36u, stream.VertexStride);
 	}
 
 	[Fact]
@@ -518,6 +550,28 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 		var stream = Assert.Single(result.Model.Streams);
 		Assert.Contains(stream.Components, component => component.Type == 7 && component.FormatName == "vec4_half");
 		Assert.Contains(stream.Components, component => component.Type == 6 && component.FormatName == "vec4_uint8");
+	}
+
+	[Fact]
+	public void CanonicalSkinningReconstructor_ReencodesLegacyMinifyOnlyStreams()
+	{
+		var targetModel = CreateModel(vertexSeed: 1, meshCount: 1) with
+		{
+			Streams = [new UnitStreamInfo(0, 128, 0, 3, 0, 3, 20, 0, 3, 0, 0, 0, 0, 0,
+			[
+				new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+				new UnitStreamComponentInfo(7, "bone_weight", 33, "vec2_half", 0, 0, 4),
+				new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4)
+			])]
+		};
+
+		var result = new SdkStyleTargetShellUnitReconstructor(planCanonicalSkinningLayout: true).Reconstruct(CreateTargetUnit(targetModel), Array.Empty<PatchUnitMesh>(), Array.Empty<TargetShellMeshMapping>());
+		var stream = Assert.Single(result.Model.Streams);
+
+		Assert.Contains(stream.Components, component => component.Type == 7 && component.Format == 35 && component.Size == 8);
+		Assert.Contains(stream.Components, component => component.Type == 6 && component.Format == 28 && component.Size == 4);
+		Assert.Equal(stream.Components.Sum(component => component.Size), stream.VertexStride);
+		Assert.All(Assert.Single(result.Model.RawMeshData).Vertices, vertex => Assert.Equal((int)stream.VertexStride, vertex.Data.Length));
 	}
 
 	[Fact]

@@ -94,7 +94,11 @@ public sealed record CrossArmorTransferCandidateRequest(
 	string OutputDirectory,
 	CrossArmorTransferPlan Plan,
 	CrossArmorMaterialBindingMode MaterialBindingMode = CrossArmorMaterialBindingMode.PreserveSourceReferences,
-	IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>? PreparedSourceEntries = null);
+	IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>? PreparedSourceEntries = null,
+	IProgress<CrossArmorTransferProgress>? Progress = null);
+
+// Purpose: Provides stage timing and bounded-work progress during cross-armor candidate generation.
+public sealed record CrossArmorTransferProgress(string Stage, int Completed, int Total, TimeSpan Elapsed);
 
 // Purpose: Reports the independent cross-armor candidate output without changing the source Mod or any profile.
 public sealed record CrossArmorTransferCandidateResult(

@@ -83,6 +83,11 @@ namespace HD2ModManager.Views
             HeaderSearchBox.Focus();
         }
 
+        private void OnToggleOutdatedFilterClick(object sender, RoutedEventArgs e)
+        {
+            if (DataContext is ProfilePageViewModel viewModel) viewModel.ShowOnlyOutdated = !viewModel.ShowOnlyOutdated;
+        }
+
         private static T? FindAncestor<T>(DependencyObject current) where T : DependencyObject
         {
             while (current != null)

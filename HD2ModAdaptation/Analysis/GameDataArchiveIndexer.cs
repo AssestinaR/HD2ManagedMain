@@ -59,6 +59,11 @@ public sealed class GameDataArchiveIndexer : IGameDataArchiveIndexer
 				issues.Add(issue);
 			}
 		}
+		if (!input.IncludeStreamLayouts)
+		{
+			return new GameDataArchiveIndex(input with { GameDataDirectory = directory }, archives, Array.Empty<GameDataStreamLayoutFact>(), issues, DateTimeOffset.UtcNow, SchemaVersion, ParserVersion);
+		}
+
 		var entriesByPackage = archives.Where(archive => archive.IsIndexed)
 			.ToDictionary(archive => archive.PackageName, archive => (IReadOnlyList<PatchTocEntry>)archive.Entries.Select(entry => new PatchTocEntry(
 				entry.AssetKey, archive.PackageName, archive.PackageName, entry.TocDataOffset, entry.StreamOffset, entry.GpuResourceOffset,

@@ -866,12 +866,27 @@ namespace HD2ModManager.ViewModels
                     .SelectMany(analysis => analysis.Entries)
                     .ToArray();
 				var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(_equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(), preparedSourceEntries, _paths);
-                if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenCrossArmorPlan(viewModel);
+                await OpenCrossArmorPlanOnUiThreadAsync(viewModel).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
             {
-                _notifications?.Show($"读取跨护甲计划失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(12));
+                RunOnUiThread(() => _notifications?.Show($"读取跨护甲计划失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(12)));
             }
+        }
+
+        private static async Task OpenCrossArmorPlanOnUiThreadAsync(HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel viewModel)
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess())
+            {
+                if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenCrossArmorPlan(viewModel);
+                return;
+            }
+
+            await dispatcher.InvokeAsync(() =>
+            {
+                if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenCrossArmorPlan(viewModel);
+            }).Task.ConfigureAwait(false);
         }
 
         private void OpenMaterialPackaging(bool splitEmbeddedMaterials, bool requireAllExternalMaterials = false)

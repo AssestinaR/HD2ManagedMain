@@ -10,4 +10,5 @@ public sealed record DerivedModNodeData(
 	IReadOnlyList<IndexedPatchFile> PatchFiles,
 	ModContentFacts ContentFacts,
 	ModAssetSummary? AssetSummary,
+	ModUnitCompatibilityReport UnitCompatibility,
 	IReadOnlyList<CoreIssue> Issues);

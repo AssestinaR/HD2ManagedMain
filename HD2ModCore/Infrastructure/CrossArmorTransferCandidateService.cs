@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
@@ -26,6 +27,7 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Rebuilds current target shells from an approved cross-armor plan into an isolated test Patch.
 public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCandidateService
 {
+	private const int TargetUnitBatchSize = 8;
 	private readonly AdaptationPatchTocScanner scanner = new();
 	private readonly AdaptationPatchUnitMeshReader unitReader = new();
 	private readonly AdaptationCrossArmorTargetShellPatchOperation patchOperation = new();
@@ -46,33 +48,36 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 	{
 		ArgumentNullException.ThrowIfNull(request);
 		var issues = new List<CoreIssue>();
-		var boneDiagnostics = new List<object>();
-		var skinningDiagnostics = new List<object>();
-		var targetBakeDiagnostics = new List<object>();
-		var targetBakeDryRunDiagnostics = new List<object>();
-		var transferLayoutDiagnostics = new List<object>();
+		var diagnosticPath = Path.Combine(request.OutputDirectory, "cross-armor-rebuild-diagnostics.jsonl");
+		var performancePath = Path.Combine(request.OutputDirectory, "cross-armor-performance.jsonl");
+		var totalStopwatch = Stopwatch.StartNew();
+		var wroteDiagnostics = false;
 		var outputTransferLayoutDiagnostics = new List<object>();
 		if (!request.Plan.CanContinue) return Failure("PlanNotReady", "当前计划尚不可写出；请先选择来源、目标并排除所有错误。", issues);
 		if (!File.Exists(request.SourcePatchTocPath)) return Failure("SourcePatchMissing", "源 Patch 主文件不存在。", issues);
 		if (!Directory.Exists(request.GameDataDirectory)) return Failure("GameDataMissing", "Game Data 文件夹不存在。", issues);
 		try
 		{
+			Directory.CreateDirectory(request.OutputDirectory);
+			if (File.Exists(performancePath)) File.Delete(performancePath);
+			await ReportProgressAsync(request, performancePath, "正在读取游戏索引", 0, 1, totalStopwatch, cancellationToken).ConfigureAwait(false);
+			var stageStopwatch = Stopwatch.StartNew();
 			var indexedLayouts = await assetIndex.GetStreamLayoutsAsync(cancellationToken).ConfigureAwait(false);
+			await WritePerformanceAsync(performancePath, "读取游戏索引", stageStopwatch.Elapsed, cancellationToken).ConfigureAwait(false);
 			if (indexedLayouts.Count == 0) throw new InvalidDataException("当前游戏资产索引不含 stream ABI 声明；请先重新建立游戏资产索引后再生成跨护甲候选。");
 			AdaptationCurrentGameStreamLayoutRegistry streamLayoutRegistry = new CurrentGameStreamLayoutRegistry(indexedLayouts);
 			var sourceEntries = request.PreparedSourceEntries is { Count: > 0 }
 				? request.PreparedSourceEntries
 				: await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
 			var mappings = request.Plan.Mappings.Where(mapping => mapping.WillReplace).ToArray();
-			Directory.CreateDirectory(request.OutputDirectory);
+			if (File.Exists(diagnosticPath)) File.Delete(diagnosticPath);
+			stageStopwatch.Restart();
+			await ReportProgressAsync(request, performancePath, "正在准备来源与材质依赖", 0, 1, totalStopwatch, cancellationToken).ConfigureAwait(false);
 			await WritePlanAuditAsync(request.OutputDirectory, request.Plan, cancellationToken).ConfigureAwait(false);
+			var sourceEntriesByKey = sourceEntries.ToDictionary(entry => entry.AssetKey);
 			var sourceKeys = mappings.Select(mapping => ToAdaptationKey(mapping.Source!.UnitAssetKey)).ToHashSet();
-			var sourceUnits = new Dictionary<AdaptationAssetKey, AdaptationPatchUnitMesh>();
-			foreach (var entry in sourceEntries.Where(entry => sourceKeys.Contains(entry.AssetKey)))
-			{
-				sourceUnits.Add(entry.AssetKey, await unitReader.ReadAsync(entry, sourceEntries, cancellationToken: cancellationToken).ConfigureAwait(false));
-			}
-			if (!sourceUnits.Keys.ToHashSet().SetEquals(sourceKeys)) throw new InvalidDataException("源 Patch 已变化或缺少计划中的真实来源 Unit；请重新打开并确认计划。");
+			if (!sourceKeys.All(sourceEntriesByKey.ContainsKey)) throw new InvalidDataException("源 Patch 已变化或缺少计划中的真实来源 Unit；请重新打开并确认计划。");
+			var sourceUnits = await ReadSourceUnitsAsync(sourceKeys, sourceEntriesByKey, sourceEntries, cancellationToken).ConfigureAwait(false);
 			var requestedMaterialIds = CollectMappedSourceMaterialIds(mappings, sourceUnits);
 			var materialDependencies = await materialDependencyResolver.ResolveAsync(
 				requestedMaterialIds,
@@ -80,6 +85,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 				request.GameDataDirectory,
 				new Dictionary<AdaptationAssetKey, IReadOnlyList<string>>(),
 				cancellationToken).ConfigureAwait(false);
+			await WritePerformanceAsync(performancePath, "准备来源与材质依赖", stageStopwatch.Elapsed, cancellationToken).ConfigureAwait(false);
 			IReadOnlySet<ulong>? allowedMaterialIds = null;
 			if (request.MaterialBindingMode == CrossArmorMaterialBindingMode.RequireCompleteSourceClosure)
 			{
@@ -88,114 +94,232 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			var resolver = new AdaptationGameDataPackageResolver(request.GameDataDirectory);
 			var avatarRig = await new AdaptationSdkStyleAvatarRigReader(resolver).ReadAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 			var targetReader = new AdaptationGameDataUnitMeshReader(resolver);
-			var workItems = new List<AdaptationSdkStyleTargetShellPatchWorkItem>();
-			foreach (var group in request.Plan.Mappings.GroupBy(mapping => mapping.PhysicalTarget.UnitAssetKey).OrderBy(group => group.Key.FileId))
+			// Only rewrite Units that have at least one approved replacement. Rebuilding an
+			// entirely hidden Unit as a placeholder is both unnecessary and unsafe: static
+			// shells can carry older normal layouts that must remain paired with their
+			// original GPU data.
+			var targetGroups = mappings.GroupBy(mapping => mapping.PhysicalTarget.UnitAssetKey).OrderBy(group => group.Key.FileId).ToArray();
+			var batchOutputs = new List<HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellPatchOutput>();
+			var batches = targetGroups.Chunk(TargetUnitBatchSize).ToArray();
+			var targetReadDuration = TimeSpan.Zero;
+			var modelPreparationDuration = TimeSpan.Zero;
+			var diagnosticsDuration = TimeSpan.Zero;
+			var outputBuildDuration = TimeSpan.Zero;
+			for (var batchIndex = 0; batchIndex < batches.Length; batchIndex++)
 			{
-				var targetArchiveId = FindTargetArchiveId(request.Plan, group.First().PhysicalTarget);
-				if (targetArchiveId is null) throw new InvalidDataException($"目标 Unit 0x{group.Key.FileId:x16} 未关联到所选目标 archive。");
-				var targetKey = ToAdaptationKey(group.Key);
-				var targetUnit = await targetReader.ReadAsync(targetArchiveId, targetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
-				var unitMappings = group.Where(mapping => mapping.WillReplace)
-					.Select(mapping => new AdaptationTargetShellMeshMapping(ToAdaptationKey(mapping.Source!.UnitAssetKey), mapping.Source.MeshInfoIndex, mapping.PhysicalTarget.MeshInfoIndex))
-					.ToArray();
-				var effectiveUnitMappings = ExpandCompleteLodFamilyMappings(targetUnit.Model, sourceUnits, unitMappings);
-				var requiredSources = effectiveUnitMappings.Select(mapping => sourceUnits[mapping.SourceUnitAssetKey]).Distinct().ToArray();
-				var expandedTargetModel = targetUnit.Model;
-				foreach (var mapping in effectiveUnitMappings)
+				var batch = batches[batchIndex];
+				stageStopwatch.Restart();
+				await ReportProgressAsync(request, performancePath, "正在重建目标 Unit", batchIndex, batches.Length, totalStopwatch, cancellationToken).ConfigureAwait(false);
+				var batchDiagnosticLines = new List<string>();
+				var workItems = new List<AdaptationSdkStyleTargetShellPatchWorkItem>(batch.Length);
+				var batchTargetReadDuration = TimeSpan.Zero;
+				var batchModelPreparationDuration = TimeSpan.Zero;
+				var batchDiagnosticsDuration = TimeSpan.Zero;
+				foreach (var group in batch)
 				{
-					expandedTargetModel = transformInfoExpander.Expand(expandedTargetModel, mapping.TargetMeshInfoIndex, sourceUnits[mapping.SourceUnitAssetKey].Model, mapping.SourceMeshInfoIndex, avatarRig.TransformInfo);
-				}
-				targetUnit = targetUnit with { Model = expandedTargetModel };
-				foreach (var mapping in effectiveUnitMappings)
-				{
-					var targetBake = targetBakeCompatibilityAnalyzer.Analyze(targetUnit.Model, mapping.TargetMeshInfoIndex, sourceUnits[mapping.SourceUnitAssetKey].Model, mapping.SourceMeshInfoIndex, avatarRig);
-					targetBakeDiagnostics.Add(new
+					var targetArchiveId = FindTargetArchiveId(request.Plan, group.First().PhysicalTarget);
+					if (targetArchiveId is null) throw new InvalidDataException($"目标 Unit 0x{group.Key.FileId:x16} 未关联到所选目标 archive。");
+					var targetKey = ToAdaptationKey(group.Key);
+					var operationStopwatch = Stopwatch.StartNew();
+					var targetUnit = await targetReader.ReadAsync(targetArchiveId, targetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+					batchTargetReadDuration += operationStopwatch.Elapsed;
+					operationStopwatch.Restart();
+					var unitMappings = group.Where(mapping => mapping.WillReplace).Select(mapping => new AdaptationTargetShellMeshMapping(ToAdaptationKey(mapping.Source!.UnitAssetKey), mapping.Source.MeshInfoIndex, mapping.PhysicalTarget.MeshInfoIndex)).ToArray();
+					var effectiveUnitMappings = ExpandCompleteLodFamilyMappings(targetUnit.Model, sourceUnits, unitMappings);
+					var requiredSources = effectiveUnitMappings.Select(mapping => sourceUnits[mapping.SourceUnitAssetKey]).Distinct().ToArray();
+					var expandedTargetModel = targetUnit.Model;
+					foreach (var mapping in effectiveUnitMappings) expandedTargetModel = transformInfoExpander.Expand(expandedTargetModel, mapping.TargetMeshInfoIndex, sourceUnits[mapping.SourceUnitAssetKey].Model, mapping.SourceMeshInfoIndex, avatarRig.TransformInfo);
+					targetUnit = targetUnit with { Model = expandedTargetModel };
+					batchModelPreparationDuration += operationStopwatch.Elapsed;
+					operationStopwatch.Restart();
+					foreach (var mapping in effectiveUnitMappings)
 					{
+					var targetBake = targetBakeCompatibilityAnalyzer.Analyze(targetUnit.Model, mapping.TargetMeshInfoIndex, sourceUnits[mapping.SourceUnitAssetKey].Model, mapping.SourceMeshInfoIndex, avatarRig);
+						batchDiagnosticLines.Add(JsonSerializer.Serialize(new
+					{
+							Kind = "TargetBake",
 						TargetUnit = $"0x{targetKey.FileId:x16}",
 						mapping.TargetMeshInfoIndex,
 						SourceUnit = $"0x{mapping.SourceUnitAssetKey.FileId:x16}",
 						mapping.SourceMeshInfoIndex,
 						Diagnostic = targetBake
-					});
+						}));
 					var targetBakeDryRun = targetBakeDryRunAnalyzer.Analyze(targetUnit.Model, mapping.TargetMeshInfoIndex, sourceUnits[mapping.SourceUnitAssetKey].Model, mapping.SourceMeshInfoIndex, avatarRig);
-					targetBakeDryRunDiagnostics.Add(new
+						batchDiagnosticLines.Add(JsonSerializer.Serialize(new
 					{
+							Kind = "TargetBakeDryRun",
 						TargetUnit = $"0x{targetKey.FileId:x16}",
 						mapping.TargetMeshInfoIndex,
 						SourceUnit = $"0x{mapping.SourceUnitAssetKey.FileId:x16}",
 						mapping.SourceMeshInfoIndex,
 						Diagnostic = targetBakeDryRun
-					});
-					transferLayoutDiagnostics.Add(CreateTransferLayoutDiagnostic(
+						}));
+						batchDiagnosticLines.Add(JsonSerializer.Serialize(new { Kind = "TransferLayout", Value = CreateTransferLayoutDiagnostic(
 						targetKey,
 						mapping.TargetMeshInfoIndex,
 						mapping.SourceUnitAssetKey,
 						mapping.SourceMeshInfoIndex,
 						targetUnit.Model,
-						sourceUnits[mapping.SourceUnitAssetKey].Model));
+						sourceUnits[mapping.SourceUnitAssetKey].Model) }));
 					var skinning = skinningDiagnosticAnalyzer.Analyze(sourceUnits[mapping.SourceUnitAssetKey].Model, mapping.SourceMeshInfoIndex);
-					skinningDiagnostics.Add(new
+						batchDiagnosticLines.Add(JsonSerializer.Serialize(new
 					{
+							Kind = "Skinning",
 						TargetUnit = $"0x{targetKey.FileId:x16}",
 						mapping.TargetMeshInfoIndex,
 						SourceUnit = $"0x{mapping.SourceUnitAssetKey.FileId:x16}",
 						mapping.SourceMeshInfoIndex,
 						Diagnostic = skinning
-					});
+						}));
 					var diagnostic = boneDiagnosticAnalyzer.Analyze(targetUnit.Model, mapping.TargetMeshInfoIndex, sourceUnits[mapping.SourceUnitAssetKey].Model, mapping.SourceMeshInfoIndex);
-					boneDiagnostics.Add(new
+						batchDiagnosticLines.Add(JsonSerializer.Serialize(new
 					{
+							Kind = "Bone",
 						TargetUnit = $"0x{targetKey.FileId:x16}",
 						mapping.TargetMeshInfoIndex,
 						SourceUnit = $"0x{mapping.SourceUnitAssetKey.FileId:x16}",
 						mapping.SourceMeshInfoIndex,
 						Diagnostic = diagnostic
-					});
+						}));
+					}
+					batchDiagnosticsDuration += operationStopwatch.Elapsed;
+					workItems.Add(new AdaptationSdkStyleTargetShellPatchWorkItem(
+						targetUnit,
+						requiredSources,
+						effectiveUnitMappings,
+						targetUnit.CompositePayload is null
+							? HD2ModAdaptation.PatchReconstruction.UnitMesh.TargetShellDependencyPolicy.ReferenceCurrentGame
+							: HD2ModAdaptation.PatchReconstruction.UnitMesh.TargetShellDependencyPolicy.EmbedReferencedComposite));
 				}
-				workItems.Add(new AdaptationSdkStyleTargetShellPatchWorkItem(targetUnit, requiredSources, effectiveUnitMappings));
+				if (batchDiagnosticLines.Count != 0)
+				{
+					await File.AppendAllLinesAsync(diagnosticPath, batchDiagnosticLines, cancellationToken).ConfigureAwait(false);
+					wroteDiagnostics = true;
+				}
+				var outputBuildStopwatch = Stopwatch.StartNew();
+				batchOutputs.Add(patchOperation.BuildOutput(workItems, allowedMaterialIds, avatarRig.TransformInfo.NameHashes, streamLayoutRegistry));
+				var batchOutputBuildDuration = outputBuildStopwatch.Elapsed;
+				targetReadDuration += batchTargetReadDuration;
+				modelPreparationDuration += batchModelPreparationDuration;
+				diagnosticsDuration += batchDiagnosticsDuration;
+				outputBuildDuration += batchOutputBuildDuration;
+				await WritePerformanceAsync(performancePath, $"批次 {batchIndex + 1}/{batches.Length} - 读取目标 Unit", batchTargetReadDuration, cancellationToken).ConfigureAwait(false);
+				await WritePerformanceAsync(performancePath, $"批次 {batchIndex + 1}/{batches.Length} - 准备模型与 LOD", batchModelPreparationDuration, cancellationToken).ConfigureAwait(false);
+				await WritePerformanceAsync(performancePath, $"批次 {batchIndex + 1}/{batches.Length} - 安全诊断", batchDiagnosticsDuration, cancellationToken).ConfigureAwait(false);
+				await WritePerformanceAsync(performancePath, $"批次 {batchIndex + 1}/{batches.Length} - 重建输出", batchOutputBuildDuration, cancellationToken).ConfigureAwait(false);
+				await WritePerformanceAsync(performancePath, $"重建批次 {batchIndex + 1}/{batches.Length}（目标 Unit {batch.Length}）", stageStopwatch.Elapsed, cancellationToken).ConfigureAwait(false);
 			}
+			await WritePerformanceAsync(performancePath, "重建汇总 - 读取目标 Unit", targetReadDuration, cancellationToken).ConfigureAwait(false);
+			await WritePerformanceAsync(performancePath, "重建汇总 - 准备模型与 LOD", modelPreparationDuration, cancellationToken).ConfigureAwait(false);
+			await WritePerformanceAsync(performancePath, "重建汇总 - 安全诊断", diagnosticsDuration, cancellationToken).ConfigureAwait(false);
+			await WritePerformanceAsync(performancePath, "重建汇总 - 重建输出", outputBuildDuration, cancellationToken).ConfigureAwait(false);
+			await ReportProgressAsync(request, performancePath, "正在写入最终 Patch", batches.Length, batches.Length, totalStopwatch, cancellationToken).ConfigureAwait(false);
 			var headerArchiveId = request.Plan.SelectedTargets.First().ArchiveId;
 			var headerTemplate = await resolver.GetPackageTocAsync(headerArchiveId, cancellationToken).ConfigureAwait(false)
 				?? throw new FileNotFoundException("无法读取所选目标 archive 的 current TOC。", headerArchiveId);
-			var execution = await patchOperation.ExecuteAsync(new AdaptationCrossArmorTargetShellPatchOperationRequest(
+			var combinedOutput = CombineBatchOutputs(batchOutputs);
+			stageStopwatch.Restart();
+			var execution = await patchOperation.ExecuteOutputAsync(new AdaptationCrossArmorTargetShellPatchOperationRequest(
 				request.SourcePatchTocPath,
 				request.OutputDirectory,
 				headerTemplate.Data,
-				workItems,
+				Array.Empty<AdaptationSdkStyleTargetShellPatchWorkItem>(),
 				materialDependencies.Entries,
 				request.MaterialBindingMode == CrossArmorMaterialBindingMode.RequireCompleteSourceClosure,
 				allowedMaterialIds,
 				sourceEntries,
 				avatarRig.TransformInfo.NameHashes,
-				streamLayoutRegistry), cancellationToken).ConfigureAwait(false);
+				streamLayoutRegistry), combinedOutput, cancellationToken).ConfigureAwait(false);
+			await WritePerformanceAsync(performancePath, "写入最终 Patch", stageStopwatch.Elapsed, cancellationToken).ConfigureAwait(false);
+			stageStopwatch.Restart();
+			var validationGroups = mappings.GroupBy(mapping => mapping.PhysicalTarget.UnitAssetKey).ToArray();
+			await ReportProgressAsync(request, performancePath, "正在回读验证输出", 0, validationGroups.Length, totalStopwatch, cancellationToken).ConfigureAwait(false);
 			var outputEntries = await scanner.ScanEntriesAsync(execution.WriteResult.TocFilePath, cancellationToken).ConfigureAwait(false);
-			foreach (var mapping in mappings)
+			for (var groupIndex = 0; groupIndex < validationGroups.Length; groupIndex++)
 			{
-				var targetKey = ToAdaptationKey(mapping.PhysicalTarget.UnitAssetKey);
+				var group = validationGroups[groupIndex];
+				var targetKey = ToAdaptationKey(group.Key);
 				var outputEntry = outputEntries.SingleOrDefault(entry => entry.AssetKey == targetKey)
 					?? throw new InvalidDataException($"输出 Patch 缺少目标 Unit 0x{targetKey.FileId:x16}。" );
 				var outputUnit = await unitReader.ReadAsync(outputEntry, outputEntries, cancellationToken: cancellationToken).ConfigureAwait(false);
-				EnsureOutputPreservesSourceVertexColor(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnits[ToAdaptationKey(mapping.Source!.UnitAssetKey)].Model, mapping.Source.MeshInfoIndex);
-				outputTransferLayoutDiagnostics.Add(CreateTransferLayoutDiagnostic(
-					targetKey,
-					mapping.PhysicalTarget.MeshInfoIndex,
-					ToAdaptationKey(mapping.Source.UnitAssetKey),
-					mapping.Source.MeshInfoIndex,
-					outputUnit.Model,
-					sourceUnits[ToAdaptationKey(mapping.Source.UnitAssetKey)].Model));
+				EnsureOutputStreamAbi(outputUnit.Model, targetKey);
+				foreach (var mapping in group)
+				{
+					var sourceKey = ToAdaptationKey(mapping.Source!.UnitAssetKey);
+					var sourceUnit = sourceUnits[sourceKey];
+					EnsureOutputPreservesSourceVertexColor(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, mapping.Source.MeshInfoIndex);
+					EnsureOutputPreservesSourceGeometry(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, mapping.Source.MeshInfoIndex);
+					outputTransferLayoutDiagnostics.Add(CreateTransferLayoutDiagnostic(
+						targetKey,
+						mapping.PhysicalTarget.MeshInfoIndex,
+						sourceKey,
+						mapping.Source.MeshInfoIndex,
+						outputUnit.Model,
+						sourceUnit.Model));
+				}
+				if ((groupIndex + 1) % 16 == 0 || groupIndex + 1 == validationGroups.Length)
+					await ReportProgressAsync(request, performancePath, "正在回读验证输出", groupIndex + 1, validationGroups.Length, totalStopwatch, cancellationToken).ConfigureAwait(false);
 			}
-			var reportPath = await WriteReportAsync(request, execution.WriteResult.TocFilePath, execution.Output, boneDiagnostics, skinningDiagnostics, targetBakeDiagnostics, targetBakeDryRunDiagnostics, transferLayoutDiagnostics, outputTransferLayoutDiagnostics, requestedMaterialIds, materialDependencies, cancellationToken).ConfigureAwait(false);
+			await WritePerformanceAsync(performancePath, "回读验证输出", stageStopwatch.Elapsed, cancellationToken).ConfigureAwait(false);
+			var reportPath = await WriteReportAsync(request, execution.WriteResult.TocFilePath, execution.Output, Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), outputTransferLayoutDiagnostics, requestedMaterialIds, materialDependencies, cancellationToken).ConfigureAwait(false);
+			await WritePerformanceAsync(performancePath, "总耗时", totalStopwatch.Elapsed, cancellationToken).ConfigureAwait(false);
+			await ReportProgressAsync(request, performancePath, "生成完成", 1, 1, totalStopwatch, cancellationToken).ConfigureAwait(false);
 			return new CrossArmorTransferCandidateResult(true, request.OutputDirectory, reportPath, execution.Output.UnitResults.Count, execution.Output.UnitResults.Sum(result => result.ReplacementCount), execution.Output.UnitResults.Sum(result => result.MinifiedCount), issues);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException or OverflowException)
 		{
-			if (boneDiagnostics.Count != 0 && !string.IsNullOrWhiteSpace(request.OutputDirectory))
+			if (wroteDiagnostics && !string.IsNullOrWhiteSpace(request.OutputDirectory))
 			{
 				Directory.CreateDirectory(request.OutputDirectory);
-				await WriteFailureDiagnosticAsync(request.OutputDirectory, exception, boneDiagnostics, skinningDiagnostics, targetBakeDiagnostics, targetBakeDryRunDiagnostics, transferLayoutDiagnostics, request.Plan, cancellationToken).ConfigureAwait(false);
+				await WriteFailureDiagnosticAsync(request.OutputDirectory, exception, Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), request.Plan, cancellationToken).ConfigureAwait(false);
 			}
 			return Failure("CrossArmorWriteFailed", exception.Message, issues, request.OutputDirectory);
 		}
+	}
+
+	private static async ValueTask ReportProgressAsync(CrossArmorTransferCandidateRequest request, string performancePath, string stage, int completed, int total, Stopwatch stopwatch, CancellationToken cancellationToken)
+	{
+		request.Progress?.Report(new CrossArmorTransferProgress(stage, completed, total, stopwatch.Elapsed));
+		await AppendPerformanceEventAsync(performancePath, stage, "Progress", stopwatch.Elapsed, completed, total, cancellationToken).ConfigureAwait(false);
+	}
+
+	private static ValueTask WritePerformanceAsync(string path, string stage, TimeSpan elapsed, CancellationToken cancellationToken)
+		=> AppendPerformanceEventAsync(path, stage, "Duration", elapsed, null, null, cancellationToken);
+
+	private static async ValueTask AppendPerformanceEventAsync(string path, string stage, string kind, TimeSpan elapsed, int? completed, int? total, CancellationToken cancellationToken)
+	{
+		await AppendDiagnosticAsync(path, new { TimestampUtc = DateTimeOffset.UtcNow, Kind = kind, Stage = stage, ElapsedMilliseconds = (long)elapsed.TotalMilliseconds, Completed = completed, Total = total }, cancellationToken).ConfigureAwait(false);
+	}
+
+	private async ValueTask<IReadOnlyDictionary<AdaptationAssetKey, AdaptationPatchUnitMesh>> ReadSourceUnitsAsync(
+		IReadOnlyCollection<AdaptationAssetKey> sourceKeys,
+		IReadOnlyDictionary<AdaptationAssetKey, HD2ModAdaptation.PatchReconstruction.PatchTocEntry> sourceEntriesByKey,
+		IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> sourceEntries,
+		CancellationToken cancellationToken)
+	{
+		var result = new Dictionary<AdaptationAssetKey, AdaptationPatchUnitMesh>(sourceKeys.Count);
+		foreach (var key in sourceKeys.OrderBy(key => key.FileId))
+		{
+			if (!sourceEntriesByKey.TryGetValue(key, out var entry)) throw new InvalidDataException($"源 Patch 缺少 Unit 0x{key.FileId:x16}。");
+			result.Add(key, await unitReader.ReadAsync(entry, sourceEntries, cancellationToken: cancellationToken).ConfigureAwait(false));
+		}
+		return result;
+	}
+
+	private static async ValueTask AppendDiagnosticAsync(string path, object diagnostic, CancellationToken cancellationToken)
+	{
+		var json = JsonSerializer.Serialize(diagnostic);
+		await File.AppendAllTextAsync(path, json + Environment.NewLine, cancellationToken).ConfigureAwait(false);
+	}
+
+	private static HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellPatchOutput CombineBatchOutputs(
+		IReadOnlyCollection<HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellPatchOutput> outputs)
+	{
+		var additions = outputs.SelectMany(output => output.AdditionalEntries).GroupBy(entry => entry.AssetKey).Select(group => group.Single()).ToArray();
+		var replaced = outputs.SelectMany(output => output.ReplacedSourceUnitAssetKeys).Distinct().OrderBy(key => key.FileId).ToArray();
+		var results = outputs.SelectMany(output => output.UnitResults).OrderBy(result => result.TargetUnitAssetKey.FileId).ToArray();
+		if (results.GroupBy(result => result.TargetUnitAssetKey).Any(group => group.Count() != 1)) throw new InvalidDataException("跨护甲分批重建产生了重复目标 Unit。");
+		return new HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellPatchOutput(additions, replaced, results);
 	}
 
 	private static IReadOnlyCollection<ulong> CollectMappedSourceMaterialIds(
@@ -245,8 +369,12 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 				.Where(mesh => mesh.LodIndex is -1 or >= 0 and <= 4)
 				.OrderBy(mesh => mesh.MeshInfoIndex)
 				.ToArray();
-			if (approved.TargetMeshInfoIndex != targetRenderFamily.SingleOrDefault(mesh => mesh.LodIndex == 0)?.MeshInfoIndex
-				|| approved.SourceMeshInfoIndex != sourceRenderFamily.SingleOrDefault(mesh => mesh.LodIndex == 0)?.MeshInfoIndex) continue;
+			var targetLod0 = targetRenderFamily.SingleOrDefault(mesh => mesh.LodIndex == 0);
+			var sourceLod0 = sourceRenderFamily.SingleOrDefault(mesh => mesh.LodIndex == 0)
+				?? sourceRenderFamily.SingleOrDefault(mesh => mesh.MeshInfoIndex == approved.SourceMeshInfoIndex && mesh.LodIndex == -1);
+			if (targetLod0 is null || sourceLod0 is null
+				|| approved.TargetMeshInfoIndex != targetLod0.MeshInfoIndex
+				|| approved.SourceMeshInfoIndex != sourceLod0.MeshInfoIndex) continue;
 
 			var sourceByLod = sourceRenderFamily
 				.GroupBy(mesh => mesh.LodIndex)
@@ -426,6 +554,39 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		if (outputColor is null || outputColor.Format != sourceColor.Format || outputColor.Size != sourceColor.Size)
 		{
 			throw new InvalidDataException($"输出 target mesh {outputMeshInfoIndex} 未保留来源 vertex color 布局。" );
+		}
+	}
+
+	private static void EnsureOutputPreservesSourceGeometry(
+		HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshModel outputModel,
+		int outputMeshInfoIndex,
+		HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshModel sourceModel,
+		int sourceMeshInfoIndex)
+	{
+		var source = sourceModel.RawMeshData.Single(mesh => mesh.MeshInfoIndex == sourceMeshInfoIndex);
+		var output = outputModel.RawMeshData.Single(mesh => mesh.MeshInfoIndex == outputMeshInfoIndex);
+		var sourceTriangleCount = source.Triangles.Count;
+		var outputTriangleCount = output.Triangles.Count;
+		if (source.Vertices.Count != output.Vertices.Count || sourceTriangleCount != outputTriangleCount)
+		{
+			throw new InvalidDataException($"输出 target mesh {outputMeshInfoIndex} 的几何数量与来源不一致：顶点 {output.Vertices.Count}/{source.Vertices.Count}，三角形 {outputTriangleCount}/{sourceTriangleCount}。" );
+		}
+	}
+
+	private static void EnsureOutputStreamAbi(HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshModel outputModel, AdaptationAssetKey targetKey)
+	{
+		foreach (var stream in outputModel.Streams)
+		{
+			var componentSize = checked((uint)stream.Components.Sum(component => component.Size));
+			if (stream.VertexStride != componentSize) throw new InvalidDataException($"输出 Unit 0x{targetKey.FileId:x16} 的 stream {stream.Index} stride 与分量大小不一致。" );
+			foreach (var weight in stream.Components.Where(component => component.Type == 7))
+			{
+				if (weight.Format != 35 || weight.Size != 8) throw new InvalidDataException($"输出 Unit 0x{targetKey.FileId:x16} 的 stream {stream.Index} 含非 canonical bone_weight 格式 {weight.Format}。" );
+			}
+			foreach (var index in stream.Components.Where(component => component.Type == 6))
+			{
+				if (index.Format != 28 || index.Size != 4) throw new InvalidDataException($"输出 Unit 0x{targetKey.FileId:x16} 的 stream {stream.Index} 含非 canonical bone_index 格式 {index.Format}。" );
+			}
 		}
 	}
 

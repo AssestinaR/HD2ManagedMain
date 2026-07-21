@@ -15,16 +15,22 @@ internal sealed class CurrentGameStreamLayoutRegistry : ICurrentGameStreamLayout
 		this.layouts = layouts.ToArray();
 	}
 
-	public bool TryResolveCanonicalSkinningLayout(UnitStreamInfo targetStream, int requiredSkinningCapacity, out UnitStreamInfo layout)
+	public bool TryResolveCanonicalSkinningLayout(UnitStreamInfo targetStream, IReadOnlyCollection<UnitStreamComponentInfo> requiredSourceComponents, int requiredSkinningCapacity, out UnitStreamInfo layout)
 	{
 		if (requiredSkinningCapacity is < 1 or > 4)
 		{
 			layout = default!;
 			return false;
 		}
-		var targetNonSkinning = Signature(targetStream.Components.Where(component => component.Type is not 6 and not 7));
+		var targetNonSkinning = targetStream.Components
+			.Where(component => component.Type is not 6 and not 7)
+			.Concat(requiredSourceComponents.Where(component => component.Type is not 6 and not 7))
+			.GroupBy(component => (component.Type, component.Index))
+			.Select(group => group.OrderByDescending(component => component.Size).ThenByDescending(component => component.Format).First())
+			.OrderBy(component => ComponentOrder(component.Type)).ThenBy(component => component.Index);
+		var requiredSignature = Signature(targetNonSkinning);
 		var match = layouts.Where(candidate =>
-			Signature(candidate.Components.Where(component => component.Type is not 6 and not 7)) == targetNonSkinning
+			Signature(candidate.Components.Where(component => component.Type is not 6 and not 7)) == requiredSignature
 			&& candidate.Components.Count(component => component.Type == 7 && component.Format == 35 && component.Index == 0) == 1
 			&& candidate.Components.Count(component => component.Type == 6 && component.Format == 28 && component.Index == 0) == 1
 			&& candidate.Components.Count(component => component.Type == 7) == 1
@@ -57,6 +63,8 @@ internal sealed class CurrentGameStreamLayoutRegistry : ICurrentGameStreamLayout
 
 	private static string Signature(IEnumerable<UnitStreamComponentInfo> components)
 		=> string.Join(";", components.Select(component => $"{component.Type}:{component.Format}:{component.Index}:{component.Unknown:x16}:{component.Size}"));
+
+	private static int ComponentOrder(uint type) => type switch { 5 => 0, 0 => 1, 1 => 2, 2 => 3, 3 => 4, 4 => 5, _ => 6 };
 
 	private static string TypeName(uint type) => type switch
 	{

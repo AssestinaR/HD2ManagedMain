@@ -6,7 +6,8 @@ namespace HD2ModAdaptation.Analysis;
 public sealed record GameDataArchiveInput(
 	string GameDataDirectory,
 	IReadOnlyList<string>? PackageNames = null,
-	IReadOnlyDictionary<string, GameDataArchiveMetadata>? MetadataByPackageName = null);
+	IReadOnlyDictionary<string, GameDataArchiveMetadata>? MetadataByPackageName = null,
+	bool IncludeStreamLayouts = false);
 
 public sealed record GameDataArchiveMetadata(
 	string? ArchiveHex = null,

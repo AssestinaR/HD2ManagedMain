@@ -46,6 +46,23 @@
                 </StackPanel>
             </StackPanel>
         </Border>
+        <Border Style="{StaticResource CardContainer}" Margin="0,12,0,0" Padding="22" MinWidth="560">
+            <StackPanel>
+                <TextBlock Text="游戏维护" Style="{StaticResource AppCardTitle}"/>
+                <Grid Margin="0,14,0,0">
+                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="已启用的模组" Style="{StaticResource AppSupportingText}" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="1" Text="{Binding EnabledModCount}" Style="{StaticResource AppStatusValue}"/>
+                </Grid>
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="过时检测" Style="{StaticResource AppSupportingText}" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="1" Text="{Binding OutdatedModSummary}" Style="{StaticResource AppStatusValue}" VerticalAlignment="Center"/>
+                    <Button Grid.Column="3" Style="{StaticResource AppSecondaryButton}" Content="一键修复" Command="{Binding RepairOutdatedModsCommand}"/>
+                </Grid>
+                <Button Style="{StaticResource AppPrimaryButton}" Content="启动游戏" Command="{Binding LaunchGameCommand}" FontSize="28" FontWeight="SemiBold" Height="82" Margin="0,22,0,0"/>
+            </StackPanel>
+        </Border>
         </StackPanel>
     </Grid>
 </UserControl>

@@ -21,6 +21,46 @@ public sealed class UnitMeshWriterTests
 	}
 
 	[Fact]
+	public void Write_RebuildsSharedStreamVertexAndIndexOffsetsIndependently()
+	{
+		var toc = new byte[1024];
+		var stream = new UnitStreamInfo(0, 128, 0, 1, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0,
+			[new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12)]);
+		var first = CreateRawMesh(0, 10, 100, 3, 1);
+		var second = CreateRawMesh(1, 0, 0, 6, 2);
+		var model = new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UnitCustomizationInfo.Empty, Array.Empty<UnitBoneInfo>(), [stream], [CreateMesh(0, 256, 10, 100), CreateMesh(1, 512, 0, 0)], Array.Empty<UnitMaterialBinding>(), Array.Empty<UnitRawMeshSummary>(), [first, second]);
+
+		var result = new UnitMeshWriter().Write(model, toc);
+
+		Assert.Equal(0u, ReadUInt32(result.TocData, 512 + 4));
+		Assert.Equal(6u, ReadUInt32(result.TocData, 256 + 4));
+		Assert.Equal(0u, ReadUInt32(result.TocData, 512 + 12));
+		Assert.Equal(6u, ReadUInt32(result.TocData, 256 + 12));
+		var indexBufferOffset = ReadUInt32(result.TocData, 128 + 8 + 320 + 96);
+		Assert.Equal(6u, BinaryPrimitives.ReadUInt16LittleEndian(result.GpuData.AsSpan((int)indexBufferOffset + 12, 2)));
+	}
+
+	[Fact]
+	public void Write_PromotesSharedStreamTo32BitIndicesWhenCombinedVerticesExceed16BitRange()
+	{
+		var toc = new byte[1024];
+		var stream = new UnitStreamInfo(0, 128, 0, 1, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0,
+			[new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12)]);
+		var first = CreateRawMesh(0, 0, 0, 65536, 1);
+		var second = CreateRawMesh(1, 65535, 3, 3, 1);
+		second = second with
+		{
+			Sections = [new UnitRawMeshSectionData(0, 0, [new UnitTriangleIndices(0, 1, 2)])],
+			Triangles = [new UnitTriangleIndices(0, 1, 2)]
+		};
+		var model = new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UnitCustomizationInfo.Empty, Array.Empty<UnitBoneInfo>(), [stream], [CreateMesh(0, 256, 0, 0), CreateMesh(1, 512, 65535, 3)], Array.Empty<UnitMaterialBinding>(), Array.Empty<UnitRawMeshSummary>(), [first, second]);
+
+		var result = new UnitMeshWriter().Write(model, toc);
+
+		Assert.True(result.GpuData.Length >= 65539 * 12 + 24);
+	}
+
+	[Fact]
 	public void Write_WithBoneInfoRelocation_RebuildsVariableLengthBlockAndShiftsFollowingOffsets()
 	{
 		var originalToc = new byte[320];
@@ -121,6 +161,19 @@ public sealed class UnitMeshWriterTests
 			Array.Empty<UnitRawMeshSummary>(),
 			Array.Empty<UnitRawMeshData>());
 	}
+
+	private static UnitMeshInfo CreateMesh(int index, uint offset, uint vertexOffset, uint indexOffset)
+		=> new(index, offset, (uint)(100 + index), 0, 0, 0, 1, offset + 128, 1, offset + 132, UnitMeshSemanticInfo.Empty(0, index), [0],
+			[new UnitMeshSectionInfo(offset, 0, 0, vertexOffset, 0, indexOffset, 0, 0)]);
+
+	private static UnitRawMeshData CreateRawMesh(int index, uint vertexOffset, uint indexOffset, int vertexCount, int triangleCount)
+	{
+		var vertices = Enumerable.Range(0, vertexCount).Select(value => new UnitRawVertexRecord((uint)value, new byte[12], Array.Empty<UnitVertexComponentValue>())).ToArray();
+		var triangles = Enumerable.Range(0, triangleCount).Select(_ => new UnitTriangleIndices(0, 1, 2)).ToArray();
+		return new UnitRawMeshData(index, (uint)(100 + index), 0, 0, [new UnitRawMeshSectionData(0, 0, triangles)], triangles, vertices);
+	}
+
+	private static uint ReadUInt32(byte[] data, int offset) => BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset, 4));
 
 	private static void WriteUInt32(byte[] data, int offset, uint value)
 	{

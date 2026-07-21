@@ -23,7 +23,8 @@ public sealed class UnitMeshWriter
 		var relocation = allowBoneInfoRelocation
 			? RelocateBoneInfos(transformRelocation.Model, transformRelocation.TocData)
 			: new MetadataRelocation(transformRelocation.TocData, transformRelocation.Model);
-		var (tocData, writableModel) = PrepareTocForExpandedMetadata(relocation.Model, relocation.TocData);
+		var indexSafeModel = PromoteSharedStreamIndexBuffers(relocation.Model);
+		var (tocData, writableModel) = PrepareTocForExpandedMetadata(indexSafeModel, relocation.TocData);
 		var meshTocData = tocData;
 		byte[]? compositeTocData = null;
 		if (writableModel.StreamInfoOffset == UnsupportedOffset && !originalCompositeTocData.IsEmpty)
@@ -38,6 +39,27 @@ public sealed class UnitMeshWriter
 		WriteBoneInfos(tocData, writableModel);
 		var gpuData = BuildGpuData(writableModel, meshTocData);
 		return new UnitMeshWriteResult(tocData, gpuData, compositeTocData, compositeTocData is null ? null : gpuData);
+	}
+
+	private static UnitMeshModel PromoteSharedStreamIndexBuffers(UnitMeshModel model)
+	{
+		var streams = model.Streams.Select(stream =>
+		{
+			if (stream.IndexBufferType == 1) return stream;
+			var vertexBase = 0L;
+			var requires32Bit = false;
+			foreach (var mesh in model.RawMeshData.Where(mesh => mesh.StreamIndex == (uint)stream.Index).OrderBy(mesh => GetFirstVertexOffset(model, mesh)).ThenBy(mesh => mesh.MeshInfoIndex))
+			{
+				if (mesh.Triangles.Any(triangle => (long)Math.Max(triangle.A, Math.Max(triangle.B, triangle.C)) + vertexBase > ushort.MaxValue))
+				{
+					requires32Bit = true;
+					break;
+				}
+				vertexBase = checked(vertexBase + mesh.Vertices.Count);
+			}
+			return requires32Bit ? stream with { IndexBufferType = 1 } : stream;
+		}).ToArray();
+		return model with { Streams = streams };
 	}
 
 	private static (byte[] TocData, UnitMeshModel Model) PrepareTocForExpandedMetadata(UnitMeshModel model, ReadOnlySpan<byte> originalTocData)
@@ -201,16 +223,24 @@ public sealed class UnitMeshWriter
 		var gpuData = new List<byte>();
 		foreach (var stream in model.Streams)
 		{
-			var rawMeshes = model.RawMeshData
+			var streamMeshes = model.RawMeshData
 				.Where(mesh => mesh.StreamIndex == (uint)stream.Index)
+				.ToArray();
+			var vertexOrderedMeshes = streamMeshes
 				.OrderBy(mesh => GetFirstVertexOffset(model, mesh))
-				.ThenBy(mesh => GetFirstIndexOffset(model, mesh))
+				.ThenBy(mesh => mesh.MeshInfoIndex)
+				.ToArray();
+			var indexOrderedMeshes = streamMeshes
+				.OrderBy(mesh => GetFirstIndexOffset(model, mesh))
+				.ThenBy(mesh => mesh.MeshInfoIndex)
 				.ToArray();
 
 			var vertexBufferOffset = checked((uint)gpuData.Count);
 			var vertexCount = 0u;
-			foreach (var mesh in rawMeshes)
+			var vertexBaseOffsets = new Dictionary<int, uint>(vertexOrderedMeshes.Length);
+			foreach (var mesh in vertexOrderedMeshes)
 			{
+				vertexBaseOffsets[mesh.MeshInfoIndex] = vertexCount;
 				foreach (var vertex in mesh.Vertices)
 				{
 					WriteVertex(gpuData, stream.VertexStride, vertex.Data);
@@ -223,16 +253,18 @@ public sealed class UnitMeshWriter
 			var indexBufferOffset = checked((uint)gpuData.Count);
 			var indexCount = 0u;
 			var indexStride = stream.IndexBufferType == 1 ? 4 : 2;
-			foreach (var mesh in rawMeshes)
+			foreach (var mesh in indexOrderedMeshes)
 			{
+				if (!vertexBaseOffsets.TryGetValue(mesh.MeshInfoIndex, out var vertexBaseOffset))
+					throw new InvalidDataException($"Mesh {mesh.MeshInfoIndex} has no shared-stream vertex buffer offset.");
 				foreach (var section in mesh.Sections)
 				{
 					foreach (var triangle in section.Triangles)
 					{
 						ValidateTriangleReferences(mesh, triangle);
-						WriteIndex(gpuData, triangle.A, indexStride);
-						WriteIndex(gpuData, triangle.B, indexStride);
-						WriteIndex(gpuData, triangle.C, indexStride);
+						WriteIndex(gpuData, checked(triangle.A + vertexBaseOffset), indexStride);
+						WriteIndex(gpuData, checked(triangle.B + vertexBaseOffset), indexStride);
+						WriteIndex(gpuData, checked(triangle.C + vertexBaseOffset), indexStride);
 						indexCount += 3;
 					}
 				}
@@ -240,7 +272,8 @@ public sealed class UnitMeshWriter
 
 			var indexBufferSize = checked((uint)gpuData.Count - indexBufferOffset);
 			WriteStreamGpuFields(tocData, stream, vertexCount, vertexBufferOffset, vertexBufferSize, indexCount, indexBufferOffset, indexBufferSize);
-			WriteMeshSectionOffsets(tocData, model, rawMeshes);
+			WriteMeshVertexOffsets(tocData, model, vertexOrderedMeshes);
+			WriteMeshIndexOffsets(tocData, model, indexOrderedMeshes);
 		}
 
 		return gpuData.ToArray();
@@ -281,10 +314,9 @@ public sealed class UnitMeshWriter
 		return meshInfo?.Sections.Count > 0 ? meshInfo.Sections[0].IndexOffset : 0;
 	}
 
-	private static void WriteMeshSectionOffsets(byte[] tocData, UnitMeshModel model, IReadOnlyList<UnitRawMeshData> rawMeshes)
+	private static void WriteMeshVertexOffsets(byte[] tocData, UnitMeshModel model, IReadOnlyList<UnitRawMeshData> rawMeshes)
 	{
 		var vertexOffset = 0u;
-		var indexOffset = 0u;
 		foreach (var rawMesh in rawMeshes)
 		{
 			var meshInfo = FindMeshInfo(model, rawMesh.MeshInfoIndex);
@@ -302,16 +334,31 @@ public sealed class UnitMeshWriter
 			{
 				var section = meshInfo.Sections[i];
 				var rawSection = i < rawMesh.Sections.Count ? rawMesh.Sections[i] : null;
-				var numIndices = checked((uint)((rawSection?.Triangles.Count ?? 0) * 3));
 				WriteUInt32(tocData, section.Offset, rawSection?.MaterialIndex ?? section.MaterialIndex);
 				WriteUInt32(tocData, section.Offset + 4, vertexOffset);
 				WriteUInt32(tocData, section.Offset + 8, checked((uint)rawMesh.Vertices.Count));
-				WriteUInt32(tocData, section.Offset + 12, indexOffset);
-				WriteUInt32(tocData, section.Offset + 16, numIndices);
-				indexOffset = checked(indexOffset + numIndices);
 			}
 
 			vertexOffset = checked(vertexOffset + (uint)rawMesh.Vertices.Count);
+		}
+	}
+
+	private static void WriteMeshIndexOffsets(byte[] tocData, UnitMeshModel model, IReadOnlyList<UnitRawMeshData> rawMeshes)
+	{
+		var indexOffset = 0u;
+		foreach (var rawMesh in rawMeshes)
+		{
+			var meshInfo = FindMeshInfo(model, rawMesh.MeshInfoIndex);
+			if (meshInfo is null) continue;
+			if (rawMesh.Sections.Count > meshInfo.Sections.Count) throw new InvalidDataException("RawMeshData contains more sections than the target Unit MeshInfo can describe.");
+			for (var i = 0; i < meshInfo.Sections.Count; i++)
+			{
+				var rawSection = i < rawMesh.Sections.Count ? rawMesh.Sections[i] : null;
+				var numIndices = checked((uint)((rawSection?.Triangles.Count ?? 0) * 3));
+				WriteUInt32(tocData, meshInfo.Sections[i].Offset + 12, indexOffset);
+				WriteUInt32(tocData, meshInfo.Sections[i].Offset + 16, numIndices);
+				indexOffset = checked(indexOffset + numIndices);
+			}
 		}
 	}
 
@@ -578,7 +625,6 @@ public sealed class UnitMeshWriter
 			}).ToArray()
 		};
 	}
-
 	private sealed record MetadataRelocation(byte[] TocData, UnitMeshModel Model);
 
 	private static UnitMeshInfo? FindMeshInfo(UnitMeshModel model, int meshInfoIndex)

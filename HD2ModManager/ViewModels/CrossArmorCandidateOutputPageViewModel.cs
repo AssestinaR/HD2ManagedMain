@@ -61,8 +61,13 @@ namespace HD2ModManager.ViewModels
             _plan.CandidateGenerationRunning = true;
             try
             {
+				var progress = new Progress<CrossArmorTransferProgress>(update =>
+				{
+					var count = update.Total > 1 ? $" {update.Completed}/{update.Total}" : string.Empty;
+					State = $"{update.Stage}{count}（已用时 {update.Elapsed:mm\\:ss}）。";
+				});
                 var result = await Task.Run(() => CoreServices.CreateCrossArmorTransferCandidateService(_plan.Paths).GenerateCandidateAsync(
-                    new CrossArmorTransferCandidateRequest(_plan.SourcePatchTocPath, _plan.GameDataDirectory, candidateDirectory, plan, CrossArmorMaterialBindingMode.PreserveSourceReferences, _plan.PreparedSourceEntries)).AsTask());
+                    new CrossArmorTransferCandidateRequest(_plan.SourcePatchTocPath, _plan.GameDataDirectory, candidateDirectory, plan, CrossArmorMaterialBindingMode.PreserveSourceReferences, _plan.PreparedSourceEntries, progress)).AsTask());
                 if (!result.IsSuccessful)
                 {
                     State = $"生成失败：{string.Join("；", result.Issues.Select(issue => issue.Message).Take(3))}";

@@ -27,8 +27,12 @@ public static class CoreServices
 			CreateAssetArchiveIndexService(paths),
 			CreateFileSystemArchiveHashesProvider(paths),
 			CreateAdvancedModAnalysisService(paths));
+	public static IModRepairBatchService CreateModRepairBatchService(StoragePaths paths)
+		=> new ModRepairBatchService(paths, CreateModSameKeyReconstructionService(paths), CreateAdvancedModAnalysisService(paths), CreatePatchFileNameParser());
    public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths)
 		=> new AssetArchiveIndexService(paths);
+	public static IAdvancedEquipmentIndexService CreateAdvancedEquipmentIndexService(StoragePaths paths)
+		=> new AdvancedEquipmentIndexService(paths);
 	public static IGameDataLocator CreateGameDataLocator(IGameDataSettings settings)
 		=> new GameDataLocator(settings);
 	public static IArchiveHashesProvider CreateFileSystemArchiveHashesProvider(StoragePaths paths)
@@ -44,7 +48,7 @@ public static class CoreServices
 			CreatePatchFileNameParser());
 	public static IModFactsStore CreateModFactsStore(StoragePaths paths) => new SqliteModFactsStore(paths);
 	public static IModContentFactsService CreateModContentFactsService(StoragePaths paths)
-		=> new ModContentFactsService(CreatePatchFileNameParser(), CreatePatchGroupAnalysisProvider(paths));
+		=> new ModContentFactsService(CreatePatchFileNameParser(), CreatePatchGroupAnalysisProvider(paths), new UnitVersionProbe());
 	public static IAdvancedModAnalysisService CreateAdvancedModAnalysisService(StoragePaths paths)
 		=> new AdvancedModAnalysisService(
 			CreateAdvancedModAnalysisCacheStore(paths),

@@ -5,6 +5,27 @@ public sealed class SdkStyleVertexStreamPlanner
 {
 	private const uint Vec4HalfFormat = 35;
 	private const uint Vec4UInt8Format = 28;
+	private const uint Vec2FloatFormat = 1;
+	private const uint PackedNormalFormat = 30;
+
+	public UnitMeshModel CanonicalizeAllSkinningStreams(UnitMeshModel model)
+	{
+		ArgumentNullException.ThrowIfNull(model);
+		var streams = model.Streams.Select(stream =>
+		{
+			if (!stream.Components.Any(component => component.Type is 6 or 7)) return stream;
+			var components = stream.Components
+				.Where(component => component.Type is not 6 and not 7)
+				.Select(CanonicalizeLegacyComponent)
+				.Append(new UnitStreamComponentInfo(7, "bone_weight", Vec4HalfFormat, "vec4_half", 0, 0, 8))
+				.Append(new UnitStreamComponentInfo(6, "bone_index", Vec4UInt8Format, "vec4_uint8", 0, 0, 4))
+				.OrderBy(component => GetSdkComponentOrder(component.Type))
+				.ThenBy(component => component.Index)
+				.ToArray();
+			return stream with { NumComponents = checked((ulong)components.Length), VertexStride = checked((uint)components.Sum(component => component.Size)), Components = components };
+		}).ToArray();
+		return model with { Streams = streams };
+	}
 
 	public UnitMeshModel PlanCanonicalSkinning(UnitMeshModel targetModel, IReadOnlyCollection<SdkStyleStreamReplacement> replacements, ICurrentGameStreamLayoutRegistry? streamLayoutRegistry = null)
 	{
@@ -18,18 +39,28 @@ public sealed class SdkStyleVertexStreamPlanner
 		var streams = targetModel.Streams.Select(stream =>
 		{
 			if (!requiredSkinningCapacityByStream.TryGetValue(stream.Index, out var requiredSkinningCapacity)) return stream;
-			var fallbackComponents = stream.Components
+			var sourceComponents = replacements
+				.Where(replacement => GetTargetStreamIndex(targetModel, replacement.TargetMeshInfoIndex) == stream.Index)
+				.SelectMany(replacement => GetSourceStream(replacement).Components)
 				.Where(component => component.Type is not 6 and not 7)
+				.Select(CanonicalizeLegacyComponent)
+				.GroupBy(component => (component.Type, component.Index))
+				.Select(group => group.OrderByDescending(component => component.Size).ThenByDescending(component => component.Format).First())
+				.ToArray();
+			var sdkComponents = stream.Components
+				.Where(component => component.Type is not 6 and not 7)
+				.Select(CanonicalizeLegacyComponent)
+				.Concat(sourceComponents)
+				.GroupBy(component => (component.Type, component.Index))
+				.Select(group => group.OrderByDescending(component => component.Size).ThenByDescending(component => component.Format).First())
 				.Append(new UnitStreamComponentInfo(7, "bone_weight", Vec4HalfFormat, "vec4_half", 0, 0, 8))
 				.Append(new UnitStreamComponentInfo(6, "bone_index", Vec4UInt8Format, "vec4_uint8", 0, 0, 4))
 				.OrderBy(component => GetSdkComponentOrder(component.Type))
 				.ThenBy(component => component.Index)
 				.ToArray();
-			var planned = streamLayoutRegistry is null
-				? new UnitStreamInfo(stream.Index, stream.Offset, stream.ComponentInfoId, checked((ulong)fallbackComponents.Length), stream.VertexBufferId, stream.NumVertices, checked((uint)fallbackComponents.Sum(component => component.Size)), stream.IndexBufferId, stream.NumIndices, stream.IndexBufferType, stream.VertexBufferOffset, stream.VertexBufferSize, stream.IndexBufferOffset, stream.IndexBufferSize, fallbackComponents)
-				: streamLayoutRegistry.TryResolveCanonicalSkinningLayout(stream, requiredSkinningCapacity, out var registered)
-					? registered
-					: throw new InvalidDataException($"Current-game layout catalog has no verified canonical skinning route for stream {stream.Index}.");
+			var planned = streamLayoutRegistry is not null && streamLayoutRegistry.TryResolveCanonicalSkinningLayout(stream, sourceComponents, requiredSkinningCapacity, out var registered)
+				? registered
+				: new UnitStreamInfo(stream.Index, stream.Offset, stream.ComponentInfoId, checked((ulong)sdkComponents.Length), stream.VertexBufferId, stream.NumVertices, checked((uint)sdkComponents.Sum(component => component.Size)), stream.IndexBufferId, stream.NumIndices, stream.IndexBufferType, stream.VertexBufferOffset, stream.VertexBufferSize, stream.IndexBufferOffset, stream.IndexBufferSize, sdkComponents);
 			var components = planned.Components;
 			if (!components.Any(component => component.Type == 0 && component.Index == 0))
 			{
@@ -69,6 +100,14 @@ public sealed class SdkStyleVertexStreamPlanner
 		}
 		return Math.Max(1, maximum);
 	}
+
+	private static UnitStreamComponentInfo CanonicalizeLegacyComponent(UnitStreamComponentInfo component)
+		=> component switch
+		{
+			{ Type: 1, Format: 30 } => component with { Format = PackedNormalFormat, FormatName = "unk_normal", Size = 4 },
+			{ Type: 4, Format: 33 } => component with { Format = Vec2FloatFormat, FormatName = "vec2_float", Size = 8 },
+			_ => component
+		};
 
 	public UnitMeshModel Plan(UnitMeshModel targetModel, IReadOnlyCollection<SdkStyleStreamReplacement> replacements)
 	{

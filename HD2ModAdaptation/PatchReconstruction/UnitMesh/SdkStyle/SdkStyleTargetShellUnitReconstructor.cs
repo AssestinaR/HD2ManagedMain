@@ -70,9 +70,12 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 				sourceByKey[mapping.SourceUnitAssetKey].Model,
 				mapping.SourceMeshInfoIndex)).ToArray())
 			: targetUnit.Model;
+		var allStreamCanonicalModel = planCanonicalSkinningLayout
+			? streamPlanner.CanonicalizeAllSkinningStreams(plannedTargetModel)
+			: plannedTargetModel;
 		var model = targetIndexes.Count == 0
-			? minifier.MinifyAll(targetUnit.Model)
-			: minifier.MinifyExcept(plannedTargetModel, targetIndexes);
+			? minifier.MinifyAll(allStreamCanonicalModel)
+			: minifier.MinifyExcept(allStreamCanonicalModel, targetIndexes);
 		var rebuiltBoneInfoIndexes = new HashSet<int>();
 		var replacementMaterialIds = new HashSet<ulong>();
 		foreach (var mapping in mappings.OrderBy(mapping => mapping.TargetMeshInfoIndex))
@@ -104,7 +107,7 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 
 public interface ICurrentGameStreamLayoutRegistry
 {
-	bool TryResolveCanonicalSkinningLayout(UnitStreamInfo targetStream, int requiredSkinningCapacity, out UnitStreamInfo layout);
+	bool TryResolveCanonicalSkinningLayout(UnitStreamInfo targetStream, IReadOnlyCollection<UnitStreamComponentInfo> requiredSourceComponents, int requiredSkinningCapacity, out UnitStreamInfo layout);
 }
 
 public sealed record SdkStyleTargetShellUnitReconstructionResult(

@@ -46,6 +46,7 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 			var patchFiles = nodeContentFacts.ToPatchFileIndex();
 
 			summaries.TryGetValue(node.Id, out var assetSummary);
+			var unitCompatibility = ModUnitCompatibilityReport.FromEvidence(nodeContentFacts.PatchGroups.SelectMany(group => group.UnitVersions ?? Array.Empty<UnitVersionEvidence>()));
 
 			var nodeIssues = issues.Where(i => i.NodeId == node.Id).ToList();
 			nodes[node.Id] = new DerivedModNodeData(
@@ -57,6 +58,7 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 				PatchFiles: patchFiles,
 				ContentFacts: nodeContentFacts,
 				AssetSummary: assetSummary,
+				UnitCompatibility: unitCompatibility,
 				Issues: nodeIssues);
 		}
 

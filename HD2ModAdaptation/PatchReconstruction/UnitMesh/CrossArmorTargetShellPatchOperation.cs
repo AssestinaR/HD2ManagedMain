@@ -29,15 +29,40 @@ public sealed class CrossArmorTargetShellPatchOperation
 		var entries = request.PreparedSourceEntries is { Count: > 0 }
 			? request.PreparedSourceEntries
 			: await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
+		var output = BuildOutput(request.WorkItems, request.AllowedSourceMaterialIds, request.CanonicalBoneHashOrder, request.StreamLayoutRegistry);
+		return await ExecuteOutputAsync(request, output, cancellationToken).ConfigureAwait(false);
+	}
+
+	// Purpose: Rebuilds a bounded batch of target shells without retaining unrelated target Unit models.
+	public SdkStyleTargetShellPatchOutput BuildOutput(
+		IReadOnlyCollection<SdkStyleTargetShellPatchWorkItem> workItems,
+		IReadOnlySet<ulong>? allowedSourceMaterialIds,
+		IReadOnlyList<uint>? canonicalBoneHashOrder,
+		ICurrentGameStreamLayoutRegistry? streamLayoutRegistry)
+	{
 		var outputBuilder = new SdkStyleTargetShellPatchOutputBuilder(
 			new SdkStyleTargetShellUnitReconstructor(
-				reencoder: new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true, canonicalBoneHashOrder: request.CanonicalBoneHashOrder),
+				reencoder: new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true, canonicalBoneHashOrder: canonicalBoneHashOrder),
 				writer: new UnitMeshWriter(allowBoneInfoRelocation: true, allowTransformInfoRelocation: true),
 				propagateSourceMaterials: true,
-				allowedSourceMaterialIds: request.AllowedSourceMaterialIds,
+				allowedSourceMaterialIds: allowedSourceMaterialIds,
 				planCanonicalSkinningLayout: true,
-				streamLayoutRegistry: request.StreamLayoutRegistry));
-		var output = outputBuilder.Build(request.WorkItems);
+				streamLayoutRegistry: streamLayoutRegistry));
+		return outputBuilder.Build(workItems);
+	}
+
+	// Purpose: Serially commits previously rebuilt batches as one Patch archive.
+	public async ValueTask<CrossArmorTargetShellPatchOperationResult> ExecuteOutputAsync(
+		CrossArmorTargetShellPatchOperationRequest request,
+		SdkStyleTargetShellPatchOutput output,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(request);
+		ArgumentNullException.ThrowIfNull(output);
+		request.Validate(requireWorkItems: false);
+		var entries = request.PreparedSourceEntries is { Count: > 0 }
+			? request.PreparedSourceEntries
+			: await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
 		var removals = await GetSourceUnitAndCompositeRemovalsAsync(entries, cancellationToken).ConfigureAwait(false);
 		var preservedSourceKeys = entries.Where(entry => !removals.Contains(entry)).Select(entry => entry.AssetKey).ToHashSet();
 		var additionalEntries = output.AdditionalEntries
@@ -96,14 +121,14 @@ public sealed record CrossArmorTargetShellPatchOperationRequest(
 	IReadOnlyList<uint>? CanonicalBoneHashOrder = null,
 	ICurrentGameStreamLayoutRegistry? StreamLayoutRegistry = null)
 {
-	public void Validate()
+	public void Validate(bool requireWorkItems = true)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(SourcePatchTocPath);
 		ArgumentException.ThrowIfNullOrWhiteSpace(OutputDirectory);
 		ArgumentNullException.ThrowIfNull(HeaderTemplateTocData);
 		ArgumentNullException.ThrowIfNull(WorkItems);
 		ArgumentNullException.ThrowIfNull(MaterialDependencies);
-		if (WorkItems.Count == 0) throw new InvalidDataException("At least one approved target Unit work item is required.");
+		if (requireWorkItems && WorkItems.Count == 0) throw new InvalidDataException("At least one approved target Unit work item is required.");
 	}
 }
 

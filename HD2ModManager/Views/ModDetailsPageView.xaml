@@ -64,6 +64,23 @@
                     <TextBlock Text="{Binding AssetTagsString}" FontFamily="Consolas" Foreground="#444" TextWrapping="Wrap" Margin="0,8,0,0"/>
                 </StackPanel>
             </Border>
+
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+                <StackPanel>
+                    <TextBlock Text="模型兼容性" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="模型过时" Foreground="{StaticResource StatusDanger}" FontWeight="SemiBold" FontSize="16" Margin="0,8,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsModelOutdated}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <TextBlock Text="{Binding UnitCompatibilitySummary}" Foreground="#555" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                </StackPanel>
+            </Border>
         </StackPanel>
     </ScrollViewer>
 </UserControl>
