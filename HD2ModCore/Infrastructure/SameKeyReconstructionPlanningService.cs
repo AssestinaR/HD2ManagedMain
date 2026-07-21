@@ -28,7 +28,10 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 	{
 		this.assetIndex = assetIndex ?? throw new ArgumentNullException(nameof(assetIndex));
 		this.planningOperation = planningOperation ?? new AdaptationSameKeyTargetShellPlanningOperation();
-		this.reconstructor = reconstructor ?? new AdaptationSdkStyleTargetShellUnitReconstructor();
+		// The writer always canonicalizes replaced target streams before encoding. The
+		// dry-run must use the same route, otherwise legacy target skinning declarations
+		// are rejected even though the actual current-target output is encodable.
+		this.reconstructor = reconstructor ?? new AdaptationSdkStyleTargetShellUnitReconstructor(planCanonicalSkinningLayout: true);
 	}
 
 	public async ValueTask<SameKeyReconstructionPlan> CreatePlanAsync(

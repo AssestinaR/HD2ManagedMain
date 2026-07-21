@@ -498,6 +498,29 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 	}
 
 	[Fact]
+	public void CanonicalSkinningReconstructor_ReencodesLegacyTargetSkinningFormats()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1);
+		var targetModel = CreateModel(vertexSeed: 1, meshCount: 1) with
+		{
+			Streams = [new UnitStreamInfo(0, 128, 0, 4, 0, 3, 32, 0, 3, 0, 0, 0, 0, 0,
+			[
+				new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+				new UnitStreamComponentInfo(7, "bone_weight", 999, "unknown", 0, 0, 8),
+				new UnitStreamComponentInfo(6, "bone_index", 998, "unknown", 0, 0, 4)
+			])]
+		};
+		var target = CreateTargetUnit(targetModel);
+
+		var result = new SdkStyleTargetShellUnitReconstructor(planCanonicalSkinningLayout: true).Reconstruct(
+			target, [CreatePatchUnit(SourceKey, sourceModel)], [new TargetShellMeshMapping(SourceKey, 0, 0)]);
+
+		var stream = Assert.Single(result.Model.Streams);
+		Assert.Contains(stream.Components, component => component.Type == 7 && component.FormatName == "vec4_half");
+		Assert.Contains(stream.Components, component => component.Type == 6 && component.FormatName == "vec4_uint8");
+	}
+
+	[Fact]
 	public void TargetBakeDryRun_DoesNotRejectThreeInfluenceSourceBecauseTargetHasTwoWeights()
 	{
 		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with

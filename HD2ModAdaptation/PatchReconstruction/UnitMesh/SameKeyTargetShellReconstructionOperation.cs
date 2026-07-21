@@ -24,7 +24,8 @@ public sealed class SameKeyTargetShellReconstructionOperation
 		this.unitReader = unitReader ?? new PatchUnitMeshReader();
 		this.payloadReader = payloadReader ?? new PatchEntryPayloadReader();
 		this.archiveWriter = archiveWriter ?? new PatchArchiveWriter(this.scanner, this.payloadReader);
-		this.outputBuilder = outputBuilder ?? new SdkStyleTargetShellPatchOutputBuilder();
+		this.outputBuilder = outputBuilder ?? new SdkStyleTargetShellPatchOutputBuilder(
+			new SdkStyleTargetShellUnitReconstructor(planCanonicalSkinningLayout: true));
 	}
 
 	public async ValueTask<SameKeyTargetShellReconstructionResult> ExecuteAsync(

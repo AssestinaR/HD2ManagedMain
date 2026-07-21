@@ -375,6 +375,12 @@ namespace HD2ModManager
             e.Handled = true;
         }
 
+        private void OnCopySelectedMessagesClick(object sender, RoutedEventArgs e)
+        {
+            if (DataContext is ShellViewModel shell) shell.CopySelectedMessagesCommand.Execute(MessageList.SelectedItems);
+            e.Handled = true;
+        }
+
         private static void ScrollMessagesToEnd(ListBox listBox)
         {
             if (listBox.Items.Count == 0) return;

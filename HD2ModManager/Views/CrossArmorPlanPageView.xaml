@@ -24,14 +24,14 @@
                 </Grid.RowDefinitions>
                 <Border Grid.Row="0" Style="{StaticResource CardContainer}">
                     <StackPanel>
-                        <TextBlock Text="更换护甲 Mod：计划" Style="{StaticResource AppCardTitle}"/>
-                        <TextBlock Text="此页只规划来源与目标。候选仅写入独立空目录，不修改源 Mod、库或部署。" Style="{StaticResource AppSupportingText}" Margin="0,4,0,0"/>
+                        <TextBlock Text="替换模型到选择的护甲" Style="{StaticResource AppCardTitle}"/>
+                        <TextBlock Text="此页只替换护甲，并将文件默认输出到管理器内/Output文件夹" Style="{StaticResource AppSupportingText}" Margin="0,4,0,0"/>
                         <TextBlock Text="{Binding PlanState}" Foreground="{StaticResource StatusSuccess}" Margin="0,6,0,0" TextWrapping="Wrap"/>
                         <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="78"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="来源 Armor" VerticalAlignment="Center"/><ComboBox Style="{StaticResource AppComboBox}" Grid.Column="1" ItemsSource="{Binding SourceArmorChoices}" DisplayMemberPath="Display" SelectedValuePath="Entry" SelectedValue="{Binding SelectedSourceArmor}"/></Grid>
                         <Grid Margin="0,7,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="78"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="来源 Helmet" VerticalAlignment="Center"/><ComboBox Style="{StaticResource AppComboBox}" Grid.Column="1" ItemsSource="{Binding SourceHelmetChoices}" DisplayMemberPath="Display" SelectedValuePath="Entry" SelectedValue="{Binding SelectedSourceHelmet}"/></Grid>
                         <Grid Margin="0,7,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="78"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="来源身形" VerticalAlignment="Center"/><ComboBox Style="{StaticResource AppComboBox}" Grid.Column="1" SelectedValuePath="Tag" SelectedValue="{Binding SelectedSourceBodyVariant}"><ComboBoxItem Content="任意" Tag="{x:Static analysis:UnitMeshBodyVariant.Any}"/><ComboBoxItem Content="Slim" Tag="{x:Static analysis:UnitMeshBodyVariant.Slim}"/><ComboBoxItem Content="Stocky" Tag="{x:Static analysis:UnitMeshBodyVariant.Stocky}"/></ComboBox></Grid>
                         <Grid Margin="0,7,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="78"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="输出目录" VerticalAlignment="Center"/><Grid Grid.Column="1"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox Style="{StaticResource AppTextBox}" Text="{Binding CandidateOutput.OutputDirectory}" IsReadOnly="True"/><Button Style="{StaticResource AppSecondaryButton}" Grid.Column="1" Content="浏览..." Margin="8,0,0,0" Click="OnBrowseOutputClick"/></Grid></Grid>
-                        <Button Style="{StaticResource AppPrimaryButton}" Content="生成验证候选" Command="{Binding CandidateOutput.GenerateCommand}" IsEnabled="{Binding CandidateOutput.CanGenerate}" HorizontalAlignment="Left" Margin="78,8,0,0"/>
+                        <Button Style="{StaticResource AppPrimaryButton}" Content="生成" Command="{Binding CandidateOutput.GenerateCommand}" IsEnabled="{Binding CandidateOutput.CanGenerate}" HorizontalAlignment="Left" Margin="78,8,0,0"/>
                         <TextBlock Text="{Binding CandidateOutput.State}" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0"/>
                     </StackPanel>
                 </Border>
@@ -86,7 +86,7 @@
                     <DockPanel>
                         <Button Style="{StaticResource AppSecondaryButton}" DockPanel.Dock="Right" Content="刷新计划" Command="{Binding RefreshPlanCommand}"/>
                         <ComboBox Style="{StaticResource AppCompactComboBox}" DockPanel.Dock="Right" Width="185" ItemsSource="{Binding TargetArchiveFilters}" SelectedItem="{Binding SelectedTargetArchiveFilter}" DisplayMemberPath="DisplayName" Margin="0,0,8,0" ToolTip="仅从已经选择的目标 archive 筛选"/>
-                        <TextBlock Text="目标预测（替换或极小化）" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <TextBlock Text="目标预测" FontWeight="SemiBold" VerticalAlignment="Center"/>
                     </DockPanel>
                 </Border>
                 <DataGrid Grid.Row="1" Style="{StaticResource DataTableGrid}" ItemsSource="{Binding FilteredTargetMappings}" SelectedItem="{Binding SelectedTargetMapping, Mode=TwoWay}">

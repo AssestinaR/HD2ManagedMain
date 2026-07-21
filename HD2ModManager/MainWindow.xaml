@@ -255,23 +255,34 @@
                 </StackPanel>
             </Border>
 
-            <Border x:Name="MessageCenterPanel" Style="{StaticResource AppElevatedPanel}" HorizontalAlignment="Right" VerticalAlignment="Top" Width="360" MaxHeight="520" Margin="0,0,12,0"
-                    Padding="8" Panel.ZIndex="20" RenderTransformOrigin="0.5,0"
+            <Border x:Name="MessageCenterPanel" Style="{StaticResource AppElevatedPanel}" HorizontalAlignment="Right" VerticalAlignment="Top" Width="420" MaxHeight="560" Margin="0,0,4,0"
+                    Padding="3" Panel.ZIndex="20" RenderTransformOrigin="0.5,0"
                     Visibility="Collapsed">
                 <Border.RenderTransform><TranslateTransform Y="0"/></Border.RenderTransform>
                 <Grid>
-                    <ListBox x:Name="MessageList" ItemsSource="{Binding MessageItems}" Style="{StaticResource ModListBox}" BorderThickness="0" SelectionMode="Extended" Loaded="OnMessageListLoaded">
+					<Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+					<DockPanel Margin="4,2,2,2">
+						<TextBlock Text="消息" FontWeight="SemiBold" VerticalAlignment="Center"/>
+						<Button DockPanel.Dock="Right" Style="{StaticResource AppQuietButton}" Content="复制所选" Padding="7,3" Click="OnCopySelectedMessagesClick"/>
+					</DockPanel>
+                    <ListBox Grid.Row="1" x:Name="MessageList" ItemsSource="{Binding MessageItems}" Style="{StaticResource ModListBox}" BorderThickness="0" SelectionMode="Extended" Loaded="OnMessageListLoaded" Padding="0">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Border Style="{StaticResource ModListRowContainer}" Height="Auto" Padding="8" Margin="0,2">
+                                <Border Style="{StaticResource ModListRowContainer}" Height="Auto" Padding="5,4" Margin="0,1">
+									<Border.ContextMenu>
+										<ContextMenu>
+											<MenuItem Header="复制消息" Command="{Binding DataContext.CopyMessageCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"/>
+										</ContextMenu>
+									</Border.ContextMenu>
                                     <Grid>
-                                        <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <Path Grid.Column="0" Width="16" Height="16" VerticalAlignment="Center" Data="M8,2 A6,6 0 1 0 8,14 A6,6 0 1 0 8,2 M8,5 L8,9 M8,11 L8,11.2" Stroke="{StaticResource Accent}" StrokeThickness="1.4" StrokeStartLineCap="Round"/>
                                         <StackPanel Grid.Column="1">
                                             <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                             <TextBlock Text="{Binding Detail}" Foreground="{StaticResource TextSecondary}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
                                         </StackPanel>
                                         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+											<Button Style="{StaticResource AppQuietButton}" Content="复制" Padding="6,2" Command="{Binding DataContext.CopyMessageCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"/>
                                             <Button Style="{StaticResource AppQuietButton}" Content="取消" Command="{Binding DataContext.CancelTaskCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}"/>
                                             <Button Style="{StaticResource AppQuietButton}" Content="重试" Command="{Binding DataContext.RetryTaskCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding CanRetry, Converter={StaticResource BoolToVis}}"/>
                                         </StackPanel>
@@ -283,16 +294,16 @@
                 </Grid>
             </Border>
 
-            <Border x:Name="MessagePreviewPanel" Style="{StaticResource AppElevatedPanel}" HorizontalAlignment="Right" VerticalAlignment="Top" Width="360" Height="50" Margin="0,0,12,0"
-                    Padding="8" Panel.ZIndex="19" ClipToBounds="True" Cursor="Hand"
+                <Border x:Name="MessagePreviewPanel" Style="{StaticResource AppElevatedPanel}" HorizontalAlignment="Right" VerticalAlignment="Top" Width="420" Height="42" Margin="0,0,4,0"
+                    Padding="3" Panel.ZIndex="19" ClipToBounds="True" Cursor="Hand"
                     Visibility="Collapsed" RenderTransformOrigin="0.5,0"
                     MouseLeftButtonDown="OnMessagePreviewClick">
                 <Border.RenderTransform><TranslateTransform Y="0"/></Border.RenderTransform>
                 <ContentControl Content="{Binding LatestMessageItem}" IsHitTestVisible="False">
                     <ContentControl.ContentTemplate>
                         <DataTemplate>
-                            <Grid Margin="4">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <Grid Margin="2,0">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Path Grid.Column="0" Width="14" Height="14" VerticalAlignment="Center" Data="M7,1.5 A5.5,5.5 0 1 0 7,12.5 A5.5,5.5 0 1 0 7,1.5 M7,4 L7,7.5 M7,9.5 L7,9.7" Stroke="{StaticResource Accent}" StrokeThickness="1.3" StrokeStartLineCap="Round"/>
                                 <StackPanel Grid.Column="1">
                                     <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>

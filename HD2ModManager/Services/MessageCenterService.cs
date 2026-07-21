@@ -28,6 +28,7 @@ namespace HD2ModManager.Services
         public bool CanCancel => _task?.CanCancel == true;
         public bool CanRetry => _task?.CanRetry == true;
         public BackgroundTaskItem? Task => _task;
+		public string CopyText => string.IsNullOrWhiteSpace(Detail) ? Title : $"{Title}{Environment.NewLine}{Detail}";
     }
 
     public sealed class MessageCenterService

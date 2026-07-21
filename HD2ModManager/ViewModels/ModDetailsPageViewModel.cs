@@ -35,6 +35,7 @@ namespace HD2ModManager.ViewModels
 		private bool _sameKeyReconstructionRunning;
         private bool _advancedAnalysisRunning;
         private bool _advancedAnalysisReady;
+		private bool _advancedAnalysisHasEquipment;
 		private bool _dependencyGraphTestRunning;
         private bool _dependencyGraphComparisonRunning;
         private readonly IAdvancedModAssetQueryService _advancedAssetQueryService;
@@ -69,14 +70,15 @@ namespace HD2ModManager.ViewModels
 		public string AdvancedAnalysisSummary { get; private set; } = "正在检查高级缓存。";
         public string DependencyGraphTestSummary { get; private set; } = "仅读取 Unit 材质绑定表与 Material 贴图表；结果会写入 logs。";
         public string DependencyGraphComparisonSummary { get; private set; } = "可用完整 Unit 解析对比轻量引用链的去重关系集合。";
-        public bool CanRunAdvancedAnalysis => !_disposed && !_advancedAnalysisRunning && TryGetCurrentNode(out _);
+        public bool CanRunAdvancedAnalysis => !_disposed && !_advancedAnalysisRunning && HasPatchGroups && TryGetCurrentNode(out _);
 		public bool CanRunDependencyGraphTest => !_disposed && !_dependencyGraphTestRunning && TryGetCurrentNode(out _);
         public bool CanCompareDependencyGraph => !_disposed && !_dependencyGraphComparisonRunning && TryGetCurrentNode(out _);
-        public bool CanSplitEmbeddedMaterials => !_disposed && TryGetCurrentNode(out _);
+        public bool CanSplitEmbeddedMaterials => !_disposed && _materialState is { HasEmbeddedMaterials: true } && TryGetCurrentNode(out _);
         public bool CanReplaceEmbeddedMaterials => !_disposed && TryGetCurrentNode(out _);
         public bool CanEmbedExternalMaterials => !_disposed && TryGetCurrentNode(out _);
-		public bool CanRebuildSameKey => !_disposed && !_sameKeyReconstructionRunning && _advancedAnalysisReady && TryGetCurrentNode(out _);
-		public bool CanPlanCrossArmorTransfer => !_disposed && _advancedAnalysisReady && TryGetCurrentNode(out _);
+        public bool CanRebuildSameKey => !_disposed && !_sameKeyReconstructionRunning && _advancedAnalysisReady && _advancedAnalysisHasEquipment && TryGetCurrentNode(out _);
+        public bool CanPlanCrossArmorTransfer => !_disposed && _advancedAnalysisReady && _advancedAnalysisHasEquipment && TryGetCurrentNode(out _);
+        private bool HasPatchGroups => Mod?.FileGroups?.Count > 0;
         public ObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
         public bool AdvancedOnlyIssues { get => _advancedOnlyIssues; set { if (SetField(ref _advancedOnlyIssues, value)) ApplyAdvancedAssetFilter(); } }
@@ -175,6 +177,8 @@ namespace HD2ModManager.ViewModels
                 var state = await _advancedAnalysis.GetStateAsync(node, _library.ModsRootDirectory);
                 if (_disposed) return;
                 _advancedAnalysisReady = state.IsReady;
+				if (state.IsReady) await RefreshAdvancedEquipmentStateAsync(node).ConfigureAwait(false);
+				else _advancedAnalysisHasEquipment = false;
                 AdvancedAnalysisSummary = state.IsReady
                     ? $"高级缓存已就绪：{state.BuiltUtc:yyyy-MM-dd HH:mm:ss}。"
                     : "尚未执行高级分析。Unit 更新和更换护甲计划已禁用；材质操作可直接使用轻量引用图。";
@@ -182,6 +186,7 @@ namespace HD2ModManager.ViewModels
             catch (Exception exception)
             {
                 _advancedAnalysisReady = false;
+				_advancedAnalysisHasEquipment = false;
                 AdvancedAnalysisSummary = $"高级缓存状态读取失败：{exception.Message}";
             }
             RunOnUiThread(() =>
@@ -208,11 +213,13 @@ namespace HD2ModManager.ViewModels
                     ? $"高级分析完成：{result.BuiltUtc:yyyy-MM-dd HH:mm:ss}。"
                     : $"高级分析完成，但发现 {result.Issues.Count} 项读取提醒。";
                 _advancedAnalysisReady = result.IsReady;
+                await RefreshAdvancedEquipmentStateAsync(node).ConfigureAwait(false);
                 await RefreshAdvancedDetailsAsync();
             }
             catch (Exception exception)
             {
                 _advancedAnalysisReady = false;
+				_advancedAnalysisHasEquipment = false;
                 AdvancedAnalysisSummary = $"高级分析失败：{exception.Message}";
                 _notifications?.Show(AdvancedAnalysisSummary, NotificationLevel.Error, TimeSpan.FromSeconds(10));
             }
@@ -224,6 +231,25 @@ namespace HD2ModManager.ViewModels
                 RunAdvancedAnalysisCommand.RaiseCanExecuteChanged();
                 RaiseMaterialCommandStates();
                 RaiseSameKeyReconstructionCommandState();
+            }
+        }
+
+        private async Task RefreshAdvancedEquipmentStateAsync(ModNode node)
+        {
+            try
+            {
+                var analyses = await _advancedAnalysis.GetRequiredAnalysesAsync(node, _library.ModsRootDirectory).ConfigureAwait(false);
+                var unitKeys = analyses.SelectMany(analysis => analysis.Assets)
+                    .Where(asset => asset.AssetKey.TypeId == 0xe0a48d0be9a7453f)
+                    .Select(asset => new AssetKey(asset.AssetKey.TypeId, asset.AssetKey.FileId))
+                    .ToHashSet();
+                var entries = await _equipmentUnitCatalog.GetEntriesAsync(unitKeys).ConfigureAwait(false);
+                _advancedAnalysisHasEquipment = entries.Any(entry => string.Equals(entry.Category, "Armor", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(entry.Category, "Helmet", StringComparison.OrdinalIgnoreCase));
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+            {
+                _advancedAnalysisHasEquipment = false;
             }
         }
 
@@ -528,6 +554,7 @@ namespace HD2ModManager.ViewModels
 			OnPropertyChanged(nameof(MaterialDeliverySummary));
             OnPropertyChanged(nameof(SameKeyReconstructionSummary));
 			OnPropertyChanged(nameof(AdvancedAnalysisSummary));
+            OnPropertyChanged(nameof(CanRunAdvancedAnalysis));
 			OnPropertyChanged(nameof(DependencyGraphTestSummary));
 			OnPropertyChanged(nameof(CanPlanCrossArmorTransfer));
             RaiseMaterialCommandStates();

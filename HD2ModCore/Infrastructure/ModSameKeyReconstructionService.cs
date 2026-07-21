@@ -46,9 +46,9 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 		ArgumentNullException.ThrowIfNull(source);
 		var issues = new List<CoreIssue>();
 		var patchPaths = FindBasePatchPaths(source, modsRootDirectory);
-		if (patchPaths.Count != 1)
+		if (patchPaths.Count == 0)
 		{
-			issues.Add(Error("SinglePatchRequired", patchPaths.Count == 0 ? "Mod 没有 Patch 主文件。" : "当前重建仅支持只含一个 Patch 文件组的 Mod。", source.Id));
+			issues.Add(Error("PatchRequired", "Mod 没有 Patch 主文件。", source.Id));
 			return CreateState(source.Id, null, null, false, issues);
 		}
 		if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory))
@@ -75,16 +75,12 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 
 		try
 		{
-			var plan = await CreatePlanAsync(source, patchPaths[0], gameDataDirectory, modsRootDirectory, cancellationToken).ConfigureAwait(false);
-			issues.AddRange(plan.Issues);
-			foreach (var unit in plan.Units)
+			foreach (var patchPath in patchPaths)
 			{
-				issues.AddRange(unit.Issues);
-				if (!unit.HasFullTargetShellCoverage) issues.Add(Error("IncompleteTargetShell", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 未覆盖全部 current target mesh。", source.Id));
-				if (unit.HasExperimentalCandidate) issues.Add(Error("ExperimentalMeshMapping", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 包含实验性 mesh mapping；正式第一版不会写出。", source.Id));
-				if (unit.TargetArchive is null) issues.Add(Error("SelectedArchiveMissing", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 没有可读的 current target archive。", source.Id));
+				var plan = await CreatePlanAsync(source, patchPath, gameDataDirectory, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+				CollectPlanIssues(plan, source.Id, issues);
 			}
-			return CreateState(source.Id, patchPaths[0], plan, true, issues);
+			return CreateState(source.Id, patchPaths[0], null, true, issues);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException or OverflowException)
 		{
@@ -103,9 +99,9 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 		if (string.IsNullOrWhiteSpace(outputRootDirectory)) return Failure(new[] { Error("OutputDirectoryMissing", "必须选择输出文件夹。", source.Id) });
 		var issues = new List<CoreIssue>();
 		var patchPaths = FindBasePatchPaths(source, modsRootDirectory);
-		if (patchPaths.Count != 1)
+		if (patchPaths.Count == 0)
 		{
-			issues.Add(Error("SinglePatchRequired", patchPaths.Count == 0 ? "Mod 没有 Patch 主文件。" : "当前重建仅支持只含一个 Patch 文件组的 Mod。", source.Id));
+			issues.Add(Error("PatchRequired", "Mod 没有 Patch 主文件。", source.Id));
 			return Failure(issues);
 		}
 		if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory))
@@ -130,17 +126,14 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 			return Failure(issues);
 		}
 
-		SameKeyReconstructionPlan plan;
+		var plans = new List<(string PatchPath, SameKeyReconstructionPlan Plan)>();
 		try
 		{
-			plan = await CreatePlanAsync(source, patchPaths[0], gameDataDirectory, modsRootDirectory, cancellationToken).ConfigureAwait(false);
-			issues.AddRange(plan.Issues);
-			foreach (var unit in plan.Units)
+			foreach (var patchPath in patchPaths)
 			{
-				issues.AddRange(unit.Issues);
-				if (!unit.HasFullTargetShellCoverage) issues.Add(Error("IncompleteTargetShell", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 未覆盖全部 current target mesh。", source.Id));
-				if (unit.HasExperimentalCandidate) issues.Add(Error("ExperimentalMeshMapping", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 包含实验性 mesh mapping；正式第一版不会写出。", source.Id));
-				if (unit.TargetArchive is null) issues.Add(Error("SelectedArchiveMissing", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 没有可读的 current target archive。", source.Id));
+				var plan = await CreatePlanAsync(source, patchPath, gameDataDirectory, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+				plans.Add((patchPath, plan));
+				CollectPlanIssues(plan, source.Id, issues);
 			}
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException or OverflowException)
@@ -148,20 +141,22 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 			issues.Add(Error("SameKeyPlanFailed", exception.Message, source.Id, exception));
 			return Failure(issues);
 		}
-		if (plan.SourceUnitCount == 0 || issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
+		if (plans.All(item => item.Plan.SourceUnitCount == 0) || issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
 
-		var sourcePath = patchPaths[0];
-		var state = CreateState(source.Id, sourcePath, plan, true, issues);
 		var outputDirectory = CreateOutputDirectory(outputRootDirectory, source.Metadata.Name);
 		try
 		{
 			Directory.CreateDirectory(outputDirectory);
-			var preparedEntries = await GetPreparedSourceEntriesAsync(source, sourcePath, modsRootDirectory, cancellationToken).ConfigureAwait(false);
-			var request = new AdaptationSameKeyTargetShellReconstructionRequest(
-				sourcePath,
-				gameDataDirectory,
-				outputDirectory,
-				plan.Units.Select(unit =>
+			var executions = new List<(SameKeyReconstructionPlan Plan, HD2ModAdaptation.PatchReconstruction.PatchArchiveFileWriteResult Write)>();
+			foreach (var (sourcePath, plan) in plans)
+			{
+				if (plan.SourceUnitCount == 0) continue;
+				var preparedEntries = await GetPreparedSourceEntriesAsync(source, sourcePath, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+				var request = new AdaptationSameKeyTargetShellReconstructionRequest(
+					sourcePath,
+					gameDataDirectory,
+					outputDirectory,
+					plan.Units.Select(unit =>
 				{
 					var targetArchive = unit.TargetArchive ?? throw new InvalidDataException($"Unit 0x{unit.UnitAssetKey.FileId:x16} has no selected target archive.");
 					var unitKey = new AdaptationAssetKey(unit.UnitAssetKey.TypeId, unit.UnitAssetKey.FileId);
@@ -170,16 +165,29 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 						.Select(step => new AdaptationTargetShellMeshMapping(unitKey, step.SourceMeshInfoIndex ?? throw new InvalidDataException("Replacement step lacks source mesh index."), step.TargetMeshInfoIndex))
 						.ToArray();
 					return new AdaptationSameKeyTargetShellReconstructionUnit(unitKey, targetArchive.ArchiveId, mappings);
-				}).ToArray(),
-			preparedEntries.Select(ToAdaptationEntry).ToArray());
-			var execution = await reconstructionOperation.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
-			var report = await WriteReportAsync(outputDirectory, source, state, execution.WriteResult, cancellationToken).ConfigureAwait(false);
-			await WriteFormalValidationChecklistAsync(outputDirectory, source, state, cancellationToken).ConfigureAwait(false);
-			return new SameKeyReconstructionOperationResult(true, outputDirectory, report.JsonPath, report.MarkdownPath, execution.UnitCount, execution.UnitsWithReplacements, execution.MinifyOnlyUnitCount, execution.ReplacementMeshCount, execution.MinifiedMeshCount, state.Issues);
+					}).ToArray(),
+					preparedEntries.Select(ToAdaptationEntry).ToArray());
+				var execution = await reconstructionOperation.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+				executions.Add((plan, execution.WriteResult));
+			}
+			var report = await WriteMultiPatchReportAsync(outputDirectory, source, executions, issues, cancellationToken).ConfigureAwait(false);
+			return new SameKeyReconstructionOperationResult(true, outputDirectory, report.JsonPath, report.MarkdownPath, executions.Sum(item => item.Plan.SourceUnitCount), executions.Sum(item => item.Plan.Units.Count(unit => unit.Adaptation?.ReplacementCount > 0)), executions.Sum(item => item.Plan.Units.Count(unit => unit.Adaptation?.ReplacementCount == 0)), executions.Sum(item => item.Plan.Units.Sum(unit => unit.Adaptation?.ReplacementCount ?? 0)), executions.Sum(item => item.Plan.Units.Sum(unit => unit.Adaptation?.MinifiedCount ?? 0)), issues);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException or OverflowException)
 		{
-			return Failure(state.Issues.Concat(new[] { Error("SameKeyWriteFailed", exception.Message, source.Id, exception) }).ToArray(), outputDirectory);
+			return Failure(issues.Concat(new[] { Error("SameKeyWriteFailed", exception.Message, source.Id, exception) }).ToArray(), outputDirectory);
+		}
+	}
+
+	private static void CollectPlanIssues(SameKeyReconstructionPlan plan, ModNodeId nodeId, List<CoreIssue> issues)
+	{
+		issues.AddRange(plan.Issues);
+		foreach (var unit in plan.Units)
+		{
+			issues.AddRange(unit.Issues);
+			if (!unit.HasFullTargetShellCoverage) issues.Add(Error("IncompleteTargetShell", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 未覆盖全部 current target mesh。", nodeId));
+			if (unit.HasExperimentalCandidate) issues.Add(Error("ExperimentalMeshMapping", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 包含实验性 mesh mapping；正式第一版不会写出。", nodeId));
+			if (unit.TargetArchive is null) issues.Add(Error("SelectedArchiveMissing", $"Unit 0x{unit.UnitAssetKey.FileId:x16} 没有可读的 current target archive。", nodeId));
 		}
 	}
 
@@ -229,6 +237,54 @@ public sealed class ModSameKeyReconstructionService : IModSameKeyReconstructionS
 		{
 			markdown.AppendLine().AppendLine("## Notices");
 			foreach (var issue in state.Issues) markdown.AppendLine($"- {issue.Severity}: {issue.Code} — {issue.Message}");
+		}
+		await File.WriteAllTextAsync(markdownPath, markdown.ToString(), cancellationToken).ConfigureAwait(false);
+		return (jsonPath, markdownPath);
+	}
+
+	private static async ValueTask<(string JsonPath, string MarkdownPath)> WriteMultiPatchReportAsync(
+		string outputDirectory,
+		ModNode source,
+		IReadOnlyList<(SameKeyReconstructionPlan Plan, HD2ModAdaptation.PatchReconstruction.PatchArchiveFileWriteResult Write)> executions,
+		IReadOnlyList<CoreIssue> issues,
+		CancellationToken cancellationToken)
+	{
+		var outputs = new List<object>();
+		foreach (var (plan, write) in executions)
+		{
+			outputs.Add(new
+			{
+				SourcePatch = plan.Request.SourcePatchTocPath,
+				Output = new { write.TocFilePath, write.StreamFilePath, write.GpuResourceFilePath, TocSha256 = await HashFileAsync(write.TocFilePath, cancellationToken).ConfigureAwait(false) },
+				Units = plan.Units.Select(unit => new { AssetKey = $"0x{unit.UnitAssetKey.FileId:x16}", Archive = unit.TargetArchive?.ArchiveId, ReplacementMeshes = unit.Adaptation?.ReplacementCount ?? 0, MinifiedMeshes = unit.Adaptation?.MinifiedCount ?? 0 }).ToArray()
+			});
+		}
+		var jsonPath = Path.Combine(outputDirectory, "reconstruction-report.json");
+		var markdownPath = Path.Combine(outputDirectory, "reconstruction-report.md");
+		await File.WriteAllTextAsync(jsonPath, JsonSerializer.Serialize(new
+		{
+			SourceMod = source.Metadata.Name,
+			GeneratedUtc = DateTimeOffset.UtcNow,
+			PatchCount = outputs.Count,
+			Outputs = outputs,
+			Issues = issues.Select(issue => new { Severity = issue.Severity.ToString(), issue.Code, issue.Message })
+		}, new JsonSerializerOptions { WriteIndented = true }), cancellationToken).ConfigureAwait(false);
+		var markdown = new StringBuilder()
+			.AppendLine("# Same-AssetKey reconstruction report")
+			.AppendLine()
+			.AppendLine($"- Source Mod: {source.Metadata.Name}")
+			.AppendLine($"- Rebuilt Patch groups: {executions.Count}")
+			.AppendLine("- Each source Patch group is rebuilt into its own output Patch group; Patch shells are not merged.")
+			.AppendLine()
+			.AppendLine("## Outputs");
+		foreach (var (plan, write) in executions)
+		{
+			markdown.AppendLine($"- {Path.GetFileName(plan.Request.SourcePatchTocPath)} -> {Path.GetFileName(write.TocFilePath)}; Units {plan.SourceUnitCount}; replacement {plan.Units.Sum(unit => unit.Adaptation?.ReplacementCount ?? 0)}; minify {plan.Units.Sum(unit => unit.Adaptation?.MinifiedCount ?? 0)}");
+		}
+		if (issues.Count != 0)
+		{
+			markdown.AppendLine().AppendLine("## Notices");
+			foreach (var issue in issues) markdown.AppendLine($"- {issue.Severity}: {issue.Code} — {issue.Message}");
 		}
 		await File.WriteAllTextAsync(markdownPath, markdown.ToString(), cancellationToken).ConfigureAwait(false);
 		return (jsonPath, markdownPath);

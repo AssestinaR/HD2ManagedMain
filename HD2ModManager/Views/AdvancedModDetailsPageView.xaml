@@ -6,7 +6,7 @@
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
                 <StackPanel>
                     <TextBlock Text="{Binding Name}" Style="{StaticResource AppPageTitle}" TextTrimming="CharacterEllipsis"/>
-                    <TextBlock Text="稳定资产事实只读展示；Profile 状态和诊断为当前配置投影。" Style="{StaticResource AppSupportingText}" Margin="0,4,0,0"/>
+                    <TextBlock Text="高级功能。" Style="{StaticResource AppSupportingText}" Margin="0,4,0,0"/>
                 </StackPanel>
             </Border>
 
@@ -87,10 +87,6 @@
                         <DataGridTextColumn Header="GPU" Binding="{Binding GpuBytes}" Width="0.6*"/>
                     </DataGrid.Columns>
                 </DataGrid>
-            </Border>
-
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
-                <StackPanel><TextBlock Text="文件与解析诊断" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding FileIntegritySummary}" FontFamily="Consolas" TextWrapping="Wrap" Margin="0,8,0,0"/></StackPanel>
             </Border>
         </StackPanel>
     </ScrollViewer>

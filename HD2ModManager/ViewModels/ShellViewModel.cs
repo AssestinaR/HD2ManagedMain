@@ -96,6 +96,8 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ToggleMessagePanelCommand { get; }
         public RelayCommand CancelTaskCommand { get; }
         public RelayCommand RetryTaskCommand { get; }
+        public RelayCommand CopyMessageCommand { get; }
+        public RelayCommand CopySelectedMessagesCommand { get; }
 
         public bool IsHomeActive => CurrentMode == WorkspaceMode.Home;
         public bool IsProfileActive => CurrentMode == WorkspaceMode.ProfileOnly;
@@ -206,6 +208,8 @@ namespace HD2ModManager.ViewModels
             ToggleMessagePanelCommand = new RelayCommand(ToggleMessagePanel);
             CancelTaskCommand = new RelayCommand(CancelTask, task => task is BackgroundTaskItem { CanCancel: true });
             RetryTaskCommand = new RelayCommand(async task => await RetryTaskAsync(task), task => task is BackgroundTaskItem { CanRetry: true });
+            CopyMessageCommand = new RelayCommand(CopyMessage, item => item is MessageCenterItem);
+            CopySelectedMessagesCommand = new RelayCommand(CopySelectedMessages, items => items is System.Collections.IEnumerable);
             _selection.SelectionChanged += (_, _) => RaiseSelectionFlags();
 
             Navigate(WorkspaceMode.Home);
@@ -752,6 +756,18 @@ namespace HD2ModManager.ViewModels
         private void ToggleMessagePanel()
         {
             if (IsMessagePanelOpen) CloseMessagePanel(); else OpenMessagePanel();
+        }
+
+        private static void CopyMessage(object? value)
+        {
+            if (value is MessageCenterItem item && !string.IsNullOrWhiteSpace(item.CopyText)) System.Windows.Clipboard.SetText(item.CopyText);
+        }
+
+        private static void CopySelectedMessages(object? value)
+        {
+            if (value is not System.Collections.IEnumerable items) return;
+            var text = string.Join(Environment.NewLine + Environment.NewLine, items.Cast<object>().OfType<MessageCenterItem>().Select(item => item.CopyText));
+            if (!string.IsNullOrWhiteSpace(text)) System.Windows.Clipboard.SetText(text);
         }
 
         private static void CancelTask(object? parameter)
