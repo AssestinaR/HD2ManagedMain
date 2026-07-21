@@ -89,6 +89,91 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 	}
 
 	[Fact]
+	public void Reencode_CanonicalTargetBake_OmitsInactiveSourcePaletteBones()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with
+		{
+			TransformNameHashes = [101, 102, 103],
+			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [IdentityMatrix(), IdentityMatrix(), IdentityMatrix()], Array.Empty<UnitTransformEntry>(), [101, 102, 103]),
+			Streams = [CreateSkinnedStream()],
+			BoneInfos = [new UnitBoneInfo(0, 0, 0, 0, 0, 0, [2, 0, 1], [new UnitBoneRemap(0, 0, [1, 2, 0])])],
+			RawMeshData = [CreateSkinnedRawMesh()]
+		};
+		var targetModel = sourceModel with
+		{
+			BoneInfos = [new UnitBoneInfo(0, 0, 0, 0, 0, 0, [0, 1, 2], [new UnitBoneRemap(0, 0, [0, 1, 2])])]
+		};
+
+		var result = new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true, canonicalBoneHashOrder: [102, 103, 101]).Reencode(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal(new uint[] { 0 }, result.RebuiltTargetBoneInfo.RealIndices);
+		Assert.Equal(new uint[] { 0 }, Assert.Single(result.RebuiltTargetBoneInfo.Remaps).FakeIndices);
+	}
+
+	[Fact]
+	public void Reencode_CanonicalTargetBake_PreservesAnExtraEmptyTargetSection()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with
+		{
+			TransformNameHashes = [101, 102],
+			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [IdentityMatrix(), IdentityMatrix()], Array.Empty<UnitTransformEntry>(), [101, 102]),
+			Streams = [CreateSkinnedStream()],
+			BoneInfos = [new UnitBoneInfo(0, 0, 0, 0, 0, 0, [0, 1], [new UnitBoneRemap(0, 0, [0, 1]), new UnitBoneRemap(1, 0, Array.Empty<uint>())])],
+			RawMeshData = [CreateSkinnedRawMesh()]
+		};
+		var sourceSection = sourceModel.RawMeshData[0].Sections[0];
+		var targetModel = sourceModel with
+		{
+			RawMeshData = [sourceModel.RawMeshData[0] with { Sections = [sourceSection, new UnitRawMeshSectionData(1, 21, Array.Empty<UnitTriangleIndices>())] }]
+		};
+
+		var result = new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true, canonicalBoneHashOrder: [101, 102]).Reencode(targetModel, 0, sourceModel, 0);
+
+		Assert.Equal(2, Assert.Single(result.Model.RawMeshData).Sections.Count);
+		Assert.Empty(result.Model.RawMeshData[0].Sections[1].Triangles);
+	}
+
+	[Fact]
+	public void Reencode_CanonicalTargetBake_NormalizesMultipleSourceIndexGroupsIntoCanonicalLayout()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with
+		{
+			TransformNameHashes = [101, 102],
+			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [IdentityMatrix(), IdentityMatrix()], Array.Empty<UnitTransformEntry>(), [101, 102]),
+			Streams = [new UnitStreamInfo(0, 128, 0, 4, 0, 3, 32, 0, 3, 0, 0, 0, 0, 0,
+			[
+				new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+				new UnitStreamComponentInfo(7, "bone_weight", 33, "vec4_half", 0, 0, 8),
+				new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4),
+				new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 1, 0, 4)
+			])],
+			BoneInfos = [new UnitBoneInfo(0, 0, 0, 0, 0, 0, [0, 1], [new UnitBoneRemap(0, 0, [0, 1])])],
+			RawMeshData = [CreateSkinnedRawMesh() with
+			{
+				Vertices = Enumerable.Range(0, 3).Select(index => new UnitRawVertexRecord((uint)index, Array.Empty<byte>(),
+				[
+					new UnitVertexComponentValue(0, "position", 2, "vec3_float", 0, [0f, 0f, 0f], Array.Empty<uint>(), Array.Empty<byte>()),
+					new UnitVertexComponentValue(7, "bone_weight", 33, "vec4_half", 0, [.4f, .6f, 0f, 0f], Array.Empty<uint>(), Array.Empty<byte>()),
+					new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, Array.Empty<float>(), [0u, 1u, 0u, 0u], Array.Empty<byte>()),
+					new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 1, Array.Empty<float>(), [0u, 1u, 0u, 0u], Array.Empty<byte>())
+				])).ToArray()
+			}]
+		};
+		var targetModel = sourceModel with
+		{
+			Streams = [CreateSkinnedStream()],
+			BoneInfos = [new UnitBoneInfo(0, 0, 0, 0, 0, 0, [0, 1], [new UnitBoneRemap(0, 0, [0, 1])])]
+		};
+
+		var result = new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true, canonicalBoneHashOrder: [101, 102]).Reencode(targetModel, 0, sourceModel, 0);
+		var vertex = Assert.Single(result.Model.RawMeshData).Vertices[0];
+
+		Assert.Equal(new byte[] { 1, 0, 0, 0 }, vertex.Data.Skip(20).Take(4));
+		Assert.Equal(0.6f, (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(vertex.Data, 12)), 2);
+		Assert.Equal(0.4f, (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(vertex.Data, 14)), 2);
+	}
+
+	[Fact]
 	public void Reencode_RebuildingInverseJointMatrices_SkipsUnreachableUnusedSourcePaletteBones()
 	{
 		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with
@@ -187,9 +272,19 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 			sourceRawMesh.Sections[0] with { MaterialIndex = 1, MaterialSlotId = 21, Triangles = Array.Empty<UnitTriangleIndices>() }
 		};
 		var source = CreatePatchUnit(SourceKey, sourceModel with { RawMeshData = [sourceRawMesh with { Sections = sections }] });
-		var baseTarget = CreateTargetUnit(CreateModel(vertexSeed: 1, meshCount: 1));
-		var targetRawMesh = baseTarget.Model.RawMeshData[0];
-		var target = baseTarget with { Model = baseTarget.Model with { RawMeshData = [targetRawMesh with { Sections = sections }] } };
+		var baseTargetModel = CreateModel(vertexSeed: 1, meshCount: 1);
+		var targetRawMesh = baseTargetModel.RawMeshData[0];
+		var targetModel = baseTargetModel with
+		{
+			Meshes = baseTargetModel.Meshes.Select(mesh => mesh with
+			{
+				MaterialSlotIds = [20, 21],
+				Sections = [mesh.Sections[0], mesh.Sections[0] with { MaterialIndex = 1, MaterialSlotId = 21 }]
+			}).ToArray(),
+			Materials = [new UnitMaterialBinding(20, 0x100), new UnitMaterialBinding(21, 0x101)],
+			RawMeshData = [targetRawMesh with { Sections = sections }]
+		};
+		var target = CreateTargetUnit(targetModel);
 
 		var result = new SdkStyleTargetShellUnitReconstructor().Reconstruct(
 			target,
@@ -340,7 +435,7 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 	private static GameDataUnitMesh CreateTargetUnit(UnitMeshModel model, byte[]? tocData = null)
 	{
 		var entry = new PatchTocEntry(TargetKey, "target", "target");
-		return new GameDataUnitMesh(TargetKey, "target", new PatchEntryPayload(entry, tocData ?? CreateToc(), Array.Empty<byte>(), Array.Empty<byte>()), model);
+		return new GameDataUnitMesh(TargetKey, "target", new PatchEntryPayload(entry, tocData ?? CreateToc(model.Materials.Count), Array.Empty<byte>(), Array.Empty<byte>()), model);
 	}
 
 	private static UnitMeshModel CreateModel(byte vertexSeed, int meshCount)

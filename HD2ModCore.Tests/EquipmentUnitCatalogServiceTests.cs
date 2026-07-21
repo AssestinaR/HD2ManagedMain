@@ -29,6 +29,47 @@ public sealed class EquipmentUnitCatalogServiceTests
 	}
 
 	[Fact]
+	public async Task CreatePlanAsync_AutomaticModeMatchesSlimSourceToSlimTarget()
+	{
+		var slim = Part(SourceUnit, 1, "slim") with { BodyVariant = UnitMeshBodyVariant.Slim, StoredBytes = 64 };
+		var stocky = Part(SourceUnit, 2, "stocky") with { BodyVariant = UnitMeshBodyVariant.Stocky, StoredBytes = 1024 };
+		var target = Part(TargetUnit, 3, "slim-target") with { BodyVariant = UnitMeshBodyVariant.Slim };
+
+		var plan = await CreateService().CreatePlanAsync(
+			[Entry("source", slim, stocky)], [Entry("target", target)], "source", UnitMeshBodyVariant.Any,
+			CrossArmorBodyVariantPreference.Stocky, CrossArmorLayerPreference.Armor, ["target"]);
+
+		Assert.Equal(slim, Assert.Single(plan.Mappings).Source);
+	}
+
+	[Fact]
+	public async Task CreatePlanAsync_AutomaticModeMatchesStockySourceToStockyTarget()
+	{
+		var slim = Part(SourceUnit, 1, "slim") with { BodyVariant = UnitMeshBodyVariant.Slim, StoredBytes = 1024 };
+		var stocky = Part(SourceUnit, 2, "stocky") with { BodyVariant = UnitMeshBodyVariant.Stocky, StoredBytes = 64 };
+		var target = Part(TargetUnit, 3, "stocky-target") with { BodyVariant = UnitMeshBodyVariant.Stocky };
+
+		var plan = await CreateService().CreatePlanAsync(
+			[Entry("source", slim, stocky)], [Entry("target", target)], "source", UnitMeshBodyVariant.Any,
+			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, ["target"]);
+
+		Assert.Equal(stocky, Assert.Single(plan.Mappings).Source);
+	}
+
+	[Fact]
+	public async Task CreatePlanAsync_AutomaticModeAllowsAnySourceForEitherTargetBodyVariant()
+	{
+		var any = Part(SourceUnit, 1, "any") with { BodyVariant = UnitMeshBodyVariant.Any };
+		var target = Part(TargetUnit, 2, "stocky-target") with { BodyVariant = UnitMeshBodyVariant.Stocky };
+
+		var plan = await CreateService().CreatePlanAsync(
+			[Entry("source", any)], [Entry("target", target)], "source", UnitMeshBodyVariant.Any,
+			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, ["target"]);
+
+		Assert.Equal(any, Assert.Single(plan.Mappings).Source);
+	}
+
+	[Fact]
 	public async Task CreatePlanAsync_MultipleSourceMeshesDoNotMultiplyPartHitBudget()
 	{
 		var smaller = Part(SourceUnit, 1, "small") with { StoredBytes = 64 };

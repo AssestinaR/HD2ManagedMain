@@ -40,6 +40,6 @@ public sealed class GameItemResourceRelationBuilderTests
 	{
 		var entries = keys.Select((key, index) => new GameDataArchiveEntryFact(key, packageName, (uint)index, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0)).ToArray();
 		var archive = new GameDataArchiveFact(packageName, null, null, null, false, entries, Array.Empty<PatchAnalysisIssue>());
-		return new GameDataArchiveIndex(new GameDataArchiveInput("."), new[] { archive }, Array.Empty<PatchAnalysisIssue>(), DateTimeOffset.UtcNow, "test", "test");
+		return new GameDataArchiveIndex(new GameDataArchiveInput("."), new[] { archive }, Array.Empty<GameDataStreamLayoutFact>(), Array.Empty<PatchAnalysisIssue>(), DateTimeOffset.UtcNow, "test", "test");
 	}
 }

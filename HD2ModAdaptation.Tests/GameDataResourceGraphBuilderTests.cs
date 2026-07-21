@@ -18,7 +18,7 @@ public sealed class GameDataResourceGraphBuilderTests
 		var texture = new AssetKey(MaterialDependencyResolver.TextureTypeId, 5);
 		var entries = new[] { unit, composite, bone, material, texture }.Select((key, index) => Entry(key, (uint)index, key == unit ? 24u : key == material ? 152u : 0u)).ToArray();
 		var archive = new GameDataArchiveFact("items.archive", null, null, null, false, entries, Array.Empty<PatchAnalysisIssue>());
-		var index = new GameDataArchiveIndex(new GameDataArchiveInput("."), new[] { archive }, Array.Empty<PatchAnalysisIssue>(), DateTimeOffset.UtcNow, "test", "test");
+		var index = new GameDataArchiveIndex(new GameDataArchiveInput("."), new[] { archive }, Array.Empty<GameDataStreamLayoutFact>(), Array.Empty<PatchAnalysisIssue>(), DateTimeOffset.UtcNow, "test", "test");
 		var resolver = new FakeResolver(new Dictionary<(string, ulong), byte[]>
 		{
 			[("items.archive", 0)] = ReferencePayload(3, 2),
@@ -61,7 +61,7 @@ public sealed class GameDataResourceGraphBuilderTests
 	}
 
 	private static GameDataArchiveEntryFact Entry(AssetKey key, uint index, uint tocDataSize) => new(key, "items.archive", index, index, 0, 0, tocDataSize, 0, 0, 0, 0, 0, 0);
-	private static GameDataArchiveIndex CreateIndex(IReadOnlyList<GameDataArchiveEntryFact> entries) => new(new GameDataArchiveInput("."), new[] { new GameDataArchiveFact("items.archive", null, null, null, false, entries, Array.Empty<PatchAnalysisIssue>()) }, Array.Empty<PatchAnalysisIssue>(), DateTimeOffset.UtcNow, "test", "test");
+	private static GameDataArchiveIndex CreateIndex(IReadOnlyList<GameDataArchiveEntryFact> entries) => new(new GameDataArchiveInput("."), new[] { new GameDataArchiveFact("items.archive", null, null, null, false, entries, Array.Empty<PatchAnalysisIssue>()) }, Array.Empty<GameDataStreamLayoutFact>(), Array.Empty<PatchAnalysisIssue>(), DateTimeOffset.UtcNow, "test", "test");
 	private static byte[] ReferencePayload(ulong bone, ulong composite) { var data = new byte[24]; BitConverter.GetBytes(bone).CopyTo(data, 8); BitConverter.GetBytes(composite).CopyTo(data, 16); return data; }
 	private static byte[] MaterialPayload(ulong texture) { var data = new byte[152]; BitConverter.GetBytes(1u).CopyTo(data, 64); BitConverter.GetBytes(texture).CopyTo(data, 140); return data; }
 
