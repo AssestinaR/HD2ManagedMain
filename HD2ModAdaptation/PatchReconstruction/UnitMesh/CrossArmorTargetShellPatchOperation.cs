@@ -31,10 +31,12 @@ public sealed class CrossArmorTargetShellPatchOperation
 			: await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
 		var outputBuilder = new SdkStyleTargetShellPatchOutputBuilder(
 			new SdkStyleTargetShellUnitReconstructor(
-				reencoder: new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true),
+				reencoder: new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true, canonicalBoneHashOrder: request.CanonicalBoneHashOrder),
 				writer: new UnitMeshWriter(allowBoneInfoRelocation: true, allowTransformInfoRelocation: true),
 				propagateSourceMaterials: true,
-				allowedSourceMaterialIds: request.AllowedSourceMaterialIds));
+				allowedSourceMaterialIds: request.AllowedSourceMaterialIds,
+				planCanonicalSkinningLayout: true,
+				streamLayoutRegistry: request.StreamLayoutRegistry));
 		var output = outputBuilder.Build(request.WorkItems);
 		var removals = await GetSourceUnitAndCompositeRemovalsAsync(entries, cancellationToken).ConfigureAwait(false);
 		var preservedSourceKeys = entries.Where(entry => !removals.Contains(entry)).Select(entry => entry.AssetKey).ToHashSet();
@@ -90,7 +92,9 @@ public sealed record CrossArmorTargetShellPatchOperationRequest(
 	IReadOnlyCollection<PatchArchiveAdditionalEntry> MaterialDependencies,
 	bool IncludeResolvedMaterialDependencies,
 	IReadOnlySet<ulong>? AllowedSourceMaterialIds,
-	IReadOnlyList<PatchTocEntry>? PreparedSourceEntries = null)
+	IReadOnlyList<PatchTocEntry>? PreparedSourceEntries = null,
+	IReadOnlyList<uint>? CanonicalBoneHashOrder = null,
+	ICurrentGameStreamLayoutRegistry? StreamLayoutRegistry = null)
 {
 	public void Validate()
 	{

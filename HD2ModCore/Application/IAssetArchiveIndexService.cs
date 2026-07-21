@@ -19,6 +19,15 @@ public interface IAssetArchiveIndexService
 		IReadOnlySet<AssetKey> unitAssetKeys,
 		CancellationToken cancellationToken = default);
 
+	ValueTask<IReadOnlyList<GameDataStreamLayoutFact>> FindStreamLayoutsAsync(
+		IReadOnlyList<GameDataStreamComponentFact> components,
+		uint vertexStride,
+		bool requireSkinned = false,
+		CancellationToken cancellationToken = default);
+
+	ValueTask<IReadOnlyList<GameDataStreamLayoutFact>> GetStreamLayoutsAsync(
+		CancellationToken cancellationToken = default);
+
 	ValueTask<GameDataIndexStatus> GetIndexStatusAsync(
 		string gameDataDirectory,
 		string archiveHashesJson,

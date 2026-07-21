@@ -7,6 +7,7 @@ using System.Text.Encodings.Web;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views;
@@ -52,6 +53,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	}
 	public string SourcePatchTocPath { get; }
 	public string GameDataDirectory { get; }
+	public StoragePaths Paths { get; }
 	public IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> PreparedSourceEntries { get; }
 	public RelayCommand RefreshPlanCommand { get; }
 	public RelayCommand ApplyManualMappingCommand { get; }
@@ -189,7 +191,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		IReadOnlyList<EquipmentUnitCatalogEntry> targetCandidates,
 		string sourcePatchTocPath,
 		string gameDataDirectory,
-		IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> preparedSourceEntries)
+		IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> preparedSourceEntries,
+		StoragePaths paths)
 	{
 		this.catalogService = catalogService;
 		this.sourceCandidates = sourceCandidates;
@@ -197,6 +200,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		Title = "跨护甲计划";
 		SourcePatchTocPath = sourcePatchTocPath;
 		GameDataDirectory = gameDataDirectory;
+		Paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		PreparedSourceEntries = preparedSourceEntries ?? throw new ArgumentNullException(nameof(preparedSourceEntries));
 		SourceArmorChoices = sourceCandidates.Where(entry => string.Equals(entry.Category, "Armor", StringComparison.OrdinalIgnoreCase)).Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
 		SourceHelmetChoices = sourceCandidates.Where(entry => string.Equals(entry.Category, "Helmet", StringComparison.OrdinalIgnoreCase)).Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();

@@ -18,6 +18,15 @@ public sealed class GameDataUnitMeshReader
 		this.unitMeshReader = unitMeshReader ?? new UnitMeshReader();
 	}
 
+	public void PrimeEntries(IReadOnlyDictionary<string, IReadOnlyList<PatchTocEntry>> knownEntries)
+	{
+		ArgumentNullException.ThrowIfNull(knownEntries);
+		foreach (var (archiveName, entries) in knownEntries)
+		{
+			entriesByArchive.TryAdd(archiveName, entries);
+		}
+	}
+
 	public async ValueTask<GameDataUnitMesh> ReadAsync(
 		string archiveName,
 		AssetKey unitAssetKey,

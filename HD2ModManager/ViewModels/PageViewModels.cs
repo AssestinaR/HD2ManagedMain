@@ -861,8 +861,12 @@ namespace HD2ModManager.ViewModels
                 AssetIndexSummary = "正在解析 Game Data。";
                 var archiveHashes = await File.ReadAllTextAsync(_paths.ArchiveHashesPath);
                 var index = CoreServices.CreateAssetArchiveIndexService(_paths);
+				var lastProgressUpdate = 0L;
                 var progress = new Progress<IndexBuildProgress>(item =>
                 {
+					var now = Environment.TickCount64;
+					if (now - Interlocked.Read(ref lastProgressUpdate) < 200 && item.Current < item.Total) return;
+					Interlocked.Exchange(ref lastProgressUpdate, now);
                     task?.UpdateStage($"正在索引 Archive {item.Current}/{item.Total}");
                     task?.UpdateProgress(item.Total <= 0 ? null : (double)item.Current / item.Total);
                     AssetIndexCounts = $"Archive {item.Current}/{item.Total}";

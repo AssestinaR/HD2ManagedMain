@@ -19,6 +19,7 @@ namespace HD2ModCore.Infrastructure;
 public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 {
 	private const string UnitPartAnalyzerVersion = "unit-parts-v4-sdk-customization-variants-armor-helmet";
+	private const string StreamLayoutIndexerVersion = "stream-layouts-v1-full-inline-abi";
 	private readonly StoragePaths _paths;
 	private readonly IGameDataArchiveIndexer _archiveIndexer;
 	private readonly UnitMeshPartClassifier _unitPartClassifier;
@@ -72,8 +73,10 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 		await using var versionConnection = new SqliteConnection($"Data Source={_paths.DbPath};Mode=ReadOnly;Cache=Shared");
 		await versionConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		var indexedUnitPartVersion = await SqliteSchema.GetMetaAsync(versionConnection, "unit_part_analyzer_version", cancellationToken).ConfigureAwait(false);
+		var indexedStreamLayoutVersion = await SqliteSchema.GetMetaAsync(versionConnection, "stream_layout_indexer_version", cancellationToken).ConfigureAwait(false);
 		var state = string.Equals(stored.SourceFingerprint, currentFingerprint, StringComparison.OrdinalIgnoreCase)
 			&& string.Equals(indexedUnitPartVersion, UnitPartAnalyzerVersion, StringComparison.Ordinal)
+			&& string.Equals(indexedStreamLayoutVersion, StreamLayoutIndexerVersion, StringComparison.Ordinal)
 			? GameDataIndexState.Current
 			: GameDataIndexState.Stale;
 
@@ -292,8 +295,11 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 			normalizedGameDataDirectory,
 			archiveHashesJson,
 			cancellationToken).ConfigureAwait(false);
+		var archiveProgress = new Progress<GameDataArchiveIndexProgress>(item =>
+			progress?.Report(new IndexBuildProgress(item.Current, Math.Max(item.Total, 1), $"{item.Stage}：{item.Item}")));
 		var facts = await _archiveIndexer.BuildAsync(
 			new GameDataArchiveInput(normalizedGameDataDirectory, metadataByPackage.Keys.ToArray(), metadataByPackage),
+			archiveProgress,
 			cancellationToken).ConfigureAwait(false);
 		if (facts.Archives.Count == 0)
 		{
@@ -364,6 +370,7 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 
 
 		await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+		await SaveStreamLayoutsAsync(facts.StreamLayouts, cancellationToken).ConfigureAwait(false);
 
 		await SqliteSchema.SetMetaAsync(connection, "built_utc", DateTimeOffset.UtcNow.ToString("O"), cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "archives_total", total.ToString(), cancellationToken).ConfigureAwait(false);
@@ -378,6 +385,68 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		var globalBoneNames = LoadGlobalBoneNames(_paths.BoneHashesPath);
 		var partFacts = await AnalyzeEquipmentUnitPartsAsync(normalizedGameDataDirectory, facts.Archives, equipmentArchiveIds, globalBoneNames, progress, cancellationToken).ConfigureAwait(false);
 		await SaveUnitPartFactsAsync(partFacts, cancellationToken).ConfigureAwait(false);
+		await using var versionConnection = new SqliteConnection($"Data Source={_paths.DbPath};Pooling=False");
+		await versionConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(versionConnection, "stream_layout_indexer_version", StreamLayoutIndexerVersion, cancellationToken).ConfigureAwait(false);
+	}
+
+	public async ValueTask<IReadOnlyList<HD2ModCore.Domain.GameDataStreamLayoutFact>> FindStreamLayoutsAsync(
+		IReadOnlyList<HD2ModCore.Domain.GameDataStreamComponentFact> components,
+		uint vertexStride,
+		bool requireSkinned = false,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(components);
+		if (!File.Exists(_paths.DbPath)) return Array.Empty<HD2ModCore.Domain.GameDataStreamLayoutFact>();
+		var signature = BuildLayoutSignature(components);
+		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Mode=ReadOnly;Cache=Shared");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		await using var command = connection.CreateCommand();
+		command.CommandText = @"
+SELECT archive_id,unit_type_id,unit_file_id,stream_index,component_info_id,unit_version,vertex_stride,components_json,layout_signature,is_skinned
+FROM game_data_stream_layouts
+WHERE layout_signature=$signature AND vertex_stride=$stride AND ($skinned=0 OR is_skinned=1)
+ORDER BY archive_id,unit_file_id,stream_index;";
+		command.Parameters.AddWithValue("$signature", signature);
+		command.Parameters.AddWithValue("$stride", vertexStride);
+		command.Parameters.AddWithValue("$skinned", requireSkinned ? 1 : 0);
+		var result = new List<HD2ModCore.Domain.GameDataStreamLayoutFact>();
+		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+		{
+			var parsed = JsonSerializer.Deserialize<List<HD2ModCore.Domain.GameDataStreamComponentFact>>(reader.GetString(7)) ?? new List<HD2ModCore.Domain.GameDataStreamComponentFact>();
+			result.Add(new HD2ModCore.Domain.GameDataStreamLayoutFact(
+				reader.GetString(0),
+				new CoreAssetKey(unchecked((ulong)reader.GetInt64(1)), unchecked((ulong)reader.GetInt64(2))),
+				reader.GetInt32(3),
+				unchecked((ulong)reader.GetInt64(4)),
+				unchecked((uint)reader.GetInt64(5)),
+				unchecked((uint)reader.GetInt64(6)),
+				parsed,
+				reader.GetString(8),
+				reader.GetInt32(9) != 0));
+		}
+		return result;
+	}
+
+	public async ValueTask<IReadOnlyList<HD2ModCore.Domain.GameDataStreamLayoutFact>> GetStreamLayoutsAsync(CancellationToken cancellationToken = default)
+	{
+		if (!File.Exists(_paths.DbPath)) return Array.Empty<HD2ModCore.Domain.GameDataStreamLayoutFact>();
+		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Mode=ReadOnly;Cache=Shared");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		await using var command = connection.CreateCommand();
+		command.CommandText = @"
+SELECT archive_id,unit_type_id,unit_file_id,stream_index,component_info_id,unit_version,vertex_stride,components_json,layout_signature,is_skinned
+FROM game_data_stream_layouts
+ORDER BY archive_id,unit_file_id,stream_index;";
+		var result = new List<HD2ModCore.Domain.GameDataStreamLayoutFact>();
+		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+		{
+			var components = JsonSerializer.Deserialize<List<HD2ModCore.Domain.GameDataStreamComponentFact>>(reader.GetString(7)) ?? new List<HD2ModCore.Domain.GameDataStreamComponentFact>();
+			result.Add(new HD2ModCore.Domain.GameDataStreamLayoutFact(reader.GetString(0), new CoreAssetKey(unchecked((ulong)reader.GetInt64(1)), unchecked((ulong)reader.GetInt64(2))), reader.GetInt32(3), unchecked((ulong)reader.GetInt64(4)), unchecked((uint)reader.GetInt64(5)), unchecked((uint)reader.GetInt64(6)), components, reader.GetString(8), reader.GetInt32(9) != 0));
+		}
+		return result;
 	}
 
 	private async ValueTask<IReadOnlyList<GameDataUnitPartFact>> AnalyzeEquipmentUnitPartsAsync(
@@ -442,6 +511,41 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value;";
 		await metaCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 	}
+
+	private async ValueTask SaveStreamLayoutsAsync(IReadOnlyList<HD2ModAdaptation.Analysis.GameDataStreamLayoutFact> layouts, CancellationToken cancellationToken)
+	{
+		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Pooling=False");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+		await using var command = connection.CreateCommand();
+		command.Transaction = (SqliteTransaction)transaction;
+		command.CommandText = @"INSERT INTO game_data_stream_layouts
+(archive_id,unit_type_id,unit_file_id,stream_index,component_info_id,unit_version,vertex_stride,components_json,layout_signature,is_skinned)
+VALUES($archive,$type,$file,$stream,$componentInfo,$version,$stride,$components,$signature,$skinned)";
+		foreach (var name in new[] { "$archive", "$components", "$signature" }) command.Parameters.Add(name, SqliteType.Text);
+		foreach (var name in new[] { "$type", "$file", "$stream", "$componentInfo", "$version", "$stride", "$skinned" }) command.Parameters.Add(name, SqliteType.Integer);
+		command.Prepare();
+		foreach (var layout in layouts)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var components = layout.Components.Select(component => new HD2ModCore.Domain.GameDataStreamComponentFact(component.Type, component.Format, component.Index, component.Unknown, component.Size)).ToArray();
+			command.Parameters["$archive"].Value = layout.PackageName;
+			command.Parameters["$type"].Value = unchecked((long)layout.UnitAssetKey.TypeId);
+			command.Parameters["$file"].Value = unchecked((long)layout.UnitAssetKey.FileId);
+			command.Parameters["$stream"].Value = layout.StreamIndex;
+			command.Parameters["$componentInfo"].Value = unchecked((long)layout.ComponentInfoId);
+			command.Parameters["$version"].Value = layout.UnitVersion;
+			command.Parameters["$stride"].Value = layout.VertexStride;
+			command.Parameters["$components"].Value = JsonSerializer.Serialize(components);
+			command.Parameters["$signature"].Value = BuildLayoutSignature(components);
+			command.Parameters["$skinned"].Value = layout.IsSkinned ? 1 : 0;
+			await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+		}
+		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	private static string BuildLayoutSignature(IEnumerable<HD2ModCore.Domain.GameDataStreamComponentFact> components)
+		=> string.Join(";", components.Select(component => $"{component.Type}:{component.Format}:{component.Index}:{component.Unknown:x16}"));
 
 	public async ValueTask<IReadOnlyList<AssetArchiveMatch>> FindAssetArchivesAsync(
 		IReadOnlySet<CoreAssetKey> assetKeys,

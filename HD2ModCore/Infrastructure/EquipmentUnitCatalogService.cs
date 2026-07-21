@@ -197,6 +197,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 					var sourcePool = sourcePools
 						.Where(pool => pool.Key.PartKind == targetPart.PartKind
 							&& string.Equals(pool.Key.Category, physicalTarget.First().Entry.Category, StringComparison.OrdinalIgnoreCase)
+							&& IsBodyVariantCompatible(pool.Key.BodyVariant, targetPart.BodyVariant)
 							&& pool.RemainingHits > 0)
 						.OrderByDescending(pool => pool.Representative.StoredBytes)
 						.ThenBy(pool => pool.Representative.UnitAssetKey.FileId).ThenBy(pool => pool.Representative.MeshInfoIndex)

@@ -11,15 +11,17 @@ public sealed class SdkStyleMeshReencoder
 	private readonly bool propagateSourceMaterials;
 	private readonly bool transformMeshSpace;
 	private readonly bool rebuildTargetInverseJointMatrices;
+	private readonly IReadOnlyList<uint>? canonicalBoneHashOrder;
 	private readonly IReadOnlySet<ulong>? allowedSourceMaterialIds;
 
-	public SdkStyleMeshReencoder(SdkStyleBoneRemapBuilder? remapBuilder = null, bool allowSectionRebuild = false, bool propagateSourceMaterials = true, bool transformMeshSpace = false, IReadOnlySet<ulong>? allowedSourceMaterialIds = null, bool rebuildTargetInverseJointMatrices = false)
+	public SdkStyleMeshReencoder(SdkStyleBoneRemapBuilder? remapBuilder = null, bool allowSectionRebuild = false, bool propagateSourceMaterials = true, bool transformMeshSpace = false, IReadOnlySet<ulong>? allowedSourceMaterialIds = null, bool rebuildTargetInverseJointMatrices = false, IReadOnlyList<uint>? canonicalBoneHashOrder = null)
 	{
 		this.remapBuilder = remapBuilder ?? new SdkStyleBoneRemapBuilder();
 		this.allowSectionRebuild = allowSectionRebuild;
 		this.propagateSourceMaterials = propagateSourceMaterials;
 		this.transformMeshSpace = transformMeshSpace;
 		this.rebuildTargetInverseJointMatrices = rebuildTargetInverseJointMatrices;
+		this.canonicalBoneHashOrder = canonicalBoneHashOrder;
 		this.allowedSourceMaterialIds = allowedSourceMaterialIds;
 	}
 
@@ -41,6 +43,10 @@ public sealed class SdkStyleMeshReencoder
 		{
 			var effectiveSourceMesh = RemoveEmptySourceSections(sourceRawMesh);
 			if (effectiveSourceMesh.Sections.Count == targetRawMesh.Sections.Count) sourceRawMesh = effectiveSourceMesh;
+			else if (canonicalBoneHashOrder is not null && effectiveSourceMesh.Sections.Count < targetRawMesh.Sections.Count)
+			{
+				sourceRawMesh = ExpandSourceSectionsToTargetLayout(effectiveSourceMesh, targetRawMesh.Sections.Count);
+			}
 		}
 		var meshSpaceTransform = transformMeshSpace || rebuildTargetInverseJointMatrices
 			? BuildMeshSpaceTransform(targetModel, targetMeshInfoIndex, sourceModel, sourceMeshInfoIndex)
@@ -60,6 +66,10 @@ public sealed class SdkStyleMeshReencoder
 		{
 			throw new InvalidDataException("The current target Unit has no TransformInfo bone-name hashes.");
 		}
+		if (sourceUsesBones && canonicalBoneHashOrder is not null)
+		{
+			EnsureCanonicalTargetBakeSkinningLayout(targetStream);
+		}
 		if (!sourceUsesBones)
 		{
 			return ReencodeUnskinned(targetModel, targetRawMesh, sourceRawMesh, targetStream, sourceMeshInfoIndex, meshSpaceTransform);
@@ -68,14 +78,20 @@ public sealed class SdkStyleMeshReencoder
 		var sourceBoneInfo = FindBoneInfo(sourceModel, sourceRawMesh, "source");
 		var targetBoneInfo = FindBoneInfo(targetModel, targetRawMesh, "target");
 		var materialByVertex = BuildVertexMaterialMap(sourceRawMesh, targetRawMesh);
-		var rebuiltTargetBoneInfo = rebuildTargetInverseJointMatrices
-			? BuildCompleteSourceOrderedBoneInfo(sourceBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes)
+		var rebuiltTargetBoneInfo = canonicalBoneHashOrder is not null
+			? BuildCanonicalTargetBakedBoneInfo(sourceRawMesh, targetRawMesh, sourceBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, canonicalBoneHashOrder)
+			: rebuildTargetInverseJointMatrices
+				? BuildCompleteSourceOrderedBoneInfo(sourceBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes)
 			: remapBuilder.SetRemap(targetBoneInfo, BuildSectionRemapBoneNames(sourceRawMesh, targetRawMesh, sourceBoneInfo, sourceModel.TransformNameHashes, targetModel), targetModel.TransformNameHashes);
 		rebuiltTargetBoneInfo = AttachTargetBoneMatrices(rebuiltTargetBoneInfo, BuildTargetMatrixMap(targetModel, targetRawMesh));
 		var updatedVertices = sourceRawMesh.Vertices.Select(vertex => new UnitRawVertexRecord(
 			vertex.Index,
 			EncodeTargetVertex(vertex, targetStream, sourceBoneInfo, rebuiltTargetBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, materialByVertex.TryGetValue(vertex.Index, out var materials) ? materials.Source : 0, materialByVertex.TryGetValue(vertex.Index, out materials) ? materials.Target : 0, meshSpaceTransform, transformMeshSpace || rebuildTargetInverseJointMatrices),
 			Array.Empty<UnitVertexComponentValue>())).ToArray();
+		if (canonicalBoneHashOrder is not null)
+		{
+			ValidateCanonicalTargetBakeRoundTrip(sourceRawMesh, updatedVertices, materialByVertex, targetStream, sourceBoneInfo, rebuiltTargetBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes);
+		}
 		var vertexIndexMap = BuildVertexIndexMap(sourceRawMesh);
 		var updatedSections = sourceRawMesh.Sections.Select((sourceSection, index) => new UnitRawMeshSectionData(
 			targetRawMesh.Sections[index].MaterialIndex,
@@ -263,9 +279,33 @@ public sealed class SdkStyleMeshReencoder
 			};
 	}
 
+	private static UnitRawMeshData ExpandSourceSectionsToTargetLayout(UnitRawMeshData sourceMesh, int targetSectionCount)
+	{
+		if (sourceMesh.Sections.Count > targetSectionCount) throw new InvalidDataException("A source mesh cannot be projected into fewer target material sections.");
+		if (sourceMesh.Sections.Count == targetSectionCount) return sourceMesh;
+		var sections = sourceMesh.Sections.ToList();
+		while (sections.Count < targetSectionCount)
+		{
+			// Keep the physical target layout intact. The empty section has no vertices and
+			// therefore receives neither source geometry nor a propagated source material.
+			sections.Add(new UnitRawMeshSectionData(0, 0, Array.Empty<UnitTriangleIndices>()));
+		}
+		return sourceMesh with { Sections = sections, Triangles = sections.SelectMany(section => section.Triangles).ToArray() };
+	}
+
 	private static UnitStreamInfo FindStream(UnitMeshModel model, UnitRawMeshData mesh, string role)
 		=> model.Streams.FirstOrDefault(stream => stream.Index == mesh.StreamIndex)
 			?? throw new KeyNotFoundException($"The {role} Unit does not contain stream {mesh.StreamIndex}.");
+
+	private static void EnsureCanonicalTargetBakeSkinningLayout(UnitStreamInfo targetStream)
+	{
+		var targetIndexGroups = targetStream.Components.Count(component => component.Type == 6);
+		var targetWeightGroups = targetStream.Components.Count(component => component.Type == 7);
+		if (targetIndexGroups != 1 || targetWeightGroups != 1 || targetStream.Components.Single(component => component.Type == 6).FormatName != "vec4_uint8" || targetStream.Components.Single(component => component.Type == 7).FormatName != "vec4_half")
+		{
+			throw new InvalidDataException("Stable canonical target-bake requires the SDK-style canonical skinning layout: one vec4_half bone-weight group and one vec4_uint8 bone-index group.");
+		}
+	}
 
 	private static int GetBoneInfoIndex(UnitMeshModel model, UnitRawMeshData mesh)
 		=> mesh.LodIndex >= 0 && mesh.LodIndex < model.BoneInfos.Count ? mesh.LodIndex : 0;
@@ -348,6 +388,49 @@ public sealed class SdkStyleMeshReencoder
 			remaps);
 	}
 
+	private static UnitBoneInfo BuildCanonicalTargetBakedBoneInfo(
+		UnitRawMeshData sourceMesh,
+		UnitRawMeshData targetMesh,
+		UnitBoneInfo sourceBoneInfo,
+		IReadOnlyList<uint> sourceTransformHashes,
+		IReadOnlyList<uint> targetTransformHashes,
+		IReadOnlyList<uint> canonicalBoneHashes)
+	{
+		var sectionHashes = sourceMesh.Sections
+			.Select(section => CollectSectionBoneHashes(section, sourceMesh, sourceBoneInfo, sourceTransformHashes))
+			.ToArray();
+		var activeHashes = sectionHashes.SelectMany(hashes => hashes).ToHashSet();
+		var orderedHashes = canonicalBoneHashes.Where(activeHashes.Contains).Distinct().ToArray();
+		if (orderedHashes.Length != activeHashes.Count) throw new InvalidDataException("An active source bone is absent from the canonical Avatar Rig.");
+
+		var realIndices = new List<uint>(orderedHashes.Length);
+		foreach (var hash in orderedHashes)
+		{
+			var targetTransformIndex = IndexOf(targetTransformHashes, hash);
+			if (targetTransformIndex < 0) throw new InvalidDataException("An active canonical bone is absent from the target TransformInfo.");
+			realIndices.Add(checked((uint)targetTransformIndex));
+		}
+
+		var remapCount = Math.Max(sourceBoneInfo.Remaps.Count, targetMesh.Sections.Count == 0 ? 0 : checked((int)targetMesh.Sections.Max(section => section.MaterialIndex) + 1));
+		var remapOffset = checked((uint)(4 + remapCount * 8));
+		var remaps = new List<UnitBoneRemap>(remapCount);
+		for (var materialIndex = 0; materialIndex < remapCount; materialIndex++)
+		{
+			var sectionIndex = Array.FindIndex(targetMesh.Sections.ToArray(), section => section.MaterialIndex == checked((uint)materialIndex));
+			var hashes = sectionIndex < 0 ? Array.Empty<uint>() : sectionHashes[sectionIndex];
+			var fakeIndices = hashes.Select(hash =>
+			{
+				var targetTransformIndex = IndexOf(targetTransformHashes, hash);
+				var realIndex = targetTransformIndex < 0 ? -1 : IndexOf(realIndices, checked((uint)targetTransformIndex));
+				if (realIndex < 0) throw new InvalidDataException("The canonical target palette is missing an active section bone.");
+				return checked((uint)realIndex);
+			}).ToArray();
+			remaps.Add(new UnitBoneRemap(materialIndex, remapOffset, fakeIndices));
+			remapOffset = checked(remapOffset + (uint)(fakeIndices.Length * sizeof(uint)));
+		}
+		return new UnitBoneInfo(sourceBoneInfo.Index, sourceBoneInfo.Offset, checked((uint)realIndices.Count), sourceBoneInfo.MatrixOffset, sourceBoneInfo.RealIndicesOffset, sourceBoneInfo.RemapDataOffset, realIndices, remaps);
+	}
+
 	private IReadOnlyDictionary<uint, byte[]> BuildTargetMatrixMap(UnitMeshModel targetModel, UnitRawMeshData targetMesh)
 	{
 		if (!transformMeshSpace && !rebuildTargetInverseJointMatrices)
@@ -413,7 +496,11 @@ public sealed class SdkStyleMeshReencoder
 		for (var index = 0; index < sourceRawMesh.Sections.Count; index++)
 		{
 			var sourceSection = sourceRawMesh.Sections[index];
-			if (sourceSection.MaterialIndex >= sourceMesh.MaterialSlotIds.Count) throw new InvalidDataException("A source mesh section material index is outside its material-slot table.");
+			if (sourceSection.MaterialIndex >= sourceMesh.MaterialSlotIds.Count)
+			{
+				if (sourceSection.Triangles.Count == 0) continue;
+				throw new InvalidDataException("A source mesh section material index is outside its material-slot table.");
+			}
 			var sourceSlot = sourceMesh.MaterialSlotIds[(int)sourceSection.MaterialIndex];
 			var materialIds = sourceModel.Materials.Where(binding => binding.SectionId == sourceSlot).Select(binding => binding.MaterialId).Distinct().ToArray();
 			if (materialIds.Length != 1) throw new InvalidDataException("A source mesh material slot does not resolve to exactly one Material asset.");
@@ -528,6 +615,7 @@ public sealed class SdkStyleMeshReencoder
 	private static byte[] EncodeTargetVertex(UnitRawVertexRecord sourceVertex, UnitStreamInfo targetStream, UnitBoneInfo sourceBoneInfo, UnitBoneInfo rebuiltTargetBoneInfo, IReadOnlyList<uint> sourceTransformHashes, IReadOnlyList<uint> targetTransformHashes, uint sourceMaterialIndex, uint targetMaterialIndex, Matrix4x4 meshSpaceTransform, bool requireCompleteBoneRemap)
 	{
 		var data = new byte[checked((int)targetStream.VertexStride)];
+		var skinning = BuildTargetSkinning(sourceVertex, targetStream, sourceBoneInfo, rebuiltTargetBoneInfo, sourceTransformHashes, targetTransformHashes, sourceMaterialIndex, targetMaterialIndex, requireCompleteBoneRemap);
 		var cursor = 0;
 		foreach (var targetComponent in targetStream.Components)
 		{
@@ -537,15 +625,11 @@ public sealed class SdkStyleMeshReencoder
 			var sourceComponent = TransformVertexComponent(FindComponent(sourceVertex, targetComponent.Type, targetComponent.Index), targetComponent.Type, meshSpaceTransform);
 			if (targetComponent.Type == 6)
 			{
-				if (sourceComponent is not null)
-				{
-					var sourceWeights = FindComponent(sourceVertex, 7, targetComponent.Index)?.FloatValues ?? Array.Empty<float>();
-					WriteBoneIndices(destination, targetComponent, sourceComponent, sourceWeights, sourceMaterialIndex, targetMaterialIndex, sourceBoneInfo, rebuiltTargetBoneInfo, sourceTransformHashes, targetTransformHashes, requireCompleteBoneRemap);
-				}
+				WriteBoneIndices(destination, targetComponent, skinning.IndicesByGroup.TryGetValue(targetComponent.Index, out var indices) ? indices : Array.Empty<uint>());
 			}
 			else if (targetComponent.Type == 7)
 			{
-				if (sourceComponent is not null) WriteFloatValues(destination, targetComponent.FormatName, sourceComponent.FloatValues);
+				WriteFloatValues(destination, targetComponent.FormatName, skinning.WeightsByGroup.TryGetValue(targetComponent.Index, out var weights) ? weights : Array.Empty<float>());
 			}
 			else if (sourceComponent is not null)
 			{
@@ -555,6 +639,122 @@ public sealed class SdkStyleMeshReencoder
 		}
 		return data;
 	}
+
+	private static TargetVertexSkinning BuildTargetSkinning(UnitRawVertexRecord sourceVertex, UnitStreamInfo targetStream, UnitBoneInfo sourceBoneInfo, UnitBoneInfo targetBoneInfo, IReadOnlyList<uint> sourceTransformHashes, IReadOnlyList<uint> targetTransformHashes, uint sourceMaterialIndex, uint targetMaterialIndex, bool requireCompleteBoneRemap)
+	{
+		var targetIndexGroups = targetStream.Components.Where(component => component.Type == 6).OrderBy(component => component.Index).ToArray();
+		var targetWeightGroups = targetStream.Components.Where(component => component.Type == 7).OrderBy(component => component.Index).ToArray();
+		if (targetIndexGroups.Length == 0 && targetWeightGroups.Length == 0) return TargetVertexSkinning.Empty;
+		if (targetIndexGroups.Length == 0 || targetWeightGroups.Length == 0) throw new InvalidDataException("A target skinned stream must contain both bone-index and bone-weight components.");
+
+		var sourceWeightGroups = sourceVertex.Components.Where(component => component.Type == 7).ToDictionary(component => component.Index, component => component.FloatValues);
+		IReadOnlyList<float> fallbackWeights = sourceWeightGroups.Values.FirstOrDefault() ?? Array.Empty<float>();
+		var influences = new Dictionary<uint, float>();
+		foreach (var group in sourceVertex.Components.Where(component => component.Type == 6).OrderBy(component => component.Index))
+		{
+			IReadOnlyList<float> weights = sourceWeightGroups.TryGetValue(group.Index, out var matched) ? matched : fallbackWeights;
+			for (var index = 0; index < Math.Min(group.UIntValues.Length, weights.Count); index++)
+			{
+				if (weights[index] <= ActiveWeightThreshold) continue;
+				try
+				{
+					var hash = ResolveSourceBoneHash(group.UIntValues[index], sourceMaterialIndex, sourceBoneInfo, sourceTransformHashes);
+					var transformIndex = IndexOf(targetTransformHashes, hash);
+					if (transformIndex < 0) throw new InvalidDataException("An active source bone is absent from the target TransformInfo.");
+					var targetIndex = GetTargetRemappedIndex(checked((uint)transformIndex), targetMaterialIndex, targetBoneInfo);
+					influences[targetIndex] = influences.TryGetValue(targetIndex, out var accumulated) ? accumulated + weights[index] : weights[index];
+				}
+				catch (InvalidDataException) when (!requireCompleteBoneRemap) { }
+			}
+		}
+
+		var primaryWeights = targetWeightGroups[0];
+		var capacity = Math.Min(GetComponentValueCapacity(primaryWeights.FormatName), GetComponentValueCapacity(targetIndexGroups[0].FormatName));
+		if (capacity <= 0) throw new InvalidDataException("The target skinning component format is unsupported.");
+		if (influences.Count > capacity) throw new InvalidDataException($"The source vertex has {influences.Count} active target influences but the target skinning group can encode only {capacity}.");
+		var selected = influences.OrderByDescending(pair => pair.Value).ThenBy(pair => pair.Key).Take(capacity).ToArray();
+		var total = selected.Sum(pair => pair.Value);
+		if (total <= ActiveWeightThreshold && influences.Count != 0) throw new InvalidDataException("A skinned source vertex has no encodable target influence.");
+		var primaryIndices = selected.Select(pair => pair.Key).ToArray();
+		var normalizedWeights = selected.Select(pair => pair.Value / total).ToArray();
+		var indicesByGroup = targetIndexGroups.ToDictionary(group => group.Index, group => group.Index == targetIndexGroups[0].Index ? (IReadOnlyList<uint>)primaryIndices : Array.Empty<uint>());
+		var weightsByGroup = targetWeightGroups.ToDictionary(group => group.Index, group => group.Index == primaryWeights.Index ? (IReadOnlyList<float>)normalizedWeights : Array.Empty<float>());
+		return new TargetVertexSkinning(indicesByGroup, weightsByGroup);
+	}
+
+	private static void ValidateCanonicalTargetBakeRoundTrip(UnitRawMeshData sourceMesh, IReadOnlyList<UnitRawVertexRecord> encodedVertices, IReadOnlyDictionary<uint, VertexMaterialIndexes> materialByVertex, UnitStreamInfo targetStream, UnitBoneInfo sourceBoneInfo, UnitBoneInfo targetBoneInfo, IReadOnlyList<uint> sourceTransformHashes, IReadOnlyList<uint> targetTransformHashes)
+	{
+		foreach (var encodedVertex in encodedVertices)
+		{
+			if (!materialByVertex.TryGetValue(encodedVertex.Index, out var materials)) continue;
+			if (encodedVertex.Index >= sourceMesh.Vertices.Count) throw new InvalidDataException("Encoded vertex index is outside the source mesh.");
+			var expected = BuildTargetSkinning(sourceMesh.Vertices[(int)encodedVertex.Index], targetStream, sourceBoneInfo, targetBoneInfo, sourceTransformHashes, targetTransformHashes, materials.Source, materials.Target, requireCompleteBoneRemap: true);
+			foreach (var component in targetStream.Components.Where(component => component.Type is 6 or 7))
+			{
+				var actual = ReadEncodedSkinningComponent(encodedVertex.Data, targetStream, component);
+				if (component.Type == 6)
+				{
+					var expectedValues = expected.IndicesByGroup[component.Index];
+					var paddedExpected = expectedValues.Concat(Enumerable.Repeat(0u, GetComponentValueCapacity(component.FormatName) - expectedValues.Count)).ToArray();
+					if (!actual.UIntValues.SequenceEqual(paddedExpected))
+					{
+						throw new InvalidDataException($"Canonical target-bake skinning round-trip changed bone indices for vertex {encodedVertex.Index}.");
+					}
+				}
+				else
+				{
+					var expectedValues = expected.WeightsByGroup[component.Index];
+					var paddedExpected = expectedValues.Concat(Enumerable.Repeat(0f, GetComponentValueCapacity(component.FormatName) - expectedValues.Count)).ToArray();
+					if (actual.FloatValues.Length != paddedExpected.Length || actual.FloatValues.Where((value, index) => MathF.Abs(value - paddedExpected[index]) > 0.002f).Any())
+					{
+						throw new InvalidDataException($"Canonical target-bake skinning round-trip changed bone weights for vertex {encodedVertex.Index}.");
+					}
+				}
+			}
+		}
+	}
+
+	private static UnitVertexComponentValue ReadEncodedSkinningComponent(byte[] data, UnitStreamInfo stream, UnitStreamComponentInfo targetComponent)
+	{
+		var offset = 0;
+		foreach (var component in stream.Components)
+		{
+			if (component == targetComponent) break;
+			offset += checked((int)component.Size);
+		}
+		var size = checked((int)targetComponent.Size);
+		if (offset + size > data.Length) throw new InvalidDataException("Encoded skinning component is outside the target vertex stride.");
+		var values = data.AsSpan(offset, size);
+		return targetComponent.Type == 6
+			? new UnitVertexComponentValue(6, targetComponent.TypeName, targetComponent.Format, targetComponent.FormatName, targetComponent.Index, Array.Empty<float>(), ReadBoneIndices(values, targetComponent.FormatName), Array.Empty<byte>())
+			: new UnitVertexComponentValue(7, targetComponent.TypeName, targetComponent.Format, targetComponent.FormatName, targetComponent.Index, ReadFloatValues(values, targetComponent.FormatName), Array.Empty<uint>(), Array.Empty<byte>());
+	}
+
+	private static uint[] ReadBoneIndices(ReadOnlySpan<byte> data, string format)
+	{
+		if (format == "vec4_uint8") return [data[0], data[1], data[2], data[3]];
+		if (format == "vec4_uint32") return [BitConverter.ToUInt32(data[..4]), BitConverter.ToUInt32(data.Slice(4, 4)), BitConverter.ToUInt32(data.Slice(8, 4)), BitConverter.ToUInt32(data.Slice(12, 4))];
+		throw new InvalidDataException($"Unsupported target bone-index format '{format}'.");
+	}
+
+	private static float[] ReadFloatValues(ReadOnlySpan<byte> data, string format)
+	{
+		if (format == "float") return [BitConverter.ToSingle(data)];
+		if (format == "vec2_half") return [(float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(data[..2])), (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(data.Slice(2, 2)))];
+		if (format == "vec4_half") return [(float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(data[..2])), (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(data.Slice(2, 2))), (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(data.Slice(4, 2))), (float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(data.Slice(6, 2)))];
+		if (format == "vec2_float") return [BitConverter.ToSingle(data[..4]), BitConverter.ToSingle(data.Slice(4, 4))];
+		if (format == "vec4_float") return [BitConverter.ToSingle(data[..4]), BitConverter.ToSingle(data.Slice(4, 4)), BitConverter.ToSingle(data.Slice(8, 4)), BitConverter.ToSingle(data.Slice(12, 4))];
+		throw new InvalidDataException($"Unsupported target bone-weight format '{format}'.");
+	}
+
+	private static int GetComponentValueCapacity(string format)
+		=> format switch
+		{
+			"float" => 1,
+			"vec2_half" or "vec2_float" => 2,
+			"vec4_half" or "vec4_float" or "vec4_uint8" or "vec4_uint32" => 4,
+			_ => 0
+		};
 
 	private static Matrix4x4 BuildMeshSpaceTransform(UnitMeshModel targetModel, int targetMeshInfoIndex, UnitMeshModel sourceModel, int sourceMeshInfoIndex)
 	{
@@ -606,39 +806,15 @@ public sealed class SdkStyleMeshReencoder
 	private static UnitVertexComponentValue? FindComponent(UnitRawVertexRecord vertex, uint type, uint? index = null)
 		=> vertex.Components.FirstOrDefault(component => component.Type == type && (!index.HasValue || component.Index == index.Value));
 
-	private static void WriteBoneIndices(Span<byte> destination, UnitStreamComponentInfo targetComponent, UnitVertexComponentValue? sourceComponent, IReadOnlyList<float> sourceWeights, uint sourceMaterialIndex, uint targetMaterialIndex, UnitBoneInfo sourceBoneInfo, UnitBoneInfo targetBoneInfo, IReadOnlyList<uint> sourceTransformHashes, IReadOnlyList<uint> targetTransformHashes, bool requireCompleteBoneRemap)
+	private static void WriteBoneIndices(Span<byte> destination, UnitStreamComponentInfo targetComponent, IReadOnlyList<uint> output)
 	{
-		var sourceIndices = sourceComponent?.UIntValues ?? Array.Empty<uint>();
-		var output = new uint[4];
-		for (var influence = 0; influence < output.Length; influence++)
-		{
-			if (influence >= sourceWeights.Count || sourceWeights[influence] <= ActiveWeightThreshold)
-			{
-				output[influence] = 0;
-				continue;
-			}
-			var sourceIndex = influence < sourceIndices.Length ? sourceIndices[influence] : 0;
-			try
-			{
-				var hash = ResolveSourceBoneHash(sourceIndex, sourceMaterialIndex, sourceBoneInfo, sourceTransformHashes);
-				var targetTransformIndex = IndexOf(targetTransformHashes, hash);
-				output[influence] = targetTransformIndex < 0
-					? 0
-					: GetTargetRemappedIndex(checked((uint)targetTransformIndex), targetMaterialIndex, targetBoneInfo);
-			}
-			catch (InvalidDataException) when (!requireCompleteBoneRemap)
-			{
-				// HD2SDK GetMeshData catches absent remaps and writes index 0 for that influence.
-				output[influence] = 0;
-			}
-		}
 		if (targetComponent.FormatName == "vec4_uint8")
 		{
-			for (var i = 0; i < 4; i++) destination[i] = checked((byte)Math.Min(output[i], byte.MaxValue));
+			for (var i = 0; i < 4; i++) destination[i] = checked((byte)Math.Min(i < output.Count ? output[i] : 0, byte.MaxValue));
 		}
 		else if (targetComponent.FormatName == "vec4_uint32")
 		{
-			for (var i = 0; i < 4; i++) BitConverter.GetBytes(output[i]).CopyTo(destination[(i * 4)..]);
+			for (var i = 0; i < 4; i++) BitConverter.GetBytes(i < output.Count ? output[i] : 0).CopyTo(destination[(i * 4)..]);
 		}
 		else
 		{
@@ -728,6 +904,15 @@ public sealed class SdkStyleMeshReencoder
 	{
 		for (var index = 0; index < values.Count; index++) if (values[index] == value) return index;
 		return -1;
+	}
+
+	private sealed record TargetVertexSkinning(
+		IReadOnlyDictionary<uint, IReadOnlyList<uint>> IndicesByGroup,
+		IReadOnlyDictionary<uint, IReadOnlyList<float>> WeightsByGroup)
+	{
+		public static TargetVertexSkinning Empty { get; } = new(
+			new Dictionary<uint, IReadOnlyList<uint>>(),
+			new Dictionary<uint, IReadOnlyList<float>>());
 	}
 
 	private readonly record struct VertexMaterialIndexes(uint Source, uint Target);

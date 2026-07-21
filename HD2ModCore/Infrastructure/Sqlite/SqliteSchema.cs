@@ -6,7 +6,7 @@ namespace HD2ModCore.Infrastructure.Sqlite;
 // Purpose: Defines and applies the persisted GameData facts and asset->archive reverse index schema.
 internal static class SqliteSchema
 {
-	public const int SchemaVersion = 3;
+	public const int SchemaVersion = 4;
 
 	public static async Task EnsureCreatedAsync(SqliteConnection connection, CancellationToken cancellationToken)
 	{
@@ -98,6 +98,24 @@ CREATE TABLE IF NOT EXISTS game_data_unit_parts (
 
 CREATE INDEX IF NOT EXISTS ix_game_data_unit_parts_unit ON game_data_unit_parts(unit_type_id, unit_file_id);
 
+CREATE TABLE IF NOT EXISTS game_data_stream_layouts (
+	archive_id TEXT NOT NULL,
+	unit_type_id INTEGER NOT NULL,
+	unit_file_id INTEGER NOT NULL,
+	stream_index INTEGER NOT NULL,
+	component_info_id INTEGER NOT NULL,
+	unit_version INTEGER NOT NULL,
+	vertex_stride INTEGER NOT NULL,
+	components_json TEXT NOT NULL,
+	layout_signature TEXT NOT NULL,
+	is_skinned INTEGER NOT NULL,
+	PRIMARY KEY(archive_id, unit_type_id, unit_file_id, stream_index),
+	FOREIGN KEY(archive_id) REFERENCES archives(archive_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_game_data_stream_layouts_signature ON game_data_stream_layouts(layout_signature, vertex_stride, is_skinned);
+CREATE INDEX IF NOT EXISTS ix_game_data_stream_layouts_component_info ON game_data_stream_layouts(component_info_id);
+
 DROP TABLE IF EXISTS game_data_unit_part_scans;
 
 ";
@@ -157,6 +175,7 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value;";
 		cmd.CommandText = @"
 DELETE FROM asset_archives;
 DELETE FROM assets;
+DELETE FROM game_data_stream_layouts;
 DELETE FROM game_data_unit_parts;
 DELETE FROM archive_issues;
 DELETE FROM archive_entries;

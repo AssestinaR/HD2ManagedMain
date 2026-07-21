@@ -61,7 +61,7 @@ namespace HD2ModManager.ViewModels
             _plan.CandidateGenerationRunning = true;
             try
             {
-                var result = await Task.Run(() => CoreServices.CreateCrossArmorTransferCandidateService().GenerateCandidateAsync(
+                var result = await Task.Run(() => CoreServices.CreateCrossArmorTransferCandidateService(_plan.Paths).GenerateCandidateAsync(
                     new CrossArmorTransferCandidateRequest(_plan.SourcePatchTocPath, _plan.GameDataDirectory, candidateDirectory, plan, CrossArmorMaterialBindingMode.PreserveSourceReferences, _plan.PreparedSourceEntries)).AsTask());
                 if (!result.IsSuccessful)
                 {

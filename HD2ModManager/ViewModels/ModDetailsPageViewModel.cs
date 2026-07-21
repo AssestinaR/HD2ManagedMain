@@ -38,6 +38,7 @@ namespace HD2ModManager.ViewModels
 		private bool _dependencyGraphTestRunning;
         private bool _dependencyGraphComparisonRunning;
         private readonly IAdvancedModAssetQueryService _advancedAssetQueryService;
+		private readonly StoragePaths _paths;
         private readonly EventHandler<DerivedStateSnapshot> _snapshotChangedHandler;
         private CancellationTokenSource? _advancedDetailsCancellation;
         private bool _advancedDetailsLoaded;
@@ -105,14 +106,15 @@ namespace HD2ModManager.ViewModels
             _profiles = profiles;
             _derivedState = derivedState;
             _notifications = notifications;
+            _paths = SettingsService.CreateStoragePaths();
 			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService();
-            _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(SettingsService.CreateStoragePaths());
-			_sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(SettingsService.CreateStoragePaths());
-            _equipmentUnitCatalog = CoreServices.CreateEquipmentUnitCatalogService(SettingsService.CreateStoragePaths());
-			_advancedAnalysis = CoreServices.CreateAdvancedModAnalysisService(SettingsService.CreateStoragePaths());
+            _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(_paths);
+            _sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(_paths);
+            _equipmentUnitCatalog = CoreServices.CreateEquipmentUnitCatalogService(_paths);
+            _advancedAnalysis = CoreServices.CreateAdvancedModAnalysisService(_paths);
             _dependencyGraphAnalysis = CoreServices.CreateDependencyGraphAnalysisProvider();
             _fullPatchAnalysis = CoreServices.CreateFullPatchAnalysisProvider();
-            _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(SettingsService.CreateStoragePaths());
+            _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(_paths);
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
             OpenFolderCommand = new RelayCommand(OpenFolder);
@@ -836,7 +838,7 @@ namespace HD2ModManager.ViewModels
                     .Where(analysis => string.Equals(analysis.Input.PatchTocFilePath, sourcePatchPaths[0], StringComparison.OrdinalIgnoreCase))
                     .SelectMany(analysis => analysis.Entries)
                     .ToArray();
-                var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(_equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(), preparedSourceEntries);
+				var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(_equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(), preparedSourceEntries, _paths);
                 if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenCrossArmorPlan(viewModel);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)

@@ -7,7 +7,9 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 	private readonly SdkStyleVertexStreamPlanner streamPlanner;
 	private readonly SdkStyleMeshReencoder reencoder;
 	private readonly UnitMeshWriter writer;
+	private readonly ICurrentGameStreamLayoutRegistry? streamLayoutRegistry;
 	private readonly bool planSourceStreamLayout;
+	private readonly bool planCanonicalSkinningLayout;
 
 	public SdkStyleTargetShellUnitReconstructor(
 		PlaceholderUnitMeshMinifier? minifier = null,
@@ -17,11 +19,16 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 		bool allowSectionRebuild = false,
 		bool propagateSourceMaterials = true,
 		IReadOnlySet<ulong>? allowedSourceMaterialIds = null,
-		bool planSourceStreamLayout = false)
+		bool planSourceStreamLayout = false,
+		bool planCanonicalSkinningLayout = false,
+		ICurrentGameStreamLayoutRegistry? streamLayoutRegistry = null)
 	{
+		if (planSourceStreamLayout && planCanonicalSkinningLayout) throw new ArgumentException("Source stream planning and canonical skinning planning cannot be enabled together.");
 		this.minifier = minifier ?? new PlaceholderUnitMeshMinifier();
 		this.streamPlanner = streamPlanner ?? new SdkStyleVertexStreamPlanner();
 		this.planSourceStreamLayout = planSourceStreamLayout;
+		this.planCanonicalSkinningLayout = planCanonicalSkinningLayout;
+		this.streamLayoutRegistry = streamLayoutRegistry;
 		this.reencoder = reencoder ?? new SdkStyleMeshReencoder(
 			allowSectionRebuild: allowSectionRebuild,
 			propagateSourceMaterials: propagateSourceMaterials,
@@ -52,7 +59,9 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 		// cannot be copied into a current target Unit: the same ID has different semantics
 		// between versions. Keep the current target declaration unless a caller explicitly
 		// opts into a version-aware stream migration.
-		var plannedTargetModel = planSourceStreamLayout
+		var plannedTargetModel = planCanonicalSkinningLayout
+			? streamPlanner.PlanCanonicalSkinning(targetUnit.Model, targetIndexes, streamLayoutRegistry)
+			: planSourceStreamLayout
 			? streamPlanner.Plan(targetUnit.Model, mappings.Select(mapping => new SdkStyleStreamReplacement(
 				mapping.TargetMeshInfoIndex,
 				sourceByKey[mapping.SourceUnitAssetKey].Model,
@@ -87,6 +96,12 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 
 	private static bool IsPlaceholder(UnitRawMeshData mesh)
 		=> mesh.Vertices.Count <= 3 && mesh.Triangles.Count <= 1;
+
+}
+
+public interface ICurrentGameStreamLayoutRegistry
+{
+	bool TryResolveCanonicalSkinningLayout(UnitStreamInfo targetStream, out UnitStreamInfo layout);
 }
 
 public sealed record SdkStyleTargetShellUnitReconstructionResult(

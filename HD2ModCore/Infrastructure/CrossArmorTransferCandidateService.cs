@@ -18,6 +18,8 @@ using AdaptationCrossArmorTransformInfoExpander = HD2ModAdaptation.PatchReconstr
 using AdaptationCrossArmorSkinningDiagnosticAnalyzer = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.CrossArmorSkinningDiagnosticAnalyzer;
 using AdaptationSdkStyleAvatarRigReader = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleAvatarRigReader;
 using AdaptationTargetBakeCompatibilityAnalyzer = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.TargetBakeCompatibilityAnalyzer;
+using AdaptationTargetBakeDryRunAnalyzer = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.TargetBakeDryRunAnalyzer;
+using AdaptationCurrentGameStreamLayoutRegistry = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.ICurrentGameStreamLayoutRegistry;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -31,7 +33,14 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 	private readonly AdaptationCrossArmorTransformInfoExpander transformInfoExpander = new();
 	private readonly AdaptationCrossArmorSkinningDiagnosticAnalyzer skinningDiagnosticAnalyzer = new();
 	private readonly AdaptationTargetBakeCompatibilityAnalyzer targetBakeCompatibilityAnalyzer = new();
+	private readonly AdaptationTargetBakeDryRunAnalyzer targetBakeDryRunAnalyzer = new();
 	private readonly AdaptationMaterialDependencyResolver materialDependencyResolver = new();
+	private readonly IAssetArchiveIndexService assetIndex;
+
+	public CrossArmorTransferCandidateService(IAssetArchiveIndexService? assetIndex = null)
+	{
+		this.assetIndex = assetIndex ?? throw new ArgumentNullException(nameof(assetIndex), "Cross-armor reconstruction requires the current Game Data asset index.");
+	}
 
 	public async ValueTask<CrossArmorTransferCandidateResult> GenerateCandidateAsync(CrossArmorTransferCandidateRequest request, CancellationToken cancellationToken = default)
 	{
@@ -40,6 +49,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		var boneDiagnostics = new List<object>();
 		var skinningDiagnostics = new List<object>();
 		var targetBakeDiagnostics = new List<object>();
+		var targetBakeDryRunDiagnostics = new List<object>();
 		var transferLayoutDiagnostics = new List<object>();
 		var outputTransferLayoutDiagnostics = new List<object>();
 		if (!request.Plan.CanContinue) return Failure("PlanNotReady", "当前计划尚不可写出；请先选择来源、目标并排除所有错误。", issues);
@@ -47,7 +57,9 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		if (!Directory.Exists(request.GameDataDirectory)) return Failure("GameDataMissing", "Game Data 文件夹不存在。", issues);
 		try
 		{
-			var unsafeBoneMappings = new List<string>();
+			var indexedLayouts = await assetIndex.GetStreamLayoutsAsync(cancellationToken).ConfigureAwait(false);
+			if (indexedLayouts.Count == 0) throw new InvalidDataException("当前游戏资产索引不含 stream ABI 声明；请先重新建立游戏资产索引后再生成跨护甲候选。");
+			AdaptationCurrentGameStreamLayoutRegistry streamLayoutRegistry = new CurrentGameStreamLayoutRegistry(indexedLayouts);
 			var sourceEntries = request.PreparedSourceEntries is { Count: > 0 }
 				? request.PreparedSourceEntries
 				: await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
@@ -105,6 +117,15 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 						mapping.SourceMeshInfoIndex,
 						Diagnostic = targetBake
 					});
+					var targetBakeDryRun = targetBakeDryRunAnalyzer.Analyze(targetUnit.Model, mapping.TargetMeshInfoIndex, sourceUnits[mapping.SourceUnitAssetKey].Model, mapping.SourceMeshInfoIndex, avatarRig);
+					targetBakeDryRunDiagnostics.Add(new
+					{
+						TargetUnit = $"0x{targetKey.FileId:x16}",
+						mapping.TargetMeshInfoIndex,
+						SourceUnit = $"0x{mapping.SourceUnitAssetKey.FileId:x16}",
+						mapping.SourceMeshInfoIndex,
+						Diagnostic = targetBakeDryRun
+					});
 					transferLayoutDiagnostics.Add(CreateTransferLayoutDiagnostic(
 						targetKey,
 						mapping.TargetMeshInfoIndex,
@@ -130,16 +151,8 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 						mapping.SourceMeshInfoIndex,
 						Diagnostic = diagnostic
 					});
-					if (diagnostic.Status is not ("DirectTargetCompatible" or "NeedsBoneInfoRelocation"))
-					{
-						unsafeBoneMappings.Add($"target 0x{targetKey.FileId:x16}/mesh {mapping.TargetMeshInfoIndex} <- source 0x{mapping.SourceUnitAssetKey.FileId:x16}/mesh {mapping.SourceMeshInfoIndex}: {diagnostic.Status}");
-					}
 				}
 				workItems.Add(new AdaptationSdkStyleTargetShellPatchWorkItem(targetUnit, requiredSources, effectiveUnitMappings));
-			}
-			if (unsafeBoneMappings.Count != 0)
-			{
-				throw new InvalidDataException($"跨护甲候选包含尚不安全的骨骼映射，已在写出前阻止：{string.Join("; ", unsafeBoneMappings)}。请查看 cross-armor-bone-diagnostic.json。当前仅允许 DirectTargetCompatible 和 NeedsBoneInfoRelocation。");
 			}
 			var headerArchiveId = request.Plan.SelectedTargets.First().ArchiveId;
 			var headerTemplate = await resolver.GetPackageTocAsync(headerArchiveId, cancellationToken).ConfigureAwait(false)
@@ -152,7 +165,9 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 				materialDependencies.Entries,
 				request.MaterialBindingMode == CrossArmorMaterialBindingMode.RequireCompleteSourceClosure,
 				allowedMaterialIds,
-				sourceEntries), cancellationToken).ConfigureAwait(false);
+				sourceEntries,
+				avatarRig.TransformInfo.NameHashes,
+				streamLayoutRegistry), cancellationToken).ConfigureAwait(false);
 			var outputEntries = await scanner.ScanEntriesAsync(execution.WriteResult.TocFilePath, cancellationToken).ConfigureAwait(false);
 			foreach (var mapping in mappings)
 			{
@@ -169,7 +184,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 					outputUnit.Model,
 					sourceUnits[ToAdaptationKey(mapping.Source.UnitAssetKey)].Model));
 			}
-			var reportPath = await WriteReportAsync(request, execution.WriteResult.TocFilePath, execution.Output, boneDiagnostics, skinningDiagnostics, targetBakeDiagnostics, transferLayoutDiagnostics, outputTransferLayoutDiagnostics, requestedMaterialIds, materialDependencies, cancellationToken).ConfigureAwait(false);
+			var reportPath = await WriteReportAsync(request, execution.WriteResult.TocFilePath, execution.Output, boneDiagnostics, skinningDiagnostics, targetBakeDiagnostics, targetBakeDryRunDiagnostics, transferLayoutDiagnostics, outputTransferLayoutDiagnostics, requestedMaterialIds, materialDependencies, cancellationToken).ConfigureAwait(false);
 			return new CrossArmorTransferCandidateResult(true, request.OutputDirectory, reportPath, execution.Output.UnitResults.Count, execution.Output.UnitResults.Sum(result => result.ReplacementCount), execution.Output.UnitResults.Sum(result => result.MinifiedCount), issues);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException or OverflowException)
@@ -177,7 +192,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			if (boneDiagnostics.Count != 0 && !string.IsNullOrWhiteSpace(request.OutputDirectory))
 			{
 				Directory.CreateDirectory(request.OutputDirectory);
-				await WriteFailureDiagnosticAsync(request.OutputDirectory, exception, boneDiagnostics, skinningDiagnostics, targetBakeDiagnostics, transferLayoutDiagnostics, request.Plan, cancellationToken).ConfigureAwait(false);
+				await WriteFailureDiagnosticAsync(request.OutputDirectory, exception, boneDiagnostics, skinningDiagnostics, targetBakeDiagnostics, targetBakeDryRunDiagnostics, transferLayoutDiagnostics, request.Plan, cancellationToken).ConfigureAwait(false);
 			}
 			return Failure("CrossArmorWriteFailed", exception.Message, issues, request.OutputDirectory);
 		}
@@ -268,6 +283,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		IReadOnlyList<object> boneDiagnostics,
 		IReadOnlyList<object> skinningDiagnostics,
 		IReadOnlyList<object> targetBakeDiagnostics,
+		IReadOnlyList<object> targetBakeDryRunDiagnostics,
 		IReadOnlyList<object> transferLayoutDiagnostics,
 		IReadOnlyList<object> outputTransferLayoutDiagnostics,
 		IReadOnlyCollection<ulong> requestedMaterialIds,
@@ -297,6 +313,20 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			BoneDiagnostics = boneDiagnostics,
 			SkinningDiagnostics = skinningDiagnostics,
 			TargetBakeDiagnostics = targetBakeDiagnostics,
+			TargetBakeDryRunDiagnostics = targetBakeDryRunDiagnostics,
+			CanonicalSkinningRebuilds = targetBakeDryRunDiagnostics
+				.Select(diagnostic => JsonSerializer.SerializeToElement(diagnostic))
+				.Where(diagnostic => diagnostic.GetProperty("Diagnostic").GetProperty("Status").GetString() != "TargetBakeDryRunReady")
+				.Select(diagnostic => new
+				{
+					TargetUnit = diagnostic.GetProperty("TargetUnit").GetString(),
+					TargetMeshInfoIndex = diagnostic.GetProperty("TargetMeshInfoIndex").GetInt32(),
+					SourceUnit = diagnostic.GetProperty("SourceUnit").GetString(),
+					SourceMeshInfoIndex = diagnostic.GetProperty("SourceMeshInfoIndex").GetInt32(),
+					PriorStatus = diagnostic.GetProperty("Diagnostic").GetProperty("Status").GetString(),
+					Reason = diagnostic.GetProperty("Diagnostic").GetProperty("BlockReason").GetString(),
+					Route = "SdkCanonicalSkinningLayout"
+				}).ToArray(),
 			TransferLayoutDiagnostics = transferLayoutDiagnostics,
 			OutputTransferLayoutDiagnostics = outputTransferLayoutDiagnostics,
 			SkinningRisks = skinningDiagnostics
@@ -475,6 +505,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		IReadOnlyList<object> boneDiagnostics,
 		IReadOnlyList<object> skinningDiagnostics,
 		IReadOnlyList<object> targetBakeDiagnostics,
+		IReadOnlyList<object> targetBakeDryRunDiagnostics,
 		IReadOnlyList<object> transferLayoutDiagnostics,
 		CrossArmorTransferPlan plan,
 		CancellationToken cancellationToken)
@@ -488,6 +519,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			BoneDiagnostics = boneDiagnostics,
 			SkinningDiagnostics = skinningDiagnostics,
 			TargetBakeDiagnostics = targetBakeDiagnostics,
+			TargetBakeDryRunDiagnostics = targetBakeDryRunDiagnostics,
 			TransferLayoutDiagnostics = transferLayoutDiagnostics,
 			Mappings = plan.Mappings.Select(mapping => new
 			{
