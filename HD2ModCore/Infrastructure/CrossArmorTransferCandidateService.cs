@@ -369,12 +369,8 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 				.Where(mesh => mesh.LodIndex is -1 or >= 0 and <= 4)
 				.OrderBy(mesh => mesh.MeshInfoIndex)
 				.ToArray();
-			var targetLod0 = targetRenderFamily.SingleOrDefault(mesh => mesh.LodIndex == 0);
-			var sourceLod0 = sourceRenderFamily.SingleOrDefault(mesh => mesh.LodIndex == 0)
-				?? sourceRenderFamily.SingleOrDefault(mesh => mesh.MeshInfoIndex == approved.SourceMeshInfoIndex && mesh.LodIndex == -1);
-			if (targetLod0 is null || sourceLod0 is null
-				|| approved.TargetMeshInfoIndex != targetLod0.MeshInfoIndex
-				|| approved.SourceMeshInfoIndex != sourceLod0.MeshInfoIndex) continue;
+			if (!targetRenderFamily.Any(mesh => mesh.MeshInfoIndex == approved.TargetMeshInfoIndex)
+				|| !sourceRenderFamily.Any(mesh => mesh.MeshInfoIndex == approved.SourceMeshInfoIndex)) continue;
 
 			var sourceByLod = sourceRenderFamily
 				.GroupBy(mesh => mesh.LodIndex)
