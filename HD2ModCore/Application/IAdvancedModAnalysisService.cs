@@ -11,6 +11,13 @@ public interface IAdvancedModAnalysisService
 	ValueTask<IReadOnlyList<PatchGroupAnalysis>> GetRequiredAnalysesAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default);
 }
 
+// Purpose: Persists the optional full-model analysis separately from imported lightweight facts.
+public interface IAdvancedModAnalysisCacheStore
+{
+	ValueTask<PatchGroupAnalysisCacheEntry?> TryLoadAdvancedAsync(ModNodeId nodeId, CancellationToken cancellationToken = default);
+	ValueTask SaveAdvancedAsync(PatchGroupAnalysisCacheEntry entry, CancellationToken cancellationToken = default);
+}
+
 public sealed record AdvancedModAnalysisState(
 	ModNodeId NodeId,
 	bool IsReady,

@@ -15,21 +15,27 @@ internal sealed class CurrentGameStreamLayoutRegistry : ICurrentGameStreamLayout
 		this.layouts = layouts.ToArray();
 	}
 
-	public bool TryResolveCanonicalSkinningLayout(UnitStreamInfo targetStream, out UnitStreamInfo layout)
+	public bool TryResolveCanonicalSkinningLayout(UnitStreamInfo targetStream, int requiredSkinningCapacity, out UnitStreamInfo layout)
 	{
+		if (requiredSkinningCapacity is < 1 or > 4)
+		{
+			layout = default!;
+			return false;
+		}
 		var targetNonSkinning = Signature(targetStream.Components.Where(component => component.Type is not 6 and not 7));
-		var matches = layouts.Where(candidate =>
+		var match = layouts.Where(candidate =>
 			Signature(candidate.Components.Where(component => component.Type is not 6 and not 7)) == targetNonSkinning
 			&& candidate.Components.Count(component => component.Type == 7 && component.Format == 35 && component.Index == 0) == 1
 			&& candidate.Components.Count(component => component.Type == 6 && component.Format == 28 && component.Index == 0) == 1
 			&& candidate.Components.Count(component => component.Type == 7) == 1
 			&& candidate.Components.Count(component => component.Type == 6) == 1)
 			.GroupBy(candidate => CreateLayoutKey(candidate))
-			.Select(group => group.First())
-			.ToArray();
-		if (matches.Length == 1)
+			.OrderByDescending(group => group.Count())
+			.ThenBy(group => group.Key, StringComparer.Ordinal)
+			.Select(group => group.OrderBy(candidate => candidate.ArchiveId, StringComparer.Ordinal).ThenBy(candidate => candidate.UnitAssetKey.FileId).ThenBy(candidate => candidate.StreamIndex).First())
+			.FirstOrDefault();
+		if (match is not null)
 		{
-			var match = matches[0];
 			layout = targetStream with
 			{
 				ComponentInfoId = match.ComponentInfoId,
@@ -47,10 +53,10 @@ internal sealed class CurrentGameStreamLayoutRegistry : ICurrentGameStreamLayout
 		=> $"{layout.VertexStride}|{layout.LayoutSignature}";
 
 	private static string Signature(IEnumerable<GameDataStreamComponentFact> components)
-		=> string.Join(";", components.Select(component => $"{component.Type}:{component.Format}:{component.Index}:{component.Unknown:x16}"));
+		=> string.Join(";", components.Select(component => $"{component.Type}:{component.Format}:{component.Index}:{component.Unknown:x16}:{component.Size}"));
 
 	private static string Signature(IEnumerable<UnitStreamComponentInfo> components)
-		=> string.Join(";", components.Select(component => $"{component.Type}:{component.Format}:{component.Index}:{component.Unknown:x16}"));
+		=> string.Join(";", components.Select(component => $"{component.Type}:{component.Format}:{component.Index}:{component.Unknown:x16}:{component.Size}"));
 
 	private static string TypeName(uint type) => type switch
 	{

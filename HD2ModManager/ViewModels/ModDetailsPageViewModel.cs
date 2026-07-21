@@ -152,7 +152,8 @@ namespace HD2ModManager.ViewModels
             {
                 await Task.WhenAll(
                     RefreshAdvancedAssetsAsync(cancellationToken),
-                    RefreshMaterialDeliveryFactsAsync(cancellationToken)).ConfigureAwait(false);
+                    RefreshMaterialDeliveryFactsAsync(cancellationToken),
+                    RefreshMaterialPackagingStateAsync(cancellationToken)).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -482,9 +483,8 @@ namespace HD2ModManager.ViewModels
             catch (OperationCanceledException) { throw; }
             catch (Exception exception)
             {
-                _allAdvancedAssets = Array.Empty<AdvancedModAssetRow>();
                 AdvancedAssetState = $"稳定资产事实读取失败：{exception.Message}";
-                ApplyAdvancedAssetFilter();
+				RunOnUiThread(() => OnPropertyChanged(nameof(AdvancedAssetState)));
             }
         }
 

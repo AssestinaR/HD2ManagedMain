@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle;
 
 // Purpose: Produces read-only cross-armor bone and BoneInfo capacity diagnostics before an experimental target-shell candidate is written.
@@ -43,6 +45,7 @@ public sealed class CrossArmorBoneDiagnosticAnalyzer
 			: FindUnavailableMatrixIndexes(dryRun.Failure, requiredTargetTransformIndexes);
 		var actualRebuiltBytes = dryRun.PayloadBytes;
 		var status = DetermineStatus(missingTargetTransformHashes, missingMatrices, targetBoneInfo, actualRebuiltBytes, dryRun.Failure);
+		var bindPoseMatrices = BuildBindPoseMatrixDiagnostics(targetModel, targetMeshInfoIndex, sourceModel, sourceMeshInfoIndex, sourceBoneHashes);
 
 		return new CrossArmorBoneTransferDiagnostic(
 			targetMeshInfoIndex,
@@ -59,9 +62,42 @@ public sealed class CrossArmorBoneDiagnosticAnalyzer
 			absentFromTargetPalette,
 			currentRecordBytes,
 			actualRebuiltBytes,
+			bindPoseMatrices,
 			status,
 			dryRun.Failure);
 	}
+
+	private static IReadOnlyList<CrossArmorBindPoseMatrixDiagnostic> BuildBindPoseMatrixDiagnostics(UnitMeshModel targetModel, int targetMeshInfoIndex, UnitMeshModel sourceModel, int sourceMeshInfoIndex, IReadOnlyList<uint> hashes)
+	{
+		var targetMesh = targetModel.Meshes.Single(mesh => mesh.Index == targetMeshInfoIndex);
+		var sourceMesh = sourceModel.Meshes.Single(mesh => mesh.Index == sourceMeshInfoIndex);
+		var targetMeshWorld = ToMatrix(targetModel.TransformInfo.Matrices[(int)targetMesh.TransformIndex]);
+		var sourceMeshWorld = ToMatrix(sourceModel.TransformInfo.Matrices[(int)sourceMesh.TransformIndex]);
+		if (!Matrix4x4.Invert(targetMeshWorld, out var inverseTargetMesh) || !Matrix4x4.Invert(sourceMeshWorld, out var inverseSourceMesh)) return Array.Empty<CrossArmorBindPoseMatrixDiagnostic>();
+		var targetByHash = targetModel.TransformNameHashes.Select((hash, index) => (hash, index)).ToDictionary(item => item.hash, item => item.index);
+		var sourceByHash = sourceModel.TransformNameHashes.Select((hash, index) => (hash, index)).ToDictionary(item => item.hash, item => item.index);
+		return hashes.Where(hash => targetByHash.ContainsKey(hash) && sourceByHash.ContainsKey(hash)).Select(hash =>
+		{
+			var sourceLocal = ToMatrix(sourceModel.TransformInfo.Matrices[sourceByHash[hash]]) * inverseSourceMesh;
+			var targetLocal = ToMatrix(targetModel.TransformInfo.Matrices[targetByHash[hash]]) * inverseTargetMesh;
+			if (!Matrix4x4.Invert(sourceLocal, out var inverseSourceLocal)) return new CrossArmorBindPoseMatrixDiagnostic(hash, float.PositiveInfinity, Array.Empty<float>());
+			var delta = inverseSourceLocal * targetLocal;
+			if (!Matrix4x4.Invert(targetLocal, out var inverseTargetLocal)) return new CrossArmorBindPoseMatrixDiagnostic(hash, float.PositiveInfinity, ToValues(delta));
+			return new CrossArmorBindPoseMatrixDiagnostic(hash, MaxIdentityResidual(sourceLocal * delta * inverseTargetLocal), ToValues(delta));
+		}).ToArray();
+	}
+
+	private static Matrix4x4 ToMatrix(UnitTransformMatrix matrix)
+	{
+		var v = matrix.Values;
+		return new Matrix4x4(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]);
+	}
+
+	private static float MaxIdentityResidual(Matrix4x4 matrix)
+		=> ToValues(matrix).Select((value, index) => MathF.Abs(value - (index is 0 or 5 or 10 or 15 ? 1f : 0f))).Max();
+
+	private static float[] ToValues(Matrix4x4 m)
+		=> [m.M11, m.M12, m.M13, m.M14, m.M21, m.M22, m.M23, m.M24, m.M31, m.M32, m.M33, m.M34, m.M41, m.M42, m.M43, m.M44];
 
 	private (int PayloadBytes, string? Failure) TryMeasureRebuiltBoneInfo(UnitMeshModel targetModel, int targetMeshInfoIndex, UnitMeshModel sourceModel, int sourceMeshInfoIndex)
 	{
@@ -156,5 +192,8 @@ public sealed record CrossArmorBoneTransferDiagnostic(
 	IReadOnlyList<uint> AbsentFromTargetLodPaletteTransformIndexes,
 	int CurrentTargetBoneInfoPayloadBytes,
 	int ActualRebuiltBoneInfoPayloadBytes,
+	IReadOnlyList<CrossArmorBindPoseMatrixDiagnostic> BindPoseMatrices,
 	string Status,
 	string? DryRunFailure);
+
+public sealed record CrossArmorBindPoseMatrixDiagnostic(uint BoneHash, float IdentityResidual, IReadOnlyList<float> SourceToTargetMeshLocalDelta);

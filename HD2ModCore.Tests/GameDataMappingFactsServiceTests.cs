@@ -49,6 +49,8 @@ public sealed class GameDataMappingFactsServiceTests
 
 	private sealed class StubIndexService : IAssetArchiveIndexService
 	{
+		public ValueTask<IReadOnlyList<GameDataStreamLayoutFact>> FindStreamLayoutsAsync(IReadOnlyList<GameDataStreamComponentFact> components, uint vertexStride, bool requireSkinned = false, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<GameDataStreamLayoutFact>>([]);
+		public ValueTask<IReadOnlyList<GameDataStreamLayoutFact>> GetStreamLayoutsAsync(CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<GameDataStreamLayoutFact>>([]);
 		private readonly IReadOnlyDictionary<AssetKey, IReadOnlyList<ArchiveMetadata>> _matches;
 		public string Generation { get; set; }
 		public StubIndexService(string generation, IReadOnlyDictionary<AssetKey, IReadOnlyList<ArchiveMetadata>> matches) { Generation = generation; _matches = matches; }

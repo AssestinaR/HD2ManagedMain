@@ -229,52 +229,49 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		IReadOnlyDictionary<AdaptationAssetKey, AdaptationPatchUnitMesh> sourceUnits,
 		IReadOnlyList<AdaptationTargetShellMeshMapping> approvedMappings)
 	{
-		// A selected visual LOD0 is only one member of a Unit's render family.  SDK saves
-		// the matching source geometry into every sibling LOD; minifying those siblings
-		// leaves only the chest vulnerable to the target's fallback rendering path.
-		if (approvedMappings.Count != 1) return approvedMappings;
-		var approved = approvedMappings[0];
-		var sourceModel = sourceUnits[approved.SourceUnitAssetKey].Model;
+		// A selected visual LOD0 is only one member of a Unit's render family. Rebuild
 		var targetRenderFamily = targetModel.RawMeshData
 			.Where(mesh => mesh.LodIndex is >= 0 and <= 4)
 			.OrderBy(mesh => mesh.MeshInfoIndex)
 			.ToArray();
-		var sourceRenderFamily = sourceModel.RawMeshData
-			.Where(mesh => mesh.LodIndex is -1 or >= 0 and <= 3)
-			.OrderBy(mesh => mesh.MeshInfoIndex)
-			.ToArray();
-		if (approved.TargetMeshInfoIndex != targetRenderFamily.SingleOrDefault(mesh => mesh.LodIndex == 0)?.MeshInfoIndex
-			|| approved.SourceMeshInfoIndex != sourceRenderFamily.SingleOrDefault(mesh => mesh.LodIndex == 0)?.MeshInfoIndex
-			|| targetRenderFamily.Length != sourceRenderFamily.Length
-			|| targetRenderFamily.Length < 2) return approvedMappings;
+		if (targetRenderFamily.Length < 2) return approvedMappings;
 
-		var sourceByLod = sourceRenderFamily
-			.GroupBy(mesh => mesh.LodIndex)
-			.ToDictionary(group => group.Key, group => group.ToArray());
-		var expanded = new List<AdaptationTargetShellMeshMapping>(targetRenderFamily.Length);
-		foreach (var targetMesh in targetRenderFamily)
+		var expanded = new List<AdaptationTargetShellMeshMapping>(approvedMappings);
+		var coveredTargets = expanded.Select(mapping => mapping.TargetMeshInfoIndex).ToHashSet();
+		foreach (var approved in approvedMappings)
 		{
-			var sourceLod = targetMesh.LodIndex == 4 ? -1 : targetMesh.LodIndex;
-			if (!sourceByLod.TryGetValue(sourceLod, out var sourceCandidates) || sourceCandidates.Length != 1)
+			var sourceModel = sourceUnits[approved.SourceUnitAssetKey].Model;
+			var sourceRenderFamily = sourceModel.RawMeshData
+				.Where(mesh => mesh.LodIndex is -1 or >= 0 and <= 4)
+				.OrderBy(mesh => mesh.MeshInfoIndex)
+				.ToArray();
+			if (approved.TargetMeshInfoIndex != targetRenderFamily.SingleOrDefault(mesh => mesh.LodIndex == 0)?.MeshInfoIndex
+				|| approved.SourceMeshInfoIndex != sourceRenderFamily.SingleOrDefault(mesh => mesh.LodIndex == 0)?.MeshInfoIndex) continue;
+
+			var sourceByLod = sourceRenderFamily
+				.GroupBy(mesh => mesh.LodIndex)
+				.ToDictionary(group => group.Key, group => group.ToArray());
+			foreach (var targetMesh in targetRenderFamily)
 			{
-				return approvedMappings;
+				if (coveredTargets.Contains(targetMesh.MeshInfoIndex)) continue;
+				var sourceLod = targetMesh.LodIndex == 4 ? -1 : targetMesh.LodIndex;
+				var sourceMesh = sourceByLod.TryGetValue(sourceLod, out var sourceCandidates) && sourceCandidates.Length == 1
+					? sourceCandidates[0]
+					: sourceModel.RawMeshData.Single(mesh => mesh.MeshInfoIndex == approved.SourceMeshInfoIndex);
+				if (!HasCompatibleEffectiveSectionLayout(sourceMesh, targetMesh)) continue;
+				expanded.Add(new AdaptationTargetShellMeshMapping(approved.SourceUnitAssetKey, sourceMesh.MeshInfoIndex, targetMesh.MeshInfoIndex));
+				coveredTargets.Add(targetMesh.MeshInfoIndex);
 			}
-			var sourceMesh = sourceCandidates[0];
-			// Re-encoding is intentionally limited to equal section layouts.  The failed
-			// section-rebuild route changes target metadata and can corrupt skinning. A
-			// partial LOD family is also invalid: its untouched sibling BoneInfo palette
-			// may lack matrices required by the expanded transform table.
-			if (sourceMesh.Sections.Count != targetMesh.Sections.Count)
-			{
-				return approvedMappings;
-			}
-			expanded.Add(new AdaptationTargetShellMeshMapping(approved.SourceUnitAssetKey, sourceMesh.MeshInfoIndex, targetMesh.MeshInfoIndex));
 		}
 
-		return expanded.Any(mapping => mapping.TargetMeshInfoIndex == approved.TargetMeshInfoIndex && mapping.SourceMeshInfoIndex == approved.SourceMeshInfoIndex)
-			? expanded
-			: approvedMappings;
+		return expanded;
 	}
+
+	private static bool HasCompatibleEffectiveSectionLayout(
+		HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData source,
+		HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData target)
+		=> source.Sections.Count(section => section.Triangles.Count != 0) == target.Sections.Count(section => section.Triangles.Count != 0)
+			&& source.Sections.Count(section => section.Triangles.Count != 0) != 0;
 
 	private static async ValueTask<string> WriteReportAsync(
 		CrossArmorTransferCandidateRequest request,

@@ -206,10 +206,22 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 		var result = new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true).Reencode(targetModel, 0, sourceModel, 0);
 		var vertex = Assert.Single(result.Model.RawMeshData).Vertices[0];
 
-		Assert.Equal(5f, BitConverter.ToSingle(vertex.Data, 0));
+		Assert.Equal(1f, BitConverter.ToSingle(vertex.Data, 0));
 		Assert.Equal(new float[] { 0f, 1f, 0f }, ReadVector3(vertex.Data, 12));
 		Assert.Equal(new float[] { 1f, 0f, 0f }, ReadVector3(vertex.Data, 24));
 		Assert.Equal(new float[] { 0f, 0f, 1f }, ReadVector3(vertex.Data, 36));
+	}
+
+	[Fact]
+	public void Reencode_RebuildingInverseJointMatrices_RetargetsPositionByWeightedBindPose()
+	{
+		var sourceModel = CreateWeightedBindPoseModel(0f, 0f);
+		var targetModel = CreateWeightedBindPoseModel(2f, 6f);
+
+		var result = new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true).Reencode(targetModel, 0, sourceModel, 0);
+		var vertex = Assert.Single(result.Model.RawMeshData).Vertices[0];
+
+		Assert.Equal(5f, BitConverter.ToSingle(vertex.Data, 0), 4);
 	}
 
 	[Fact]
@@ -426,6 +438,99 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 		Assert.Equal(new uint[] { 0, 4, 6 }, stream.Components.Select(component => component.Type));
 	}
 
+	[Fact]
+	public void CanonicalSkinningPlanner_UsesCurrentVersionVec4HalfFormat()
+	{
+		var targetModel = CreateModel(vertexSeed: 1, meshCount: 1) with
+		{
+			Streams = [new UnitStreamInfo(0, 128, 0, 5, 0, 3, 44, 0, 3, 0, 0, 0, 0, 0,
+			[
+				new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+				new UnitStreamComponentInfo(1, "normal", 30, "unk_normal", 0, 0, 4),
+				new UnitStreamComponentInfo(4, "uv", 33, "vec2_half", 0, 0, 4),
+				new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4),
+				new UnitStreamComponentInfo(6, "bone_index", 24, "vec4_uint32", 1, 0, 16)
+			])]
+		};
+
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1);
+		var result = new SdkStyleVertexStreamPlanner().PlanCanonicalSkinning(targetModel, [new SdkStyleStreamReplacement(0, sourceModel, 0)]);
+		var stream = Assert.Single(result.Streams);
+
+		var weights = Assert.Single(stream.Components, component => component.Type == 7);
+		Assert.Equal(35u, weights.Format);
+		Assert.Equal("vec4_half", weights.FormatName);
+		Assert.Equal(8u, weights.Size);
+		Assert.Equal(32u, stream.VertexStride);
+		Assert.Single(stream.Components, component => component.Type == 6);
+	}
+
+	[Fact]
+	public void CanonicalSkinningPlanner_UsesFourInfluenceRouteForThreeInfluenceSource()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with
+		{
+			RawMeshData = [CreateModel(vertexSeed: 7, meshCount: 1).RawMeshData[0] with
+			{
+				Vertices = Enumerable.Range(0, 3).Select(index => new UnitRawVertexRecord((uint)index, Array.Empty<byte>(),
+				[
+					new UnitVertexComponentValue(7, "bone_weight", 35, "vec4_half", 0, [.5f, .3f, .2f, 0f], Array.Empty<uint>(), Array.Empty<byte>()),
+					new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, Array.Empty<float>(), [0u, 1u, 2u, 0u], Array.Empty<byte>())
+				])).ToArray()
+			}]
+		};
+		var targetModel = sourceModel with
+		{
+			Streams = [new UnitStreamInfo(0, 128, 0, 4, 0, 3, 28, 0, 3, 0, 0, 0, 0, 0,
+			[
+				new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+				new UnitStreamComponentInfo(7, "bone_weight", 33, "vec2_half", 0, 0, 4),
+				new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4),
+				new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 1, 0, 0)
+			])]
+		};
+
+		var result = new SdkStyleVertexStreamPlanner().PlanCanonicalSkinning(targetModel, [new SdkStyleStreamReplacement(0, sourceModel, 0)]);
+		var weights = Assert.Single(Assert.Single(result.Streams).Components, component => component.Type == 7);
+
+		Assert.Equal("vec4_half", weights.FormatName);
+		Assert.Equal(8u, weights.Size);
+	}
+
+	[Fact]
+	public void TargetBakeDryRun_DoesNotRejectThreeInfluenceSourceBecauseTargetHasTwoWeights()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with
+		{
+			Streams = [CreateSkinnedStream()],
+			TransformNameHashes = [101, 102, 103],
+			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [IdentityMatrix(), IdentityMatrix(), IdentityMatrix()], Array.Empty<UnitTransformEntry>(), [101, 102, 103]),
+			BoneInfos = [new UnitBoneInfo(0, 0, 0, 0, 0, 0, [0, 1, 2], [new UnitBoneRemap(0, 0, [0, 1, 2])])],
+			RawMeshData = [CreateSkinnedRawMesh() with
+			{
+				Vertices = Enumerable.Range(0, 3).Select(index => new UnitRawVertexRecord((uint)index, Array.Empty<byte>(),
+				[
+					new UnitVertexComponentValue(7, "bone_weight", 35, "vec4_half", 0, [.5f, .3f, .2f, 0f], Array.Empty<uint>(), Array.Empty<byte>()),
+					new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, Array.Empty<float>(), [0u, 1u, 2u, 0u], Array.Empty<byte>())
+				])).ToArray()
+			}]
+		};
+		var targetModel = sourceModel with
+		{
+			Streams = [new UnitStreamInfo(0, 128, 0, 3, 0, 3, 20, 0, 3, 0, 0, 0, 0, 0,
+			[
+				new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+				new UnitStreamComponentInfo(7, "bone_weight", 33, "vec2_half", 0, 0, 4),
+				new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4)
+			])]
+		};
+		var avatar = new SdkStyleAvatarRigResource(SourceKey, "avatar", new PatchEntryPayload(new PatchTocEntry(SourceKey, "avatar", "avatar"), Array.Empty<byte>(), Array.Empty<byte>(), Array.Empty<byte>()), 0, 0, sourceModel.TransformInfo);
+
+		var diagnostic = new TargetBakeDryRunAnalyzer().Analyze(targetModel, 0, sourceModel, 0, avatar);
+
+		Assert.Equal("TargetBakeDryRunReady", diagnostic.Status);
+	}
+
 	private static PatchUnitMesh CreatePatchUnit(AssetKey key, UnitMeshModel model)
 	{
 		var entry = new PatchTocEntry(key, "source.patch", "source.patch");
@@ -500,6 +605,36 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [new UnitTransformMatrix([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, meshTransformX, 0, 0, 1])], Array.Empty<UnitTransformEntry>(), [101])
 		};
 	}
+
+	private static UnitMeshModel CreateWeightedBindPoseModel(float firstBoneX, float secondBoneX)
+	{
+		var model = CreateSurfaceVectorModel(0f);
+		var vertex = model.RawMeshData[0].Vertices[0] with
+		{
+			Components = model.RawMeshData[0].Vertices[0].Components.Select(component => component.Type switch
+			{
+				7 => component with { FloatValues = [.5f, .5f, 0f, 0f] },
+				6 => component with { UIntValues = [0u, 1u, 0u, 0u] },
+				_ => component
+			}).ToArray()
+		};
+		return model with
+		{
+			Meshes = model.Meshes.Select(mesh => mesh with { TransformIndex = 2 }).ToArray(),
+			TransformNameHashes = [101, 102],
+			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(),
+			[
+				TranslationMatrix(firstBoneX),
+				TranslationMatrix(secondBoneX),
+				IdentityMatrix()
+			], Array.Empty<UnitTransformEntry>(), [101, 102]),
+			BoneInfos = [new UnitBoneInfo(0, 0, 2, 0, 0, 0, [0, 1], [new UnitBoneRemap(0, 0, [0, 1])])],
+			RawMeshData = [model.RawMeshData[0] with { Vertices = [vertex] }]
+		};
+	}
+
+	private static UnitTransformMatrix TranslationMatrix(float x)
+		=> new([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1]);
 
 	private static float[] ReadVector3(byte[] data, int offset)
 		=> [BitConverter.ToSingle(data, offset), BitConverter.ToSingle(data, offset + 4), BitConverter.ToSingle(data, offset + 8)];

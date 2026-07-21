@@ -14,7 +14,7 @@ public sealed class TargetBakeDryRunAnalyzer
 	{
 		var targetMesh = FindRawMesh(targetModel, targetMeshInfoIndex, "target");
 		var sourceMesh = FindRawMesh(sourceModel, sourceMeshInfoIndex, "source");
-		var skinningLayoutIssue = FindSkinningLayoutIssue(targetModel, targetMesh, sourceModel, sourceMesh);
+		var skinningLayoutIssue = FindSourceSkinningIssue(sourceModel, sourceMesh);
 		if (skinningLayoutIssue is not null)
 		{
 			return new TargetBakeDryRunDiagnostic(targetMeshInfoIndex, sourceMeshInfoIndex, 0, targetMesh.Sections.Count, Array.Empty<uint>(), Array.Empty<TargetBakeSectionRemapDiagnostic>(), "TargetBakeSkinningLayoutBlocked", skinningLayoutIssue);
@@ -97,24 +97,14 @@ public sealed class TargetBakeDryRunAnalyzer
 		=> model.RawMeshData.FirstOrDefault(mesh => mesh.MeshInfoIndex == meshInfoIndex)
 			?? throw new KeyNotFoundException($"The {role} Unit does not contain mesh {meshInfoIndex}.");
 
-	private static string? FindSkinningLayoutIssue(UnitMeshModel targetModel, UnitRawMeshData targetMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceMesh)
+	private static string? FindSourceSkinningIssue(UnitMeshModel sourceModel, UnitRawMeshData sourceMesh)
 	{
-		var targetStream = targetModel.Streams.FirstOrDefault(stream => stream.Index == targetMesh.StreamIndex)
-			?? throw new KeyNotFoundException($"The target Unit does not contain stream {targetMesh.StreamIndex}.");
 		var sourceStream = sourceModel.Streams.FirstOrDefault(stream => stream.Index == sourceMesh.StreamIndex)
 			?? throw new KeyNotFoundException($"The source Unit does not contain stream {sourceMesh.StreamIndex}.");
-		var targetIndices = targetStream.Components.Where(component => component.Type == 6).OrderBy(component => component.Index).ToArray();
-		var targetWeights = targetStream.Components.Where(component => component.Type == 7).OrderBy(component => component.Index).ToArray();
 		var sourceIndices = sourceStream.Components.Where(component => component.Type == 6).OrderBy(component => component.Index).ToArray();
 		var sourceWeights = sourceStream.Components.Where(component => component.Type == 7).OrderBy(component => component.Index).ToArray();
-		if (targetIndices.Length == 0 && targetWeights.Length == 0 && sourceIndices.Length == 0 && sourceWeights.Length == 0) return null;
-		if (targetIndices.Length == 0 || targetWeights.Length == 0 || sourceIndices.Length == 0 || sourceWeights.Length == 0) return "来源或目标 stream 缺少成对的 bone-index/bone-weight 组件。";
-		if (targetIndices.Length != sourceIndices.Length)
-		{
-			return "来源与目标的 bone-index 组数量不同。SDK 会对每个 index 组复用同一权重，因此填充额外组会引入重复骨骼影响。";
-		}
-		var targetCapacity = Math.Min(ComponentCapacity(targetIndices[0].FormatName), ComponentCapacity(targetWeights[0].FormatName));
-		if (targetCapacity <= 0) return "目标 bone-index 或 bone-weight 格式尚未被完整 target-bake 支持。";
+		if (sourceIndices.Length == 0 && sourceWeights.Length == 0) return null;
+		if (sourceIndices.Length == 0 || sourceWeights.Length == 0) return "来源 stream 缺少成对的 bone-index/bone-weight 组件。";
 		foreach (var vertex in sourceMesh.Vertices)
 		{
 			var weightsByIndex = vertex.Components.Where(component => component.Type == 7).ToDictionary(component => component.Index, component => component.FloatValues);
@@ -125,7 +115,7 @@ public sealed class TargetBakeDryRunAnalyzer
 				IReadOnlyList<float> weights = weightsByIndex.TryGetValue(indices.Index, out var matched) ? matched : fallback;
 				active += Enumerable.Range(0, Math.Min(indices.UIntValues.Length, weights.Count)).Count(index => weights[index] > ActiveWeightThreshold);
 			}
-			if (active > targetCapacity) return $"来源顶点包含 {active} 个活跃骨骼影响，但目标主 skinning 组仅能无损编码 {targetCapacity} 个。";
+			if (active > 4) return $"来源顶点包含 {active} 个活跃骨骼影响，当前已验证的 canonical skinning route 最多无损编码 4 个。";
 		}
 		return null;
 	}

@@ -60,7 +60,10 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 		// between versions. Keep the current target declaration unless a caller explicitly
 		// opts into a version-aware stream migration.
 		var plannedTargetModel = planCanonicalSkinningLayout
-			? streamPlanner.PlanCanonicalSkinning(targetUnit.Model, targetIndexes, streamLayoutRegistry)
+			? streamPlanner.PlanCanonicalSkinning(targetUnit.Model, mappings.Select(mapping => new SdkStyleStreamReplacement(
+				mapping.TargetMeshInfoIndex,
+				sourceByKey[mapping.SourceUnitAssetKey].Model,
+				mapping.SourceMeshInfoIndex)).ToArray(), streamLayoutRegistry)
 			: planSourceStreamLayout
 			? streamPlanner.Plan(targetUnit.Model, mappings.Select(mapping => new SdkStyleStreamReplacement(
 				mapping.TargetMeshInfoIndex,
@@ -101,7 +104,7 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 
 public interface ICurrentGameStreamLayoutRegistry
 {
-	bool TryResolveCanonicalSkinningLayout(UnitStreamInfo targetStream, out UnitStreamInfo layout);
+	bool TryResolveCanonicalSkinningLayout(UnitStreamInfo targetStream, int requiredSkinningCapacity, out UnitStreamInfo layout);
 }
 
 public sealed record SdkStyleTargetShellUnitReconstructionResult(

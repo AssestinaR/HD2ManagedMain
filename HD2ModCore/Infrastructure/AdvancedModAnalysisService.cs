@@ -9,11 +9,11 @@ public sealed class AdvancedModAnalysisService : IAdvancedModAnalysisService
 {
 	private const int CacheVersion = 8;
 	private const string AnalyzerVersion = "patch-group-v4-section-materials";
-	private readonly IPatchGroupAnalysisCacheStore _cacheStore;
+	private readonly IAdvancedModAnalysisCacheStore _cacheStore;
 	private readonly IPatchGroupAnalysisProvider _fullAnalysisProvider;
 	private readonly IPatchFileNameParser _fileNameParser;
 
-	public AdvancedModAnalysisService(IPatchGroupAnalysisCacheStore cacheStore, IPatchGroupAnalysisProvider fullAnalysisProvider, IPatchFileNameParser fileNameParser)
+	public AdvancedModAnalysisService(IAdvancedModAnalysisCacheStore cacheStore, IPatchGroupAnalysisProvider fullAnalysisProvider, IPatchFileNameParser fileNameParser)
 	{
 		_cacheStore = cacheStore ?? throw new ArgumentNullException(nameof(cacheStore));
 		_fullAnalysisProvider = fullAnalysisProvider ?? throw new ArgumentNullException(nameof(fullAnalysisProvider));
@@ -22,7 +22,7 @@ public sealed class AdvancedModAnalysisService : IAdvancedModAnalysisService
 
 	public async ValueTask<AdvancedModAnalysisState> GetStateAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
 	{
-		var cached = await _cacheStore.TryLoadAsync(node.Id, cancellationToken).ConfigureAwait(false);
+		var cached = await _cacheStore.TryLoadAdvancedAsync(node.Id, cancellationToken).ConfigureAwait(false);
 		var currentFiles = BuildFingerprints(node, modsRootDirectory);
 		var isReady = cached is not null && cached.Version == CacheVersion && string.Equals(cached.RelativePath, node.RelativePath, StringComparison.OrdinalIgnoreCase)
 			&& cached.Analyses.All(analysis => analysis.Depth == PatchAnalysisDepth.Full && string.Equals(analysis.AnalyzerVersion, AnalyzerVersion, StringComparison.Ordinal) && analysis.Entries.Count != 0)
@@ -34,7 +34,7 @@ public sealed class AdvancedModAnalysisService : IAdvancedModAnalysisService
 	{
 		var analyses = await _fullAnalysisProvider.AnalyzeNodeAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 		var fingerprints = BuildFingerprints(node, modsRootDirectory);
-		await _cacheStore.SaveAsync(new PatchGroupAnalysisCacheEntry(CacheVersion, node.Id, node.RelativePath, fingerprints, DateTimeOffset.UtcNow, analyses), cancellationToken).ConfigureAwait(false);
+		await _cacheStore.SaveAdvancedAsync(new PatchGroupAnalysisCacheEntry(CacheVersion, node.Id, node.RelativePath, fingerprints, DateTimeOffset.UtcNow, analyses), cancellationToken).ConfigureAwait(false);
 		var issues = analyses.SelectMany(analysis => analysis.Issues)
 			.Select(issue => new CoreIssue(CoreIssueSeverity.Warning, issue.Code, issue.Message, issue.SourceFilePath, node.Id))
 			.ToArray();
@@ -45,7 +45,7 @@ public sealed class AdvancedModAnalysisService : IAdvancedModAnalysisService
 	{
 		var state = await GetStateAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 		if (!state.IsReady) throw new InvalidOperationException("请先执行高级分析以建立完整 Unit 和材质引用缓存。");
-		return (await _cacheStore.TryLoadAsync(node.Id, cancellationToken).ConfigureAwait(false))!.Analyses;
+		return (await _cacheStore.TryLoadAdvancedAsync(node.Id, cancellationToken).ConfigureAwait(false))!.Analyses;
 	}
 
 	private IReadOnlyList<PatchAssetSourceFileFingerprint> BuildFingerprints(ModNode node, string modsRootDirectory)

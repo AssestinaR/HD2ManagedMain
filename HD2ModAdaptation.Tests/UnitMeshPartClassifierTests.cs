@@ -58,6 +58,26 @@ public sealed class UnitMeshPartClassifierTests
 		Assert.Equal("g_torso_undergarment_male", part.SemanticName);
 		Assert.Equal(UnitMeshPartKind.Torso, part.PartKind);
 		Assert.Equal(UnitMeshPartLayer.Undergarment, part.Layer);
+		Assert.Equal(UnitMeshBodyVariant.Stocky, part.BodyVariant);
+	}
+
+	[Theory]
+	[InlineData("g_torso_female", UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Slim)]
+	[InlineData("g_torso_male", UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Stocky)]
+	[InlineData("g_torso_undergarment_female", UnitMeshPartKind.Torso, UnitMeshPartLayer.Undergarment, UnitMeshBodyVariant.Slim)]
+	[InlineData("g_arm_l", UnitMeshPartKind.LeftArm, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Any)]
+	[InlineData("g_leg_r", UnitMeshPartKind.RightLeg, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Any)]
+	public void Classify_InfersSdkNameVariantAndDefaultLayer(string name, UnitMeshPartKind expectedKind, UnitMeshPartLayer expectedLayer, UnitMeshBodyVariant expectedVariant)
+	{
+		var semantic = new UnitMeshSemanticInfo(name, string.Empty, string.Empty, string.Empty, string.Empty, 0, 0, false, false, false);
+		var mesh = new UnitMeshInfo(0, 0, 42, 0, 0, 0, 0, 0, 0, 0, semantic, [], []);
+		var model = new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UnitCustomizationInfo.Empty, [], [], [mesh], [], [], []);
+
+		var part = Assert.Single(new UnitMeshPartClassifier().Classify(new AssetKey(0xe0a48d0be9a7453f, 1), model));
+
+		Assert.Equal(expectedKind, part.PartKind);
+		Assert.Equal(expectedLayer, part.Layer);
+		Assert.Equal(expectedVariant, part.BodyVariant);
 	}
 
 	[Theory]

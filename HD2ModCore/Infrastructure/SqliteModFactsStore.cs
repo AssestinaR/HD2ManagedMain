@@ -7,7 +7,7 @@ using Microsoft.Data.Sqlite;
 namespace HD2ModCore.Infrastructure;
 
 // Purpose: Stores stable per-Mod patch assets, references and evidence in an independently versioned SQLite database.
-public sealed class SqliteModFactsStore : IModFactsStore
+public sealed class SqliteModFactsStore : IModFactsStore, IAdvancedModAnalysisCacheStore
 {
 	private const int SchemaVersion = 3;
 	private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -67,11 +67,34 @@ public sealed class SqliteModFactsStore : IModFactsStore
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 	}
 
+	public async ValueTask<PatchGroupAnalysisCacheEntry?> TryLoadAdvancedAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)
+	{
+		await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+		await using var command = connection.CreateCommand();
+		command.CommandText = "SELECT cache_json FROM advanced_mod_analysis_snapshots WHERE node_id = $node";
+		command.Parameters.AddWithValue("$node", nodeId.Value.ToString("N"));
+		var json = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+		return json is null ? null : JsonSerializer.Deserialize<PatchGroupAnalysisCacheEntry>(json, JsonOptions);
+	}
+
+	public async ValueTask SaveAdvancedAsync(PatchGroupAnalysisCacheEntry entry, CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(entry);
+		await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+		await using var command = connection.CreateCommand();
+		command.CommandText = "INSERT INTO advanced_mod_analysis_snapshots(node_id,relative_path,cache_json,built_utc) VALUES($node,$path,$json,$built) ON CONFLICT(node_id) DO UPDATE SET relative_path=excluded.relative_path,cache_json=excluded.cache_json,built_utc=excluded.built_utc";
+		command.Parameters.AddWithValue("$node", entry.NodeId.Value.ToString("N"));
+		command.Parameters.AddWithValue("$path", entry.RelativePath);
+		command.Parameters.AddWithValue("$json", JsonSerializer.Serialize(entry, JsonOptions));
+		command.Parameters.AddWithValue("$built", entry.BuiltAtUtc.UtcDateTime.ToString("O"));
+		await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+	}
+
 	public async ValueTask DeleteAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)
 	{
 		await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
 		await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-		await ExecuteAsync(connection, transaction, "DELETE FROM asset_references WHERE node_id = $node; DELETE FROM mod_assets WHERE node_id = $node; DELETE FROM patch_groups WHERE node_id = $node; DELETE FROM mod_fact_snapshots WHERE node_id = $node;", nodeId.Value.ToString("N"), cancellationToken).ConfigureAwait(false);
+		await ExecuteAsync(connection, transaction, "DELETE FROM asset_references WHERE node_id = $node; DELETE FROM mod_assets WHERE node_id = $node; DELETE FROM patch_groups WHERE node_id = $node; DELETE FROM mod_fact_snapshots WHERE node_id = $node; DELETE FROM advanced_mod_analysis_snapshots WHERE node_id = $node;", nodeId.Value.ToString("N"), cancellationToken).ConfigureAwait(false);
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 	}
 
@@ -103,7 +126,7 @@ public sealed class SqliteModFactsStore : IModFactsStore
 	private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
 	{
 		Directory.CreateDirectory(paths.IndexDirectory); var connection = new SqliteConnection($"Data Source={paths.ModFactsDbPath}"); await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-		await using var command = connection.CreateCommand(); command.CommandText = $"PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS schema_info(version INTEGER NOT NULL); INSERT INTO schema_info(version) SELECT {SchemaVersion} WHERE NOT EXISTS(SELECT 1 FROM schema_info); CREATE TABLE IF NOT EXISTS mod_fact_snapshots(node_id TEXT PRIMARY KEY,relative_path TEXT NOT NULL,cache_json TEXT NOT NULL,built_utc TEXT NOT NULL); CREATE TABLE IF NOT EXISTS patch_groups(group_id TEXT PRIMARY KEY,node_id TEXT NOT NULL,patch_path TEXT NOT NULL,analyzer_version TEXT NOT NULL); CREATE TABLE IF NOT EXISTS mod_assets(node_id TEXT NOT NULL,group_id TEXT NOT NULL,type_id TEXT NOT NULL,file_id TEXT NOT NULL,toc_size INTEGER NOT NULL,stream_size INTEGER NOT NULL,gpu_size INTEGER NOT NULL,PRIMARY KEY(node_id,group_id,type_id,file_id)); CREATE INDEX IF NOT EXISTS ix_mod_assets_key ON mod_assets(type_id,file_id); CREATE TABLE IF NOT EXISTS asset_references(node_id TEXT NOT NULL,group_id TEXT NOT NULL,source_type_id TEXT NOT NULL,source_file_id TEXT NOT NULL,target_type_id TEXT NOT NULL,target_file_id TEXT NOT NULL,relation_kind INTEGER NOT NULL,payload_offset INTEGER NOT NULL,slot_id INTEGER NULL,reference_index INTEGER NULL); CREATE INDEX IF NOT EXISTS ix_asset_refs_source ON asset_references(source_type_id,source_file_id); CREATE INDEX IF NOT EXISTS ix_asset_refs_target ON asset_references(target_type_id,target_file_id);"; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); return connection;
+		await using var command = connection.CreateCommand(); command.CommandText = $"PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; CREATE TABLE IF NOT EXISTS schema_info(version INTEGER NOT NULL); INSERT INTO schema_info(version) SELECT {SchemaVersion} WHERE NOT EXISTS(SELECT 1 FROM schema_info); CREATE TABLE IF NOT EXISTS mod_fact_snapshots(node_id TEXT PRIMARY KEY,relative_path TEXT NOT NULL,cache_json TEXT NOT NULL,built_utc TEXT NOT NULL); CREATE TABLE IF NOT EXISTS advanced_mod_analysis_snapshots(node_id TEXT PRIMARY KEY,relative_path TEXT NOT NULL,cache_json TEXT NOT NULL,built_utc TEXT NOT NULL); CREATE TABLE IF NOT EXISTS patch_groups(group_id TEXT PRIMARY KEY,node_id TEXT NOT NULL,patch_path TEXT NOT NULL,analyzer_version TEXT NOT NULL); CREATE TABLE IF NOT EXISTS mod_assets(node_id TEXT NOT NULL,group_id TEXT NOT NULL,type_id TEXT NOT NULL,file_id TEXT NOT NULL,toc_size INTEGER NOT NULL,stream_size INTEGER NOT NULL,gpu_size INTEGER NOT NULL,PRIMARY KEY(node_id,group_id,type_id,file_id)); CREATE INDEX IF NOT EXISTS ix_mod_assets_key ON mod_assets(type_id,file_id); CREATE TABLE IF NOT EXISTS asset_references(node_id TEXT NOT NULL,group_id TEXT NOT NULL,source_type_id TEXT NOT NULL,source_file_id TEXT NOT NULL,target_type_id TEXT NOT NULL,target_file_id TEXT NOT NULL,relation_kind INTEGER NOT NULL,payload_offset INTEGER NOT NULL,slot_id INTEGER NULL,reference_index INTEGER NULL); CREATE INDEX IF NOT EXISTS ix_asset_refs_source ON asset_references(source_type_id,source_file_id); CREATE INDEX IF NOT EXISTS ix_asset_refs_target ON asset_references(target_type_id,target_file_id);"; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); return connection;
 	}
 
 	private static async ValueTask ExecuteAsync(SqliteConnection connection, System.Data.Common.DbTransaction transaction, string sql, string node, CancellationToken cancellationToken) { await using var command = connection.CreateCommand(); command.Transaction = (SqliteTransaction)transaction; command.CommandText = sql; command.Parameters.AddWithValue("$node", node); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }

@@ -77,6 +77,9 @@ public sealed class SdkStyleMeshReencoder
 
 		var sourceBoneInfo = FindBoneInfo(sourceModel, sourceRawMesh, "source");
 		var targetBoneInfo = FindBoneInfo(targetModel, targetRawMesh, "target");
+		var bindPoseRetarget = rebuildTargetInverseJointMatrices
+			? BuildBindPoseRetargetContext(targetModel, targetMeshInfoIndex, sourceModel, sourceMeshInfoIndex)
+			: null;
 		var materialByVertex = BuildVertexMaterialMap(sourceRawMesh, targetRawMesh);
 		var rebuiltTargetBoneInfo = canonicalBoneHashOrder is not null
 			? BuildCanonicalTargetBakedBoneInfo(sourceRawMesh, targetRawMesh, sourceBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, canonicalBoneHashOrder)
@@ -86,7 +89,7 @@ public sealed class SdkStyleMeshReencoder
 		rebuiltTargetBoneInfo = AttachTargetBoneMatrices(rebuiltTargetBoneInfo, BuildTargetMatrixMap(targetModel, targetRawMesh));
 		var updatedVertices = sourceRawMesh.Vertices.Select(vertex => new UnitRawVertexRecord(
 			vertex.Index,
-			EncodeTargetVertex(vertex, targetStream, sourceBoneInfo, rebuiltTargetBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, materialByVertex.TryGetValue(vertex.Index, out var materials) ? materials.Source : 0, materialByVertex.TryGetValue(vertex.Index, out materials) ? materials.Target : 0, meshSpaceTransform, transformMeshSpace || rebuildTargetInverseJointMatrices),
+			EncodeTargetVertex(vertex, targetStream, sourceBoneInfo, rebuiltTargetBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, materialByVertex.TryGetValue(vertex.Index, out var materials) ? materials.Source : 0, materialByVertex.TryGetValue(vertex.Index, out materials) ? materials.Target : 0, meshSpaceTransform, transformMeshSpace || rebuildTargetInverseJointMatrices, bindPoseRetarget),
 			Array.Empty<UnitVertexComponentValue>())).ToArray();
 		if (canonicalBoneHashOrder is not null)
 		{
@@ -178,6 +181,9 @@ public sealed class SdkStyleMeshReencoder
 
 		var sourceBoneInfo = FindBoneInfo(sourceModel, sourceRawMesh, "source");
 		var targetBoneInfo = FindBoneInfo(targetModel, targetRawMesh, "target");
+		var bindPoseRetarget = rebuildTargetInverseJointMatrices
+			? BuildBindPoseRetargetContext(targetModel, targetRawMesh.MeshInfoIndex, sourceModel, sourceMeshInfoIndex)
+			: null;
 		var remapNames = BuildTargetRemapBoneNames(targetModel, targetBoneInfo);
 		foreach (var group in outputSections)
 		{
@@ -189,7 +195,7 @@ public sealed class SdkStyleMeshReencoder
 		var rebuiltBoneInfo = AttachTargetBoneMatrices(remapBuilder.SetRemap(targetBoneInfo, remapNames, targetModel.TransformNameHashes), BuildTargetMatrixMap(targetModel, targetRawMesh));
 		var verticesWithBones = vertexSources.Select((source, index) => new UnitRawVertexRecord(
 			(uint)index,
-			EncodeTargetVertex(sourceRawMesh.Vertices[(int)source.sourceVertex], targetStream, sourceBoneInfo, rebuiltBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, source.sourceMaterial, source.targetMaterial, meshSpaceTransform, transformMeshSpace),
+			EncodeTargetVertex(sourceRawMesh.Vertices[(int)source.sourceVertex], targetStream, sourceBoneInfo, rebuiltBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, source.sourceMaterial, source.targetMaterial, meshSpaceTransform, transformMeshSpace, bindPoseRetarget),
 			Array.Empty<UnitVertexComponentValue>())).ToArray();
 		return CreateRebuiltResult(targetModel, targetRawMesh, sourceMeshInfoIndex, rebuiltSections, verticesWithBones, rebuiltBoneInfo, materialBindings.SourceMaterialIds);
 
@@ -612,7 +618,7 @@ public sealed class SdkStyleMeshReencoder
 		return hashes.OrderBy(hash => hash).ToArray();
 	}
 
-	private static byte[] EncodeTargetVertex(UnitRawVertexRecord sourceVertex, UnitStreamInfo targetStream, UnitBoneInfo sourceBoneInfo, UnitBoneInfo rebuiltTargetBoneInfo, IReadOnlyList<uint> sourceTransformHashes, IReadOnlyList<uint> targetTransformHashes, uint sourceMaterialIndex, uint targetMaterialIndex, Matrix4x4 meshSpaceTransform, bool requireCompleteBoneRemap)
+	private static byte[] EncodeTargetVertex(UnitRawVertexRecord sourceVertex, UnitStreamInfo targetStream, UnitBoneInfo sourceBoneInfo, UnitBoneInfo rebuiltTargetBoneInfo, IReadOnlyList<uint> sourceTransformHashes, IReadOnlyList<uint> targetTransformHashes, uint sourceMaterialIndex, uint targetMaterialIndex, Matrix4x4 meshSpaceTransform, bool requireCompleteBoneRemap, BindPoseRetargetContext? bindPoseRetarget)
 	{
 		var data = new byte[checked((int)targetStream.VertexStride)];
 		var skinning = BuildTargetSkinning(sourceVertex, targetStream, sourceBoneInfo, rebuiltTargetBoneInfo, sourceTransformHashes, targetTransformHashes, sourceMaterialIndex, targetMaterialIndex, requireCompleteBoneRemap);
@@ -622,7 +628,9 @@ public sealed class SdkStyleMeshReencoder
 			var size = checked((int)targetComponent.Size);
 			if (size <= 0 || cursor + size > data.Length) throw new InvalidDataException("A target stream component is outside its vertex stride.");
 			var destination = data.AsSpan(cursor, size);
-			var sourceComponent = TransformVertexComponent(FindComponent(sourceVertex, targetComponent.Type, targetComponent.Index), targetComponent.Type, meshSpaceTransform);
+			var sourceComponent = targetComponent.Type == 0 && bindPoseRetarget is not null
+				? RetargetPosition(sourceVertex, sourceBoneInfo, sourceTransformHashes, sourceMaterialIndex, bindPoseRetarget)
+				: TransformVertexComponent(FindComponent(sourceVertex, targetComponent.Type, targetComponent.Index), targetComponent.Type, meshSpaceTransform);
 			if (targetComponent.Type == 6)
 			{
 				WriteBoneIndices(destination, targetComponent, skinning.IndicesByGroup.TryGetValue(targetComponent.Index, out var indices) ? indices : Array.Empty<uint>());
@@ -755,6 +763,59 @@ public sealed class SdkStyleMeshReencoder
 			"vec4_half" or "vec4_float" or "vec4_uint8" or "vec4_uint32" => 4,
 			_ => 0
 		};
+
+	private static BindPoseRetargetContext BuildBindPoseRetargetContext(UnitMeshModel targetModel, int targetMeshInfoIndex, UnitMeshModel sourceModel, int sourceMeshInfoIndex)
+	{
+		var targetMesh = targetModel.Meshes.FirstOrDefault(mesh => mesh.Index == targetMeshInfoIndex) ?? throw new KeyNotFoundException($"The target Unit does not contain MeshInfo {targetMeshInfoIndex}.");
+		var sourceMesh = sourceModel.Meshes.FirstOrDefault(mesh => mesh.Index == sourceMeshInfoIndex) ?? throw new KeyNotFoundException($"The source Unit does not contain MeshInfo {sourceMeshInfoIndex}.");
+		var sourceMeshWorld = GetTransformMatrix(sourceModel, sourceMesh.TransformIndex, "source");
+		var targetMeshWorld = GetTransformMatrix(targetModel, targetMesh.TransformIndex, "target");
+		if (!Matrix4x4.Invert(sourceMeshWorld, out var inverseSourceMesh)) throw new InvalidDataException("The source mesh TransformInfo matrix is not invertible for bind-pose retargeting.");
+		if (!Matrix4x4.Invert(targetMeshWorld, out var inverseTargetMesh)) throw new InvalidDataException("The target mesh TransformInfo matrix is not invertible for bind-pose retargeting.");
+		var targetTransformByHash = targetModel.TransformNameHashes.Select((hash, index) => (hash, index)).ToDictionary(item => item.hash, item => item.index);
+		var transforms = new Dictionary<uint, Matrix4x4>();
+		for (var sourceIndex = 0; sourceIndex < sourceModel.TransformNameHashes.Count; sourceIndex++)
+		{
+			var hash = sourceModel.TransformNameHashes[sourceIndex];
+			if (!targetTransformByHash.TryGetValue(hash, out var targetIndex)) continue;
+			var sourceBoneLocal = ToMatrix(sourceModel.TransformInfo.Matrices[sourceIndex]) * inverseSourceMesh;
+			var targetBoneLocal = ToMatrix(targetModel.TransformInfo.Matrices[targetIndex]) * inverseTargetMesh;
+			if (!Matrix4x4.Invert(sourceBoneLocal, out var inverseSourceBoneLocal)) throw new InvalidDataException($"Source bind transform 0x{hash:x8} is not invertible.");
+			transforms.Add(hash, inverseSourceBoneLocal * targetBoneLocal);
+		}
+		return new BindPoseRetargetContext(transforms);
+	}
+
+	private static UnitVertexComponentValue? RetargetPosition(UnitRawVertexRecord sourceVertex, UnitBoneInfo sourceBoneInfo, IReadOnlyList<uint> sourceTransformHashes, uint sourceMaterialIndex, BindPoseRetargetContext context)
+	{
+		var position = FindComponent(sourceVertex, 0, 0);
+		if (position is null || position.FloatValues.Length < 3) return position;
+		var indicesByGroup = sourceVertex.Components.Where(component => component.Type == 6).OrderBy(component => component.Index).ToArray();
+		var weightsByGroup = sourceVertex.Components.Where(component => component.Type == 7).ToDictionary(component => component.Index, component => component.FloatValues);
+		var fallbackWeights = weightsByGroup.Values.FirstOrDefault() ?? Array.Empty<float>();
+		var input = new Vector3(position.FloatValues[0], position.FloatValues[1], position.FloatValues[2]);
+		var output = Vector3.Zero;
+		var total = 0f;
+		foreach (var indices in indicesByGroup)
+		{
+			var weights = weightsByGroup.TryGetValue(indices.Index, out var matchingWeights) ? matchingWeights : fallbackWeights;
+			var count = indices.UIntValues.Length < weights.Length ? indices.UIntValues.Length : weights.Length;
+			for (var index = 0; index < count; index++)
+			{
+				var weight = weights[index];
+				if (weight <= ActiveWeightThreshold) continue;
+				var hash = ResolveSourceBoneHash(indices.UIntValues[index], sourceMaterialIndex, sourceBoneInfo, sourceTransformHashes);
+				if (!context.TransformByBoneHash.TryGetValue(hash, out var transform)) throw new InvalidDataException($"No target bind transform exists for active source bone 0x{hash:x8}.");
+				output += Vector3.Transform(input, transform) * weight;
+				total += weight;
+			}
+		}
+		if (total <= ActiveWeightThreshold) return position;
+		output /= total;
+		var values = position.FloatValues.ToArray();
+		values[0] = output.X; values[1] = output.Y; values[2] = output.Z;
+		return position with { FormatName = string.Empty, FloatValues = values, RawData = Array.Empty<byte>() };
+	}
 
 	private static Matrix4x4 BuildMeshSpaceTransform(UnitMeshModel targetModel, int targetMeshInfoIndex, UnitMeshModel sourceModel, int sourceMeshInfoIndex)
 	{
@@ -914,6 +975,8 @@ public sealed class SdkStyleMeshReencoder
 			new Dictionary<uint, IReadOnlyList<uint>>(),
 			new Dictionary<uint, IReadOnlyList<float>>());
 	}
+
+	private sealed record BindPoseRetargetContext(IReadOnlyDictionary<uint, Matrix4x4> TransformByBoneHash);
 
 	private readonly record struct VertexMaterialIndexes(uint Source, uint Target);
 	private sealed record SectionAssignment(int SourceSectionIndex, UnitRawMeshSectionData SourceSection, UnitRawMeshSectionData TargetSection, int TargetSectionIndex);

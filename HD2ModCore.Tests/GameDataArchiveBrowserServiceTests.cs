@@ -37,6 +37,8 @@ public sealed class GameDataArchiveBrowserServiceTests
 
 	private sealed class FakeIndexService : IAssetArchiveIndexService
 	{
+		public ValueTask<IReadOnlyList<GameDataStreamLayoutFact>> FindStreamLayoutsAsync(IReadOnlyList<GameDataStreamComponentFact> components, uint vertexStride, bool requireSkinned = false, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<GameDataStreamLayoutFact>>([]);
+		public ValueTask<IReadOnlyList<GameDataStreamLayoutFact>> GetStreamLayoutsAsync(CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<GameDataStreamLayoutFact>>([]);
 		public ValueTask<bool> IndexExistsAsync(CancellationToken cancellationToken = default) => ValueTask.FromResult(true);
 		public ValueTask<GameDataIndexFingerprint?> GetFingerprintAsync(CancellationToken cancellationToken = default) => ValueTask.FromResult<GameDataIndexFingerprint?>(new GameDataIndexFingerprint("data", DateTimeOffset.UtcNow, 1, 1, 1, "index"));
 		public ValueTask<IReadOnlyList<GameDataArchiveSummary>> GetArchiveSummariesAsync(CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<GameDataArchiveSummary>>([new GameDataArchiveSummary("target", "Target", "Armor", 1, "正常")]);

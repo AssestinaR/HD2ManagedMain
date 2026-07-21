@@ -47,9 +47,10 @@ public static class CoreServices
 		=> new ModContentFactsService(CreatePatchFileNameParser(), CreatePatchGroupAnalysisProvider(paths));
 	public static IAdvancedModAnalysisService CreateAdvancedModAnalysisService(StoragePaths paths)
 		=> new AdvancedModAnalysisService(
-			CreateModFactsStore(paths),
+			CreateAdvancedModAnalysisCacheStore(paths),
 			new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), HD2ModAdaptation.Analysis.PatchAnalysisDepth.Full),
 			CreatePatchFileNameParser());
+	public static IAdvancedModAnalysisCacheStore CreateAdvancedModAnalysisCacheStore(StoragePaths paths) => new SqliteModFactsStore(paths);
 
 	public static IPatchGroupAnalysisProvider CreateDependencyGraphAnalysisProvider()
 		=> new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), HD2ModAdaptation.Analysis.PatchAnalysisDepth.DependencyGraph);

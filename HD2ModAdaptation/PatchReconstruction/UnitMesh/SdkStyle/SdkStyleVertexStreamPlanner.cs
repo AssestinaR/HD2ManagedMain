@@ -6,18 +6,18 @@ public sealed class SdkStyleVertexStreamPlanner
 	private const uint Vec4HalfFormat = 35;
 	private const uint Vec4UInt8Format = 28;
 
-	public UnitMeshModel PlanCanonicalSkinning(UnitMeshModel targetModel, IReadOnlyCollection<int> targetMeshInfoIndexes, ICurrentGameStreamLayoutRegistry? streamLayoutRegistry = null)
+	public UnitMeshModel PlanCanonicalSkinning(UnitMeshModel targetModel, IReadOnlyCollection<SdkStyleStreamReplacement> replacements, ICurrentGameStreamLayoutRegistry? streamLayoutRegistry = null)
 	{
 		ArgumentNullException.ThrowIfNull(targetModel);
-		ArgumentNullException.ThrowIfNull(targetMeshInfoIndexes);
-		if (targetMeshInfoIndexes.Count == 0) return targetModel;
+		ArgumentNullException.ThrowIfNull(replacements);
+		if (replacements.Count == 0) return targetModel;
 
-		var streamIndexes = targetMeshInfoIndexes
-			.Select(meshIndex => GetTargetStreamIndex(targetModel, meshIndex))
-			.ToHashSet();
+		var requiredSkinningCapacityByStream = replacements
+			.GroupBy(replacement => GetTargetStreamIndex(targetModel, replacement.TargetMeshInfoIndex))
+			.ToDictionary(group => group.Key, group => group.Max(GetRequiredSkinningCapacity));
 		var streams = targetModel.Streams.Select(stream =>
 		{
-			if (!streamIndexes.Contains(stream.Index)) return stream;
+			if (!requiredSkinningCapacityByStream.TryGetValue(stream.Index, out var requiredSkinningCapacity)) return stream;
 			var fallbackComponents = stream.Components
 				.Where(component => component.Type is not 6 and not 7)
 				.Append(new UnitStreamComponentInfo(7, "bone_weight", Vec4HalfFormat, "vec4_half", 0, 0, 8))
@@ -25,9 +25,11 @@ public sealed class SdkStyleVertexStreamPlanner
 				.OrderBy(component => GetSdkComponentOrder(component.Type))
 				.ThenBy(component => component.Index)
 				.ToArray();
-			var planned = streamLayoutRegistry is not null && streamLayoutRegistry.TryResolveCanonicalSkinningLayout(stream, out var registered)
-				? registered
-				: new UnitStreamInfo(stream.Index, stream.Offset, stream.ComponentInfoId, checked((ulong)fallbackComponents.Length), stream.VertexBufferId, stream.NumVertices, checked((uint)fallbackComponents.Sum(component => component.Size)), stream.IndexBufferId, stream.NumIndices, stream.IndexBufferType, stream.VertexBufferOffset, stream.VertexBufferSize, stream.IndexBufferOffset, stream.IndexBufferSize, fallbackComponents);
+			var planned = streamLayoutRegistry is null
+				? new UnitStreamInfo(stream.Index, stream.Offset, stream.ComponentInfoId, checked((ulong)fallbackComponents.Length), stream.VertexBufferId, stream.NumVertices, checked((uint)fallbackComponents.Sum(component => component.Size)), stream.IndexBufferId, stream.NumIndices, stream.IndexBufferType, stream.VertexBufferOffset, stream.VertexBufferSize, stream.IndexBufferOffset, stream.IndexBufferSize, fallbackComponents)
+				: streamLayoutRegistry.TryResolveCanonicalSkinningLayout(stream, requiredSkinningCapacity, out var registered)
+					? registered
+					: throw new InvalidDataException($"Current-game layout catalog has no verified canonical skinning route for stream {stream.Index}.");
 			var components = planned.Components;
 			if (!components.Any(component => component.Type == 0 && component.Index == 0))
 			{
@@ -42,6 +44,30 @@ public sealed class SdkStyleVertexStreamPlanner
 			};
 		}).ToArray();
 		return targetModel with { Streams = streams };
+	}
+
+	private static int GetRequiredSkinningCapacity(SdkStyleStreamReplacement replacement)
+	{
+		var sourceMesh = replacement.SourceModel.RawMeshData.FirstOrDefault(mesh => mesh.MeshInfoIndex == replacement.SourceMeshInfoIndex)
+			?? throw new KeyNotFoundException($"Source Unit does not contain mesh {replacement.SourceMeshInfoIndex}.");
+		var maximum = 0;
+		foreach (var vertex in sourceMesh.Vertices)
+		{
+			var weightsByGroup = vertex.Components.Where(component => component.Type == 7).ToDictionary(component => component.Index, component => component.FloatValues);
+			var fallbackWeights = weightsByGroup.Values.FirstOrDefault() ?? Array.Empty<float>();
+			var active = 0;
+			foreach (var indices in vertex.Components.Where(component => component.Type == 6))
+			{
+				var weights = weightsByGroup.TryGetValue(indices.Index, out var matchingWeights) ? matchingWeights : fallbackWeights;
+				var valueCount = indices.UIntValues.Length < weights.Length ? indices.UIntValues.Length : weights.Length;
+				for (var index = 0; index < valueCount; index++)
+				{
+					if (weights[index] > 0.001f) active++;
+				}
+			}
+			maximum = Math.Max(maximum, active);
+		}
+		return Math.Max(1, maximum);
 	}
 
 	public UnitMeshModel Plan(UnitMeshModel targetModel, IReadOnlyCollection<SdkStyleStreamReplacement> replacements)

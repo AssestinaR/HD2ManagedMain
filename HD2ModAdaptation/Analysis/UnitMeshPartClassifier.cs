@@ -44,12 +44,13 @@ public sealed class UnitMeshPartClassifier
 			? UnitMeshPartEvidenceKind.BoneName
 			: semantic.HasValue ? UnitMeshPartEvidenceKind.CustomizationInfo : UnitMeshPartEvidenceKind.Unknown;
 		var kind = ResolveKind(text);
-		var bodyVariant = ResolveBodyVariant(semantic.BodyType);
+		var bodyVariant = ResolveBodyVariant(semantic.BodyType, text);
 		var layer = semantic.IsCullingBody ? UnitMeshPartLayer.Culling
 			: semantic.IsStaticMesh ? UnitMeshPartLayer.Static
 			: Contains(text, "undergarment", "inner", "body") ? UnitMeshPartLayer.Undergarment
 			: Contains(text, "armor", "armour", "plate") ? UnitMeshPartLayer.Armor
 			: kind is UnitMeshPartKind.LeftShoulder or UnitMeshPartKind.RightShoulder or UnitMeshPartKind.Accessory ? UnitMeshPartLayer.Accessory
+			: kind is UnitMeshPartKind.Torso or UnitMeshPartKind.LeftArm or UnitMeshPartKind.RightArm or UnitMeshPartKind.Pelvis or UnitMeshPartKind.LeftLeg or UnitMeshPartKind.RightLeg ? UnitMeshPartLayer.Armor
 			: UnitMeshPartLayer.Unknown;
 		var confidence = evidence switch
 		{
@@ -65,14 +66,18 @@ public sealed class UnitMeshPartClassifier
 		return new UnitMeshPartFact(unitAssetKey, semantic.MeshInfoIndex, meshId, kind, layer, bodyVariant, semantic.Name, evidence, confidence, semantic.IsVisualMesh, semantic.IsLod, reason);
 	}
 
-	private static UnitMeshBodyVariant ResolveBodyVariant(string bodyType) => bodyType.Trim() switch
+	private static UnitMeshBodyVariant ResolveBodyVariant(string bodyType, string semanticText)
 	{
-		var value when value.Equals("Slim", StringComparison.OrdinalIgnoreCase) => UnitMeshBodyVariant.Slim,
-		var value when value.Equals("Stocky", StringComparison.OrdinalIgnoreCase) => UnitMeshBodyVariant.Stocky,
-		var value when value.Equals("Any", StringComparison.OrdinalIgnoreCase) => UnitMeshBodyVariant.Any,
-		"" => UnitMeshBodyVariant.Unknown,
-		_ => UnitMeshBodyVariant.Other
-	};
+		switch (bodyType.Trim())
+		{
+			case var value when value.Equals("Slim", StringComparison.OrdinalIgnoreCase): return UnitMeshBodyVariant.Slim;
+			case var value when value.Equals("Stocky", StringComparison.OrdinalIgnoreCase): return UnitMeshBodyVariant.Stocky;
+			case var value when value.Equals("Any", StringComparison.OrdinalIgnoreCase): return UnitMeshBodyVariant.Any;
+		}
+		if (Contains(semanticText, "female", "slim")) return UnitMeshBodyVariant.Slim;
+		if (Contains(semanticText, "male", "stocky")) return UnitMeshBodyVariant.Stocky;
+		return bodyType.Trim().Length == 0 ? UnitMeshBodyVariant.Any : UnitMeshBodyVariant.Other;
+	}
 
 	private static UnitMeshPartKind ResolveKind(string text)
 	{
