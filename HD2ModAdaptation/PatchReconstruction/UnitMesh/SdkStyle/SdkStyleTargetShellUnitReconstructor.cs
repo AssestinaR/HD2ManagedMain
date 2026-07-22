@@ -54,6 +54,15 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 			if (!sourceByKey.ContainsKey(mapping.SourceUnitAssetKey)) throw new KeyNotFoundException($"Source Unit 0x{mapping.SourceUnitAssetKey.FileId:x16} was not supplied.");
 			if (!targetUnit.Model.RawMeshData.Any(mesh => mesh.MeshInfoIndex == mapping.TargetMeshInfoIndex)) throw new KeyNotFoundException($"Target Unit does not contain mesh {mapping.TargetMeshInfoIndex}.");
 		}
+		var targetLod0 = targetUnit.Model.RawMeshData.Where(mesh => mesh.LodIndex == 0).ToArray();
+		if (mappings.Count > 1 && targetLod0.Length == 1 && mappings.Any(mapping => mapping.TargetMeshInfoIndex == targetLod0[0].MeshInfoIndex))
+		{
+			var lod0TransformIndex = targetUnit.Model.Meshes.Single(mesh => mesh.Index == targetLod0[0].MeshInfoIndex).TransformIndex;
+			var alignedMeshes = targetUnit.Model.Meshes.Select(mesh => mesh.LodIndex != 0 && mesh.LodIndex != -1
+				? mesh with { TransformIndex = lod0TransformIndex }
+				: mesh).ToArray();
+			targetUnit = targetUnit with { Model = targetUnit.Model with { Meshes = alignedMeshes } };
+		}
 
 		// A source patch can use a legacy Unit format table. Its numeric vertex-format IDs
 		// cannot be copied into a current target Unit: the same ID has different semantics

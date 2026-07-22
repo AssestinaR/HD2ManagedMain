@@ -32,6 +32,7 @@ public sealed class UnitMeshReader
 		var bonesRef = ReadUInt64(tocData, 8);
 		var compositeRef = ReadUInt64(tocData, 16);
 		var version = ReadUInt32(tocData, 0x2c);
+		var unreversedLodGroupListDataOffset = ReadUInt32(tocData, 0x30);
 		var transformInfoOffset = ReadUInt32(tocData, 0x34);
 		// HD2SDK StingrayMeshFile serializes CustomizationInfoOffset after HeaderData2 at 0x4C.
 		// 0x50 is UnkHeaderOffset1 and produces empty/garbled customization values.
@@ -85,6 +86,7 @@ public sealed class UnitMeshReader
 		var transformInfo = transformInfoOffset == UnsupportedOffset
 			? UnitTransformInfo.Empty
 			: ReadTransformInfo(tocData, transformInfoOffset);
+		var unreversedLodGroupListData = ReadUnreversedLodGroupListData(tocData, unreversedLodGroupListDataOffset, transformInfoOffset, customizationInfoOffset, ReadUInt32(tocData, 0x50), ReadUInt32(tocData, 0x54), boneInfoOffset, streamInfoOffset, meshInfoOffset);
 
 		return new UnitMeshModel(
 			version,
@@ -105,10 +107,23 @@ public sealed class UnitMeshReader
 			rawMeshes,
 			rawMeshData)
 		{
+			UnreversedLodGroupListDataOffset = unreversedLodGroupListDataOffset,
+			UnreversedLodGroupListData = unreversedLodGroupListData,
 			TransformInfoOffset = transformInfoOffset,
 			TransformInfo = transformInfo,
 			TransformNameHashes = transformInfo.NameHashes
 		};
+	}
+
+	private static byte[] ReadUnreversedLodGroupListData(ReadOnlySpan<byte> data, uint startOffset, params uint[] followingOffsets)
+	{
+		if (startOffset == UnsupportedOffset || startOffset >= data.Length) return Array.Empty<byte>();
+		uint endOffset = (uint)data.Length;
+		foreach (var offset in followingOffsets)
+		{
+			if (offset > startOffset && offset <= data.Length && offset < endOffset) endOffset = offset;
+		}
+		return data.Slice(checked((int)startOffset), checked((int)(endOffset - startOffset))).ToArray();
 	}
 
 	public static UnitTransformInfo ReadTransformInfoFromUnitToc(ReadOnlySpan<byte> tocData)

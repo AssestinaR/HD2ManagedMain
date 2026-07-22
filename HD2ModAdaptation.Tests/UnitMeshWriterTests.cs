@@ -37,7 +37,7 @@ public sealed class UnitMeshWriterTests
 		Assert.Equal(0u, ReadUInt32(result.TocData, 512 + 12));
 		Assert.Equal(6u, ReadUInt32(result.TocData, 256 + 12));
 		var indexBufferOffset = ReadUInt32(result.TocData, 128 + 8 + 320 + 96);
-		Assert.Equal(6u, BinaryPrimitives.ReadUInt16LittleEndian(result.GpuData.AsSpan((int)indexBufferOffset + 12, 2)));
+		Assert.Equal(0u, BinaryPrimitives.ReadUInt16LittleEndian(result.GpuData.AsSpan((int)indexBufferOffset + 12, 2)));
 	}
 
 	[Fact]

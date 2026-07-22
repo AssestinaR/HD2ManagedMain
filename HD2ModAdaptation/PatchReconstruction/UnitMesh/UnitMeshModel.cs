@@ -21,6 +21,8 @@ public sealed record UnitMeshModel(
 	IReadOnlyList<UnitRawMeshSummary> RawMeshes,
 	IReadOnlyList<UnitRawMeshData> RawMeshData)
 {
+	public uint UnreversedLodGroupListDataOffset { get; init; }
+	public byte[] UnreversedLodGroupListData { get; init; } = Array.Empty<byte>();
 	public uint TransformInfoOffset { get; init; }
 	public UnitTransformInfo TransformInfo { get; init; } = UnitTransformInfo.Empty;
 	public IReadOnlyList<uint> TransformNameHashes { get; init; } = Array.Empty<uint>();

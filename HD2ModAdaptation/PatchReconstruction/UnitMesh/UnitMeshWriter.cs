@@ -237,10 +237,8 @@ public sealed class UnitMeshWriter
 
 			var vertexBufferOffset = checked((uint)gpuData.Count);
 			var vertexCount = 0u;
-			var vertexBaseOffsets = new Dictionary<int, uint>(vertexOrderedMeshes.Length);
 			foreach (var mesh in vertexOrderedMeshes)
 			{
-				vertexBaseOffsets[mesh.MeshInfoIndex] = vertexCount;
 				foreach (var vertex in mesh.Vertices)
 				{
 					WriteVertex(gpuData, stream.VertexStride, vertex.Data);
@@ -255,16 +253,14 @@ public sealed class UnitMeshWriter
 			var indexStride = stream.IndexBufferType == 1 ? 4 : 2;
 			foreach (var mesh in indexOrderedMeshes)
 			{
-				if (!vertexBaseOffsets.TryGetValue(mesh.MeshInfoIndex, out var vertexBaseOffset))
-					throw new InvalidDataException($"Mesh {mesh.MeshInfoIndex} has no shared-stream vertex buffer offset.");
 				foreach (var section in mesh.Sections)
 				{
 					foreach (var triangle in section.Triangles)
 					{
 						ValidateTriangleReferences(mesh, triangle);
-						WriteIndex(gpuData, checked(triangle.A + vertexBaseOffset), indexStride);
-						WriteIndex(gpuData, checked(triangle.B + vertexBaseOffset), indexStride);
-						WriteIndex(gpuData, checked(triangle.C + vertexBaseOffset), indexStride);
+						WriteIndex(gpuData, triangle.A, indexStride);
+						WriteIndex(gpuData, triangle.B, indexStride);
+						WriteIndex(gpuData, triangle.C, indexStride);
 						indexCount += 3;
 					}
 				}

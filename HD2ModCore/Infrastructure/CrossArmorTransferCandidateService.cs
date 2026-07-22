@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
@@ -123,8 +124,11 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 					var operationStopwatch = Stopwatch.StartNew();
 					var targetUnit = await targetReader.ReadAsync(targetArchiveId, targetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
 					batchTargetReadDuration += operationStopwatch.Elapsed;
+					batchDiagnosticLines.Add(JsonSerializer.Serialize(new { Kind = "LodGroupEvidence", Role = "Target", Unit = $"0x{targetKey.FileId:x16}", Value = CreateLodGroupDiagnostic(targetUnit.Model) }));
 					operationStopwatch.Restart();
 					var unitMappings = group.Where(mapping => mapping.WillReplace).Select(mapping => new AdaptationTargetShellMeshMapping(ToAdaptationKey(mapping.Source!.UnitAssetKey), mapping.Source.MeshInfoIndex, mapping.PhysicalTarget.MeshInfoIndex)).ToArray();
+					foreach (var sourceKey in unitMappings.Select(mapping => mapping.SourceUnitAssetKey).Distinct())
+						batchDiagnosticLines.Add(JsonSerializer.Serialize(new { Kind = "LodGroupEvidence", Role = "Source", Unit = $"0x{sourceKey.FileId:x16}", Value = CreateLodGroupDiagnostic(sourceUnits[sourceKey].Model) }));
 					var effectiveUnitMappings = ExpandCompleteLodFamilyMappings(targetUnit.Model, sourceUnits, unitMappings);
 					var requiredSources = effectiveUnitMappings.Select(mapping => sourceUnits[mapping.SourceUnitAssetKey]).Distinct().ToArray();
 					var expandedTargetModel = targetUnit.Model;
@@ -247,13 +251,17 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 				{
 					var sourceKey = ToAdaptationKey(mapping.Source!.UnitAssetKey);
 					var sourceUnit = sourceUnits[sourceKey];
-					EnsureOutputPreservesSourceVertexColor(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, mapping.Source.MeshInfoIndex);
-					EnsureOutputPreservesSourceGeometry(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, mapping.Source.MeshInfoIndex);
+					var targetRawMesh = outputUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.PhysicalTarget.MeshInfoIndex);
+					var sourceFamily = ResolveSourceGeometryFamily(sourceUnit.Model, mapping.Source.MeshInfoIndex);
+					var sourceRawMesh = sourceFamily.Meshes.FirstOrDefault(mesh => mesh.LodIndex == targetRawMesh.LodIndex) ?? sourceFamily.Lod0
+						?? sourceUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.Source.MeshInfoIndex);
+					EnsureOutputPreservesSourceVertexColor(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
+					EnsureOutputPreservesSourceGeometry(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
 					outputTransferLayoutDiagnostics.Add(CreateTransferLayoutDiagnostic(
 						targetKey,
 						mapping.PhysicalTarget.MeshInfoIndex,
 						sourceKey,
-						mapping.Source.MeshInfoIndex,
+						sourceRawMesh.MeshInfoIndex,
 						outputUnit.Model,
 						sourceUnit.Model));
 				}
@@ -331,15 +339,16 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		{
 			var source = mapping.Source!;
 			var model = sourceUnits[ToAdaptationKey(source.UnitAssetKey)].Model;
-			var mesh = model.Meshes.FirstOrDefault(item => item.Index == source.MeshInfoIndex)
-				?? throw new KeyNotFoundException($"源 Unit 0x{source.UnitAssetKey.FileId:x16} 不包含 MeshInfo {source.MeshInfoIndex}。");
-			var rawMesh = model.RawMeshData.FirstOrDefault(item => item.MeshInfoIndex == source.MeshInfoIndex)
-				?? throw new KeyNotFoundException($"源 Unit 0x{source.UnitAssetKey.FileId:x16} 不包含 mesh {source.MeshInfoIndex}。");
-			foreach (var section in rawMesh.Sections)
+			foreach (var rawMesh in ResolveSourceGeometryFamily(model, source.MeshInfoIndex).Meshes)
 			{
+				var mesh = model.Meshes.FirstOrDefault(item => item.Index == rawMesh.MeshInfoIndex)
+					?? throw new KeyNotFoundException($"源 Unit 0x{source.UnitAssetKey.FileId:x16} 不包含 MeshInfo {rawMesh.MeshInfoIndex}。");
+				foreach (var section in rawMesh.Sections)
+				{
 				if (section.MaterialIndex >= mesh.MaterialSlotIds.Count) continue;
 				var slot = mesh.MaterialSlotIds[(int)section.MaterialIndex];
 				foreach (var material in model.Materials.Where(binding => binding.SectionId == slot)) result.Add(material.MaterialId);
+				}
 			}
 		}
 		return result.OrderBy(id => id).ToArray();
@@ -353,49 +362,85 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		IReadOnlyDictionary<AdaptationAssetKey, AdaptationPatchUnitMesh> sourceUnits,
 		IReadOnlyList<AdaptationTargetShellMeshMapping> approvedMappings)
 	{
-		// A selected visual LOD0 is only one member of a Unit's render family. Rebuild
-		var targetRenderFamily = targetModel.RawMeshData
-			.Where(mesh => mesh.LodIndex is >= 0 and <= 4)
-			.OrderBy(mesh => mesh.MeshInfoIndex)
-			.ToArray();
-		if (targetRenderFamily.Length < 2) return approvedMappings;
+		var targetLod0 = targetModel.RawMeshData.Where(mesh => mesh.LodIndex == 0).ToArray();
+		if (targetLod0.Length != 1 || approvedMappings.Count != 1) return approvedMappings;
+		var approved = approvedMappings[0];
+		if (approved.TargetMeshInfoIndex != targetLod0[0].MeshInfoIndex) return approvedMappings;
+		var sourceModel = sourceUnits[approved.SourceUnitAssetKey].Model;
+		var sourceFamily = ResolveSourceGeometryFamily(sourceModel, approved.SourceMeshInfoIndex);
+		if (sourceFamily.Lod0 is null) return approvedMappings;
 
-		var expanded = new List<AdaptationTargetShellMeshMapping>(approvedMappings);
-		var coveredTargets = expanded.Select(mapping => mapping.TargetMeshInfoIndex).ToHashSet();
-		foreach (var approved in approvedMappings)
+		var expanded = new List<AdaptationTargetShellMeshMapping>
 		{
-			var sourceModel = sourceUnits[approved.SourceUnitAssetKey].Model;
-			var sourceRenderFamily = sourceModel.RawMeshData
-				.Where(mesh => mesh.LodIndex is -1 or >= 0 and <= 4)
-				.OrderBy(mesh => mesh.MeshInfoIndex)
-				.ToArray();
-			if (!targetRenderFamily.Any(mesh => mesh.MeshInfoIndex == approved.TargetMeshInfoIndex)
-				|| !sourceRenderFamily.Any(mesh => mesh.MeshInfoIndex == approved.SourceMeshInfoIndex)) continue;
-
-			var sourceByLod = sourceRenderFamily
-				.GroupBy(mesh => mesh.LodIndex)
-				.ToDictionary(group => group.Key, group => group.ToArray());
-			foreach (var targetMesh in targetRenderFamily)
-			{
-				if (coveredTargets.Contains(targetMesh.MeshInfoIndex)) continue;
-				var sourceLod = targetMesh.LodIndex == 4 ? -1 : targetMesh.LodIndex;
-				var sourceMesh = sourceByLod.TryGetValue(sourceLod, out var sourceCandidates) && sourceCandidates.Length == 1
-					? sourceCandidates[0]
-					: sourceModel.RawMeshData.Single(mesh => mesh.MeshInfoIndex == approved.SourceMeshInfoIndex);
-				if (!HasCompatibleEffectiveSectionLayout(sourceMesh, targetMesh)) continue;
-				expanded.Add(new AdaptationTargetShellMeshMapping(approved.SourceUnitAssetKey, sourceMesh.MeshInfoIndex, targetMesh.MeshInfoIndex));
-				coveredTargets.Add(targetMesh.MeshInfoIndex);
-			}
+			new(approved.SourceUnitAssetKey, sourceFamily.Lod0.MeshInfoIndex, approved.TargetMeshInfoIndex)
+		};
+		foreach (var targetMesh in targetModel.RawMeshData
+			.Where(mesh => mesh.LodIndex != 0 && mesh.LodIndex != -1)
+			.OrderBy(mesh => mesh.MeshInfoIndex))
+		{
+			var sourceMesh = sourceFamily.Meshes.FirstOrDefault(mesh => mesh.LodIndex == targetMesh.LodIndex) ?? sourceFamily.Lod0;
+			expanded.Add(new AdaptationTargetShellMeshMapping(approved.SourceUnitAssetKey, sourceMesh.MeshInfoIndex, targetMesh.MeshInfoIndex));
 		}
-
 		return expanded;
 	}
 
-	private static bool HasCompatibleEffectiveSectionLayout(
-		HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData source,
-		HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData target)
-		=> source.Sections.Count(section => section.Triangles.Count != 0) == target.Sections.Count(section => section.Triangles.Count != 0)
-			&& source.Sections.Count(section => section.Triangles.Count != 0) != 0;
+	private sealed record SourceGeometryFamily(
+		IReadOnlyList<HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData> Meshes,
+		HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData? Lod0);
+
+	private static SourceGeometryFamily ResolveSourceGeometryFamily(
+		HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshModel model,
+		int representativeMeshInfoIndex)
+	{
+		var representative = model.RawMeshData.SingleOrDefault(mesh => mesh.MeshInfoIndex == representativeMeshInfoIndex)
+			?? throw new KeyNotFoundException($"来源 Unit 不包含 MeshInfo {representativeMeshInfoIndex}。");
+		if (representative.Triangles.Count == 0) return new SourceGeometryFamily(Array.Empty<HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData>(), null);
+		if (representative.LodIndex == 0) return CreateFamilyFromLod0(model, representative);
+
+		var lod0Candidates = model.RawMeshData
+			.Where(mesh => mesh.LodIndex == 0 && mesh.Triangles.Count > 0)
+			.OrderByDescending(mesh => mesh.Triangles.Count)
+			.ThenByDescending(mesh => mesh.Vertices.Count)
+			.ToArray();
+		if (lod0Candidates.Length != 1) return new SourceGeometryFamily(Array.Empty<HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData>(), null);
+		return CreateFamilyFromLod0(model, lod0Candidates[0]);
+	}
+
+	private static SourceGeometryFamily CreateFamilyFromLod0(
+		HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshModel model,
+		HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData lod0)
+	{
+		if (model.RawMeshData.Count(mesh => mesh.LodIndex == 0 && mesh.Triangles.Count > 0) != 1)
+			return new SourceGeometryFamily(Array.Empty<HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData>(), null);
+		var family = model.RawMeshData
+			.Where(mesh => mesh.LodIndex is >= 0 and <= 3 && mesh.Triangles.Count > 0)
+			.Where(mesh => mesh.LodIndex == 0 || mesh.Vertices.Count == lod0.Vertices.Count && mesh.Triangles.Count == lod0.Triangles.Count)
+			.OrderBy(mesh => mesh.LodIndex)
+			.ToArray();
+		return new SourceGeometryFamily(family, family.SingleOrDefault(mesh => mesh.LodIndex == 0));
+	}
+
+	private static object CreateLodGroupDiagnostic(HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshModel model)
+	{
+		var rawData = model.UnreversedLodGroupListData;
+		return new
+		{
+			model.UnreversedLodGroupListDataOffset,
+			ByteLength = rawData.Length,
+			Sha256 = Convert.ToHexString(SHA256.HashData(rawData)),
+			RawBase64 = Convert.ToBase64String(rawData),
+			Meshes = model.RawMeshData.OrderBy(mesh => mesh.MeshInfoIndex).Select(mesh => new
+			{
+				mesh.MeshInfoIndex,
+				MeshId = $"0x{mesh.MeshId:x8}",
+				mesh.LodIndex,
+				mesh.StreamIndex,
+				SectionCount = mesh.Sections.Count,
+				NonEmptySectionCount = mesh.Sections.Count(section => section.Triangles.Count != 0),
+				TriangleCount = mesh.Triangles.Count
+			}).ToArray()
+		};
+	}
 
 	private static async ValueTask<string> WriteReportAsync(
 		CrossArmorTransferCandidateRequest request,
