@@ -118,7 +118,12 @@ public sealed record UnitMeshInfo(
 	uint SectionsOffset,
 	UnitMeshSemanticInfo SemanticInfo,
 	IReadOnlyList<uint> MaterialSlotIds,
-	IReadOnlyList<UnitMeshSectionInfo> Sections);
+	IReadOnlyList<UnitMeshSectionInfo> Sections)
+{
+	public UnitMeshCullingBounds CullingBounds { get; init; } = new(Array.Empty<float>());
+}
+
+public sealed record UnitMeshCullingBounds(IReadOnlyList<float> Values);
 
 public sealed record UnitMeshSemanticInfo(
 	string Name,

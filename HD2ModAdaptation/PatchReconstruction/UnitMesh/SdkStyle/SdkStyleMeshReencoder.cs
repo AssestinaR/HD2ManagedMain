@@ -11,16 +11,18 @@ public sealed class SdkStyleMeshReencoder
 	private readonly bool propagateSourceMaterials;
 	private readonly bool transformMeshSpace;
 	private readonly bool rebuildTargetInverseJointMatrices;
+	private readonly bool preserveCompleteSourcePalette;
 	private readonly IReadOnlyList<uint>? canonicalBoneHashOrder;
 	private readonly IReadOnlySet<ulong>? allowedSourceMaterialIds;
 
-	public SdkStyleMeshReencoder(SdkStyleBoneRemapBuilder? remapBuilder = null, bool allowSectionRebuild = false, bool propagateSourceMaterials = true, bool transformMeshSpace = false, IReadOnlySet<ulong>? allowedSourceMaterialIds = null, bool rebuildTargetInverseJointMatrices = false, IReadOnlyList<uint>? canonicalBoneHashOrder = null)
+	public SdkStyleMeshReencoder(SdkStyleBoneRemapBuilder? remapBuilder = null, bool allowSectionRebuild = false, bool propagateSourceMaterials = true, bool transformMeshSpace = false, IReadOnlySet<ulong>? allowedSourceMaterialIds = null, bool rebuildTargetInverseJointMatrices = false, IReadOnlyList<uint>? canonicalBoneHashOrder = null, bool preserveCompleteSourcePalette = false)
 	{
 		this.remapBuilder = remapBuilder ?? new SdkStyleBoneRemapBuilder();
 		this.allowSectionRebuild = allowSectionRebuild;
 		this.propagateSourceMaterials = propagateSourceMaterials;
 		this.transformMeshSpace = transformMeshSpace;
 		this.rebuildTargetInverseJointMatrices = rebuildTargetInverseJointMatrices;
+		this.preserveCompleteSourcePalette = preserveCompleteSourcePalette;
 		this.canonicalBoneHashOrder = canonicalBoneHashOrder;
 		this.allowedSourceMaterialIds = allowedSourceMaterialIds;
 	}
@@ -29,7 +31,8 @@ public sealed class SdkStyleMeshReencoder
 		UnitMeshModel targetModel,
 		int targetMeshInfoIndex,
 		UnitMeshModel sourceModel,
-		int sourceMeshInfoIndex)
+		int sourceMeshInfoIndex,
+		bool preserveSourceSectionMetadata = false)
 	{
 		ArgumentNullException.ThrowIfNull(targetModel);
 		ArgumentNullException.ThrowIfNull(sourceModel);
@@ -53,7 +56,7 @@ public sealed class SdkStyleMeshReencoder
 			var meshSpaceTransformForRebuild = transformMeshSpace || rebuildTargetInverseJointMatrices
 				? BuildMeshSpaceTransform(targetModel, targetMeshInfoIndex, sourceModel, sourceMeshInfoIndex)
 				: Matrix4x4.Identity;
-			return ReencodeWithRebuiltSections(targetModel, targetRawMesh, sourceModel, sourceRawMesh, sourceMeshInfoIndex, meshSpaceTransformForRebuild);
+			return ReencodeWithRebuiltSections(targetModel, targetRawMesh, sourceModel, sourceRawMesh, sourceMeshInfoIndex, meshSpaceTransformForRebuild, preserveSourceSectionMetadata);
 		}
 		var meshSpaceTransform = transformMeshSpace || rebuildTargetInverseJointMatrices
 			? BuildMeshSpaceTransform(targetModel, targetMeshInfoIndex, sourceModel, sourceMeshInfoIndex)
@@ -62,7 +65,7 @@ public sealed class SdkStyleMeshReencoder
 		{
 			if (allowSectionRebuild)
 			{
-				return ReencodeWithRebuiltSections(targetModel, targetRawMesh, sourceModel, sourceRawMesh, sourceMeshInfoIndex, meshSpaceTransform);
+				return ReencodeWithRebuiltSections(targetModel, targetRawMesh, sourceModel, sourceRawMesh, sourceMeshInfoIndex, meshSpaceTransform, preserveSourceSectionMetadata);
 			}
 			throw new InvalidDataException("SDK-style re-encoding currently requires source and target meshes to have the same section count.");
 		}
@@ -91,7 +94,7 @@ public sealed class SdkStyleMeshReencoder
 		var rebuiltTargetBoneInfo = canonicalBoneHashOrder is not null
 			? BuildCanonicalTargetBakedBoneInfo(sourceRawMesh, targetRawMesh, sourceBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, canonicalBoneHashOrder)
 			: rebuildTargetInverseJointMatrices
-				? BuildCompleteSourceOrderedBoneInfo(sourceBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes)
+				? BuildCompleteSourceOrderedBoneInfo(sourceBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, preserveCompleteSourcePalette)
 			: remapBuilder.SetRemap(targetBoneInfo, BuildSectionRemapBoneNames(sourceRawMesh, targetRawMesh, sourceBoneInfo, sourceModel.TransformNameHashes, targetModel), targetModel.TransformNameHashes);
 		rebuiltTargetBoneInfo = AttachTargetBoneMatrices(rebuiltTargetBoneInfo, BuildTargetMatrixMap(targetModel, targetRawMesh));
 		var updatedVertices = sourceRawMesh.Vertices.Select(vertex => new UnitRawVertexRecord(
@@ -127,6 +130,7 @@ public sealed class SdkStyleMeshReencoder
 			: new SourceMaterialBindings(targetModel.Materials, Array.Empty<ulong>());
 		var updatedModel = targetModel with
 		{
+			Meshes = targetModel.Meshes.Select(mesh => mesh.Index == targetMeshInfoIndex ? mesh with { CullingBounds = TransformCullingBoundsIfPresent(sourceModel.Meshes.Single(sourceMesh => sourceMesh.Index == sourceMeshInfoIndex).CullingBounds, meshSpaceTransform) } : mesh).ToArray(),
 			BoneInfos = targetModel.BoneInfos.Select((boneInfo, index) => index == targetBoneInfoIndex ? rebuiltTargetBoneInfo : boneInfo).ToArray(),
 			Streams = requires32BitIndices
 				? targetModel.Streams.Select(stream => stream.Index == targetStream.Index ? stream with { IndexBufferType = 1 } : stream).ToArray()
@@ -137,7 +141,7 @@ public sealed class SdkStyleMeshReencoder
 		return new SdkStyleMeshReencodeResult(updatedModel, targetMeshInfoIndex, sourceMeshInfoIndex, targetBoneInfoIndex, rebuiltTargetBoneInfo, materialBindings.SourceMaterialIds);
 	}
 
-	private SdkStyleMeshReencodeResult ReencodeWithRebuiltSections(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceRawMesh, int sourceMeshInfoIndex, Matrix4x4 meshSpaceTransform)
+	private SdkStyleMeshReencodeResult ReencodeWithRebuiltSections(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceRawMesh, int sourceMeshInfoIndex, Matrix4x4 meshSpaceTransform, bool preserveSourceSectionMetadata)
 	{
 		if (targetRawMesh.Sections.Count == 0 || sourceRawMesh.Sections.Count == 0)
 		{
@@ -145,7 +149,33 @@ public sealed class SdkStyleMeshReencoder
 		}
 		var targetMesh = targetModel.Meshes.Single(mesh => mesh.Index == targetRawMesh.MeshInfoIndex);
 		var sourceMesh = sourceModel.Meshes.Single(mesh => mesh.Index == sourceMeshInfoIndex);
-		if (sourceRawMesh.Sections.Count > targetMesh.Sections.Count)
+		if (preserveSourceSectionMetadata)
+		{
+			var sourceSections = sourceRawMesh.Sections.Select((section, index) =>
+			{
+				var sourceInfo = sourceMesh.Sections[index];
+				var template = index < targetMesh.Sections.Count ? targetMesh.Sections[index] : targetMesh.Sections[^1];
+				return template with
+				{
+					MaterialIndex = section.MaterialIndex,
+					MaterialSlotId = section.MaterialSlotId,
+					GroupIndex = sourceInfo.GroupIndex
+				};
+			}).ToArray();
+			targetMesh = targetMesh with
+			{
+				MaterialSlotIds = sourceMesh.MaterialSlotIds.ToArray(),
+				NumMaterials = checked((uint)sourceMesh.MaterialSlotIds.Count),
+				Sections = sourceSections,
+				NumSections = checked((uint)sourceSections.Length)
+			};
+			targetModel = targetModel with { Meshes = targetModel.Meshes.Select(mesh => mesh.Index == targetMesh.Index ? targetMesh : mesh).ToArray() };
+			targetRawMesh = targetRawMesh with
+			{
+				Sections = sourceRawMesh.Sections.Select(section => new UnitRawMeshSectionData(section.MaterialIndex, section.MaterialSlotId, Array.Empty<UnitTriangleIndices>())).ToArray()
+			};
+		}
+		else if (sourceRawMesh.Sections.Count > targetMesh.Sections.Count)
 		{
 			var materialSlots = targetMesh.MaterialSlotIds.ToList();
 			var sections = targetMesh.Sections.ToList();
@@ -211,7 +241,7 @@ public sealed class SdkStyleMeshReencoder
 		if (!sourceUsesBones)
 		{
 			var vertices = vertexSources.Select((source, index) => EncodeUnskinnedVertex(sourceModel, sourceRawMesh, source.sourceVertex, targetStream, (uint)index, meshSpaceTransform)).ToArray();
-			return CreateRebuiltResult(targetModel, targetRawMesh, sourceMeshInfoIndex, rebuiltSections, vertices, null, materialBindings.SourceMaterialIds);
+			return CreateRebuiltResult(targetModel, targetRawMesh, sourceModel, sourceMeshInfoIndex, meshSpaceTransform, rebuiltSections, vertices, null, materialBindings.SourceMaterialIds);
 		}
 
 		var sourceBoneInfo = FindBoneInfo(sourceModel, sourceRawMesh, "source");
@@ -227,12 +257,15 @@ public sealed class SdkStyleMeshReencoder
 			remapNames[materialIndex] = group.SelectMany(assignment => CollectSectionBoneHashes(assignment.SourceSection, sourceRawMesh, sourceBoneInfo, sourceModel.TransformNameHashes))
 				.Distinct().OrderBy(hash => hash).Select(hash => hash.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToArray();
 		}
-		var rebuiltBoneInfo = AttachTargetBoneMatrices(remapBuilder.SetRemap(targetBoneInfo, remapNames, targetModel.TransformNameHashes), BuildTargetMatrixMap(targetModel, targetRawMesh));
+		var rebuiltBoneInfo = rebuildTargetInverseJointMatrices
+			? BuildCompleteSourceOrderedBoneInfo(sourceBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, preserveCompleteSourcePalette)
+			: remapBuilder.SetRemap(targetBoneInfo, remapNames, targetModel.TransformNameHashes);
+		rebuiltBoneInfo = AttachTargetBoneMatrices(rebuiltBoneInfo, BuildTargetMatrixMap(targetModel, targetRawMesh));
 		var verticesWithBones = vertexSources.Select((source, index) => new UnitRawVertexRecord(
 			(uint)index,
 			EncodeTargetVertex(sourceRawMesh.Vertices[(int)source.sourceVertex], targetStream, sourceBoneInfo, rebuiltBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, source.sourceMaterial, source.targetMaterial, meshSpaceTransform, transformMeshSpace, bindPoseRetarget),
 			Array.Empty<UnitVertexComponentValue>())).ToArray();
-		return CreateRebuiltResult(targetModel, targetRawMesh, sourceMeshInfoIndex, rebuiltSections, verticesWithBones, rebuiltBoneInfo, materialBindings.SourceMaterialIds);
+		return CreateRebuiltResult(targetModel, targetRawMesh, sourceModel, sourceMeshInfoIndex, meshSpaceTransform, rebuiltSections, verticesWithBones, rebuiltBoneInfo, materialBindings.SourceMaterialIds);
 
 		uint GetOrAddVertex(uint sourceVertex, uint sourceMaterial, uint targetMaterial)
 		{
@@ -261,12 +294,13 @@ public sealed class SdkStyleMeshReencoder
 		return new UnitRawVertexRecord(outputIndex, data, Array.Empty<UnitVertexComponentValue>());
 	}
 
-	private static SdkStyleMeshReencodeResult CreateRebuiltResult(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, int sourceMeshInfoIndex, IReadOnlyList<UnitRawMeshSectionData> sections, IReadOnlyList<UnitRawVertexRecord> vertices, UnitBoneInfo? rebuiltBoneInfo, IReadOnlyList<ulong> sourceMaterialIds)
+	private static SdkStyleMeshReencodeResult CreateRebuiltResult(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, int sourceMeshInfoIndex, Matrix4x4 meshSpaceTransform, IReadOnlyList<UnitRawMeshSectionData> sections, IReadOnlyList<UnitRawVertexRecord> vertices, UnitBoneInfo? rebuiltBoneInfo, IReadOnlyList<ulong> sourceMaterialIds)
 	{
 		var targetBoneInfoIndex = targetModel.BoneInfos.Count == 0 ? -1 : GetBoneInfoIndex(targetModel, targetRawMesh);
 		var requires32BitIndices = targetModel.Streams.Single(stream => stream.Index == targetRawMesh.StreamIndex).IndexBufferType != 1 && vertices.Count > ushort.MaxValue;
 		var rawMesh = targetRawMesh with { Sections = sections, Triangles = sections.SelectMany(section => section.Triangles).ToArray(), Vertices = vertices };
 		var meshInfo = targetModel.Meshes.Single(mesh => mesh.Index == targetRawMesh.MeshInfoIndex);
+		var sourceMeshInfo = sourceModel.Meshes.Single(mesh => mesh.Index == sourceMeshInfoIndex);
 		var meshInfoSections = sections.Select((section, index) =>
 			(index < meshInfo.Sections.Count ? meshInfo.Sections[index] : meshInfo.Sections[^1]) with
 			{
@@ -280,6 +314,7 @@ public sealed class SdkStyleMeshReencoder
 			Streams = requires32BitIndices ? targetModel.Streams.Select(stream => stream.Index == targetRawMesh.StreamIndex ? stream with { IndexBufferType = 1 } : stream).ToArray() : targetModel.Streams,
 			Meshes = targetModel.Meshes.Select(mesh => mesh.Index == meshInfo.Index ? meshInfo with
 			{
+				CullingBounds = TransformCullingBoundsIfPresent(sourceMeshInfo.CullingBounds, meshSpaceTransform),
 				MaterialSlotIds = meshInfo.MaterialSlotIds.Concat(meshInfoSections.Select(section => section.MaterialSlotId).Where(slot => !meshInfo.MaterialSlotIds.Contains(slot))).ToArray(),
 				NumMaterials = checked((uint)meshInfo.MaterialSlotIds.Concat(meshInfoSections.Select(section => section.MaterialSlotId).Where(slot => !meshInfo.MaterialSlotIds.Contains(slot))).Distinct().Count()),
 				Sections = meshInfoSections,
@@ -402,7 +437,7 @@ public sealed class SdkStyleMeshReencoder
 		return remapNames;
 	}
 
-	private static UnitBoneInfo BuildCompleteSourceOrderedBoneInfo(UnitBoneInfo sourceBoneInfo, IReadOnlyList<uint> sourceTransformHashes, IReadOnlyList<uint> targetTransformHashes)
+	private static UnitBoneInfo BuildCompleteSourceOrderedBoneInfo(UnitBoneInfo sourceBoneInfo, IReadOnlyList<uint> sourceTransformHashes, IReadOnlyList<uint> targetTransformHashes, bool requireCompletePalette)
 	{
 		var sourceRealIndexPositions = new Dictionary<uint, uint>();
 		var sourceToTargetRealIndices = new List<uint>(sourceBoneInfo.RealIndices.Count);
@@ -411,10 +446,11 @@ public sealed class SdkStyleMeshReencoder
 			var sourceTransformIndex = sourceBoneInfo.RealIndices[sourceRealIndexPosition];
 			if (sourceTransformIndex >= sourceTransformHashes.Count) throw new InvalidDataException("A source BoneInfo real index is absent from TransformInfo.");
 			var targetTransformIndex = IndexOf(targetTransformHashes, sourceTransformHashes[(int)sourceTransformIndex]);
-			// A source LOD palette can include unused rig bones which are not carried by
-			// the current target shell. Active influences are still checked while vertices
-			// are encoded; only these unreachable, inactive palette entries are omitted.
-			if (targetTransformIndex < 0) continue;
+			if (targetTransformIndex < 0)
+			{
+				if (requireCompletePalette) throw new InvalidDataException("A source LOD palette bone is absent from the target TransformInfo after palette expansion.");
+				continue;
+			}
 			if (sourceToTargetRealIndices.Contains(checked((uint)targetTransformIndex))) throw new InvalidDataException("Source BoneInfo resolves multiple real bones to the same current target TransformInfo index.");
 			sourceRealIndexPositions.Add(checked((uint)sourceRealIndexPosition), checked((uint)sourceToTargetRealIndices.Count));
 			sourceToTargetRealIndices.Add(checked((uint)targetTransformIndex));
@@ -425,6 +461,8 @@ public sealed class SdkStyleMeshReencoder
 		foreach (var sourceRemap in sourceBoneInfo.Remaps.OrderBy(remap => remap.MaterialIndex))
 		{
 			if (sourceRemap.FakeIndices.Any(index => index >= sourceBoneInfo.RealIndices.Count)) throw new InvalidDataException("A source BoneInfo remap points outside its real-index table.");
+			if (requireCompletePalette && sourceRemap.FakeIndices.Any(sourceRealIndexPosition => !sourceRealIndexPositions.ContainsKey(sourceRealIndexPosition)))
+				throw new InvalidDataException("A source material remap references a palette bone absent from the complete target palette.");
 			var fakeIndices = sourceRemap.FakeIndices
 				.Where(sourceRealIndexPositions.ContainsKey)
 				.Select(sourceRealIndexPosition => sourceRealIndexPositions[sourceRealIndexPosition])
@@ -876,6 +914,27 @@ public sealed class SdkStyleMeshReencoder
 		if (!Matrix4x4.Invert(targetMatrix, out var inverseTarget)) throw new InvalidDataException("The target mesh TransformInfo matrix is not invertible.");
 		return sourceMatrix * inverseTarget;
 	}
+
+	private static UnitMeshCullingBounds TransformCullingBounds(UnitMeshCullingBounds source, Matrix4x4 transform)
+	{
+		if (source.Values.Count != 7) throw new InvalidDataException("A source MeshInfo culling-bounds block does not contain 7 floats.");
+		var min = new Vector3(source.Values[0], source.Values[1], source.Values[2]);
+		var max = new Vector3(source.Values[3], source.Values[4], source.Values[5]);
+		var corners = new[]
+		{
+			new Vector3(min.X, min.Y, min.Z), new Vector3(min.X, min.Y, max.Z),
+			new Vector3(min.X, max.Y, min.Z), new Vector3(min.X, max.Y, max.Z),
+			new Vector3(max.X, min.Y, min.Z), new Vector3(max.X, min.Y, max.Z),
+			new Vector3(max.X, max.Y, min.Z), new Vector3(max.X, max.Y, max.Z)
+		}.Select(corner => Vector3.Transform(corner, transform)).ToArray();
+		var transformedMin = new Vector3(corners.Min(value => value.X), corners.Min(value => value.Y), corners.Min(value => value.Z));
+		var transformedMax = new Vector3(corners.Max(value => value.X), corners.Max(value => value.Y), corners.Max(value => value.Z));
+		var scale = MathF.Max(new Vector3(transform.M11, transform.M12, transform.M13).Length(), MathF.Max(new Vector3(transform.M21, transform.M22, transform.M23).Length(), new Vector3(transform.M31, transform.M32, transform.M33).Length()));
+		return new UnitMeshCullingBounds([transformedMin.X, transformedMin.Y, transformedMin.Z, transformedMax.X, transformedMax.Y, transformedMax.Z, source.Values[6] * scale]);
+	}
+
+	private static UnitMeshCullingBounds TransformCullingBoundsIfPresent(UnitMeshCullingBounds source, Matrix4x4 transform)
+		=> source.Values.Count == 7 ? TransformCullingBounds(source, transform) : source;
 
 	private static UnitVertexComponentValue? TransformVertexComponent(UnitVertexComponentValue? component, uint type, Matrix4x4 transform)
 		// The target inverse-joint matrices and positions must share mesh space. Surface

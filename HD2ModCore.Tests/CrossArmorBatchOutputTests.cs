@@ -1,7 +1,9 @@
 using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle;
+using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 
 // Purpose: Verifies independently rebuilt cross-armor batches form one unique final target set.
 namespace HD2ModCore.Tests;
@@ -11,7 +13,7 @@ public sealed class CrossArmorBatchOutputTests
 	[Fact]
 	public void CombineBatchOutputs_RejectsDuplicateTargetUnits()
 	{
-		var key = new AssetKey(0xe0a48d0be9a7453f, 1);
+		var key = new AdaptationAssetKey(0xe0a48d0be9a7453f, 1);
 		var output = Output(key);
 
 		var method = typeof(CrossArmorTransferCandidateService).GetMethod("CombineBatchOutputs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
@@ -21,9 +23,33 @@ public sealed class CrossArmorBatchOutputTests
 	}
 
 	[Fact]
+	public void TargetGroups_IncludeUnitsWithOnlyHiddenMappings()
+	{
+		var hiddenTarget = new AdaptationAssetKey(0xe0a48d0be9a7453f, 3);
+		var mappings = new[]
+		{
+			new CrossArmorTransferMapping(
+				new CrossArmorPhysicalTargetKey(new HD2ModCore.Domain.AssetKey(hiddenTarget.TypeId, hiddenTarget.FileId), 4),
+				null!,
+				null,
+				false,
+				"隐藏",
+				Array.Empty<string>(),
+				Array.Empty<string>(),
+				false,
+				false)
+		};
+
+		var groups = mappings.GroupBy(mapping => mapping.PhysicalTarget.UnitAssetKey).ToArray();
+
+		Assert.Single(groups);
+		Assert.Equal(new HD2ModCore.Domain.AssetKey(hiddenTarget.TypeId, hiddenTarget.FileId), groups[0].Key);
+	}
+
+	[Fact]
 	public void ExpandCompleteLodFamilyMappings_MultipleApprovedMappings_DoesNotInferAdditionalFamilyMembers()
 	{
-		var sourceKey = new AssetKey(0xe0a48d0be9a7453f, 2);
+		var sourceKey = new AdaptationAssetKey(0xe0a48d0be9a7453f, 2);
 		var target = CreateModel((0, 0), (1, 1), (2, 2));
 		var source = CreatePatchUnit(sourceKey, CreateModel((0, 0), (1, 1), (2, 2)));
 		var approved = new[]
@@ -32,48 +58,66 @@ public sealed class CrossArmorBatchOutputTests
 			new TargetShellMeshMapping(sourceKey, 1, 1)
 		};
 
-		var result = Expand(target, new Dictionary<AssetKey, PatchUnitMesh> { [sourceKey] = source }, approved);
+		var result = Expand(target, new Dictionary<AdaptationAssetKey, PatchUnitMesh> { [sourceKey] = source }, approved);
 
 		Assert.Equal(approved, result);
 	}
 
 	[Fact]
-	public void ExpandCompleteLodFamilyMappings_RepresentativeMinusOne_UsesRealSourceLodFamily()
+	public void ExpandCompleteLodFamilyMappings_RepresentativeMinusOne_UsesMatchingSourceLods()
 	{
-		var sourceKey = new AssetKey(0xe0a48d0be9a7453f, 2);
-		var target = CreateModel((0, 0), (1, 1), (2, 2));
+		var sourceKey = new AdaptationAssetKey(0xe0a48d0be9a7453f, 2);
+		var target = CreateModel((0, -1), (1, 4), (2, 3), (3, 2), (4, 1), (5, 0));
 		var source = CreatePatchUnit(sourceKey, CreateModel((0, -1), (1, 3), (2, 2), (3, 1), (4, 0)));
-		var approved = new[] { new TargetShellMeshMapping(sourceKey, 0, 0) };
+		var approved = new[] { new TargetShellMeshMapping(sourceKey, 0, 5) };
 
-		var result = Expand(target, new Dictionary<AssetKey, PatchUnitMesh> { [sourceKey] = source }, approved);
+		var result = Expand(target, new Dictionary<AdaptationAssetKey, PatchUnitMesh> { [sourceKey] = source }, approved);
 
 		Assert.Collection(result,
-			mapping => Assert.Equal((4, 0), (mapping.SourceMeshInfoIndex, mapping.TargetMeshInfoIndex)),
-			mapping => Assert.Equal((3, 1), (mapping.SourceMeshInfoIndex, mapping.TargetMeshInfoIndex)),
-			mapping => Assert.Equal((2, 2), (mapping.SourceMeshInfoIndex, mapping.TargetMeshInfoIndex)));
+			mapping => Assert.Equal((4, 5), (mapping.SourceMeshInfoIndex, mapping.TargetMeshInfoIndex)),
+			mapping => Assert.Equal((1, 2), (mapping.SourceMeshInfoIndex, mapping.TargetMeshInfoIndex)),
+			mapping => Assert.Equal((2, 3), (mapping.SourceMeshInfoIndex, mapping.TargetMeshInfoIndex)),
+			mapping => Assert.Equal((3, 4), (mapping.SourceMeshInfoIndex, mapping.TargetMeshInfoIndex)));
+	}
+
+	[Fact]
+	public void ExpandCompleteLodFamilyMappings_MissingSourceLod_FallsBackToSourceLod0()
+	{
+		var sourceKey = new AdaptationAssetKey(0xe0a48d0be9a7453f, 2);
+		var target = CreateModel((0, -1), (1, 3), (2, 2), (3, 1), (4, 0));
+		var source = CreatePatchUnit(sourceKey, CreateModel((0, 0), (1, 1), (2, 3)));
+		var approved = new[] { new TargetShellMeshMapping(sourceKey, 0, 4) };
+
+		var result = Expand(target, new Dictionary<AdaptationAssetKey, PatchUnitMesh> { [sourceKey] = source }, approved);
+
+		Assert.Collection(result,
+			mapping => Assert.Equal((0, 4), (mapping.SourceMeshInfoIndex, mapping.TargetMeshInfoIndex)),
+			mapping => Assert.Equal((2, 1), (mapping.SourceMeshInfoIndex, mapping.TargetMeshInfoIndex)),
+			mapping => Assert.Equal((0, 2), (mapping.SourceMeshInfoIndex, mapping.TargetMeshInfoIndex)),
+			mapping => Assert.Equal((1, 3), (mapping.SourceMeshInfoIndex, mapping.TargetMeshInfoIndex)));
 	}
 
 	[Fact]
 	public void ExpandCompleteLodFamilyMappings_NonUniqueSourceLod0_RemainsConservative()
 	{
-		var sourceKey = new AssetKey(0xe0a48d0be9a7453f, 2);
+		var sourceKey = new AdaptationAssetKey(0xe0a48d0be9a7453f, 2);
 		var target = CreateModel((0, -1), (1, 3), (2, 2), (3, 1), (4, 0));
 		var source = CreatePatchUnit(sourceKey, CreateModel((0, 0), (1, 0)));
 		var approved = new[] { new TargetShellMeshMapping(sourceKey, 0, 4) };
 
-		var result = Expand(target, new Dictionary<AssetKey, PatchUnitMesh> { [sourceKey] = source }, approved);
+		var result = Expand(target, new Dictionary<AdaptationAssetKey, PatchUnitMesh> { [sourceKey] = source }, approved);
 
 		Assert.Equal(approved, result);
 	}
 
-	private static IReadOnlyList<TargetShellMeshMapping> Expand(UnitMeshModel target, IReadOnlyDictionary<AssetKey, PatchUnitMesh> sources, IReadOnlyList<TargetShellMeshMapping> approved)
+	private static IReadOnlyList<TargetShellMeshMapping> Expand(UnitMeshModel target, IReadOnlyDictionary<AdaptationAssetKey, PatchUnitMesh> sources, IReadOnlyList<TargetShellMeshMapping> approved)
 	{
 		var method = typeof(CrossArmorTransferCandidateService).GetMethod("ExpandCompleteLodFamilyMappings", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
 		return (IReadOnlyList<TargetShellMeshMapping>)method.Invoke(null, [target, sources, approved])!;
 	}
 
-	private static PatchUnitMesh CreatePatchUnit(AssetKey key, UnitMeshModel model)
-		=> new(new PatchTocEntry(key, "test.patch", "test.patch"), new PatchEntryPayload(new PatchTocEntry(key, "test.patch", "test.patch"), [], [], []), model);
+	private static PatchUnitMesh CreatePatchUnit(AdaptationAssetKey key, UnitMeshModel model)
+		=> new(new HD2ModAdaptation.PatchReconstruction.PatchTocEntry(key, "test.patch", "test.patch"), new HD2ModAdaptation.PatchReconstruction.PatchEntryPayload(new HD2ModAdaptation.PatchReconstruction.PatchTocEntry(key, "test.patch", "test.patch"), [], [], []), model);
 
 	private static UnitMeshModel CreateModel(params (int MeshInfoIndex, int LodIndex)[] specs)
 	{
@@ -83,6 +127,6 @@ public sealed class CrossArmorBatchOutputTests
 		return new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UnitCustomizationInfo.Empty, [], [stream], meshes, [], [], rawMeshes);
 	}
 
-	private static SdkStyleTargetShellPatchOutput Output(AssetKey target)
+	private static SdkStyleTargetShellPatchOutput Output(AdaptationAssetKey target)
 		=> new([], [], [new SdkStyleTargetShellPatchUnitResult(target, 1, 0, 1, [], [], [], [])]);
 }

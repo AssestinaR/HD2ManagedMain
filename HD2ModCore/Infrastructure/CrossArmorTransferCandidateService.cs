@@ -70,16 +70,17 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			var sourceEntries = request.PreparedSourceEntries is { Count: > 0 }
 				? request.PreparedSourceEntries
 				: await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
-			var mappings = request.Plan.Mappings.Where(mapping => mapping.WillReplace).ToArray();
+			var mappings = request.Plan.Mappings.ToArray();
+			var replacementMappings = mappings.Where(mapping => mapping.WillReplace).ToArray();
 			if (File.Exists(diagnosticPath)) File.Delete(diagnosticPath);
 			stageStopwatch.Restart();
 			await ReportProgressAsync(request, performancePath, "正在准备来源与材质依赖", 0, 1, totalStopwatch, cancellationToken).ConfigureAwait(false);
 			await WritePlanAuditAsync(request.OutputDirectory, request.Plan, cancellationToken).ConfigureAwait(false);
 			var sourceEntriesByKey = sourceEntries.ToDictionary(entry => entry.AssetKey);
-			var sourceKeys = mappings.Select(mapping => ToAdaptationKey(mapping.Source!.UnitAssetKey)).ToHashSet();
+			var sourceKeys = replacementMappings.Select(mapping => ToAdaptationKey(mapping.Source!.UnitAssetKey)).ToHashSet();
 			if (!sourceKeys.All(sourceEntriesByKey.ContainsKey)) throw new InvalidDataException("源 Patch 已变化或缺少计划中的真实来源 Unit；请重新打开并确认计划。");
 			var sourceUnits = await ReadSourceUnitsAsync(sourceKeys, sourceEntriesByKey, sourceEntries, cancellationToken).ConfigureAwait(false);
-			var requestedMaterialIds = CollectMappedSourceMaterialIds(mappings, sourceUnits);
+			var requestedMaterialIds = CollectMappedSourceMaterialIds(replacementMappings, sourceUnits);
 			var materialDependencies = await materialDependencyResolver.ResolveAsync(
 				requestedMaterialIds,
 				sourceEntries,
@@ -95,10 +96,9 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			var resolver = new AdaptationGameDataPackageResolver(request.GameDataDirectory);
 			var avatarRig = await new AdaptationSdkStyleAvatarRigReader(resolver).ReadAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 			var targetReader = new AdaptationGameDataUnitMeshReader(resolver);
-			// Only rewrite Units that have at least one approved replacement. Rebuilding an
-			// entirely hidden Unit as a placeholder is both unnecessary and unsafe: static
-			// shells can carry older normal layouts that must remain paired with their
-			// original GPU data.
+			// Rewrite every selected target Unit, including Units whose every mapped mesh is
+			// hidden. Those Units must become minify-only current shells; otherwise the game
+			// keeps resolving their original visible armor geometry.
 			var targetGroups = mappings.GroupBy(mapping => mapping.PhysicalTarget.UnitAssetKey).OrderBy(group => group.Key.FileId).ToArray();
 			var batchOutputs = new List<HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellPatchOutput>();
 			var batches = targetGroups.Chunk(TargetUnitBatchSize).ToArray();
@@ -126,7 +126,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 					batchTargetReadDuration += operationStopwatch.Elapsed;
 					batchDiagnosticLines.Add(JsonSerializer.Serialize(new { Kind = "LodGroupEvidence", Role = "Target", Unit = $"0x{targetKey.FileId:x16}", Value = CreateLodGroupDiagnostic(targetUnit.Model) }));
 					operationStopwatch.Restart();
-					var unitMappings = group.Where(mapping => mapping.WillReplace).Select(mapping => new AdaptationTargetShellMeshMapping(ToAdaptationKey(mapping.Source!.UnitAssetKey), mapping.Source.MeshInfoIndex, mapping.PhysicalTarget.MeshInfoIndex)).ToArray();
+					var unitMappings = group.Where(mapping => mapping.WillReplace).Select(mapping => new AdaptationTargetShellMeshMapping(ToAdaptationKey(mapping.Source!.UnitAssetKey), mapping.Source!.MeshInfoIndex, mapping.PhysicalTarget.MeshInfoIndex)).ToArray();
 					foreach (var sourceKey in unitMappings.Select(mapping => mapping.SourceUnitAssetKey).Distinct())
 						batchDiagnosticLines.Add(JsonSerializer.Serialize(new { Kind = "LodGroupEvidence", Role = "Source", Unit = $"0x{sourceKey.FileId:x16}", Value = CreateLodGroupDiagnostic(sourceUnits[sourceKey].Model) }));
 					var effectiveUnitMappings = ExpandCompleteLodFamilyMappings(targetUnit.Model, sourceUnits, unitMappings);
@@ -236,7 +236,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 				streamLayoutRegistry), combinedOutput, cancellationToken).ConfigureAwait(false);
 			await WritePerformanceAsync(performancePath, "写入最终 Patch", stageStopwatch.Elapsed, cancellationToken).ConfigureAwait(false);
 			stageStopwatch.Restart();
-			var validationGroups = mappings.GroupBy(mapping => mapping.PhysicalTarget.UnitAssetKey).ToArray();
+			var validationGroups = replacementMappings.GroupBy(mapping => mapping.PhysicalTarget.UnitAssetKey).ToArray();
 			await ReportProgressAsync(request, performancePath, "正在回读验证输出", 0, validationGroups.Length, totalStopwatch, cancellationToken).ConfigureAwait(false);
 			var outputEntries = await scanner.ScanEntriesAsync(execution.WriteResult.TocFilePath, cancellationToken).ConfigureAwait(false);
 			for (var groupIndex = 0; groupIndex < validationGroups.Length; groupIndex++)
@@ -253,8 +253,9 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 					var sourceUnit = sourceUnits[sourceKey];
 					var targetRawMesh = outputUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.PhysicalTarget.MeshInfoIndex);
 					var sourceFamily = ResolveSourceGeometryFamily(sourceUnit.Model, mapping.Source.MeshInfoIndex);
-					var sourceRawMesh = sourceFamily.Meshes.FirstOrDefault(mesh => mesh.LodIndex == targetRawMesh.LodIndex) ?? sourceFamily.Lod0
-						?? sourceUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.Source.MeshInfoIndex);
+					var sourceRawMesh = targetRawMesh.LodIndex is >= 0 and <= 3 && sourceFamily.Lod0 is { } sourceLod0
+						? sourceLod0
+						: sourceUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.Source.MeshInfoIndex);
 					EnsureOutputPreservesSourceVertexColor(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
 					EnsureOutputPreservesSourceGeometry(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
 					outputTransferLayoutDiagnostics.Add(CreateTransferLayoutDiagnostic(
@@ -375,11 +376,11 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			new(approved.SourceUnitAssetKey, sourceFamily.Lod0.MeshInfoIndex, approved.TargetMeshInfoIndex)
 		};
 		foreach (var targetMesh in targetModel.RawMeshData
-			.Where(mesh => mesh.LodIndex != 0 && mesh.LodIndex != -1)
+			.Where(mesh => mesh.LodIndex is >= 1 and <= 3)
 			.OrderBy(mesh => mesh.MeshInfoIndex))
 		{
-			var sourceMesh = sourceFamily.Meshes.FirstOrDefault(mesh => mesh.LodIndex == targetMesh.LodIndex) ?? sourceFamily.Lod0;
-			expanded.Add(new AdaptationTargetShellMeshMapping(approved.SourceUnitAssetKey, sourceMesh.MeshInfoIndex, targetMesh.MeshInfoIndex));
+			var matchingSourceLod = sourceFamily.Meshes.SingleOrDefault(mesh => mesh.LodIndex == targetMesh.LodIndex);
+			expanded.Add(new AdaptationTargetShellMeshMapping(approved.SourceUnitAssetKey, (matchingSourceLod ?? sourceFamily.Lod0).MeshInfoIndex, targetMesh.MeshInfoIndex));
 		}
 		return expanded;
 	}
@@ -606,11 +607,16 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 	{
 		var source = sourceModel.RawMeshData.Single(mesh => mesh.MeshInfoIndex == sourceMeshInfoIndex);
 		var output = outputModel.RawMeshData.Single(mesh => mesh.MeshInfoIndex == outputMeshInfoIndex);
+		var sourceReferencedVertexCount = source.Sections
+			.SelectMany(section => section.Triangles)
+			.SelectMany(triangle => new[] { triangle.A, triangle.B, triangle.C })
+			.Distinct()
+			.Count();
 		var sourceTriangleCount = source.Triangles.Count;
 		var outputTriangleCount = output.Triangles.Count;
-		if (source.Vertices.Count != output.Vertices.Count || sourceTriangleCount != outputTriangleCount)
+		if (sourceReferencedVertexCount != output.Vertices.Count || sourceTriangleCount != outputTriangleCount)
 		{
-			throw new InvalidDataException($"输出 target mesh {outputMeshInfoIndex} 的几何数量与来源不一致：顶点 {output.Vertices.Count}/{source.Vertices.Count}，三角形 {outputTriangleCount}/{sourceTriangleCount}。" );
+			throw new InvalidDataException($"输出 target mesh {outputMeshInfoIndex} 的几何数量与来源不一致：顶点 {output.Vertices.Count}/{sourceReferencedVertexCount}，三角形 {outputTriangleCount}/{sourceTriangleCount}。" );
 		}
 	}
 

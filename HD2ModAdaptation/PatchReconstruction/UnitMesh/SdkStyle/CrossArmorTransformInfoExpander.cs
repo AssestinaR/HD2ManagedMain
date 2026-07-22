@@ -14,7 +14,7 @@ public sealed class CrossArmorTransformInfoExpander
 		ArgumentNullException.ThrowIfNull(avatar);
 		ValidateTransformInfo(avatar, "avatar");
 		ValidateTransformInfo(targetModel.TransformInfo, "target");
-		var requiredHashes = CollectSourceBoneHashes(sourceModel, sourceMeshInfoIndex);
+		var requiredHashes = CollectSourcePaletteBoneHashes(sourceModel, sourceMeshInfoIndex);
 		var expanded = ExpandTransformInfo(targetModel.TransformInfo, requiredHashes, avatar);
 		var mesh = targetModel.Meshes.FirstOrDefault(item => item.Index == targetMeshInfoIndex)
 			?? throw new KeyNotFoundException($"The target Unit does not contain MeshInfo {targetMeshInfoIndex}.");
@@ -73,33 +73,16 @@ public sealed class CrossArmorTransformInfoExpander
 		return new UnitTransformInfo(target.Reserved0, target.Reserved1, target.Reserved2, locals, matrices, entries, hashes);
 	}
 
-	private static IReadOnlyList<uint> CollectSourceBoneHashes(UnitMeshModel source, int meshInfoIndex)
+	private static IReadOnlyList<uint> CollectSourcePaletteBoneHashes(UnitMeshModel source, int meshInfoIndex)
 	{
 		var mesh = source.RawMeshData.FirstOrDefault(item => item.MeshInfoIndex == meshInfoIndex) ?? throw new KeyNotFoundException($"The source Unit does not contain mesh {meshInfoIndex}.");
 		if (source.BoneInfos.Count == 0) return Array.Empty<uint>();
 		var info = source.BoneInfos[mesh.LodIndex >= 0 && mesh.LodIndex < source.BoneInfos.Count ? mesh.LodIndex : 0];
 		var result = new HashSet<uint>();
-		foreach (var section in mesh.Sections)
+		foreach (var transformIndex in info.RealIndices)
 		{
-			if (section.MaterialIndex >= info.Remaps.Count) throw new InvalidDataException("A source section has no BoneInfo remap.");
-			var remap = info.Remaps[(int)section.MaterialIndex];
-			foreach (var vertexIndex in section.Triangles.SelectMany(triangle => new[] { triangle.A, triangle.B, triangle.C }).Distinct())
-			{
-				if (vertexIndex >= mesh.Vertices.Count) throw new InvalidDataException("A source section references a vertex outside the source mesh.");
-				var vertex = mesh.Vertices[(int)vertexIndex];
-				var indices = vertex.Components.FirstOrDefault(component => component.Type == 6)?.UIntValues ?? Array.Empty<uint>();
-				var weights = vertex.Components.FirstOrDefault(component => component.Type == 7)?.FloatValues ?? Array.Empty<float>();
-				for (var influence = 0; influence < indices.Length; influence++)
-				{
-					if (influence < weights.Length && weights[influence] <= ActiveWeightThreshold) continue;
-					if (indices[influence] >= remap.FakeIndices.Count) throw new InvalidDataException("A source vertex bone index is outside its source material remap.");
-					var realPosition = remap.FakeIndices[(int)indices[influence]];
-					if (realPosition >= info.RealIndices.Count) throw new InvalidDataException("A source BoneInfo remap points outside its real-index table.");
-					var transformIndex = info.RealIndices[(int)realPosition];
-					if (transformIndex >= source.TransformNameHashes.Count) throw new InvalidDataException("A source BoneInfo real index is absent from TransformInfo.");
-					result.Add(source.TransformNameHashes[(int)transformIndex]);
-				}
-			}
+			if (transformIndex >= source.TransformNameHashes.Count) throw new InvalidDataException("A source BoneInfo real index is absent from TransformInfo.");
+			result.Add(source.TransformNameHashes[(int)transformIndex]);
 		}
 		return result.OrderBy(hash => hash).ToArray();
 	}

@@ -34,6 +34,7 @@ public sealed class UnitMeshWriter
 		}
 
 		WriteMeshMaterialSlots(meshTocData, writableModel.Meshes);
+		WriteMeshCullingBounds(meshTocData, writableModel.Meshes);
 		WriteStreamLayouts(meshTocData, writableModel.Streams);
 		WriteMaterialBindings(tocData, writableModel);
 		WriteBoneInfos(tocData, writableModel);
@@ -41,22 +42,27 @@ public sealed class UnitMeshWriter
 		return new UnitMeshWriteResult(tocData, gpuData, compositeTocData, compositeTocData is null ? null : gpuData);
 	}
 
+	private static void WriteMeshCullingBounds(byte[] tocData, IReadOnlyList<UnitMeshInfo> meshes)
+	{
+		foreach (var mesh in meshes)
+		{
+			if (mesh.CullingBounds.Values.Count == 0) continue;
+			if (mesh.CullingBounds.Values.Count != 7) throw new InvalidDataException($"MeshInfo {mesh.Index} culling bounds do not contain 7 floats.");
+			var offset = checked((int)mesh.Offset + 8);
+			EnsureWritableRange(tocData, offset, 7 * sizeof(float), $"mesh {mesh.Index} culling bounds");
+			for (var index = 0; index < 7; index++) WriteSingle(tocData, offset + index * sizeof(float), mesh.CullingBounds.Values[index]);
+		}
+	}
+
 	private static UnitMeshModel PromoteSharedStreamIndexBuffers(UnitMeshModel model)
 	{
 		var streams = model.Streams.Select(stream =>
 		{
 			if (stream.IndexBufferType == 1) return stream;
-			var vertexBase = 0L;
-			var requires32Bit = false;
-			foreach (var mesh in model.RawMeshData.Where(mesh => mesh.StreamIndex == (uint)stream.Index).OrderBy(mesh => GetFirstVertexOffset(model, mesh)).ThenBy(mesh => mesh.MeshInfoIndex))
-			{
-				if (mesh.Triangles.Any(triangle => (long)Math.Max(triangle.A, Math.Max(triangle.B, triangle.C)) + vertexBase > ushort.MaxValue))
-				{
-					requires32Bit = true;
-					break;
-				}
-				vertexBase = checked(vertexBase + mesh.Vertices.Count);
-			}
+			var requires32Bit = model.RawMeshData
+				.Where(mesh => mesh.StreamIndex == (uint)stream.Index)
+				.SelectMany(mesh => mesh.Triangles)
+				.Any(triangle => Math.Max(triangle.A, Math.Max(triangle.B, triangle.C)) > ushort.MaxValue);
 			return requires32Bit ? stream with { IndexBufferType = 1 } : stream;
 		}).ToArray();
 		return model with { Streams = streams };
@@ -457,7 +463,10 @@ public sealed class UnitMeshWriter
 		WriteUInt32(payload, 12, checked((uint)remapDataOffset));
 		for (var index = 0; index < count; index++)
 		{
-			if (!matrixByTransformIndex.TryGetValue(boneInfo.RealIndices[index], out var matrix) || matrix.Length != 64)
+			var matrix = index < boneInfo.BoneMatrices.Count
+				? boneInfo.BoneMatrices[index]
+				: matrixByTransformIndex.TryGetValue(boneInfo.RealIndices[index], out var fallback) ? fallback : null;
+			if (matrix is null || matrix.Length != 64)
 			{
 				throw new InvalidDataException($"No current-target inverse joint matrix exists for transform index {boneInfo.RealIndices[index]}.");
 			}

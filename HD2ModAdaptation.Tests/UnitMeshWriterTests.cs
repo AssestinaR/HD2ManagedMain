@@ -8,6 +8,31 @@ namespace HD2ModAdaptation.Tests;
 public sealed class UnitMeshWriterTests
 {
 	[Fact]
+	public void SerializeBoneInfo_PreservesLodSpecificInverseJointMatrix()
+	{
+		var lodMatrix = Enumerable.Repeat((byte)0x5a, 64).ToArray();
+		var fallbackMatrix = Enumerable.Repeat((byte)0xa5, 64).ToArray();
+		var boneInfo = new UnitBoneInfo(0, 0, 1, 0, 0, 0, [7], [new UnitBoneRemap(0, 0, [0])])
+		{
+			BoneMatrices = [lodMatrix]
+		};
+		var otherBoneInfo = boneInfo with { Index = 1, BoneMatrices = [fallbackMatrix] };
+		var toc = new byte[512];
+		WriteUInt32(toc, 0x58, 128);
+		WriteUInt32(toc, 0x5c, 352);
+		WriteUInt32(toc, 0x60, 400);
+		WriteUInt32(toc, 0x64, 336);
+		WriteUInt32(toc, 128, 2);
+		WriteUInt32(toc, 132, 12);
+		WriteUInt32(toc, 136, 112);
+		var model = new UnitMeshModel(0, 0, 0, 0, 0, 128, 352, 368, 0, 400, UnitCustomizationInfo.Empty, [boneInfo, otherBoneInfo], Array.Empty<UnitStreamInfo>(), Array.Empty<UnitMeshInfo>(), Array.Empty<UnitMaterialBinding>(), Array.Empty<UnitRawMeshSummary>(), Array.Empty<UnitRawMeshData>());
+
+		var result = new UnitMeshWriter().Write(model, toc);
+
+		Assert.Equal(lodMatrix, result.TocData.AsSpan(128 + 12 + 16, 64).ToArray());
+	}
+
+	[Fact]
 	public void Write_AppendsSdkEndingBytesWhenEndingOffsetMoves()
 	{
 		var originalToc = new byte[128];
@@ -41,7 +66,7 @@ public sealed class UnitMeshWriterTests
 	}
 
 	[Fact]
-	public void Write_PromotesSharedStreamTo32BitIndicesWhenCombinedVerticesExceed16BitRange()
+	public void Write_KeepsSharedStreamLocalIndices16BitWhenOnlyCombinedVerticesExceed16BitRange()
 	{
 		var toc = new byte[1024];
 		var stream = new UnitStreamInfo(0, 128, 0, 1, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0,
@@ -57,7 +82,9 @@ public sealed class UnitMeshWriterTests
 
 		var result = new UnitMeshWriter().Write(model, toc);
 
-		Assert.True(result.GpuData.Length >= 65539 * 12 + 24);
+		Assert.Equal(0u, ReadUInt32(result.TocData, 128 + 8 + 320 + 76));
+		var indexBufferOffset = ReadUInt32(result.TocData, 128 + 8 + 320 + 96);
+		Assert.Equal(0, BinaryPrimitives.ReadUInt16LittleEndian(result.GpuData.AsSpan((int)indexBufferOffset + 6, 2)));
 	}
 
 	[Fact]

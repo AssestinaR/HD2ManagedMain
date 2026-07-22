@@ -30,6 +30,71 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 	}
 
 	[Fact]
+	public void Reconstruct_WithMappings_PreservesTheTargetLodMinusOneCullingMesh()
+	{
+		var source = CreatePatchUnit(SourceKey, CreateModel(vertexSeed: 7, meshCount: 1));
+		var targetModel = CreateModel(vertexSeed: 1, meshCount: 2);
+		targetModel = targetModel with
+		{
+			Meshes = targetModel.Meshes.Select(mesh => mesh.Index == 1 ? mesh with { LodIndex = -1 } : mesh).ToArray(),
+			RawMeshData = targetModel.RawMeshData.Select(mesh => mesh.MeshInfoIndex == 1 ? mesh with { LodIndex = -1 } : mesh).ToArray()
+		};
+
+		var result = new SdkStyleTargetShellUnitReconstructor().Reconstruct(
+			CreateTargetUnit(targetModel),
+			[source],
+			[new TargetShellMeshMapping(SourceKey, 0, 0)]);
+
+		Assert.Empty(result.MinifiedTargetMeshInfoIndexes);
+		Assert.Equal(3, result.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == 1).Vertices.Count);
+		Assert.Equal(targetModel.RawMeshData.Single(mesh => mesh.MeshInfoIndex == 1).Vertices, result.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == 1).Vertices);
+	}
+
+	[Fact]
+	public void Reconstruct_SameAssetKey_CopiesTheSourceCullingProxy()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 2) with
+		{
+			Meshes = CreateModel(vertexSeed: 7, meshCount: 2).Meshes.Select(mesh => mesh.Index == 1 ? mesh with { LodIndex = -1 } : mesh).ToArray(),
+			RawMeshData = CreateModel(vertexSeed: 7, meshCount: 2).RawMeshData.Select(mesh => mesh.MeshInfoIndex == 1 ? mesh with { LodIndex = -1 } : mesh).ToArray()
+		};
+		var targetModel = CreateModel(vertexSeed: 1, meshCount: 2) with
+		{
+			Meshes = CreateModel(vertexSeed: 1, meshCount: 2).Meshes.Select(mesh => mesh.Index == 1 ? mesh with { LodIndex = -1 } : mesh).ToArray(),
+			RawMeshData = CreateModel(vertexSeed: 1, meshCount: 2).RawMeshData.Select(mesh => mesh.MeshInfoIndex == 1 ? mesh with { LodIndex = -1 } : mesh).ToArray()
+		};
+		var sameKey = TargetKey;
+		var sameKeySource = new PatchUnitMesh(new PatchTocEntry(sameKey, "source", "source"), new PatchEntryPayload(new PatchTocEntry(sameKey, "source", "source"), [], [], []), sourceModel);
+
+		var result = new SdkStyleTargetShellUnitReconstructor().Reconstruct(
+			CreateTargetUnit(targetModel),
+			[sameKeySource],
+			[new TargetShellMeshMapping(sameKey, 0, 0)]);
+
+		Assert.Equal(sourceModel.RawMeshData.Single(mesh => mesh.LodIndex == -1).Vertices, result.Model.RawMeshData.Single(mesh => mesh.LodIndex == -1).Vertices);
+	}
+
+	[Fact]
+	public void Reconstruct_NormalizesMappedLodMaterialSlotOrderToLod0()
+	{
+		var targetModel = CreateModel(vertexSeed: 1, meshCount: 2) with
+		{
+			Meshes = CreateModel(vertexSeed: 1, meshCount: 2).Meshes.Select(mesh => mesh.Index == 1
+				? mesh with { LodIndex = 1, MaterialSlotIds = [21], Sections = [mesh.Sections[0] with { MaterialSlotId = 21 }] }
+				: mesh with { LodIndex = 0, MaterialSlotIds = [20], Sections = [mesh.Sections[0] with { MaterialSlotId = 20 }] }).ToArray(),
+			RawMeshData = CreateModel(vertexSeed: 1, meshCount: 2).RawMeshData.Select(mesh => mesh.MeshInfoIndex == 1
+				? mesh with { LodIndex = 1, Sections = [mesh.Sections[0] with { MaterialSlotId = 21 }] }
+				: mesh with { LodIndex = 0, Sections = [mesh.Sections[0] with { MaterialSlotId = 20 }] }).ToArray()
+		};
+		var source = CreatePatchUnit(SourceKey, CreateModel(vertexSeed: 7, meshCount: 1));
+		var result = new SdkStyleTargetShellUnitReconstructor().Reconstruct(
+			CreateTargetUnit(targetModel), [source], [new TargetShellMeshMapping(SourceKey, 0, 0), new TargetShellMeshMapping(SourceKey, 0, 1)]);
+
+		Assert.Equal(20u, result.Model.Meshes.Single(mesh => mesh.Index == 1).MaterialSlotIds[0]);
+		Assert.Equal(20u, result.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == 1).Sections[0].MaterialSlotId);
+	}
+
+	[Fact]
 	public void Reconstruct_WithoutMappings_MinifiesEveryTargetSlot()
 	{
 		var target = CreateTargetUnit(CreateModel(vertexSeed: 1, meshCount: 2));
@@ -195,6 +260,28 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 
 		Assert.Equal(new uint[] { 0, 1 }, result.RebuiltTargetBoneInfo.RealIndices);
 		Assert.Equal(new uint[] { 0, 1 }, Assert.Single(result.RebuiltTargetBoneInfo.Remaps).FakeIndices);
+	}
+
+	[Fact]
+	public void Reencode_CompletePaletteMode_RejectsMissingSourcePaletteBone()
+	{
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1) with
+		{
+			TransformNameHashes = [101, 102, 103],
+			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [IdentityMatrix(), IdentityMatrix(), IdentityMatrix()], Array.Empty<UnitTransformEntry>(), [101, 102, 103]),
+			Streams = [CreateSkinnedStream()],
+			BoneInfos = [new UnitBoneInfo(0, 0, 0, 0, 0, 0, [2, 0, 1], [new UnitBoneRemap(0, 0, [1, 2, 0])])],
+			RawMeshData = [CreateSkinnedRawMesh()]
+		};
+		var targetModel = sourceModel with
+		{
+			TransformNameHashes = [101, 102],
+			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [IdentityMatrix(), IdentityMatrix()], Array.Empty<UnitTransformEntry>(), [101, 102])
+		};
+
+		var exception = Assert.Throws<InvalidDataException>(() => new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true, preserveCompleteSourcePalette: true).Reencode(targetModel, 0, sourceModel, 0));
+
+		Assert.Contains("source LOD palette bone", exception.Message);
 	}
 
 	[Fact]

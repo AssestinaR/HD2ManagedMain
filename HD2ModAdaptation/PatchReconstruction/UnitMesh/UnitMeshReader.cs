@@ -546,6 +546,9 @@ public sealed class UnitMeshReader
 	private static UnitMeshInfo ReadMesh(ReadOnlySpan<byte> data, int index, uint absoluteOffset, uint fallbackMeshId, bool readInlineMaterialSections, UnitCustomizationInfo customizationInfo, UnitBoneNames boneNames)
 	{
 		EnsureRange(data, absoluteOffset, 112, $"mesh info {index}");
+		var cullingValues = new float[7];
+		for (var valueIndex = 0; valueIndex < cullingValues.Length; valueIndex++) cullingValues[valueIndex] = ReadSingle(data, checked((int)absoluteOffset + 8 + valueIndex * sizeof(float)));
+		var cullingBounds = new UnitMeshCullingBounds(cullingValues);
 		var cursor = checked((int)absoluteOffset + 40);
 		var meshId = ReadUInt32(data, cursor); cursor += 4;
 		if (meshId == 0 && fallbackMeshId != 0)
@@ -579,7 +582,7 @@ public sealed class UnitMeshReader
 				0,
 				semanticInfo,
 				Array.Empty<uint>(),
-				Array.Empty<UnitMeshSectionInfo>());
+				Array.Empty<UnitMeshSectionInfo>()) { CullingBounds = cullingBounds };
 		}
 
 		var materialCount = checked((int)numMaterials);
@@ -621,7 +624,7 @@ public sealed class UnitMeshReader
 			sectionsOffset,
 			semanticInfo,
 			materialSlotIds,
-			sections);
+			sections) { CullingBounds = cullingBounds };
 	}
 
 	private static IReadOnlyList<UnitMaterialBinding> ReadMaterials(ReadOnlySpan<byte> data, uint materialsOffset)

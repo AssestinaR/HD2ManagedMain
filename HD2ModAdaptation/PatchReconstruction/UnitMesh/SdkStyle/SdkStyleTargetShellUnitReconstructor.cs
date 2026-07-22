@@ -54,16 +54,6 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 			if (!sourceByKey.ContainsKey(mapping.SourceUnitAssetKey)) throw new KeyNotFoundException($"Source Unit 0x{mapping.SourceUnitAssetKey.FileId:x16} was not supplied.");
 			if (!targetUnit.Model.RawMeshData.Any(mesh => mesh.MeshInfoIndex == mapping.TargetMeshInfoIndex)) throw new KeyNotFoundException($"Target Unit does not contain mesh {mapping.TargetMeshInfoIndex}.");
 		}
-		var targetLod0 = targetUnit.Model.RawMeshData.Where(mesh => mesh.LodIndex == 0).ToArray();
-		if (mappings.Count > 1 && targetLod0.Length == 1 && mappings.Any(mapping => mapping.TargetMeshInfoIndex == targetLod0[0].MeshInfoIndex))
-		{
-			var lod0TransformIndex = targetUnit.Model.Meshes.Single(mesh => mesh.Index == targetLod0[0].MeshInfoIndex).TransformIndex;
-			var alignedMeshes = targetUnit.Model.Meshes.Select(mesh => mesh.LodIndex != 0 && mesh.LodIndex != -1
-				? mesh with { TransformIndex = lod0TransformIndex }
-				: mesh).ToArray();
-			targetUnit = targetUnit with { Model = targetUnit.Model with { Meshes = alignedMeshes } };
-		}
-
 		// A source patch can use a legacy Unit format table. Its numeric vertex-format IDs
 		// cannot be copied into a current target Unit: the same ID has different semantics
 		// between versions. Keep the current target declaration unless a caller explicitly
@@ -82,16 +72,28 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 		var allStreamCanonicalModel = planCanonicalSkinningLayout
 			? streamPlanner.CanonicalizeAllSkinningStreams(plannedTargetModel)
 			: plannedTargetModel;
+		var preservedMeshIndexes = targetIndexes.Count == 0
+			? targetIndexes
+			: targetIndexes.Concat(allStreamCanonicalModel.RawMeshData
+				.Where(mesh => mesh.LodIndex == -1)
+				.Select(mesh => mesh.MeshInfoIndex))
+			.ToHashSet();
 		var model = targetIndexes.Count == 0
 			? minifier.MinifyAll(allStreamCanonicalModel)
-			: minifier.MinifyExcept(allStreamCanonicalModel, targetIndexes);
+			: minifier.MinifyExcept(allStreamCanonicalModel, preservedMeshIndexes);
+		model = NormalizeMappedLodSectionLayouts(model, targetIndexes);
 		var rebuiltBoneInfoIndexes = new HashSet<int>();
 		var replacementMaterialIds = new HashSet<ulong>();
 		foreach (var mapping in mappings.OrderBy(mapping => mapping.TargetMeshInfoIndex))
 		{
 			var sourceUnit = sourceByKey[mapping.SourceUnitAssetKey];
-			var result = reencoder.Reencode(model, mapping.TargetMeshInfoIndex, sourceUnit.Model, mapping.SourceMeshInfoIndex);
+			var preserveSourceSectionMetadata = mapping.SourceUnitAssetKey == targetUnit.AssetKey;
+			var result = reencoder.Reencode(model, mapping.TargetMeshInfoIndex, sourceUnit.Model, mapping.SourceMeshInfoIndex, preserveSourceSectionMetadata);
 			model = result.Model;
+			if (preserveSourceSectionMetadata)
+			{
+				model = PreserveSourceCullingProxy(model, sourceUnit.Model);
+			}
 			rebuiltBoneInfoIndexes.Add(result.TargetBoneInfoIndex);
 			foreach (var materialId in result.SourceMaterialIds) replacementMaterialIds.Add(materialId);
 		}
@@ -100,7 +102,7 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 		var coveredIndexes = model.RawMeshData.Select(mesh => mesh.MeshInfoIndex).ToHashSet();
 		if (!targetMeshIndexes.SetEquals(coveredIndexes)) throw new InvalidDataException("The reconstructed target shell does not cover every current target RawMesh.");
 		var replacements = mappings.Select(mapping => mapping.TargetMeshInfoIndex).ToHashSet();
-		var minified = targetMeshIndexes.Where(index => !replacements.Contains(index)).OrderBy(index => index).ToArray();
+		var minified = targetMeshIndexes.Where(index => !preservedMeshIndexes.Contains(index)).OrderBy(index => index).ToArray();
 		if (minified.Any(index => !IsPlaceholder(model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == index)))) throw new InvalidDataException("An unreplaced target mesh was not reduced to a placeholder.");
 
 		var write = targetUnit.CompositePayload is null
@@ -111,6 +113,57 @@ public sealed class SdkStyleTargetShellUnitReconstructor
 
 	private static bool IsPlaceholder(UnitRawMeshData mesh)
 		=> mesh.Vertices.Count <= 3 && mesh.Triangles.Count <= 1;
+
+	private static UnitMeshModel PreserveSourceCullingProxy(UnitMeshModel targetModel, UnitMeshModel sourceModel)
+	{
+		var sourceProxies = sourceModel.RawMeshData.Where(mesh => mesh.LodIndex == -1).ToArray();
+		var targetProxies = targetModel.RawMeshData.Where(mesh => mesh.LodIndex == -1).ToArray();
+		if (sourceProxies.Length != 1 || targetProxies.Length != 1) return targetModel;
+		var sourceProxy = sourceProxies[0];
+		var targetProxy = targetProxies[0];
+		if (sourceProxy is null || targetProxy is null) return targetModel;
+		if (sourceProxy.StreamIndex != targetProxy.StreamIndex || sourceProxy.Sections.Count != targetProxy.Sections.Count) return targetModel;
+		if (sourceProxy.Vertices.Count == 0 || sourceProxy.Triangles.Count == 0) return targetModel;
+		var sourceStream = sourceModel.Streams.SingleOrDefault(stream => stream.Index == sourceProxy.StreamIndex);
+		var targetStream = targetModel.Streams.SingleOrDefault(stream => stream.Index == targetProxy.StreamIndex);
+		if (sourceStream is null || targetStream is null || sourceStream.VertexStride != targetStream.VertexStride || !sourceStream.Components.SequenceEqual(targetStream.Components)) return targetModel;
+		return targetModel with
+		{
+			RawMeshData = targetModel.RawMeshData.Select(mesh => mesh.MeshInfoIndex == targetProxy.MeshInfoIndex
+				? sourceProxy with { MeshInfoIndex = targetProxy.MeshInfoIndex, MeshId = targetProxy.MeshId, LodIndex = targetProxy.LodIndex, StreamIndex = targetProxy.StreamIndex }
+				: mesh).ToArray(),
+			Meshes = targetModel.Meshes.Select(mesh => mesh.Index == targetProxy.MeshInfoIndex
+				? mesh with { CullingBounds = sourceModel.Meshes.Single(source => source.Index == sourceProxy.MeshInfoIndex).CullingBounds }
+				: mesh).ToArray()
+		};
+	}
+
+	private static UnitMeshModel NormalizeMappedLodSectionLayouts(UnitMeshModel model, IReadOnlySet<int> mappedMeshIndexes)
+	{
+		var lod0 = model.RawMeshData.SingleOrDefault(mesh => mesh.LodIndex == 0 && mappedMeshIndexes.Contains(mesh.MeshInfoIndex));
+		if (lod0 is null) return model;
+		var canonicalSlots = model.Meshes.Single(mesh => mesh.Index == lod0.MeshInfoIndex).MaterialSlotIds;
+		if (canonicalSlots.Count == 0) return model;
+
+		var meshes = model.Meshes.Select(mesh =>
+		{
+			if (!mappedMeshIndexes.Contains(mesh.Index) || mesh.LodIndex < 0 || mesh.LodIndex > 3 || mesh.MaterialSlotIds.Count != canonicalSlots.Count || mesh.Sections.Count != canonicalSlots.Count) return mesh;
+			return mesh with
+			{
+				MaterialSlotIds = canonicalSlots.ToArray(),
+				Sections = mesh.Sections.Select((section, index) => section with { MaterialIndex = checked((uint)index), MaterialSlotId = canonicalSlots[index] }).ToArray()
+			};
+		}).ToArray();
+		var rawMeshes = model.RawMeshData.Select(rawMesh =>
+		{
+			if (!mappedMeshIndexes.Contains(rawMesh.MeshInfoIndex) || rawMesh.LodIndex < 0 || rawMesh.LodIndex > 3 || rawMesh.Sections.Count != canonicalSlots.Count) return rawMesh;
+			return rawMesh with
+			{
+				Sections = rawMesh.Sections.Select((section, index) => section with { MaterialIndex = checked((uint)index), MaterialSlotId = canonicalSlots[index] }).ToArray()
+			};
+		}).ToArray();
+		return model with { Meshes = meshes, RawMeshData = rawMeshes };
+	}
 
 }
 
