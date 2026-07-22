@@ -42,7 +42,7 @@ public sealed class CrossArmorTargetShellPatchOperation
 	{
 		var outputBuilder = new SdkStyleTargetShellPatchOutputBuilder(
 			new SdkStyleTargetShellUnitReconstructor(
-				reencoder: new SdkStyleMeshReencoder(rebuildTargetInverseJointMatrices: true, canonicalBoneHashOrder: canonicalBoneHashOrder),
+				reencoder: new SdkStyleMeshReencoder(allowSectionRebuild: true, rebuildTargetInverseJointMatrices: true, canonicalBoneHashOrder: canonicalBoneHashOrder),
 				writer: new UnitMeshWriter(allowBoneInfoRelocation: true, allowTransformInfoRelocation: true),
 				propagateSourceMaterials: true,
 				allowedSourceMaterialIds: allowedSourceMaterialIds,

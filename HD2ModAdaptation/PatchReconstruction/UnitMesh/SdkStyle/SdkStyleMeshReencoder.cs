@@ -48,6 +48,13 @@ public sealed class SdkStyleMeshReencoder
 				sourceRawMesh = ExpandSourceSectionsToTargetLayout(effectiveSourceMesh, targetRawMesh.Sections.Count);
 			}
 		}
+		if (allowSectionRebuild && targetRawMesh.Sections.Count != targetModel.Meshes.Single(mesh => mesh.Index == targetMeshInfoIndex).Sections.Count)
+		{
+			var meshSpaceTransformForRebuild = transformMeshSpace || rebuildTargetInverseJointMatrices
+				? BuildMeshSpaceTransform(targetModel, targetMeshInfoIndex, sourceModel, sourceMeshInfoIndex)
+				: Matrix4x4.Identity;
+			return ReencodeWithRebuiltSections(targetModel, targetRawMesh, sourceModel, sourceRawMesh, sourceMeshInfoIndex, meshSpaceTransformForRebuild);
+		}
 		var meshSpaceTransform = transformMeshSpace || rebuildTargetInverseJointMatrices
 			? BuildMeshSpaceTransform(targetModel, targetMeshInfoIndex, sourceModel, sourceMeshInfoIndex)
 			: Matrix4x4.Identity;
@@ -135,6 +142,34 @@ public sealed class SdkStyleMeshReencoder
 		if (targetRawMesh.Sections.Count == 0 || sourceRawMesh.Sections.Count == 0)
 		{
 			throw new InvalidDataException("SDK-style section rebuild requires both source and target meshes to contain material sections.");
+		}
+		var targetMesh = targetModel.Meshes.Single(mesh => mesh.Index == targetRawMesh.MeshInfoIndex);
+		var sourceMesh = sourceModel.Meshes.Single(mesh => mesh.Index == sourceMeshInfoIndex);
+		if (sourceRawMesh.Sections.Count > targetMesh.Sections.Count)
+		{
+			var materialSlots = targetMesh.MaterialSlotIds.ToList();
+			var sections = targetMesh.Sections.ToList();
+			for (var index = sections.Count; index < sourceRawMesh.Sections.Count; index++)
+			{
+				var sourceSection = sourceRawMesh.Sections[index];
+				var sourceSlot = sourceSection.MaterialIndex < sourceMesh.MaterialSlotIds.Count
+					? sourceMesh.MaterialSlotIds[(int)sourceSection.MaterialIndex]
+					: throw new InvalidDataException("A source mesh section material index is outside its material-slot table.");
+				if (!materialSlots.Contains(sourceSlot)) materialSlots.Add(sourceSlot);
+				var template = sections[^1];
+				sections.Add(template with { MaterialIndex = checked((uint)materialSlots.IndexOf(sourceSlot)), MaterialSlotId = sourceSlot });
+			}
+			targetMesh = targetMesh with { MaterialSlotIds = materialSlots, NumMaterials = checked((uint)materialSlots.Count), Sections = sections, NumSections = checked((uint)sections.Count) };
+			targetModel = targetModel with { Meshes = targetModel.Meshes.Select(mesh => mesh.Index == targetMesh.Index ? targetMesh : mesh).ToArray() };
+			var targetSections = sections.Select(section => new UnitRawMeshSectionData(section.MaterialIndex, section.MaterialSlotId, Array.Empty<UnitTriangleIndices>())).ToArray();
+			targetRawMesh = targetRawMesh with { Sections = targetSections };
+		}
+		else if (targetRawMesh.Sections.Count != targetMesh.Sections.Count)
+		{
+			targetRawMesh = targetRawMesh with
+			{
+				Sections = targetMesh.Sections.Select(section => new UnitRawMeshSectionData(section.MaterialIndex, section.MaterialSlotId, Array.Empty<UnitTriangleIndices>())).ToArray()
+			};
 		}
 		var targetStream = FindStream(targetModel, targetRawMesh, "target");
 		var sourceUsesBones = sourceRawMesh.Vertices.Any(vertex => FindComponent(vertex, 6) is not null);
@@ -231,10 +266,25 @@ public sealed class SdkStyleMeshReencoder
 		var targetBoneInfoIndex = targetModel.BoneInfos.Count == 0 ? -1 : GetBoneInfoIndex(targetModel, targetRawMesh);
 		var requires32BitIndices = targetModel.Streams.Single(stream => stream.Index == targetRawMesh.StreamIndex).IndexBufferType != 1 && vertices.Count > ushort.MaxValue;
 		var rawMesh = targetRawMesh with { Sections = sections, Triangles = sections.SelectMany(section => section.Triangles).ToArray(), Vertices = vertices };
+		var meshInfo = targetModel.Meshes.Single(mesh => mesh.Index == targetRawMesh.MeshInfoIndex);
+		var meshInfoSections = sections.Select((section, index) =>
+			(index < meshInfo.Sections.Count ? meshInfo.Sections[index] : meshInfo.Sections[^1]) with
+			{
+				MaterialIndex = section.MaterialIndex,
+				MaterialSlotId = section.MaterialSlotId,
+				NumIndices = checked((uint)(section.Triangles.Count * 3))
+			}).ToArray();
 		var model = targetModel with
 		{
 			BoneInfos = rebuiltBoneInfo is null || targetBoneInfoIndex < 0 ? targetModel.BoneInfos : targetModel.BoneInfos.Select((boneInfo, index) => index == targetBoneInfoIndex ? rebuiltBoneInfo : boneInfo).ToArray(),
 			Streams = requires32BitIndices ? targetModel.Streams.Select(stream => stream.Index == targetRawMesh.StreamIndex ? stream with { IndexBufferType = 1 } : stream).ToArray() : targetModel.Streams,
+			Meshes = targetModel.Meshes.Select(mesh => mesh.Index == meshInfo.Index ? meshInfo with
+			{
+				MaterialSlotIds = meshInfo.MaterialSlotIds.Concat(meshInfoSections.Select(section => section.MaterialSlotId).Where(slot => !meshInfo.MaterialSlotIds.Contains(slot))).ToArray(),
+				NumMaterials = checked((uint)meshInfo.MaterialSlotIds.Concat(meshInfoSections.Select(section => section.MaterialSlotId).Where(slot => !meshInfo.MaterialSlotIds.Contains(slot))).Distinct().Count()),
+				Sections = meshInfoSections,
+				NumSections = checked((uint)meshInfoSections.Length)
+			} : mesh).ToArray(),
 			RawMeshData = targetModel.RawMeshData.Select(mesh => mesh.MeshInfoIndex == targetRawMesh.MeshInfoIndex ? rawMesh : mesh).ToArray()
 		};
 		var outputBoneInfo = rebuiltBoneInfo ?? (targetBoneInfoIndex < 0 ? new UnitBoneInfo(-1, 0, 0, 0, 0, 0, Array.Empty<uint>(), Array.Empty<UnitBoneRemap>()) : targetModel.BoneInfos[targetBoneInfoIndex]);

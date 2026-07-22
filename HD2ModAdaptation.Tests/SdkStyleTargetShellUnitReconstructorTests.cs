@@ -227,7 +227,19 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 	[Fact]
 	public void Reconstruct_WithSectionRebuild_HandlesDifferentSourceAndTargetSectionCounts()
 	{
-		var source = CreatePatchUnit(SourceKey, CreateModel(vertexSeed: 7, meshCount: 1));
+		var sourceModel = CreateModel(vertexSeed: 7, meshCount: 1);
+		var sourceRawMesh = sourceModel.RawMeshData[0];
+		var sourceSection = sourceRawMesh.Sections[0] with { MaterialIndex = 1, MaterialSlotId = 21 };
+		var source = CreatePatchUnit(SourceKey, sourceModel with
+		{
+			Materials = [new UnitMaterialBinding(20, 0x200), new UnitMaterialBinding(21, 0x201)],
+			Meshes = [sourceModel.Meshes[0] with
+			{
+				MaterialSlotIds = [20, 21],
+				Sections = [sourceModel.Meshes[0].Sections[0], sourceModel.Meshes[0].Sections[0] with { MaterialIndex = 1, MaterialSlotId = 21 }]
+			}],
+			RawMeshData = [sourceRawMesh with { Sections = [sourceSection, sourceSection] }]
+		});
 		var baseTarget = CreateTargetUnit(CreateModel(vertexSeed: 1, meshCount: 2));
 		var rawTarget = baseTarget.Model.RawMeshData[0];
 		var target = baseTarget with
@@ -245,7 +257,7 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 			new[] { source },
 			new[] { new TargetShellMeshMapping(SourceKey, 0, 0) });
 
-		Assert.Single(result.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == 0).Sections);
+		Assert.Equal(2, result.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == 0).Sections.Count);
 		Assert.Equal(new[] { 1 }, result.MinifiedTargetMeshInfoIndexes);
 	}
 
