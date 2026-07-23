@@ -59,6 +59,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	public RelayCommand ApplyManualMappingCommand { get; }
 	public RelayCommand SuppressSelectedMappingCommand { get; }
 	public RelayCommand RestoreSelectedMappingCommand { get; }
+	public RelayCommand SelectAllTargetsCommand { get; }
+	public RelayCommand InvertTargetSelectionCommand { get; }
 	public bool IsPlanning { get => isPlanning; private set { if (isPlanning == value) return; isPlanning = value; OnPropertyChanged(); } }
 	public string PlanState { get => planState; private set { if (planState == value) return; planState = value; OnPropertyChanged(); } }
 	public CrossArmorTransferMapping? SelectedTargetMapping
@@ -210,6 +212,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		ApplyManualMappingCommand = new RelayCommand(_ => { if (SelectedTargetMapping is not null && SelectedManualSource is not null) SetManualMapping(SelectedTargetMapping, SelectedManualSource); }, _ => CanEditSelectedMapping && SelectedManualSource is not null);
 		SuppressSelectedMappingCommand = new RelayCommand(_ => { if (SelectedTargetMapping is not null) SuppressAutomaticMapping(SelectedTargetMapping); }, _ => CanEditSelectedMapping);
 		RestoreSelectedMappingCommand = new RelayCommand(_ => { if (SelectedTargetMapping is not null) RestoreAutomaticMapping(SelectedTargetMapping); }, _ => CanEditSelectedMapping);
+		SelectAllTargetsCommand = new RelayCommand(_ => SetAllTargetsSelected(true));
+		InvertTargetSelectionCommand = new RelayCommand(_ => SetAllTargetsSelected(null));
 		SelectedSourceArmor = SourceArmorChoices.FirstOrDefault()?.Entry;
 		SelectedSourceHelmet = SourceHelmetChoices.FirstOrDefault()?.Entry;
 	}
@@ -380,6 +384,17 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	{
 		ArgumentNullException.ThrowIfNull(target);
 		if (suppressedTargets.Remove(target.PhysicalTarget)) QueueRefreshPlan();
+	}
+
+	public void SetAllTargetsSelected(bool? selected)
+	{
+		applyingTargetSelection = true;
+		try
+		{
+			foreach (var target in TargetChoices) target.IsSelected = selected ?? !target.IsSelected;
+		}
+		finally { applyingTargetSelection = false; }
+		QueueRefreshPlan();
 	}
 
 	private void QueueRefreshPlan()

@@ -75,11 +75,19 @@ namespace HD2ModManager
         [DllImport("user32.dll")]
         static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
 
+        [DllImport("user32.dll")]
+        static extern bool GetCursorPos(out POINT lpPoint);
+
+        [DllImport("user32.dll")]
+        static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
 
         const int DWMWA_NCRENDERING_POLICY = 2; // DWMNCRP_ENABLED
         const int WM_GETMINMAXINFO = 0x0024;
+        const int WM_NCHITTEST = 0x0084;
+        const int HTTOP = 12;
         const uint MONITOR_DEFAULTTONEAREST = 2;
 
         public MainWindow()
@@ -115,8 +123,23 @@ namespace HD2ModManager
             }
             else
             {
+                RestoreFromMaximizedForDrag(e.GetPosition(this));
                 DragMove();
             }
+        }
+
+        private void RestoreFromMaximizedForDrag(Point pointerPosition)
+        {
+            if (WindowState != WindowState.Maximized) return;
+
+            var restoredBounds = RestoreBounds;
+            var horizontalRatio = ActualWidth > 0 ? pointerPosition.X / ActualWidth : 0.5;
+            var screenPointer = PointToScreen(pointerPosition);
+            var dpi = VisualTreeHelper.GetDpi(this);
+
+            WindowState = WindowState.Normal;
+            Left = screenPointer.X / dpi.DpiScaleX - restoredBounds.Width * horizontalRatio;
+            Top = screenPointer.Y / dpi.DpiScaleY - 16;
         }
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -595,6 +618,16 @@ namespace HD2ModManager
             IntPtr lParam,
             ref bool handled)
         {
+            if (msg == WM_NCHITTEST && hwnd != IntPtr.Zero && GetCursorPos(out var cursor) && GetWindowRect(hwnd, out var windowRect))
+            {
+                // 顶部标题栏覆盖了 WindowChrome 的默认命中区域时，仍保留 6px 原生拖拽调整边框。
+                if (cursor.y >= windowRect.top && cursor.y < windowRect.top + 6)
+                {
+                    handled = true;
+                    return new IntPtr(HTTOP);
+                }
+            }
+
             if (msg != WM_GETMINMAXINFO || lParam == IntPtr.Zero)
             {
                 return IntPtr.Zero;
@@ -613,6 +646,16 @@ namespace HD2ModManager
             }
 
             var maxInfo = Marshal.PtrToStructure<MINMAXINFO>(lParam);
+            var window = HwndSource.FromHwnd(hwnd)?.RootVisual as Window;
+            if (window != null)
+            {
+                var dpi = VisualTreeHelper.GetDpi(window);
+                maxInfo.ptMinTrackSize = new POINT
+                {
+                    x = (int)Math.Ceiling(window.MinWidth * dpi.DpiScaleX),
+                    y = (int)Math.Ceiling(window.MinHeight * dpi.DpiScaleY)
+                };
+            }
             maxInfo.ptMaxPosition = new POINT
             {
                 x = monitorInfo.rcWork.left - monitorInfo.rcMonitor.left,

@@ -254,7 +254,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 					var targetRawMesh = outputUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.PhysicalTarget.MeshInfoIndex);
 					var sourceFamily = ResolveSourceGeometryFamily(sourceUnit.Model, mapping.Source.MeshInfoIndex);
 					var sourceRawMesh = targetRawMesh.LodIndex is >= 0 and <= 3 && sourceFamily.Lod0 is { } sourceLod0
-						? sourceLod0
+						? sourceFamily.Meshes.SingleOrDefault(mesh => mesh.LodIndex == targetRawMesh.LodIndex) ?? sourceLod0
 						: sourceUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.Source.MeshInfoIndex);
 					EnsureOutputPreservesSourceVertexColor(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
 					EnsureOutputPreservesSourceGeometry(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);

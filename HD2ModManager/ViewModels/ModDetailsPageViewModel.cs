@@ -88,6 +88,7 @@ namespace HD2ModManager.ViewModels
             : string.Join(Environment.NewLine, Mod.FileGroups.Select(g => $"{g.HexPrefix}.patch_{g.PatchN}"));
 
         public RelayCommand RefreshCommand { get; }
+        public RelayCommand UpdateImageCommand { get; }
         public RelayCommand OpenFolderCommand { get; }
         public RelayCommand AddToProfileCommand { get; }
         public RelayCommand DeleteCommand { get; }
@@ -119,6 +120,7 @@ namespace HD2ModManager.ViewModels
             _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(_paths);
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
+            UpdateImageCommand = new RelayCommand(UpdateImage, path => path is string imagePath && File.Exists(imagePath));
             OpenFolderCommand = new RelayCommand(OpenFolder);
             AddToProfileCommand = new RelayCommand(AddToProfile);
             DeleteCommand = new RelayCommand(Delete);
@@ -140,6 +142,36 @@ namespace HD2ModManager.ViewModels
             _derivedState.SnapshotChanged += _snapshotChangedHandler;
             Refresh();
 			_ = RefreshAdvancedAnalysisStateAsync();
+        }
+
+        private void UpdateImage(object? parameter)
+        {
+            if (parameter is not string sourceImagePath || Mod is null) return;
+
+            var modDirectory = _library.ResolveAbsolutePath(Mod.SourcePath);
+            if (string.IsNullOrWhiteSpace(modDirectory) || !Directory.Exists(modDirectory)) return;
+
+            var destination = Path.Combine(modDirectory, "icon" + Path.GetExtension(sourceImagePath).ToLowerInvariant());
+            File.Copy(sourceImagePath, destination, overwrite: true);
+            Mod.Image = destination;
+            _library.Add(Mod);
+            _library.Save();
+            Refresh();
+            _notifications?.Show($"已更新图像：{Mod.Name}");
+            _ = RegenerateThumbnailAsync(destination);
+        }
+
+        private async Task RegenerateThumbnailAsync(string imagePath)
+        {
+            try
+            {
+                await ThumbnailService.RegenerateThumbnailAsync(imagePath, 72).ConfigureAwait(false);
+                await _derivedState.RefreshAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // 图像已经保存；缩略图失败时由下次库页刷新重试。
+            }
         }
 
         public async Task RefreshAdvancedDetailsAsync()

@@ -2,8 +2,50 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Grid Background="Transparent">
-        <StackPanel HorizontalAlignment="Left" VerticalAlignment="Top">
-        <Border Style="{StaticResource CardContainer}" MinWidth="560" Padding="22">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="1*" MinWidth="480"/>
+            <ColumnDefinition Width="16"/>
+            <ColumnDefinition Width="0.54*" MinWidth="300"/>
+        </Grid.ColumnDefinitions>
+        <Grid Grid.Column="2">
+            <Grid.RowDefinitions>
+                <RowDefinition/>
+                <RowDefinition Height="0.3*"/>
+            </Grid.RowDefinitions>
+            <Expander Grid.Row="0" ExpandDirection="Up" IsExpanded="False" HorizontalAlignment="Center" VerticalAlignment="Bottom" Width="250" Margin="0,0,0,16">
+                <Expander.Header>
+                    <Border Style="{StaticResource CardContainer}" Padding="14,10">
+                        <DockPanel>
+                            <TextBlock Text="启动前检查" Style="{StaticResource AppCardTitle}"/>
+                            <TextBlock Text="点击展开" Style="{StaticResource AppSupportingText}" HorizontalAlignment="Right" Margin="12,2,0,0"/>
+                        </DockPanel>
+                    </Border>
+                </Expander.Header>
+                <Border Style="{StaticResource CardContainer}" Padding="18" Margin="0,0,0,4">
+                    <StackPanel>
+                        <TextBlock Text="启动前检查清单" Style="{StaticResource AppCardTitle}"/>
+                        <Grid Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="已启用的模组" Style="{StaticResource AppSupportingText}"/>
+                            <TextBlock Grid.Column="1" Text="{Binding EnabledModCount}" Style="{StaticResource AppStatusValue}"/>
+                        </Grid>
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="过时检测" Style="{StaticResource AppSupportingText}"/>
+                            <TextBlock Grid.Column="1" Text="{Binding OutdatedModSummary}" Style="{StaticResource AppStatusValue}"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </Expander>
+            <Button Grid.Row="1" Style="{StaticResource AppPrimaryButton}" Content="启动游戏" Command="{Binding LaunchGameCommand}" FontSize="36" FontWeight="SemiBold" Margin="18,0,18,0"/>
+        </Grid>
+        <Border Grid.Column="0" Style="{StaticResource CardContainer}" Padding="22">
             <StackPanel>
                 <TextBlock Text="HD2 Mod Manager" Style="{StaticResource AppPageTitle}"/>
                 <TextBlock Text="新版工作区已启用：顶部切换页面，配置页与模组库可左右并排。" Style="{StaticResource AppSupportingText}" Margin="0,8,0,18"/>
@@ -25,44 +67,65 @@
                     <TextBlock Text="在线资产" Style="{StaticResource AppSupportingText}" Margin="0,0,12,10"/>
                     <TextBlock Text="{Binding AssetMetadataHealth}" Style="{StaticResource AppStatusValue}" Margin="0,0,0,10"/>
                     <TextBlock Text="后台任务" Style="{StaticResource AppSupportingText}" Margin="0,0,12,0"/>
-                    <StackPanel Orientation="Horizontal"><Border Style="{StaticResource AppBadge}"><TextBlock Text="{Binding TaskHealth}" Foreground="{StaticResource Accent}" FontWeight="SemiBold"/></Border><Button Style="{StaticResource AppQuietButton}" Content="打开任务中心" Command="{Binding OpenTaskHubCommand}" Margin="6,-2,0,0"/></StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <Border Style="{StaticResource AppBadge}">
+                            <TextBlock Text="{Binding TaskHealth}" Foreground="{StaticResource Accent}" FontWeight="SemiBold"/>
+                        </Border>
+                        <Button Style="{StaticResource AppQuietButton}" Content="打开任务中心" Command="{Binding OpenTaskHubCommand}" Margin="6,-2,0,0"/>
+                    </StackPanel>
                 </UniformGrid>
             </StackPanel>
         </Border>
-        <Border Style="{StaticResource CardContainer}" Margin="0,12,0,0" Padding="18">
-            <StackPanel>
-                <TextBlock Text="部署能力" Style="{StaticResource AppCardTitle}"/>
-                <Border Style="{StaticResource AppInlineNotice}" Margin="0,8,0,0"><TextBlock Text="{Binding DeploymentCapabilityText}" Style="{StaticResource AppSupportingText}"/></Border>
-                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                    <StackPanel.Style>
-                        <Style TargetType="StackPanel">
-                            <Setter Property="Visibility" Value="Collapsed"/>
-                            <Style.Triggers><DataTrigger Binding="{Binding IsDeploymentBlocked}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
-                        </Style>
-                    </StackPanel.Style>
-                    <Button Style="{StaticResource AppPrimaryButton}" Content="使用推荐 Mod 库" Command="{Binding MoveLibraryToRecommendedCommand}"/>
-                    <Button Style="{StaticResource AppSecondaryButton}" Content="打开开发者设置" Command="{Binding OpenDeveloperSettingsCommand}" Margin="8,0,0,0"/>
-                    <Button Style="{StaticResource AppSecondaryButton}" Content="以管理员身份重启" Command="{Binding RestartAsAdministratorCommand}" Margin="8,0,0,0"/>
+        <!-- Secondary maintenance cards remain available below the new main dashboard in a later pass. -->
+        <StackPanel Grid.Column="2" Visibility="Collapsed">
+            <Border Style="{StaticResource CardContainer}" Margin="0,12,0,0" Padding="18">
+                <StackPanel>
+                    <TextBlock Text="部署能力" Style="{StaticResource AppCardTitle}"/>
+                    <Border Style="{StaticResource AppInlineNotice}" Margin="0,8,0,0">
+                        <TextBlock Text="{Binding DeploymentCapabilityText}" Style="{StaticResource AppSupportingText}"/>
+                    </Border>
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <StackPanel.Style>
+                            <Style TargetType="StackPanel">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsDeploymentBlocked}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </StackPanel.Style>
+                        <Button Style="{StaticResource AppPrimaryButton}" Content="使用推荐 Mod 库" Command="{Binding MoveLibraryToRecommendedCommand}"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="打开开发者设置" Command="{Binding OpenDeveloperSettingsCommand}" Margin="8,0,0,0"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="以管理员身份重启" Command="{Binding RestartAsAdministratorCommand}" Margin="8,0,0,0"/>
+                    </StackPanel>
                 </StackPanel>
-            </StackPanel>
-        </Border>
-        <Border Style="{StaticResource CardContainer}" Margin="0,12,0,0" Padding="22" MinWidth="560">
-            <StackPanel>
-                <TextBlock Text="游戏维护" Style="{StaticResource AppCardTitle}"/>
-                <Grid Margin="0,14,0,0">
-                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="已启用的模组" Style="{StaticResource AppSupportingText}" VerticalAlignment="Center"/>
-                    <TextBlock Grid.Column="1" Text="{Binding EnabledModCount}" Style="{StaticResource AppStatusValue}"/>
-                </Grid>
-                <Grid Margin="0,10,0,0">
-                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="过时检测" Style="{StaticResource AppSupportingText}" VerticalAlignment="Center"/>
-                    <TextBlock Grid.Column="1" Text="{Binding OutdatedModSummary}" Style="{StaticResource AppStatusValue}" VerticalAlignment="Center"/>
-                    <Button Grid.Column="3" Style="{StaticResource AppSecondaryButton}" Content="一键修复" Command="{Binding RepairOutdatedModsCommand}"/>
-                </Grid>
-                <Button Style="{StaticResource AppPrimaryButton}" Content="启动游戏" Command="{Binding LaunchGameCommand}" FontSize="28" FontWeight="SemiBold" Height="82" Margin="0,22,0,0"/>
-            </StackPanel>
-        </Border>
+            </Border>
+            <Border Style="{StaticResource CardContainer}" Margin="0,12,0,0" Padding="22" MinWidth="560">
+                <StackPanel>
+                    <TextBlock Text="游戏维护" Style="{StaticResource AppCardTitle}"/>
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="已启用的模组" Style="{StaticResource AppSupportingText}" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1" Text="{Binding EnabledModCount}" Style="{StaticResource AppStatusValue}"/>
+                    </Grid>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="12"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="过时检测" Style="{StaticResource AppSupportingText}" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1" Text="{Binding OutdatedModSummary}" Style="{StaticResource AppStatusValue}" VerticalAlignment="Center"/>
+                        <Button Grid.Column="3" Style="{StaticResource AppSecondaryButton}" Content="一键修复" Command="{Binding RepairOutdatedModsCommand}"/>
+                    </Grid>
+                    <Button Style="{StaticResource AppPrimaryButton}" Content="启动游戏" Command="{Binding LaunchGameCommand}" FontSize="28" FontWeight="SemiBold" Height="82" Margin="0,22,0,0"/>
+                </StackPanel>
+            </Border>
         </StackPanel>
     </Grid>
 </UserControl>

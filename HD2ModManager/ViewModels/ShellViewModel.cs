@@ -85,6 +85,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ShowHomeCommand { get; }
         public RelayCommand ShowProfileCommand { get; }
         public RelayCommand ShowLibraryCommand { get; }
+        public RelayCommand LaunchGameCommand { get; }
         public RelayCommand ShowSplitCommand { get; }
         public RelayCommand ShowSettingsCommand { get; }
         public RelayCommand ApplyChangesCommand { get; }
@@ -100,6 +101,8 @@ namespace HD2ModManager.ViewModels
         public RelayCommand CopySelectedMessagesCommand { get; }
 
         public bool IsHomeActive => CurrentMode == WorkspaceMode.Home;
+        public bool ShowHomeTitle => IsHomeActive;
+        public bool ShowLaunchGameButton => !IsHomeActive;
         public bool IsProfileActive => CurrentMode == WorkspaceMode.ProfileOnly;
         public bool IsLibraryActive => CurrentMode == WorkspaceMode.LibraryOnly;
         public bool IsSplitActive => CurrentMode == WorkspaceMode.ProfileLibrarySplit;
@@ -197,6 +200,7 @@ namespace HD2ModManager.ViewModels
             ShowHomeCommand = new RelayCommand(() => Navigate(WorkspaceMode.Home));
             ShowProfileCommand = new RelayCommand(() => Navigate(WorkspaceMode.ProfileOnly));
             ShowLibraryCommand = new RelayCommand(() => Navigate(WorkspaceMode.LibraryOnly));
+            LaunchGameCommand = new RelayCommand(LaunchGame);
             ShowSplitCommand = new RelayCommand(() => Navigate(WorkspaceMode.ProfileLibrarySplit));
             ShowSettingsCommand = new RelayCommand(() => Navigate(WorkspaceMode.Settings));
             ApplyChangesCommand = new RelayCommand(QueueActiveProfileDeployment);
@@ -674,6 +678,14 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        private void LaunchGame()
+        {
+            Process.Start(new ProcessStartInfo("steam://rungameid/553850")
+            {
+                UseShellExecute = true,
+            });
+        }
+
         private async void BrowseAndImport()
         {
             var dialog = new Microsoft.Win32.OpenFileDialog
@@ -1102,6 +1114,8 @@ namespace HD2ModManager.ViewModels
         private void RaiseModeFlags()
         {
             OnPropertyChanged(nameof(IsHomeActive));
+            OnPropertyChanged(nameof(ShowHomeTitle));
+            OnPropertyChanged(nameof(ShowLaunchGameButton));
             OnPropertyChanged(nameof(IsProfileActive));
             OnPropertyChanged(nameof(IsLibraryActive));
             OnPropertyChanged(nameof(IsSplitActive));

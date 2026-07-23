@@ -10,7 +10,7 @@
         ResizeMode="CanResize"
         AllowsTransparency="False"
         Background="{StaticResource AppSurfaceBrush}"
-        Title="HD2 Mod Manager" Height="720" Width="1200">
+        Title="HD2 Mod Manager" Height="720" Width="1200" MinHeight="720" MinWidth="1200">
     <Window.Resources>
         <localVM:NotificationBrushConverter x:Key="NotificationBrushConverter"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
@@ -149,7 +149,24 @@
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <TextBlock Text="HD2 Mod Manager" VerticalAlignment="Center" FontSize="16" FontWeight="SemiBold" Margin="16,0,18,0"/>
+            <Grid Margin="16,0,18,0" VerticalAlignment="Center">
+                <TextBlock Text="HD2 Mod Manager" VerticalAlignment="Center" FontSize="18" FontWeight="SemiBold">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Visible"/>
+                            <Style.Triggers><DataTrigger Binding="{Binding ShowHomeTitle}" Value="False"><Setter Property="Visibility" Value="Hidden"/></DataTrigger></Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <Button Content="启动游戏" Command="{Binding LaunchGameCommand}" Padding="14,5">
+                    <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource AppPrimaryButton}">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers><DataTrigger Binding="{Binding ShowLaunchGameButton}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
+            </Grid>
 
             <Grid x:Name="WorkspaceNavigationHost" Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <Canvas IsHitTestVisible="False">

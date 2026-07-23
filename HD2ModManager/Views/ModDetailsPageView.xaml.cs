@@ -21,7 +21,10 @@ namespace HD2ModManager.Views
                 Filter = "图像文件|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp|所有文件|*.*",
                 Multiselect = false
             };
-            dialog.ShowDialog();
+            if (dialog.ShowDialog() == true && DataContext is ModDetailsPageViewModel details)
+            {
+                details.UpdateImageCommand.Execute(dialog.FileName);
+            }
         }
 
         private void OnEditNameClick(object sender, RoutedEventArgs e)

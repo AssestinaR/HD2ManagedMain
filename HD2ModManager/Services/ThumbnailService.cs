@@ -69,13 +69,27 @@ namespace HD2ModManager.Services
                 var generated = false;
                 foreach (var path in paths)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    if (cancellationToken.IsCancellationRequested) return generated;
                     var thumbnail = GetThumbPath(path, decode);
                     if (File.Exists(thumbnail)) continue;
                     EnsureThumb(path, decode);
                     generated = true;
                 }
                 return generated;
+            }, cancellationToken);
+        }
+
+        public static Task RegenerateThumbnailAsync(string? imagePath, int decode, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath)) return Task.CompletedTask;
+
+            return Task.Run(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var thumbnail = GetThumbPath(imagePath, decode);
+                if (File.Exists(thumbnail)) File.Delete(thumbnail);
+                cancellationToken.ThrowIfCancellationRequested();
+                EnsureThumb(imagePath, decode);
             }, cancellationToken);
         }
 

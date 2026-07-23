@@ -258,6 +258,7 @@ namespace HD2ModManager.ViewModels
         private string? _selectionAnchorGuid;
         private string _query = string.Empty;
         private CancellationTokenSource? _searchCancellation;
+        private CancellationTokenSource? _thumbnailCancellation;
 
         public BulkObservableCollection<ProfileListItemViewModel> Items { get; } = new();
         public ObservableCollection<string> Profiles { get; } = new();
@@ -351,6 +352,7 @@ namespace HD2ModManager.ViewModels
             PageActions.Add(new PageActionViewModel("⟳", "刷新配置", RefreshCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 40, kind: "RefreshProfile"));
             Refresh();
             QueueStatusRefresh();
+            QueueThumbnailRefresh();
         }
 
         public void AddMod(string guid)
@@ -493,6 +495,26 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ItemCountText));
         }
 
+        private async void QueueThumbnailRefresh()
+        {
+            if (!SettingsService.GetEnableLibraryImages()) return;
+            _thumbnailCancellation?.Cancel();
+            _thumbnailCancellation?.Dispose();
+            _thumbnailCancellation = new CancellationTokenSource();
+            try
+            {
+                var generated = await ThumbnailService.EnsureThumbnailsAsync(
+                    _profiles.SelectedProfile is null
+                        ? Array.Empty<string?>()
+                        : _profiles.GetSortedEntries(_profiles.SelectedProfile)
+                            .Select(entry => _library.Get(entry.NodeId.Value.ToString("N"))?.Image),
+                    72,
+                    _thumbnailCancellation.Token);
+                if (generated && !_thumbnailCancellation.IsCancellationRequested) Refresh();
+            }
+            catch (OperationCanceledException) { }
+        }
+
         private async void QueueSearchRefresh()
         {
             _searchCancellation?.Cancel();
@@ -519,6 +541,7 @@ namespace HD2ModManager.ViewModels
         private void QueueStatusRefresh()
         {
             Refresh();
+            QueueThumbnailRefresh();
             _ = RefreshUserStatusesAsync();
         }
 
@@ -573,6 +596,9 @@ namespace HD2ModManager.ViewModels
             _searchCancellation?.Cancel();
             _searchCancellation?.Dispose();
             _searchCancellation = null;
+            _thumbnailCancellation?.Cancel();
+            _thumbnailCancellation?.Dispose();
+            _thumbnailCancellation = null;
         }
     }
 
@@ -646,7 +672,7 @@ namespace HD2ModManager.ViewModels
             Guid = guid;
             Name = name;
             Description = description;
-            ImagePath = imagePath;
+            ImagePath = ThumbnailService.GetExistingThumbnailPath(imagePath, 72);
             AssetSummary = assetSummary;
             LoadOrder = loadOrder;
             AddedUtc = addedUtc;
