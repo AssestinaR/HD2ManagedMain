@@ -45,6 +45,7 @@ namespace HD2ModManager.ViewModels
         private bool _advancedDetailsLoaded;
         private bool _disposed;
         private IReadOnlyList<AdvancedModAssetRow> _allAdvancedAssets = Array.Empty<AdvancedModAssetRow>();
+        private ModContentFacts? _detailContentFacts;
         private string _advancedAssetQuery = string.Empty;
         private bool _advancedOnlyIssues;
 
@@ -62,6 +63,9 @@ namespace HD2ModManager.ViewModels
         public string AssetListSummary { get; private set; } = "未解析";
         public string AssetOverrideSummary { get; private set; } = "未检查";
 		public string MaterialDiagnosticSummary { get; private set; } = "当前没有活动配置或材质诊断正在更新。";
+        public string UnitCompatibilitySummary { get; private set; } = "模型版本尚未检测。";
+        public bool IsModelOutdated { get; private set; }
+        public string DataIndexSummary { get; private set; } = "跨 Mod 资产索引尚未读取。";
         public string UserStatusTitle { get; private set; } = "状态未知";
         public string UserStatusSummary { get; private set; } = "正在读取状态。";
         public string MaterialPackagingSummary { get; private set; } = "材质操作基于导入后的轻量引用图；无需执行高级分析。";
@@ -112,9 +116,9 @@ namespace HD2ModManager.ViewModels
             _paths = SettingsService.CreateStoragePaths();
 			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService();
             _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(_paths);
-            _sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(_paths);
+            _sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(_paths, _derivedState.InformationCenter);
             _equipmentUnitCatalog = CoreServices.CreateEquipmentUnitCatalogService(_paths);
-            _advancedAnalysis = CoreServices.CreateAdvancedModAnalysisService(_paths);
+            _advancedAnalysis = CoreServices.CreateAdvancedModAnalysisService(_paths, _derivedState.InformationCenter);
             _dependencyGraphAnalysis = CoreServices.CreateDependencyGraphAnalysisProvider();
             _fullPatchAnalysis = CoreServices.CreateFullPatchAnalysisProvider();
             _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(_paths);
@@ -137,11 +141,61 @@ namespace HD2ModManager.ViewModels
             {
                 if (_disposed) return;
                 Refresh();
+                _ = RefreshInformationProductsAsync();
                 if (_advancedDetailsLoaded) _ = RefreshAdvancedDetailsAsync();
             });
             _derivedState.SnapshotChanged += _snapshotChangedHandler;
             Refresh();
+			_ = RefreshInformationProductsAsync();
 			_ = RefreshAdvancedAnalysisStateAsync();
+        }
+
+        private async Task RefreshInformationProductsAsync()
+        {
+            if (_disposed || !TryGetCurrentNode(out var node)) return;
+            try
+            {
+                var assetInventory = await _derivedState.InformationCenter.RequestAssetInventoryAsync(
+                    node,
+                    _library.ModsRootDirectory,
+                    new ModInformationRequest(ModInformationKind.AssetInventory, "ModDetails"));
+                var unitVersion = await _derivedState.InformationCenter.RequestUnitVersionAsync(
+                    node,
+                    _library.ModsRootDirectory,
+                    new ModInformationRequest(ModInformationKind.UnitVersion, "ModDetails"));
+                RunOnUiThread(() =>
+                {
+                    if (_disposed) return;
+                    _detailContentFacts = assetInventory.Data;
+                    if (unitVersion.Data is { } facts)
+                    {
+                        UnitCompatibilitySummary = facts.Report.Summary;
+                        IsModelOutdated = facts.Report.IsOutdated;
+                    }
+                    else
+                    {
+                        UnitCompatibilitySummary = unitVersion.Status == ModInformationStatus.Unavailable
+                            ? "模型版本检测不可用。"
+                            : "模型版本检测失败。";
+                        IsModelOutdated = false;
+                    }
+                    OnPropertyChanged(nameof(UnitCompatibilitySummary));
+                    OnPropertyChanged(nameof(IsModelOutdated));
+                    RefreshAssetStatus();
+                });
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception exception)
+            {
+                RunOnUiThread(() =>
+                {
+                    if (_disposed) return;
+                    UnitCompatibilitySummary = $"模型版本检测失败：{exception.Message}";
+                    IsModelOutdated = false;
+                    OnPropertyChanged(nameof(UnitCompatibilitySummary));
+                    OnPropertyChanged(nameof(IsModelOutdated));
+                });
+            }
         }
 
         private void UpdateImage(object? parameter)
@@ -166,6 +220,13 @@ namespace HD2ModManager.ViewModels
             try
             {
                 await ThumbnailService.RegenerateThumbnailAsync(imagePath, 72).ConfigureAwait(false);
+                if (TryGetCurrentNode(out var node))
+                {
+                    await _derivedState.InformationCenter.RequestThumbnailAsync(
+                        node,
+                        _library.ModsRootDirectory,
+                        new ModInformationRequest(ModInformationKind.Thumbnail, "UserRefresh", RequireFresh: true)).ConfigureAwait(false);
+                }
                 await _derivedState.RefreshAsync().ConfigureAwait(false);
             }
             catch
@@ -233,36 +294,48 @@ namespace HD2ModManager.ViewModels
         private async Task RunAdvancedAnalysisAsync()
         {
             if (!TryGetCurrentNode(out var node)) return;
-            _advancedAnalysisRunning = true;
-            AdvancedAnalysisSummary = "正在读取 Unit 完整结构、材质和贴图引用…";
-            OnPropertyChanged(nameof(AdvancedAnalysisSummary));
-            OnPropertyChanged(nameof(CanRunAdvancedAnalysis));
-            RunAdvancedAnalysisCommand.RaiseCanExecuteChanged();
+            await RunOnUiThreadAsync(() =>
+            {
+                _advancedAnalysisRunning = true;
+                AdvancedAnalysisSummary = "正在读取 Unit 完整结构、材质和贴图引用…";
+                OnPropertyChanged(nameof(AdvancedAnalysisSummary));
+                OnPropertyChanged(nameof(CanRunAdvancedAnalysis));
+                RunAdvancedAnalysisCommand.RaiseCanExecuteChanged();
+            });
             try
             {
                 var result = await Task.Run(() => _advancedAnalysis.AnalyzeAsync(node, _library.ModsRootDirectory).AsTask());
-                AdvancedAnalysisSummary = result.Issues.Count == 0
-                    ? $"高级分析完成：{result.BuiltUtc:yyyy-MM-dd HH:mm:ss}。"
-                    : $"高级分析完成，但发现 {result.Issues.Count} 项读取提醒。";
-                _advancedAnalysisReady = result.IsReady;
+                await RunOnUiThreadAsync(() =>
+                {
+                    AdvancedAnalysisSummary = result.Issues.Count == 0
+                        ? $"高级分析完成：{result.BuiltUtc:yyyy-MM-dd HH:mm:ss}。"
+                        : $"高级分析完成，但发现 {result.Issues.Count} 项读取提醒。";
+                    _advancedAnalysisReady = result.IsReady;
+                });
                 await RefreshAdvancedEquipmentStateAsync(node).ConfigureAwait(false);
                 await RefreshAdvancedDetailsAsync();
             }
             catch (Exception exception)
             {
-                _advancedAnalysisReady = false;
-				_advancedAnalysisHasEquipment = false;
-                AdvancedAnalysisSummary = $"高级分析失败：{exception.Message}";
-                _notifications?.Show(AdvancedAnalysisSummary, NotificationLevel.Error, TimeSpan.FromSeconds(10));
+                await RunOnUiThreadAsync(() =>
+                {
+                    _advancedAnalysisReady = false;
+					_advancedAnalysisHasEquipment = false;
+                    AdvancedAnalysisSummary = $"高级分析失败：{exception.Message}";
+                    _notifications?.Show(AdvancedAnalysisSummary, NotificationLevel.Error, TimeSpan.FromSeconds(10));
+                });
             }
             finally
             {
-                _advancedAnalysisRunning = false;
-                OnPropertyChanged(nameof(AdvancedAnalysisSummary));
-                OnPropertyChanged(nameof(CanRunAdvancedAnalysis));
-                RunAdvancedAnalysisCommand.RaiseCanExecuteChanged();
-                RaiseMaterialCommandStates();
-                RaiseSameKeyReconstructionCommandState();
+                await RunOnUiThreadAsync(() =>
+                {
+                    _advancedAnalysisRunning = false;
+                    OnPropertyChanged(nameof(AdvancedAnalysisSummary));
+                    OnPropertyChanged(nameof(CanRunAdvancedAnalysis));
+                    RunAdvancedAnalysisCommand.RaiseCanExecuteChanged();
+                    RaiseMaterialCommandStates();
+                    RaiseSameKeyReconstructionCommandState();
+                });
             }
         }
 
@@ -535,14 +608,20 @@ namespace HD2ModManager.ViewModels
                 var diagnostics = active is null ? null : _derivedState.Snapshot.MaterialDiagnostics;
                 _allAdvancedAssets = await _advancedAssetQueryService.QueryAsync(nodeId, _library.Snapshot, graph, diagnostics, cancellationToken);
                 if (_disposed || cancellationToken.IsCancellationRequested) return;
-                AdvancedAssetState = _allAdvancedAssets.Count == 0 ? "轻量引用图尚未完成；请等待导入后的后台分析。" : $"共 {_allAdvancedAssets.Count} 个 AssetKey（轻量引用图）";
-                ApplyAdvancedAssetFilter();
+                await RunOnUiThreadAsync(() =>
+                {
+                    AdvancedAssetState = _allAdvancedAssets.Count == 0 ? "轻量引用图尚未完成；请等待导入后的后台分析。" : $"共 {_allAdvancedAssets.Count} 个 AssetKey（轻量引用图）";
+                    ApplyAdvancedAssetFilter();
+                });
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception exception)
             {
-                AdvancedAssetState = $"稳定资产事实读取失败：{exception.Message}";
-				RunOnUiThread(() => OnPropertyChanged(nameof(AdvancedAssetState)));
+                await RunOnUiThreadAsync(() =>
+                {
+                    AdvancedAssetState = $"稳定资产事实读取失败：{exception.Message}";
+					OnPropertyChanged(nameof(AdvancedAssetState));
+                });
             }
         }
 
@@ -579,6 +658,9 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(AssetTagsString));
             OnPropertyChanged(nameof(AssetListSummary));
             OnPropertyChanged(nameof(AssetOverrideSummary));
+            OnPropertyChanged(nameof(UnitCompatibilitySummary));
+            OnPropertyChanged(nameof(IsModelOutdated));
+            OnPropertyChanged(nameof(DataIndexSummary));
 			OnPropertyChanged(nameof(MaterialDiagnosticSummary));
             OnPropertyChanged(nameof(UserStatusTitle));
             OnPropertyChanged(nameof(UserStatusSummary));
@@ -606,6 +688,7 @@ namespace HD2ModManager.ViewModels
             AssetTagsString = "未解析";
             AssetListSummary = "未解析";
             AssetOverrideSummary = "未检查";
+            DataIndexSummary = "跨 Mod 资产索引尚未读取。";
 
             if (Mod == null)
             {
@@ -632,7 +715,7 @@ namespace HD2ModManager.ViewModels
             var summary = derived?.AssetSummary;
             if (summary == null)
             {
-                var facts = derived?.ContentFacts ?? _derivedState.Snapshot.ContentFacts.GetValueOrDefault(nodeId);
+                var facts = _detailContentFacts ?? derived?.ContentFacts ?? _derivedState.Snapshot.ContentFacts.GetValueOrDefault(nodeId);
                 if (facts is not null)
                 {
                     var assets = facts.PatchGroups.SelectMany(group => group.AssetKeys).ToArray();
@@ -647,6 +730,7 @@ namespace HD2ModManager.ViewModels
                     AssetListSummary = "稳定资产事实正在导入分析。";
                 }
                 AssetOverrideSummary = BuildCachedAssetOverrideSummary(nodeId);
+                _ = RefreshDataIndexSummaryAsync(nodeId, facts);
                 return;
             }
             AssetTagsString = BuildAssetTagTreeText(summary);
@@ -656,6 +740,39 @@ namespace HD2ModManager.ViewModels
             if (summary.Assets.Count > 80) AssetListSummary += Environment.NewLine + $"... 另有 {summary.Assets.Count - 80} 个资产";
             AssetOverrideSummary = BuildCachedAssetOverrideSummary(nodeId);
             MaterialDiagnosticSummary = BuildMaterialDiagnosticSummary(nodeId);
+            _ = RefreshDataIndexSummaryAsync(nodeId, _detailContentFacts ?? derived?.ContentFacts ?? _derivedState.Snapshot.ContentFacts.GetValueOrDefault(nodeId));
+        }
+
+        private async Task RefreshDataIndexSummaryAsync(ModNodeId nodeId, ModContentFacts? facts)
+        {
+            if (facts is null) return;
+            try
+            {
+                var index = CoreServices.CreateModDataIndex(_paths);
+                var assets = facts.PatchGroups.SelectMany(group => group.AssetKeys).Distinct().ToArray();
+                var providers = 0;
+                var consumers = 0;
+                foreach (var asset in assets)
+                {
+                    providers += (await index.FindProvidersAsync(asset)).Count(entry => entry.NodeId != nodeId);
+                    consumers += (await index.FindConsumersAsync(asset)).Count(entry => entry.NodeId != nodeId);
+                }
+                RunOnUiThread(() =>
+                {
+                    if (_disposed) return;
+                    DataIndexSummary = $"跨 Mod 索引：关联提供者 {providers} 个，引用消费者 {consumers} 个。";
+                    OnPropertyChanged(nameof(DataIndexSummary));
+                });
+            }
+            catch (Exception exception)
+            {
+                RunOnUiThread(() =>
+                {
+                    if (_disposed) return;
+                    DataIndexSummary = $"跨 Mod 资产索引不可用：{exception.Message}";
+                    OnPropertyChanged(nameof(DataIndexSummary));
+                });
+            }
         }
 
         private string BuildMaterialDiagnosticSummary(ModNodeId nodeId)
@@ -1044,6 +1161,17 @@ namespace HD2ModManager.ViewModels
             var dispatcher = System.Windows.Application.Current?.Dispatcher;
             if (dispatcher is null || dispatcher.CheckAccess()) action();
             else _ = dispatcher.InvokeAsync(action);
+        }
+
+        private static Task RunOnUiThreadAsync(Action action)
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess())
+            {
+                action();
+                return Task.CompletedTask;
+            }
+            return dispatcher.InvokeAsync(action).Task;
         }
 
         public override void Dispose()

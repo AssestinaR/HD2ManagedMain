@@ -36,6 +36,7 @@ namespace HD2ModManager.Services
         private readonly StoragePaths _paths;
         private readonly HD2ModCore.Application.IModLibraryManager _manager;
         private readonly HD2ModCore.Application.ILibraryDerivedDataService _derivedDataService;
+        private readonly HD2ModCore.Application.IModInformationCenter? _informationCenter;
         private LibrarySnapshot _snapshot;
         private DerivedLibraryData _derivedData;
         private readonly Dictionary<string, ModEntity> _byGuid = new();
@@ -48,11 +49,12 @@ namespace HD2ModManager.Services
         public event EventHandler<ModContentFactsChangedEventArgs>? ModContentFactsChanged;
         public event EventHandler? SnapshotChanged;
 
-        public ModLibraryService(string libraryPath)
+        public ModLibraryService(string libraryPath, HD2ModCore.Application.IModInformationCenter? informationCenter = null)
         {
             _paths = SettingsService.CreateStoragePaths();
             _manager = CoreServices.CreateModLibraryManager(_paths);
-            _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths);
+            _informationCenter = informationCenter;
+            _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, informationCenter);
             _snapshot = EmptySnapshot();
             _derivedData = EmptyDerivedData();
         }
@@ -93,9 +95,10 @@ namespace HD2ModManager.Services
                     _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues);
                 }
 				if (nodeIds is null) RebuildEntityIndex(); else UpdateEntityIndex(nodeIds);
-                if (nodeIds is { Count: > 0 })
+                IReadOnlyCollection<ModNodeId> changedNodeIds = nodeIds is null ? rebuilt.Nodes.Keys.ToArray() : nodeIds;
+                if (changedNodeIds.Count > 0)
                 {
-                    ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(nodeIds, changeKind));
+                    ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(changedNodeIds, changeKind));
                 }
             }
             finally
@@ -134,6 +137,9 @@ namespace HD2ModManager.Services
             if (!TryParseNodeId(guid, out var nodeId)) return false;
             _snapshot = _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true).AsTask().GetAwaiter().GetResult();
             CoreServices.CreateModFactsStore(_paths).DeleteAsync(nodeId).AsTask().GetAwaiter().GetResult();
+			new JsonModFileFactsCache(_paths).DeleteNodeAsync(nodeId).AsTask().GetAwaiter().GetResult();
+            _informationCenter?.InvalidateNodeAsync(nodeId).AsTask().GetAwaiter().GetResult();
+			ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
             var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
             nodes.Remove(nodeId);
             _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray());
@@ -225,11 +231,11 @@ namespace HD2ModManager.Services
                 Guid = node.Id.Value.ToString("N"),
                 Name = node.Metadata.Name,
                 Description = node.Metadata.Notes,
-                Image = derived?.IconPath,
+                Image = derived?.IconPath ?? ModIconLocator.TryResolve(ResolveAbsolutePath(node.RelativePath)),
                 SourcePath = node.RelativePath,
                 CreatedAt = node.Metadata.CreatedUtc.UtcDateTime,
                 UpdatedAt = (node.Metadata.ModifiedUtc ?? node.Metadata.CreatedUtc).UtcDateTime,
-                FileGroups = (derived?.PatchFiles.Where(f => f.SidecarKind == PatchSidecarKind.Base)
+                FileGroups = (GetPatchFiles(node, derived).Where(f => f.SidecarKind == PatchSidecarKind.Base)
                     .OrderBy(f => f.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
                     .ThenBy(f => f.NormalizedOrder)
                     .Select(f => new FileGroup
@@ -240,6 +246,17 @@ namespace HD2ModManager.Services
                     Files = new List<string> { f.FileName }
                 }) ?? Enumerable.Empty<FileGroup>()).ToList(),
             };
+        }
+
+        private IReadOnlyList<IndexedPatchFile> GetPatchFiles(ModNode node, DerivedModNodeData? derived)
+        {
+            if (derived?.PatchFiles is { Count: > 0 } files) return files;
+            try
+            {
+                var index = CoreServices.CreatePatchFileIndexBuilder().BuildAsync(_snapshot, _paths.ModsDirectory).AsTask().GetAwaiter().GetResult();
+                return index.FilesByNode.TryGetValue(node.Id, out var nodeFiles) ? nodeFiles : Array.Empty<IndexedPatchFile>();
+            }
+            catch { return Array.Empty<IndexedPatchFile>(); }
         }
 
         private static bool TryParseNodeId(string? value, out ModNodeId nodeId)

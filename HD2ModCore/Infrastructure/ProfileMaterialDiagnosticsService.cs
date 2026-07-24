@@ -13,6 +13,8 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 	private const ulong MaterialTypeId = 0xeac0b497876adedf;
 	private const ulong TextureTypeId = 0xcd4238c6a0c69e32;
 	private readonly IPatchGroupAnalysisProvider? analysisProvider;
+	private readonly IReferenceGraphProducer? referenceGraphProducer;
+	private readonly IModInformationCenter? informationCenter;
 	private readonly IModFactsStore? factsStore;
 	private readonly IGameDataMappingFactsService mappingFactsService;
 	private readonly IAssetArchiveIndexService? indexService;
@@ -21,6 +23,20 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 	{
 		this.analysisProvider = analysisProvider ?? throw new ArgumentNullException(nameof(analysisProvider));
 		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
+	}
+
+	public ProfileMaterialDiagnosticsService(IReferenceGraphProducer referenceGraphProducer, IGameDataMappingFactsService mappingFactsService, IAssetArchiveIndexService? indexService = null)
+	{
+		this.referenceGraphProducer = referenceGraphProducer ?? throw new ArgumentNullException(nameof(referenceGraphProducer));
+		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
+		this.indexService = indexService;
+	}
+
+	public ProfileMaterialDiagnosticsService(IModInformationCenter informationCenter, IGameDataMappingFactsService mappingFactsService, IAssetArchiveIndexService? indexService = null)
+	{
+		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
+		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
+		this.indexService = indexService;
 	}
 
 	public ProfileMaterialDiagnosticsService(IModFactsStore factsStore, IGameDataMappingFactsService mappingFactsService)
@@ -127,6 +143,20 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 
 	private async ValueTask<IReadOnlyList<PatchGroupAnalysis>> GetAnalysesAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken)
 	{
+		if (informationCenter is not null)
+		{
+			var result = await informationCenter.RequestReferenceGraphAsync(
+				node,
+				modsRootDirectory,
+				new ModInformationRequest(ModInformationKind.ReferenceGraph, "MaterialDiagnostics"),
+				cancellationToken).ConfigureAwait(false);
+			return result.Data?.Analyses ?? Array.Empty<PatchGroupAnalysis>();
+		}
+		if (referenceGraphProducer is not null)
+		{
+			var graph = await referenceGraphProducer.ProduceAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+			return graph.Analyses;
+		}
 		if (factsStore is not null)
 		{
 			var facts = await factsStore.TryLoadAsync(node.Id, cancellationToken).ConfigureAwait(false);

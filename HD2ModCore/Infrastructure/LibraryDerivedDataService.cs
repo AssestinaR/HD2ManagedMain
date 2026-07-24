@@ -8,11 +8,18 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 {
 	private readonly IModContentFactsService _contentFactsService;
 	private readonly ModAssetSummaryProjector _assetSummaryProjector;
+	private readonly IModInformationCenter? _informationCenter;
 
 	public LibraryDerivedDataService(IModContentFactsService contentFactsService, ModAssetSummaryProjector assetSummaryProjector)
+		: this(contentFactsService, assetSummaryProjector, null)
+	{
+	}
+
+	public LibraryDerivedDataService(IModContentFactsService contentFactsService, ModAssetSummaryProjector assetSummaryProjector, IModInformationCenter? informationCenter)
 	{
 		_contentFactsService = contentFactsService ?? throw new ArgumentNullException(nameof(contentFactsService));
 		_assetSummaryProjector = assetSummaryProjector ?? throw new ArgumentNullException(nameof(assetSummaryProjector));
+		_informationCenter = informationCenter;
 	}
 
 	public async ValueTask<DerivedLibraryData> BuildAsync(LibrarySnapshot snapshot, string modsRootDirectory, string? gameDataDirectory = null, IReadOnlySet<ModNodeId>? nodeIds = null, CancellationToken cancellationToken = default)
@@ -23,7 +30,9 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 			throw new ArgumentException("Value cannot be null or whitespace.", nameof(modsRootDirectory));
 		}
 
-		var contentFacts = await _contentFactsService.GetLibraryFactsAsync(snapshot, modsRootDirectory, nodeIds, cancellationToken).ConfigureAwait(false);
+		var contentFacts = _informationCenter is null
+			? await _contentFactsService.GetLibraryFactsAsync(snapshot, modsRootDirectory, nodeIds, cancellationToken).ConfigureAwait(false)
+			: await GetAssetInventoryAsync(snapshot, modsRootDirectory, nodeIds, cancellationToken).ConfigureAwait(false);
 		var issues = new List<CoreIssue>(contentFacts.Values.SelectMany(facts => facts.Issues));
 		var selectedNodes = snapshot.Nodes.Values.Where(node => nodeIds is null || nodeIds.Contains(node.Id)).ToArray();
 		var factsByNode = selectedNodes.Where(node => contentFacts.ContainsKey(node.Id)).ToDictionary(node => node, node => contentFacts[node.Id]);
@@ -63,6 +72,26 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 		}
 
 		return new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues);
+	}
+
+	private async ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetAssetInventoryAsync(
+		LibrarySnapshot snapshot,
+		string modsRootDirectory,
+		IReadOnlySet<ModNodeId>? nodeIds,
+		CancellationToken cancellationToken)
+	{
+		var result = new Dictionary<ModNodeId, ModContentFacts>();
+		foreach (var node in snapshot.Nodes.Values)
+		{
+			if (nodeIds is not null && !nodeIds.Contains(node.Id)) continue;
+			var inventory = await _informationCenter!.RequestAssetInventoryAsync(
+				node,
+				modsRootDirectory,
+				new ModInformationRequest(ModInformationKind.AssetInventory, "LibraryRefresh"),
+				cancellationToken).ConfigureAwait(false);
+			if (inventory.Data is not null) result[node.Id] = inventory.Data;
+		}
+		return result;
 	}
 
 	private static string ResolveNodeDirectory(string modsRootDirectory, string relativePath)

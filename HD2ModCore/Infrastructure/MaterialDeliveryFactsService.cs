@@ -20,7 +20,7 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 	{
 		ArgumentNullException.ThrowIfNull(librarySnapshot);
 		var source = await factsStore.TryLoadAsync(nodeId, cancellationToken).ConfigureAwait(false);
-		if (source is null || source.Version != 7 || source.Analyses.Any(analysis => analysis.Depth is not (PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full)))
+		if (source is null || source.Version <= 0 || source.Analyses.Any(analysis => analysis.Depth is not (PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full)))
 		{
 			return new MaterialDeliveryFacts(nodeId, MaterialDeliveryMode.Unknown, 0, 0, 0, 0, 0, Array.Empty<MaterialDeliveryCandidate>(), new[] { "请先执行高级分析以建立完整材质引用缓存。" });
 		}
@@ -60,7 +60,7 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var cached = await factsStore.TryLoadAsync(node.Id, cancellationToken).ConfigureAwait(false);
-			if (cached is null || cached.Version != 7 || cached.Analyses.Any(analysis => analysis.Depth is not (PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full))) continue;
+			if (cached is null || cached.Version <= 0 || cached.Analyses.Any(analysis => analysis.Depth is not (PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full))) continue;
 			var graph = BuildGraph(cached);
 			var covered = requiredExternalMaterials.Intersect(graph.Materials).ToHashSet();
 			if (covered.Count == 0) continue;

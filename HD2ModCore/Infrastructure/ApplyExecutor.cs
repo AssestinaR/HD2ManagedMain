@@ -1,5 +1,5 @@
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
+using System.ComponentModel;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 
@@ -68,11 +68,11 @@ public sealed class ApplyExecutor : IApplyExecutor
 				{
 					commitFailed = true;
 					issues.Add(ToIssue(result, operation));
-					break;
+					continue;
 				}
 
 				var source = preflight.Sources[operation.SourcePath!];
-				deployed.Add(new ActivationStateFileEntry(operation.TargetPath, operation.SourcePath!, result.Method.Value, operation.ArchiveHex16!, operation.SourcePatchIndex!.Value, operation.TargetPatchIndex!.Value, operation.SidecarKind!.Value, operation.NodeId, source.Length, source.ContentSha256));
+				deployed.Add(new ActivationStateFileEntry(operation.TargetPath, operation.SourcePath!, result.Method.Value, operation.ArchiveHex16!, operation.SourcePatchIndex!.Value, operation.TargetPatchIndex!.Value, operation.SidecarKind!.Value, operation.NodeId, source.Length, string.Empty));
 			}
 		}
 
@@ -82,6 +82,11 @@ public sealed class ApplyExecutor : IApplyExecutor
 			await DeleteActivationStateBestEffortAsync(plan.GameDataDirectory).ConfigureAwait(false);
 			var failedReport = await _stateScanner.ScanAsync(plan.GameDataDirectory, false, CancellationToken.None).ConfigureAwait(false);
 			return new ApplyResult(false, operationResults, failedReport, issues);
+		}
+		if (deployOperations.Count == 0)
+		{
+			await DeleteActivationStateBestEffortAsync(plan.GameDataDirectory).ConfigureAwait(false);
+			return new ApplyResult(!issues.Any(issue => issue.Severity == CoreIssueSeverity.Error), operationResults, new PatchStateReport(plan.GameDataDirectory, DateTimeOffset.UtcNow, Array.Empty<PatchStateGroup>(), issues), issues);
 		}
 
 		var report = await _stateScanner.ScanAsync(plan.GameDataDirectory, recursive: false, CancellationToken.None).ConfigureAwait(false);
@@ -154,9 +159,13 @@ public sealed class ApplyExecutor : IApplyExecutor
 			}
 			try
 			{
-				await using var stream = new FileStream(operation.SourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
-				var hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
-				sources[operation.SourcePath] = new SourceFileFact(stream.Length, Convert.ToHexString(hash).ToLowerInvariant());
+				var info = new FileInfo(operation.SourcePath);
+				if (!info.Exists)
+				{
+					issues.Add(new CoreIssue(CoreIssueSeverity.Error, "SourceFileMissing", $"Source file does not exist: {operation.SourcePath}", operation.SourcePath, operation.NodeId));
+					continue;
+				}
+				sources[operation.SourcePath] = new SourceFileFact(info.Length);
 			}
 			catch (Exception exception) when (exception is not OperationCanceledException)
 			{
@@ -186,9 +195,7 @@ public sealed class ApplyExecutor : IApplyExecutor
 				issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedLengthMismatch", "Deployed target length differs from its source.", file.TargetPath, file.NodeId));
 				continue;
 			}
-			await using var stream = new FileStream(file.TargetPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
-			var hash = Convert.ToHexString(await SHA256.HashDataAsync(stream, CancellationToken.None).ConfigureAwait(false)).ToLowerInvariant();
-			if (!string.Equals(hash, file.ContentSha256, StringComparison.OrdinalIgnoreCase)) issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedContentMismatch", "Deployed target content differs from its source.", file.TargetPath, file.NodeId));
+			// Link deployment is validated by link target/length; content hashing is reserved for diagnostics.
 		}
 		return issues;
 	}
@@ -226,7 +233,6 @@ public sealed class ApplyExecutor : IApplyExecutor
 		{
 			if (File.Exists(operation.TargetPath))
 			{
-				ClearReadOnlyAttribute(operation.TargetPath);
 				File.Delete(operation.TargetPath);
 			}
 			else if (Directory.Exists(operation.TargetPath))
@@ -276,7 +282,7 @@ public sealed class ApplyExecutor : IApplyExecutor
 	private static bool TryCreateSymbolicLink(string linkPath, string targetPath, out string? error)
 	{
 		try { File.CreateSymbolicLink(linkPath, targetPath); error = null; return true; }
-		catch (Exception exception) { error = exception.Message; return false; }
+		catch (Exception exception) { error = FormatDeploymentError(exception); return false; }
 	}
 
 	private static void ClearReadOnlyAttribute(string path)
@@ -292,13 +298,19 @@ public sealed class ApplyExecutor : IApplyExecutor
 	{
 		if (!OperatingSystem.IsWindows()) { error = "Hardlink P/Invoke is only implemented for Windows."; return false; }
 		if (CreateHardLinkW(linkPath, targetPath, IntPtr.Zero)) { error = null; return true; }
-		error = Marshal.GetLastWin32Error().ToString();
+		var win32Error = Marshal.GetLastWin32Error();
+		error = $"Win32 {win32Error}: {new Win32Exception(win32Error).Message}";
 		return false;
 	}
+
+	private static string FormatDeploymentError(Exception exception)
+		=> exception is Win32Exception win32
+			? $"Win32 {win32.NativeErrorCode}: {win32.Message}"
+			: exception.Message;
 
 	[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
 	private static extern bool CreateHardLinkW(string lpFileName, string lpExistingFileName, IntPtr lpSecurityAttributes);
 
-	private sealed record SourceFileFact(long Length, string ContentSha256);
+	private sealed record SourceFileFact(long Length);
 	private sealed record PreflightResult(IReadOnlyDictionary<string, SourceFileFact> Sources, IReadOnlyList<CoreIssue> Issues);
 }

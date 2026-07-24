@@ -93,6 +93,20 @@ namespace HD2ModManager.Services
             }, cancellationToken);
         }
 
+        public static void DeleteCachedThumbnailsForSource(string? originalPath)
+        {
+            if (string.IsNullOrWhiteSpace(originalPath)) return;
+            try
+            {
+                foreach (var size in new[] { 72, 128, 256 })
+                {
+                    var path = GetThumbPath(originalPath, size);
+                    if (File.Exists(path)) File.Delete(path);
+                }
+            }
+            catch { }
+        }
+
         private static void EnsureThumb(string originalPath, int decode)
         {
             lock (SyncRoot)

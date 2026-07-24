@@ -39,7 +39,12 @@ namespace HD2ModManager.Services
                     .Where(o => o.Method != null)
                     .GroupBy(o => o.Method!.Value)
                     .Select(g => $"{g.Key}: {g.Count()}");
-                var issues = core.Issues.Take(8).Select(i => $"[{i.Severity}] {i.Code}: {i.Message}");
+                var issues = core.Issues.Take(20).Select(i =>
+                {
+                    var path = string.IsNullOrWhiteSpace(i.FilePath) ? string.Empty : $" | 路径: {i.FilePath}";
+                    var exception = string.IsNullOrWhiteSpace(i.ExceptionMessage) ? string.Empty : $" | 异常: {i.ExceptionMessage}";
+                    return $"[{i.Severity}] {i.Code}: {i.Message}{path}{exception}";
+                });
                 return methodGroups.Concat(issues).ToList();
             }
         }

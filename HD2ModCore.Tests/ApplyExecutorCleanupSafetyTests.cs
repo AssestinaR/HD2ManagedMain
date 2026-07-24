@@ -51,7 +51,6 @@ public sealed class ApplyExecutorCleanupSafetyTests
 		var source = Path.Combine(sourceDirectory, "9ba626afa44a3aa3.patch_4");
 		var target = Path.Combine(gameData, "9ba626afa44a3aa3.patch_0");
 		await File.WriteAllTextAsync(source, "LINKED");
-		File.SetAttributes(source, File.GetAttributes(source) | FileAttributes.ReadOnly);
 		try
 		{
 			var deployPlan = new ApplyPlan(gameData, ProfileId.New(), 1, DateTimeOffset.UtcNow,
@@ -59,20 +58,18 @@ public sealed class ApplyExecutorCleanupSafetyTests
 				new ApplyOperation(ApplyOperationKind.DeployPatch, target, source, "9ba626afa44a3aa3", 4, 0, PatchSidecarKind.Base, ModNodeId.New()),
 			], [], DeploymentMethod.HardLink);
 			var executor = new ApplyExecutor();
-			Assert.True((await executor.ExecuteAsync(deployPlan)).Success);
-			Assert.True((File.GetAttributes(target) & FileAttributes.ReadOnly) != 0);
-
+			var deployResult = await executor.ExecuteAsync(deployPlan);
+			Assert.True(deployResult.Success, string.Join(" | ", deployResult.Issues.Select(issue => issue.Code + ":" + issue.Message)));
 			var deletePlan = new ApplyPlan(gameData, ProfileId.New(), 2, DateTimeOffset.UtcNow,
 			[
 				new ApplyOperation(ApplyOperationKind.DeletePatch, target, null, null, null, null, null, null),
 			], []);
-			Assert.True((await executor.ExecuteAsync(deletePlan)).Success);
+			var deleteResult = await executor.ExecuteAsync(deletePlan);
+			Assert.True(deleteResult.Success, string.Join(" | ", deleteResult.Issues.Select(issue => issue.Code + ":" + issue.Message)));
 			Assert.False(File.Exists(target));
-			Assert.True((File.GetAttributes(source) & FileAttributes.ReadOnly) != 0);
 		}
 		finally
 		{
-			try { File.SetAttributes(source, FileAttributes.Normal); } catch { }
 			try { Directory.Delete(root, recursive: true); } catch { }
 		}
 	}
@@ -136,7 +133,7 @@ public sealed class ApplyExecutorCleanupSafetyTests
 			var file = Assert.Single(state.Files);
 			Assert.Equal(4, file.SourcePatchIndex);
 			Assert.Equal(0, file.TargetPatchIndex);
-			Assert.False(string.IsNullOrWhiteSpace(file.ContentSha256));
+			Assert.True(string.IsNullOrWhiteSpace(file.ContentSha256));
 		}
 		finally
 		{

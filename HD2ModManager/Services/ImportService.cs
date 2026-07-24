@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Application;
 
 namespace HD2ModManager.Services
 {
@@ -13,19 +14,19 @@ namespace HD2ModManager.Services
     public class ImportService
     {
         private static readonly HashSet<string> ArchiveExtensions = new(StringComparer.OrdinalIgnoreCase) { ".zip", ".rar", ".7z" };
-		private static readonly SemaphoreSlim ImportAnalysisGate = new(1, 1);
-
         private readonly ModLibraryService _library;
         private readonly Action<string>? _onInfo;
         private readonly Action<string>? _onError;
         private readonly StoragePaths _paths;
+        private readonly HD2ModCore.Application.IModInformationCenter _informationCenter;
 
-        public ImportService(ModLibraryService library, Action<string>? onInfo = null, Action<string>? onError = null)
+        public ImportService(ModLibraryService library, Action<string>? onInfo = null, Action<string>? onError = null, IModInformationCenter? informationCenter = null)
         {
             _library = library;
             _onInfo = onInfo;
             _onError = onError;
             _paths = SettingsService.CreateStoragePaths();
+            _informationCenter = informationCenter ?? CoreServices.CreateModInformationCenter(_paths);
         }
 
         public Task EnqueueImportsAsync(IEnumerable<string> paths, CancellationToken ct = default)
@@ -91,14 +92,22 @@ namespace HD2ModManager.Services
         {
             var guids = importedGuids.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             if (guids.Length == 0) return;
-            await ImportAnalysisGate.WaitAsync(ct).ConfigureAwait(false);
-            try
+            var snapshot = _library.Snapshot;
+            foreach (var guid in guids)
             {
-                await Task.Run(() => _library.RefreshDerivedDataAsync(guids, ModContentChangeKind.Added, ct), ct).ConfigureAwait(false);
-            }
-            finally
-            {
-                ImportAnalysisGate.Release();
+                if (!Guid.TryParse(guid, out var value)) continue;
+                var nodeId = new ModNodeId(value);
+                if (!snapshot.Nodes.TryGetValue(nodeId, out var node)) continue;
+                var result = await _informationCenter.RequestAssetInventoryAsync(
+                    node,
+                    _library.ModsRootDirectory,
+                    new ModInformationRequest(ModInformationKind.AssetInventory, "Import"),
+                    ct).ConfigureAwait(false);
+                if (result.Data is null)
+                {
+                    _onError?.Invoke(result.Issues.FirstOrDefault()?.Message ?? "AssetInventory production failed.");
+                    continue;
+                }
             }
         }
 

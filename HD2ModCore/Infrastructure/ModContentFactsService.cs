@@ -6,17 +6,15 @@ using HD2ModCore.Domain;
 namespace HD2ModCore.Infrastructure;
 
 // Purpose: Unifies top-level patch discovery, sidecar grouping and Adaptation-owned AssetKey analysis into one content snapshot.
-public sealed class ModContentFactsService : IModContentFactsService
+public sealed class ModContentFactsService : IAssetInventoryProducer
 {
 	private readonly IPatchFileNameParser _fileNameParser;
 	private readonly IPatchGroupAnalysisProvider _analysisProvider;
-	private readonly IUnitVersionProbe _unitVersionProbe;
 
 	public ModContentFactsService(IPatchFileNameParser fileNameParser, IPatchGroupAnalysisProvider analysisProvider, IUnitVersionProbe? unitVersionProbe = null)
 	{
 		_fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
 		_analysisProvider = analysisProvider ?? throw new ArgumentNullException(nameof(analysisProvider));
-		_unitVersionProbe = unitVersionProbe ?? new UnitVersionProbe();
 	}
 
 	public async ValueTask<ModContentFacts> GetNodeFactsAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
@@ -78,10 +76,7 @@ public sealed class ModContentFactsService : IModContentFactsService
 			}
 
 			issues.AddRange(groupIssues);
-			var unitVersions = analysis is null
-				? Array.Empty<UnitVersionEvidence>()
-				: await _unitVersionProbe.ProbeAsync(analysis, cancellationToken).ConfigureAwait(false);
-			groups.Add(new ModPatchGroupFact(discoveredGroup.Id, discoveredGroup.NormalizedOrder, discoveredGroup.Files, assetKeys, groupIssues, unitVersions));
+			groups.Add(new ModPatchGroupFact(discoveredGroup.Id, discoveredGroup.NormalizedOrder, discoveredGroup.Files, assetKeys, groupIssues));
 		}
 
 		var allFiles = groups.SelectMany(group => group.Files).ToList();

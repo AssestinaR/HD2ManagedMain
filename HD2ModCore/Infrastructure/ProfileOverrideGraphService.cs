@@ -10,11 +10,18 @@ public sealed class ProfileOverrideGraphService : IProfileOverrideGraphService
 {
 	private readonly IModContentFactsService _contentFactsService;
 	private readonly IGameDataMappingFactsService _mappingFactsService;
+	private readonly IModInformationCenter? _informationCenter;
 
 	public ProfileOverrideGraphService(IModContentFactsService contentFactsService, IGameDataMappingFactsService mappingFactsService)
+		: this(contentFactsService, mappingFactsService, null)
+	{
+	}
+
+	public ProfileOverrideGraphService(IModContentFactsService contentFactsService, IGameDataMappingFactsService mappingFactsService, IModInformationCenter? informationCenter)
 	{
 		_contentFactsService = contentFactsService ?? throw new ArgumentNullException(nameof(contentFactsService));
 		_mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
+		_informationCenter = informationCenter;
 	}
 
 	public async ValueTask<ProfileOverrideGraph> BuildAsync(Profile profile, LibrarySnapshot snapshot, string modsRootDirectory, CancellationToken cancellationToken = default)
@@ -23,7 +30,9 @@ public sealed class ProfileOverrideGraphService : IProfileOverrideGraphService
 		ArgumentNullException.ThrowIfNull(snapshot);
 		var orderedEntries = profile.Entries.OrderBy(entry => entry.LoadOrder).ThenBy(entry => entry.AddedUtc).ThenBy(entry => entry.NodeId.Value).ToList();
 		var nodeIds = orderedEntries.Select(entry => entry.NodeId).ToHashSet();
-		var contentByNode = await _contentFactsService.GetLibraryFactsAsync(snapshot, modsRootDirectory, nodeIds, cancellationToken).ConfigureAwait(false);
+		var contentByNode = _informationCenter is null
+			? await _contentFactsService.GetLibraryFactsAsync(snapshot, modsRootDirectory, nodeIds, cancellationToken).ConfigureAwait(false)
+			: await GetAssetInventoryAsync(orderedEntries, snapshot, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 		var assetKeys = contentByNode.Values.SelectMany(facts => facts.PatchGroups).SelectMany(group => group.AssetKeys).ToHashSet();
 		var mapping = await _mappingFactsService.MapAsync(assetKeys, cancellationToken).ConfigureAwait(false);
 		var issues = new List<CoreIssue>(contentByNode.Values.SelectMany(facts => facts.Issues));
@@ -90,6 +99,26 @@ public sealed class ProfileOverrideGraphService : IProfileOverrideGraphService
 		var contentGenerations = contentByNode.ToDictionary(pair => pair.Key, pair => pair.Value.ContentGeneration);
 		var graphGeneration = ComputeGraphGeneration(profile, contentGenerations, mapping.MappingGeneration);
 		return new ProfileOverrideGraph(profile.Id, profile.Revision, graphGeneration, mapping.MappingGeneration, DateTimeOffset.UtcNow, contentGenerations, chains, archiveOverlaps, coverages, issues);
+	}
+
+	private async ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetAssetInventoryAsync(
+		IReadOnlyList<ProfileEntry> entries,
+		LibrarySnapshot snapshot,
+		string modsRootDirectory,
+		CancellationToken cancellationToken)
+	{
+		var result = new Dictionary<ModNodeId, ModContentFacts>();
+		foreach (var nodeId in entries.Select(entry => entry.NodeId).Distinct())
+		{
+			if (!snapshot.Nodes.TryGetValue(nodeId, out var node)) continue;
+			var inventory = await _informationCenter!.RequestAssetInventoryAsync(
+				node,
+				modsRootDirectory,
+				new ModInformationRequest(ModInformationKind.AssetInventory, "ProfilePreview"),
+				cancellationToken).ConfigureAwait(false);
+			if (inventory.Data is not null) result[nodeId] = inventory.Data;
+		}
+		return result;
 	}
 
 	private static string ComputeGraphGeneration(Profile profile, IReadOnlyDictionary<ModNodeId, string> contentGenerations, string mappingGeneration)

@@ -147,11 +147,12 @@ namespace HD2ModManager.ViewModels
             _profileService = new ProfileService(configDir);
             _profileService.Load();
 
-            _libraryService = new ModLibraryService(System.IO.Path.Combine(configDir, "library.json"));
+            var informationCenter = CoreServices.CreateModInformationCenter(SettingsService.CreateStoragePaths());
+            _libraryService = new ModLibraryService(System.IO.Path.Combine(configDir, "library.json"), informationCenter);
             // 启动必须先展示 UI；稳定 facts 的投影在后台恢复，任何异常都不能阻止管理器启动。
             _libraryService.Load(buildDerivedData: false);
             _profileService.ReloadFromLibrary();
-            _derivedState = new DerivedStateCoordinator(_libraryService, _profileService);
+            _derivedState = new DerivedStateCoordinator(_libraryService, _profileService, informationCenter);
             _importQueue = new ImportQueueService();
             _backgroundTasks = new BackgroundTaskService();
             _applyStatus = new ApplyStatusService();
@@ -493,7 +494,7 @@ namespace HD2ModManager.ViewModels
                 while ((item = _importQueue.DequeueNextQueued()) != null)
                 {
                     var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Import, $"导入 {System.IO.Path.GetFileName(item.Path)}", item.Path);
-                    var import = new ImportService(_libraryService, onInfo: null, onError: err => _importQueue.MarkFailed(item, err));
+                    var import = new ImportService(_libraryService, onInfo: null, onError: err => _importQueue.MarkFailed(item, err), informationCenter: _derivedState.InformationCenter);
                     try
                     {
                         task.MarkRunning("正在解压缩");
@@ -547,7 +548,7 @@ namespace HD2ModManager.ViewModels
             try
             {
                 task.MarkRunning("正在建立内容索引");
-                var import = new ImportService(_libraryService);
+                var import = new ImportService(_libraryService, informationCenter: _derivedState.InformationCenter);
                 await import.AnalyzeImportedAsync(created, task.CancellationToken);
                 task.MarkCompleted();
                 LogService.Info($"导入内容分析完成：来源数={sourcePaths.Count}，Mod 数={created.Count}。已合并为一次库内容变更通知。");
@@ -669,7 +670,13 @@ namespace HD2ModManager.ViewModels
                 case ProfileDeploymentStage.Failed:
                     _deploymentTask?.MarkFailed(status.Message ?? "部署失败");
                     if (status.ApplyResult is { } failure) _applyStatus.Record(new ApplyExecutionStatus(false, status.Message ?? "部署失败", failure));
-                    _notificationService.Show(status.Message ?? "活动配置部署失败。", NotificationLevel.Error, TimeSpan.FromSeconds(6));
+                    var failureMessage = status.Message ?? "活动配置部署失败。";
+                    if (status.ApplyResult is { Issues.Count: > 0 } failedResult)
+                    {
+                        var details = failedResult.Issues.Take(3).Select(issue => $"{issue.Code}: {issue.Message}");
+                        failureMessage = $"{failureMessage}\n{string.Join("\n", details)}";
+                    }
+                    _notificationService.Show(failureMessage, NotificationLevel.Error, TimeSpan.FromSeconds(12));
                     RefreshCurrentPage();
                     break;
                 case ProfileDeploymentStage.Canceled:

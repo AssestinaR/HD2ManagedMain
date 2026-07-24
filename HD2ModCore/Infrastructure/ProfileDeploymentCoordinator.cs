@@ -138,12 +138,14 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 				}
 				catch (Exception exception)
 				{
-					SetStatus(new ProfileDeploymentStatus(ProfileDeploymentStage.Failed, profile.Id, targetRevision, null, null, exception.Message, null));
+					var issue = new CoreIssue(CoreIssueSeverity.Error, "DeploymentUnhandledException", exception.Message, ExceptionMessage: exception.ToString());
+					var failure = new ApplyResult(false, Array.Empty<ApplyOperationResult>(), null, [issue]);
+					SetStatus(new ProfileDeploymentStatus(ProfileDeploymentStage.Failed, profile.Id, targetRevision, null, null, FormatFailureMessage("活动配置部署发生未处理异常", failure), failure));
 					lock (_sync) _handledRevision = targetRevision;
 					continue;
 				}
 				lock (_sync) _handledRevision = targetRevision;
-				SetStatus(new ProfileDeploymentStatus(result.Success ? ProfileDeploymentStage.Completed : ProfileDeploymentStage.Failed, profile.Id, targetRevision, null, null, result.Success ? "活动配置已部署。" : "活动配置部署失败。", result));
+				SetStatus(new ProfileDeploymentStatus(result.Success ? ProfileDeploymentStage.Completed : ProfileDeploymentStage.Failed, profile.Id, targetRevision, null, null, result.Success ? "活动配置已部署。" : FormatFailureMessage("活动配置部署失败", result), result));
 			}
 		}
 		finally
@@ -160,6 +162,20 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 	{
 		lock (_sync) _status = status;
 		StatusChanged?.Invoke(this, status);
+	}
+
+	private static string FormatFailureMessage(string prefix, ApplyResult result)
+	{
+		var details = result.Issues
+			.Where(issue => issue.Severity == CoreIssueSeverity.Error)
+			.Select(issue =>
+			{
+				var path = string.IsNullOrWhiteSpace(issue.FilePath) ? string.Empty : $" 路径={issue.FilePath}";
+				return $"[{issue.Code}] {issue.Message}{path}";
+			})
+			.Take(5)
+			.ToArray();
+		return details.Length == 0 ? $"{prefix}，但未返回结构化错误信息。请查看部署日志。" : $"{prefix}：{string.Join("；", details)}";
 	}
 
 	public async ValueTask DisposeAsync()

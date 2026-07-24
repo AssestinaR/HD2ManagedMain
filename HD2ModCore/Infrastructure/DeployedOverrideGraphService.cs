@@ -132,10 +132,13 @@ public sealed class DeployedOverrideGraphService : IDeployedOverrideGraphService
 			issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedLengthMismatch", "Deployed file length differs from activation state.", observedPath, recorded.NodeId));
 			return issues;
 		}
-		var targetHash = await HashFileAsync(observedPath, cancellationToken).ConfigureAwait(false);
-		if (!string.Equals(targetHash, recorded.ContentSha256, StringComparison.OrdinalIgnoreCase)) issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedContentMismatch", "Deployed content differs from activation state.", observedPath, recorded.NodeId));
+		if (!string.IsNullOrWhiteSpace(recorded.ContentSha256))
+		{
+			var targetHash = await HashFileAsync(observedPath, cancellationToken).ConfigureAwait(false);
+			if (!string.Equals(targetHash, recorded.ContentSha256, StringComparison.OrdinalIgnoreCase)) issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedContentMismatch", "Deployed content differs from activation state.", observedPath, recorded.NodeId));
+		}
 		if (!File.Exists(recorded.SourcePath)) issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedSourceMissing", "Recorded source file no longer exists.", recorded.SourcePath, recorded.NodeId));
-		else
+		else if (!string.IsNullOrWhiteSpace(recorded.ContentSha256))
 		{
 			var sourceHash = await HashFileAsync(recorded.SourcePath, cancellationToken).ConfigureAwait(false);
 			if (!string.Equals(sourceHash, recorded.ContentSha256, StringComparison.OrdinalIgnoreCase)) issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedSourceChanged", "Recorded source content changed after deployment.", recorded.SourcePath, recorded.NodeId));

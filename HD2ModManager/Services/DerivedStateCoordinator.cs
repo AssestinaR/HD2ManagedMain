@@ -12,6 +12,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     private readonly ProfileService _profiles;
     private readonly StoragePaths _paths;
     private readonly IModContentFactsService _contentFacts;
+    private readonly IModInformationCenter _informationCenter;
     private readonly IProfileOverrideGraphService _profileGraph;
 	private readonly IProfileMaterialDiagnosticsService _profileMaterialDiagnostics;
     private readonly IDeployedOverrideGraphService _deployedGraph;
@@ -25,16 +26,18 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     private (ProfileId? Id, long Revision) _activeProfileSignature;
 
     public DerivedStateSnapshot Snapshot { get { lock (_sync) return _snapshot; } }
+    public IModInformationCenter InformationCenter => _informationCenter;
     public event EventHandler<DerivedStateSnapshot>? SnapshotChanged;
 
-    public DerivedStateCoordinator(ModLibraryService library, ProfileService profiles)
+    public DerivedStateCoordinator(ModLibraryService library, ProfileService profiles, IModInformationCenter? informationCenter = null)
     {
         _library = library ?? throw new ArgumentNullException(nameof(library));
         _profiles = profiles ?? throw new ArgumentNullException(nameof(profiles));
         _paths = SettingsService.CreateStoragePaths();
-        _contentFacts = CoreServices.CreateModContentFactsService(_paths);
-        _profileGraph = CoreServices.CreateProfileOverrideGraphService(_paths);
-        _profileMaterialDiagnostics = CoreServices.CreateProfileMaterialDiagnosticsService(_paths);
+        _contentFacts = CoreServices.CreateAssetInventoryProducer();
+        _informationCenter = informationCenter ?? new ModInformationCenter(CoreServices.CreateModFileFactsProducer(), _contentFacts, new JsonModFileFactsCache(_paths), CoreServices.CreateReferenceGraphProducer(_paths), CoreServices.CreateMaintenanceAnalysisProducer(_paths), CoreServices.CreateUnitVersionInformationProducer(_paths), new JsonModInformationCache(_paths), CoreServices.CreateAdvancedUnitAnalysisProducer(_paths), CoreServices.CreateModThumbnailProducer(), CoreServices.CreateModDataIndex(_paths));
+        _profileGraph = CoreServices.CreateProfileOverrideGraphService(_paths, _contentFacts, _informationCenter);
+        _profileMaterialDiagnostics = CoreServices.CreateProfileMaterialDiagnosticsService(_paths, _informationCenter);
         _deployedGraph = CoreServices.CreateDeployedOverrideGraphService();
         _activeProfileSignature = GetActiveProfileSignature(_profiles.Snapshot);
         _profiles.Changed += OnProfilesChanged;
@@ -92,7 +95,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
             {
                 content = activeNodeIds.Count == 0
                     ? new Dictionary<ModNodeId, ModContentFacts>()
-                    : await _contentFacts.GetLibraryFactsAsync(profileSnapshot, _library.ModsRootDirectory, activeNodeIds, cancellationToken).ConfigureAwait(false);
+                    : await GetAssetInventoryAsync(profileSnapshot, activeNodeIds, cancellationToken).ConfigureAwait(false);
                 expectedDirty = true;
             }
 
@@ -139,6 +142,25 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
         {
             _gate.Release();
         }
+    }
+
+    private async ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetAssetInventoryAsync(
+        LibrarySnapshot snapshot,
+        IReadOnlySet<ModNodeId> nodeIds,
+        CancellationToken cancellationToken)
+    {
+        var result = new Dictionary<ModNodeId, ModContentFacts>();
+        foreach (var nodeId in nodeIds)
+        {
+            if (!snapshot.Nodes.TryGetValue(nodeId, out var node)) continue;
+            var inventory = await _informationCenter.RequestAssetInventoryAsync(
+                node,
+                _library.ModsRootDirectory,
+                new ModInformationRequest(ModInformationKind.AssetInventory, "LibraryRefresh"),
+                cancellationToken).ConfigureAwait(false);
+            if (inventory.Data is not null) result[nodeId] = inventory.Data;
+        }
+        return result;
     }
 
     private void OnProfilesChanged(object? sender, EventArgs e)
@@ -200,6 +222,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
         await _gate.WaitAsync().ConfigureAwait(false);
         _gate.Release();
         _gate.Dispose();
+        await _informationCenter.DisposeAsync().ConfigureAwait(false);
     }
 }
 
