@@ -253,6 +253,7 @@ namespace HD2ModManager.ViewModels
         private readonly ModLibraryService _library;
         private readonly DerivedStateCoordinator _derivedState;
         private readonly SelectionCoordinator? _selection;
+        private readonly BottomBarCoordinator? _bottomBar;
         private readonly ObservableCollection<string> _selectedGuids = new();
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private string? _selectionAnchorGuid;
@@ -321,13 +322,14 @@ namespace HD2ModManager.ViewModels
         public RelayCommand MoveDownCommand { get; }
         public RelayCommand ToggleSelectionCommand { get; }
 
-        public ProfilePageViewModel(ProfileService profiles, ModLibraryService library, DerivedStateCoordinator derivedState, SelectionCoordinator? selection = null)
+        public ProfilePageViewModel(ProfileService profiles, ModLibraryService library, DerivedStateCoordinator derivedState, SelectionCoordinator? selection = null, BottomBarCoordinator? bottomBar = null)
         {
             Title = "配置页";
             _profiles = profiles;
             _library = library;
             _derivedState = derivedState;
             _selection = selection;
+            _bottomBar = bottomBar;
             if (_selection != null) _selection.SelectionChanged += (_, _) => SyncSelectionFromCoordinator();
             _profiles.Changed += (_, _) => QueueStatusRefresh();
             _derivedState.SnapshotChanged += (_, _) => RunOnUiThread(QueueStatusRefresh);
@@ -342,12 +344,10 @@ namespace HD2ModManager.ViewModels
             MoveDownCommand = new RelayCommand(parameter => MoveMod(parameter, 1));
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
             PageActions.Add(new PageActionViewModel("＋", "新建配置", CreateProfileCommand, order: 10, kind: "CreateProfile"));
-            _switchAction = new ProfileSwitchActionViewModel(this);
-            PageActions.Add(new PageActionViewModel("⇄", "切换当前配置", _switchAction.ConfirmCommand, expandedContent: _switchAction, expandedWidth: 245d, order: 12, kind: "SwitchProfile"));
+            PageActions.Add(new PageActionViewModel("⇄", "切换当前配置", new RelayCommand(_ => _bottomBar?.BeginSwitchProfile()), order: 12, kind: "SwitchProfile"));
             PageActions.Add(new PageActionViewModel("▶", "设为活动配置", ActivateProfileCommand, background: new SolidColorBrush(Color.FromRgb(26, 127, 75)), order: 15, kind: "ActivateProfile"));
             PageActions.Add(new PageActionViewModel("■", "停用活动配置", DeactivateProfileCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 16, kind: "DeactivateProfile"));
-            _renameAction = new ProfileRenameActionViewModel(this);
-            PageActions.Add(new PageActionViewModel("✎", "重命名配置", _renameAction.ConfirmCommand, background: new SolidColorBrush(Color.FromRgb(30, 99, 214)), expandedContent: _renameAction, expandedWidth: 245d, order: 20, kind: "RenameProfile"));
+            PageActions.Add(new PageActionViewModel("✎", "重命名配置", new RelayCommand(_ => _bottomBar?.BeginRenameProfile()), background: new SolidColorBrush(Color.FromRgb(30, 99, 214)), order: 20, kind: "RenameProfile"));
             PageActions.Add(new PageActionViewModel("🗑", "删除当前配置", RemoveSelectedProfileCommand, background: new SolidColorBrush(Color.FromRgb(179, 38, 30)), order: 30, kind: "RemoveProfile"));
             PageActions.Add(new PageActionViewModel("⟳", "刷新配置", RefreshCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 40, kind: "RefreshProfile"));
             Refresh();
@@ -395,14 +395,18 @@ namespace HD2ModManager.ViewModels
                 _selectionAnchorGuid = guid;
             }
 
-            _selection?.Replace(SelectionScope, _selectedGuids);
+            var selectedInDisplayOrder = Items
+                .Where(item => _selectedGuids.Contains(item.Guid, StringComparer.OrdinalIgnoreCase))
+                .Select(item => item.Guid)
+                .ToList();
+            _selection?.Replace(SelectionScope, selectedInDisplayOrder);
             RefreshSelectionFlags();
         }
 
         private void CreateProfile()
         {
-            _profiles.CreateNew();
-            Refresh();
+            if (_bottomBar is not null) _bottomBar.BeginCreateProfile();
+            else { _profiles.CreateNew(); Refresh(); }
         }
 
         private void ActivateProfile()
@@ -500,7 +504,9 @@ namespace HD2ModManager.ViewModels
             if (!SettingsService.GetEnableLibraryImages()) return;
             _thumbnailCancellation?.Cancel();
             _thumbnailCancellation?.Dispose();
-            _thumbnailCancellation = new CancellationTokenSource();
+            var cancellationSource = new CancellationTokenSource();
+            _thumbnailCancellation = cancellationSource;
+            var cancellationToken = cancellationSource.Token;
             try
             {
                 var generated = false;
@@ -508,15 +514,23 @@ namespace HD2ModManager.ViewModels
                 {
                     foreach (var entry in _profiles.GetSortedEntries(_profiles.SelectedProfile))
                     {
-                        _thumbnailCancellation.Token.ThrowIfCancellationRequested();
-                        var result = await _library.RequestThumbnailAsync(entry.NodeId.Value.ToString("N"), "Profile", cancellationToken: _thumbnailCancellation.Token);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var result = await _library.RequestThumbnailAsync(entry.NodeId.Value.ToString("N"), "Profile", cancellationToken: cancellationToken);
                         if (result.Data is { } facts)
-                            generated |= await ThumbnailService.EnsureThumbnailAsync(facts, 72, _thumbnailCancellation.Token);
+                            generated |= await ThumbnailService.EnsureThumbnailAsync(facts, 72, cancellationToken);
                     }
                 }
-                if (generated && !_thumbnailCancellation.IsCancellationRequested) Refresh();
+                if (generated && !cancellationToken.IsCancellationRequested && ReferenceEquals(_thumbnailCancellation, cancellationSource)) Refresh();
             }
             catch (OperationCanceledException) { }
+            finally
+            {
+                if (ReferenceEquals(_thumbnailCancellation, cancellationSource))
+                {
+                    _thumbnailCancellation = null;
+                    cancellationSource.Dispose();
+                }
+            }
         }
 
         private async void QueueSearchRefresh()

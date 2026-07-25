@@ -136,7 +136,11 @@ namespace HD2ModManager.ViewModels
                 _selectionAnchorGuid = card.Mod.Guid;
             }
 
-            _selection?.Replace(SelectionScope, _selectedGuids);
+            var selectedInDisplayOrder = Items
+                .Where(item => _selectedGuids.Contains(item.Mod.Guid, StringComparer.OrdinalIgnoreCase))
+                .Select(item => item.Mod.Guid)
+                .ToList();
+            _selection?.Replace(SelectionScope, selectedInDisplayOrder);
             RefreshSelectionFlags();
         }
 
@@ -244,7 +248,8 @@ namespace HD2ModManager.ViewModels
             try
             {
                 var generated = false;
-                foreach (var mod in _library.All())
+                // 先固定本次刷新快照，避免异步请求期间库同步修改底层字典。
+                foreach (var mod in _library.All().ToList())
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var result = await _library.RequestThumbnailAsync(mod.Guid, "Library", cancellationToken: cancellationToken);

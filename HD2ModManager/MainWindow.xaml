@@ -259,17 +259,10 @@
                     <Style TargetType="Border" BasedOn="{StaticResource AppElevatedPanel}">
                     </Style>
                 </Border.Style>
-                <StackPanel x:Name="BottomContextBarContent" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding BottomBar.EditLabel}" VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}" Margin="0,0,6,0" Visibility="{Binding BottomBar.HasTemporaryEditor, Converter={StaticResource BoolToVis}}"/>
-                    <TextBox Style="{StaticResource AppTextBox}" Width="220" Text="{Binding BottomBar.EditText, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding BottomBar.HasTemporaryEditor, Converter={StaticResource BoolToVis}}"/>
-                    <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding BottomBar.EditConfirmText}" Command="{Binding BottomBar.ConfirmEditCommand}" Margin="8,0,0,0" Visibility="{Binding BottomBar.HasTemporaryEditor, Converter={StaticResource BoolToVis}}"/>
-                    <Button Style="{StaticResource AppSecondaryButton}" Content="取消编辑" Command="{Binding BottomBar.CancelEditCommand}" Margin="8,0,14,0" Visibility="{Binding BottomBar.HasTemporaryEditor, Converter={StaticResource BoolToVis}}"/>
-                    <TextBlock Text="{Binding BottomBar.SelectionSummary}" VerticalAlignment="Center" Foreground="{StaticResource Accent}" FontWeight="SemiBold" Margin="2,0,14,0" Visibility="{Binding BottomBar.HasSelection, Converter={StaticResource BoolToVis}}"/>
-                    <Button Style="{StaticResource AppPrimaryButton}" Content="加入配置" Command="{Binding SelectionPrimaryCommand}" Margin="0,0,8,0" Visibility="{Binding BottomBar.ShowAddToProfile, Converter={StaticResource BoolToVis}}"/>
-                    <Button Style="{StaticResource AppDangerButton}" Content="删除" Command="{Binding SelectionDeleteCommand}" Margin="0,0,8,0" Visibility="{Binding BottomBar.ShowDelete, Converter={StaticResource BoolToVis}}"/>
-                    <Button Style="{StaticResource AppDangerButton}" Content="移除" Command="{Binding SelectionDeleteCommand}" Margin="0,0,8,0" Visibility="{Binding BottomBar.ShowRemove, Converter={StaticResource BoolToVis}}"/>
-                    <Button Style="{StaticResource AppSecondaryButton}" Content="取消选择" Command="{Binding CancelSelectionCommand}" Visibility="{Binding BottomBar.HasSelection, Converter={StaticResource BoolToVis}}"/>
-                </StackPanel>
+                <Grid x:Name="BottomContextBarContent" VerticalAlignment="Center">
+                    <views:TemporaryEditorBarContent x:Name="BottomContextBarContentA" Opacity="1" IsHitTestVisible="True"/>
+                    <views:TemporaryEditorBarContent x:Name="BottomContextBarContentB" Opacity="0" IsHitTestVisible="False"/>
+                </Grid>
             </Border>
 
             <Border x:Name="MessageCenterPanel" Style="{StaticResource AppElevatedPanel}" HorizontalAlignment="Right" VerticalAlignment="Top" Width="420" MaxHeight="560" Margin="0,0,4,0"

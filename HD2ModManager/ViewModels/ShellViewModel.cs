@@ -39,7 +39,6 @@ namespace HD2ModManager.ViewModels
         private bool _isMessagePanelOpen;
         private bool _isMessagePreviewOpen;
         private System.Threading.CancellationTokenSource? _messagePreviewCancellation;
-        private int _bottomBarStateVersion;
         private readonly IModInformationCenter _informationCenter;
         private int _disposed;
 
@@ -131,7 +130,6 @@ namespace HD2ModManager.ViewModels
         public BackgroundTaskService BackgroundTasks => _backgroundTasks;
         public SelectionCoordinator Selection => _selection;
         public BottomBarCoordinator BottomBar => _bottomBar;
-        public int BottomBarStateVersion => _bottomBarStateVersion;
         public bool HasSelection => _selection.HasSelection;
         public string SelectionSummary => _selection.Summary;
         public string SelectionPrimaryText => string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase) ? "移除" : "加入配置";
@@ -161,12 +159,7 @@ namespace HD2ModManager.ViewModels
             _applyStatus = new ApplyStatusService();
             _notificationService = new NotificationService();
             _messageCenter = new MessageCenterService(_notificationService, _backgroundTasks);
-            _bottomBar = new BottomBarCoordinator(_selection, _libraryService, _notificationService, RefreshCurrentPage);
-            _bottomBar.PropertyChanged += (_, _) =>
-            {
-                _bottomBarStateVersion++;
-                OnPropertyChanged(nameof(BottomBarStateVersion));
-            };
+            _bottomBar = new BottomBarCoordinator(_selection, _libraryService, _profileService, _notificationService, RefreshCurrentPage);
             _deploymentCoordinator = CoreServices.CreateProfileDeploymentCoordinator(
                 SettingsService.CreateStoragePaths(),
                 SettingsService.GetGameDataFolder,
@@ -1017,7 +1010,7 @@ namespace HD2ModManager.ViewModels
             PageViewModel page = pageType switch
             {
                 WorkspacePageType.Home => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
-                WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection),
+                WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection, _bottomBar),
                 WorkspacePageType.Library => CreateLibraryPage(),
                 WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _backgroundTasks),
                 WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),

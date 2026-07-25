@@ -2,6 +2,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Interop;
 using System.Windows;
@@ -13,6 +14,7 @@ using System.Windows.Shell;
 using HD2ModManager.Enums;
 using HD2ModManager.Services;
 using HD2ModManager.ViewModels;
+using HD2ModManager.Views;
 
 namespace HD2ModManager
 {
@@ -24,6 +26,12 @@ namespace HD2ModManager
         private double _bottomBarAnimationStartWidth;
         private bool _bottomBarWidthUpdateQueued;
         private int _bottomBarAnimationVersion;
+        private CancellationTokenSource? _bottomBarAnimationCancellation;
+        private double _bottomBarControlledWidth;
+        private FrameworkElement? _bottomBarActiveLayer;
+        private FrameworkElement? _bottomBarPendingLayer;
+        private bool _bottomBarContentSwapPending;
+        private bool _bottomBarHasCommittedContent;
         private bool _pageTransitionQueued;
         [StructLayout(LayoutKind.Sequential)]
         struct MARGINS
@@ -145,6 +153,7 @@ namespace HD2ModManager
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             SubscribeToShell(DataContext as ShellViewModel);
+            InitializeBottomBarLayers();
             ShowInitialPage(LeftCurrentPageHost, (DataContext as ShellViewModel)?.LeftPage);
             ShowInitialPage(RightCurrentPageHost, (DataContext as ShellViewModel)?.RightPage);
             Dispatcher.BeginInvoke(UpdateWorkspaceNavigationIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
@@ -158,6 +167,7 @@ namespace HD2ModManager
 
         private async void MainWindow_Closed(object? sender, EventArgs e)
         {
+            _bottomBarAnimationCancellation?.Cancel();
             if (DataContext is ShellViewModel shell)
             {
                 shell.PropertyChanged -= Shell_PropertyChanged;
@@ -194,37 +204,87 @@ namespace HD2ModManager
             if (shell == null) return;
             shell.PropertyChanged -= Shell_PropertyChanged;
             shell.PropertyChanged += Shell_PropertyChanged;
-            shell.BottomBar.PropertyChanged -= BottomBar_PropertyChanged;
-            shell.BottomBar.PropertyChanged += BottomBar_PropertyChanged;
-            shell.Selection.SelectionChanged -= Selection_SelectionChanged;
-            shell.Selection.SelectionChanged += Selection_SelectionChanged;
+            shell.BottomBar.StructureChanged -= BottomBar_StructureChanged;
+            shell.BottomBar.StructureChanged += BottomBar_StructureChanged;
         }
 
-        private void Selection_SelectionChanged(object? sender, EventArgs e)
+        private void BottomBar_StructureChanged(object? sender, EventArgs e)
         {
+            if (DataContext is not ShellViewModel shell) return;
+            var presentation = new TemporaryEditorBarPresentation(
+                shell.BottomBar,
+                shell.SelectionPrimaryCommand,
+                shell.SelectionDeleteCommand,
+                shell.CancelSelectionCommand);
+            if (_bottomBarActiveLayer is null
+                || !_bottomBarHasCommittedContent
+                || BottomContextBar.Visibility != Visibility.Visible)
+            {
+                // 关闭后的首次显示没有旧内容可淡出，清空两层并只把新快照放入显示层。
+                _bottomBarActiveLayer = BottomContextBarContentA;
+                _bottomBarPendingLayer = BottomContextBarContentB;
+                _bottomBarActiveLayer.DataContext = presentation;
+                _bottomBarActiveLayer.Opacity = 0;
+                _bottomBarActiveLayer.IsHitTestVisible = false;
+                _bottomBarPendingLayer.Opacity = 0;
+                _bottomBarPendingLayer.IsHitTestVisible = false;
+                _bottomBarContentSwapPending = false;
+            }
+            else
+            {
+                var pendingLayer = ReferenceEquals(_bottomBarActiveLayer, BottomContextBarContentA)
+                    ? BottomContextBarContentB
+                    : BottomContextBarContentA;
+                pendingLayer.DataContext = presentation;
+                pendingLayer.Opacity = 0;
+                pendingLayer.IsHitTestVisible = false;
+                _bottomBarPendingLayer = pendingLayer;
+                _bottomBarContentSwapPending = true;
+            }
             RequestBottomContextBarWidthUpdate();
         }
 
-        private void BottomBar_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        private void InitializeBottomBarLayers()
         {
-            if (e.PropertyName is nameof(BottomBarCoordinator.HasContent)
-                or nameof(BottomBarCoordinator.HasSelection)
-                or nameof(BottomBarCoordinator.HasTemporaryEditor)
-                or nameof(BottomBarCoordinator.ShowAddToProfile)
-                or nameof(BottomBarCoordinator.ShowDelete)
-                or nameof(BottomBarCoordinator.ShowRemove))
-            {
-                RequestBottomContextBarWidthUpdate();
-            }
+            if (DataContext is not ShellViewModel shell) return;
+            _bottomBarActiveLayer = BottomContextBarContentA;
+            _bottomBarPendingLayer = BottomContextBarContentB;
+            _bottomBarActiveLayer.DataContext = new TemporaryEditorBarPresentation(
+                shell.BottomBar,
+                shell.SelectionPrimaryCommand,
+                shell.SelectionDeleteCommand,
+                shell.CancelSelectionCommand);
+            _bottomBarActiveLayer.Opacity = 1;
+            _bottomBarActiveLayer.IsHitTestVisible = true;
+            _bottomBarPendingLayer.Opacity = 0;
+            _bottomBarPendingLayer.IsHitTestVisible = false;
+            _bottomBarContentSwapPending = false;
+            _bottomBarHasCommittedContent = false;
         }
 
         private void RequestBottomContextBarWidthUpdate()
         {
-            if (BottomContextBar.Visibility == Visibility.Visible && BottomContextBar.ActualWidth > 0)
+            var currentWidth = BottomContextBar.ActualWidth;
+            if (currentWidth <= 0 || double.IsNaN(currentWidth))
+                currentWidth = BottomContextBar.Width;
+            var activeOpacity = BottomContextBarContentA.Opacity;
+            var pendingOpacity = BottomContextBarContentB.Opacity;
+            _bottomBarAnimationCancellation?.Cancel();
+            _bottomBarAnimationCancellation?.Dispose();
+            // 先移交动画所有权；旧流程的 finally 只能清理自己仍持有的视觉状态。
+            _bottomBarAnimationCancellation = null;
+            BottomContextBarContentA.BeginAnimation(OpacityProperty, null);
+            BottomContextBarContentB.BeginAnimation(OpacityProperty, null);
+            BottomContextBarContentA.Opacity = activeOpacity;
+            BottomContextBarContentB.Opacity = pendingOpacity;
+            if (BottomContextBar.Visibility == Visibility.Visible && currentWidth > 0)
             {
-                _bottomBarAnimationStartWidth = BottomContextBar.ActualWidth;
                 BottomContextBar.BeginAnimation(FrameworkElement.WidthProperty, null);
-                BottomContextBar.Width = _bottomBarAnimationStartWidth;
+                BottomContextBar.Width = currentWidth;
+                _bottomBarAnimationStartWidth = currentWidth;
+                _bottomBarControlledWidth = currentWidth;
+                if (BottomContextBar.ActualHeight > 0)
+                    BottomContextBar.Height = BottomContextBar.ActualHeight;
             }
 
             if (_bottomBarWidthUpdateQueued) return;
@@ -236,60 +296,150 @@ namespace HD2ModManager
         {
             _bottomBarWidthUpdateQueued = false;
             var version = ++_bottomBarAnimationVersion;
-            if (DataContext is not ShellViewModel { BottomBar.HasContent: true })
+            _bottomBarAnimationCancellation?.Cancel();
+            _bottomBarAnimationCancellation?.Dispose();
+            var cancellation = new CancellationTokenSource();
+            _bottomBarAnimationCancellation = cancellation;
+            var cancellationToken = cancellation.Token;
+            try
             {
-                if (BottomContextBar.Visibility != Visibility.Visible) return;
-                await AnimateBottomBarAsync(BottomContextBarContent, OpacityProperty, BottomContextBarContent.Opacity, 0, 110);
-                if (version != _bottomBarAnimationVersion) return;
-                var currentWidth = BottomContextBar.ActualWidth;
-                await AnimateBottomBarAsync(BottomContextBar, FrameworkElement.WidthProperty, currentWidth, 0, 180);
-                if (version != _bottomBarAnimationVersion) return;
+                if (DataContext is not ShellViewModel { BottomBar.HasContent: true })
+                {
+                    if (BottomContextBar.Visibility != Visibility.Visible) return;
+                    _bottomBarHasCommittedContent = false;
+                    _bottomBarContentSwapPending = false;
+                    var activeLayer = _bottomBarActiveLayer ?? BottomContextBarContentA;
+                    await AnimateBottomBarAsync(activeLayer, OpacityProperty, activeLayer.Opacity, 0, 110, cancellationToken);
+                    var currentWidth = BottomContextBar.ActualWidth;
+                    await AnimateBottomBarAsync(BottomContextBar, FrameworkElement.WidthProperty, currentWidth, 0, 180, cancellationToken);
+                    if (!IsCurrentBottomBarAnimation(cancellation)) return;
+                    BottomContextBar.Visibility = Visibility.Collapsed;
+                    activeLayer.Opacity = 0;
+                    activeLayer.IsHitTestVisible = false;
+                    BottomContextBarContentA.Opacity = 0;
+                    BottomContextBarContentB.Opacity = 0;
+                    BottomContextBarContentA.IsHitTestVisible = false;
+                    BottomContextBarContentB.IsHitTestVisible = false;
+                    _bottomBarActiveLayer = null;
+                    _bottomBarPendingLayer = null;
+                    _bottomBarContentSwapPending = false;
+                    _bottomBarHasCommittedContent = false;
+                    _bottomBarAnimationStartWidth = 0;
+                    _bottomBarControlledWidth = 0;
+                    return;
+                }
+
+                var isAppearing = !_bottomBarHasCommittedContent;
                 BottomContextBar.BeginAnimation(FrameworkElement.WidthProperty, null);
-                BottomContextBar.Width = double.NaN;
-                BottomContextBar.Visibility = Visibility.Collapsed;
-                BottomContextBarContent.Opacity = 1;
-                _bottomBarAnimationStartWidth = 0;
-                return;
-            }
-
-            var isAppearing = BottomContextBar.Visibility != Visibility.Visible;
-            if (isAppearing)
-            {
                 BottomContextBar.Visibility = Visibility.Visible;
-                BottomContextBarContent.Opacity = 0;
-                BottomContextBar.Width = double.NaN;
-                BottomContextBar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-                var appearanceTargetWidth = BottomContextBar.DesiredSize.Width;
-                if (appearanceTargetWidth <= 0) return;
-                BottomContextBar.Width = 0;
-                await AnimateBottomBarAsync(BottomContextBar, FrameworkElement.WidthProperty, 0, appearanceTargetWidth, 190);
-                if (version != _bottomBarAnimationVersion) return;
-                BottomContextBar.Width = double.NaN;
-                _bottomBarAnimationStartWidth = appearanceTargetWidth;
-                await AnimateBottomBarAsync(BottomContextBarContent, OpacityProperty, 0, 1, 130);
-                return;
+                var activeLayerForMeasure = _bottomBarActiveLayer ?? BottomContextBarContentA;
+                var targetLayer = _bottomBarContentSwapPending
+                    ? _bottomBarPendingLayer ?? BottomContextBarContentB
+                    : activeLayerForMeasure;
+                var targetSize = MeasureBottomBarLayer(targetLayer);
+                var targetWidth = targetSize.Width;
+                if (targetWidth <= 0 || targetSize.Height <= 0) return;
+
+                if (isAppearing)
+                {
+                    targetLayer.Opacity = 0;
+                    targetLayer.IsHitTestVisible = true;
+                    activeLayerForMeasure.IsHitTestVisible = false;
+                    BottomContextBar.Width = 0;
+                    _bottomBarControlledWidth = 0;
+                    BottomContextBar.Height = targetSize.Height;
+                    await AnimateBottomBarAsync(BottomContextBar, FrameworkElement.WidthProperty, 0, targetWidth, 190, cancellationToken);
+                    if (!IsCurrentBottomBarAnimation(cancellation)) return;
+                    _bottomBarActiveLayer = targetLayer;
+                    _bottomBarPendingLayer = activeLayerForMeasure;
+                    _bottomBarContentSwapPending = false;
+                    _bottomBarHasCommittedContent = true;
+                }
+                else
+                {
+                    // 防抖：连续切换编辑器时只为最后一次内容测量和伸缩外框。
+                    await Task.Delay(50, cancellationToken);
+                    targetLayer = _bottomBarPendingLayer ?? BottomContextBarContentB;
+                    targetSize = MeasureBottomBarLayer(targetLayer);
+                    targetWidth = targetSize.Width;
+                    var startWidth = _bottomBarAnimationStartWidth > 0 ? _bottomBarAnimationStartWidth : BottomContextBar.ActualWidth;
+                    BottomContextBar.Width = startWidth;
+                    BottomContextBar.Height = targetSize.Height;
+                    var oldLayer = _bottomBarActiveLayer ?? BottomContextBarContentA;
+                    targetLayer.Opacity = 0;
+                    targetLayer.IsHitTestVisible = true;
+                    oldLayer.IsHitTestVisible = false;
+                    // 宽度和内容淡化必须属于同一个事务，不能先完成外框动画再切换内容层。
+                    var widthAnimation = AnimateBottomBarAsync(
+                        BottomContextBar,
+                        FrameworkElement.WidthProperty,
+                        startWidth,
+                        targetWidth,
+                        420,
+                        cancellationToken);
+                    var layerAnimation = AnimateLayersAsync(oldLayer, targetLayer, cancellationToken);
+                    await Task.WhenAll(widthAnimation, layerAnimation);
+                    if (!IsCurrentBottomBarAnimation(cancellation)) return;
+                    _bottomBarActiveLayer = targetLayer;
+                    _bottomBarPendingLayer = oldLayer;
+                    _bottomBarContentSwapPending = false;
+                }
+
+                if (!IsCurrentBottomBarAnimation(cancellation)) return;
+                _bottomBarAnimationStartWidth = targetWidth;
+                _bottomBarControlledWidth = targetWidth;
+                BottomContextBar.Width = targetWidth;
+                await AnimateBottomBarAsync(_bottomBarActiveLayer ?? BottomContextBarContentA, OpacityProperty, (_bottomBarActiveLayer ?? BottomContextBarContentA).Opacity, 1, 220, cancellationToken);
+                if (!IsCurrentBottomBarAnimation(cancellation)) return;
+                var committedLayer = _bottomBarActiveLayer ?? BottomContextBarContentA;
+                committedLayer.Opacity = 1;
+                committedLayer.IsHitTestVisible = true;
+                var hiddenLayer = ReferenceEquals(committedLayer, BottomContextBarContentA)
+                    ? BottomContextBarContentB
+                    : BottomContextBarContentA;
+                hiddenLayer.Opacity = 0;
+                hiddenLayer.IsHitTestVisible = false;
+                _bottomBarContentSwapPending = false;
+                _bottomBarHasCommittedContent = true;
             }
-
-            await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
-            if (version != _bottomBarAnimationVersion || BottomContextBar.Visibility != Visibility.Visible) return;
-
-            var startWidth = _bottomBarAnimationStartWidth > 0 ? _bottomBarAnimationStartWidth : BottomContextBar.ActualWidth;
-            BottomContextBar.Width = double.NaN;
-            BottomContextBar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            var targetWidth = BottomContextBar.DesiredSize.Width;
-            if (targetWidth <= 0) return;
-
-            BottomContextBar.Width = startWidth;
-            await AnimateBottomBarAsync(BottomContextBar, FrameworkElement.WidthProperty, startWidth, targetWidth, 220);
-            if (version != _bottomBarAnimationVersion) return;
-
-            _bottomBarAnimationStartWidth = targetWidth;
-            BottomContextBar.BeginAnimation(FrameworkElement.WidthProperty, null);
-            BottomContextBar.Width = double.NaN;
+            catch (OperationCanceledException) { }
+            finally
+            {
+                if (ReferenceEquals(_bottomBarAnimationCancellation, cancellation))
+                {
+                    BottomContextBar.BeginAnimation(FrameworkElement.WidthProperty, null);
+                    BottomContextBarContentA.BeginAnimation(OpacityProperty, null);
+                    BottomContextBarContentB.BeginAnimation(OpacityProperty, null);
+                    _bottomBarAnimationCancellation = null;
+                    cancellation.Dispose();
+                }
+            }
         }
 
-        private static Task AnimateBottomBarAsync(DependencyObject target, DependencyProperty property, double from, double to, int milliseconds)
+        private Size MeasureBottomBarLayer(FrameworkElement layer)
         {
+            layer.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            var padding = BottomContextBar.Padding;
+            var border = BottomContextBar.BorderThickness;
+            return new Size(
+                layer.DesiredSize.Width + padding.Left + padding.Right + border.Left + border.Right,
+                layer.DesiredSize.Height + padding.Top + padding.Bottom + border.Top + border.Bottom);
+        }
+
+        private static async Task AnimateLayersAsync(FrameworkElement oldLayer, FrameworkElement newLayer, CancellationToken cancellationToken)
+        {
+            var oldAnimation = AnimateBottomBarAsync(oldLayer, OpacityProperty, oldLayer.Opacity, 0, 150, cancellationToken);
+            var newAnimation = AnimateBottomBarAsync(newLayer, OpacityProperty, newLayer.Opacity, 1, 180, cancellationToken);
+            await Task.WhenAll(oldAnimation, newAnimation);
+        }
+
+        private bool IsCurrentBottomBarAnimation(CancellationTokenSource cancellation)
+            => ReferenceEquals(_bottomBarAnimationCancellation, cancellation)
+                && !cancellation.IsCancellationRequested;
+
+        private static Task AnimateBottomBarAsync(DependencyObject target, DependencyProperty property, double from, double to, int milliseconds, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
             if (milliseconds <= 0 || Math.Abs(from - to) < 0.01)
             {
                 target.SetValue(property, to);
@@ -299,9 +449,24 @@ namespace HD2ModManager
             var completion = new TaskCompletionSource();
             var animation = new DoubleAnimation(from, to, TimeSpan.FromMilliseconds(milliseconds))
             {
-                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
             };
-            animation.Completed += (_, _) => completion.TrySetResult();
+            CancellationTokenRegistration registration = default;
+            EventHandler? completed = null;
+            completed = (_, _) =>
+            {
+                animation.Completed -= completed;
+                registration.Dispose();
+                completion.TrySetResult();
+            };
+            animation.Completed += completed;
+            registration = cancellationToken.Register(() =>
+            {
+                if (target is IAnimatable animatable) animatable.BeginAnimation(property, null);
+                animation.Completed -= completed;
+                completion.TrySetCanceled(cancellationToken);
+                registration.Dispose();
+            });
             if (target is IAnimatable animatable)
             {
                 animatable.BeginAnimation(property, animation);
@@ -326,11 +491,6 @@ namespace HD2ModManager
             if (e.PropertyName == nameof(ShellViewModel.IsMessagePreviewOpen))
             {
                 AnimateMessagePanel(MessagePreviewPanel, shell.IsMessagePreviewOpen, 50, () => shell.IsMessagePreviewOpen);
-                return;
-            }
-            if (e.PropertyName == nameof(ShellViewModel.BottomBarStateVersion))
-            {
-                RequestBottomContextBarWidthUpdate();
                 return;
             }
             if (e.PropertyName == nameof(ShellViewModel.LeftPage))
