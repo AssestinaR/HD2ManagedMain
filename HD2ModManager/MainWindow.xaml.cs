@@ -33,6 +33,7 @@ namespace HD2ModManager
         private bool _bottomBarContentSwapPending;
         private bool _bottomBarHasCommittedContent;
         private bool _pageTransitionQueued;
+        private bool _pageLayoutWasSplit;
         [StructLayout(LayoutKind.Sequential)]
         struct MARGINS
         {
@@ -156,6 +157,7 @@ namespace HD2ModManager
             InitializeBottomBarLayers();
             ShowInitialPage(LeftCurrentPageHost, (DataContext as ShellViewModel)?.LeftPage);
             ShowInitialPage(RightCurrentPageHost, (DataContext as ShellViewModel)?.RightPage);
+            _pageLayoutWasSplit = (DataContext as ShellViewModel)?.ShowRightSlot == true;
             Dispatcher.BeginInvoke(UpdateWorkspaceNavigationIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
             RequestBottomContextBarWidthUpdate();
         }
@@ -493,6 +495,14 @@ namespace HD2ModManager
                 AnimateMessagePanel(MessagePreviewPanel, shell.IsMessagePreviewOpen, 50, () => shell.IsMessagePreviewOpen);
                 return;
             }
+            if (e.PropertyName == nameof(ShellViewModel.ShowRightSlot))
+            {
+                var targetIsSplit = shell.ShowRightSlot;
+                if (!_pageLayoutWasSplit && targetIsSplit)
+                    CaptureSinglePageForSplitTransition();
+                _pageLayoutWasSplit = targetIsSplit;
+                return;
+            }
             if (e.PropertyName == nameof(ShellViewModel.LeftPage))
             {
                 QueuePageTransitions();
@@ -632,6 +642,44 @@ namespace HD2ModManager
         {
             host.Content = page;
             host.Opacity = 1;
+        }
+
+        private void CaptureSinglePageForSplitTransition()
+        {
+            if (FindName("OverlayLeftPageHost") is not ContentControl overlayLeftPageHost) return;
+            if (overlayLeftPageHost.Content is not null) return;
+            var page = LeftCurrentPageHost.Content;
+            if (page is null) return;
+
+            var width = LeftCurrentPageHost.ActualWidth;
+            var height = LeftCurrentPageHost.ActualHeight;
+            if (width <= 0 || height <= 0) return;
+
+            overlayLeftPageHost.BeginAnimation(OpacityProperty, null);
+            overlayLeftPageHost.Content = page;
+            overlayLeftPageHost.Width = width;
+            overlayLeftPageHost.Height = height;
+            Canvas.SetLeft(overlayLeftPageHost, 0);
+            Canvas.SetTop(overlayLeftPageHost, 0);
+            overlayLeftPageHost.Opacity = 1;
+            LeftCurrentPageHost.Content = null;
+
+            _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Render, new Action(() =>
+            {
+                if (overlayLeftPageHost.Content is null) return;
+                var fadeOut = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(200))
+                {
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                };
+                fadeOut.Completed += (_, _) =>
+                {
+                    overlayLeftPageHost.BeginAnimation(OpacityProperty, null);
+                    overlayLeftPageHost.Content = null;
+                    overlayLeftPageHost.Width = double.NaN;
+                    overlayLeftPageHost.Height = double.NaN;
+                };
+                overlayLeftPageHost.BeginAnimation(OpacityProperty, fadeOut);
+            }));
         }
 
         private void QueuePageTransitions()
