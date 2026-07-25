@@ -108,15 +108,6 @@ namespace HD2ModManager.ViewModels
             Refresh();
         }
 
-        public IReadOnlyList<string> GetSelectedIdsInDisplayOrder()
-            => Items.Where(card => card.IsSelected).Select(card => card.Mod.Guid).ToList();
-
-        public void ResetDragFilters()
-        {
-            Query = string.Empty;
-            ShowOnlyOutdated = false;
-        }
-
         public void SelectRow(ModCardViewModel card, ModifierKeys modifiers)
         {
             var allCards = Items.ToList();

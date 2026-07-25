@@ -61,6 +61,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	public RelayCommand RestoreSelectedMappingCommand { get; }
 	public RelayCommand SelectAllTargetsCommand { get; }
 	public RelayCommand InvertTargetSelectionCommand { get; }
+	public RelayCommand SelectAllUnreplacedTargetsCommand { get; }
+	public bool CanSelectAllUnreplacedTargets => targetReplacementFactsAvailable;
 	public bool IsPlanning { get => isPlanning; private set { if (isPlanning == value) return; isPlanning = value; OnPropertyChanged(); } }
 	public string PlanState { get => planState; private set { if (planState == value) return; planState = value; OnPropertyChanged(); } }
 	public CrossArmorTransferMapping? SelectedTargetMapping
@@ -186,6 +188,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private readonly IEquipmentUnitCatalogService catalogService;
 	private readonly IReadOnlyList<EquipmentUnitCatalogEntry> sourceCandidates;
 	private readonly IReadOnlyList<EquipmentUnitCatalogEntry> targetCandidates;
+	private readonly bool targetReplacementFactsAvailable;
 
 	public CrossArmorTransferPlanWindowViewModel(
 		IEquipmentUnitCatalogService catalogService,
@@ -194,7 +197,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		string sourcePatchTocPath,
 		string gameDataDirectory,
 		IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> preparedSourceEntries,
-		StoragePaths paths)
+		StoragePaths paths,
+		GameDataArchiveBrowserSnapshot? targetReplacementSnapshot = null)
 	{
 		this.catalogService = catalogService;
 		this.sourceCandidates = sourceCandidates;
@@ -206,7 +210,12 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		PreparedSourceEntries = preparedSourceEntries ?? throw new ArgumentNullException(nameof(preparedSourceEntries));
 		SourceArmorChoices = sourceCandidates.Where(entry => string.Equals(entry.Category, "Armor", StringComparison.OrdinalIgnoreCase)).Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
 		SourceHelmetChoices = sourceCandidates.Where(entry => string.Equals(entry.Category, "Helmet", StringComparison.OrdinalIgnoreCase)).Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
-		TargetChoices = targetCandidates.Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
+		var overlays = targetReplacementSnapshot is not null && !targetReplacementSnapshot.Issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)
+			? targetReplacementSnapshot.Archives
+			.ToDictionary(item => item.Archive.PackageName, item => item.Overlay, StringComparer.OrdinalIgnoreCase)
+			: null;
+		targetReplacementFactsAvailable = overlays is not null && targetCandidates.All(entry => overlays.ContainsKey(entry.ArchiveId));
+		TargetChoices = targetCandidates.Select(entry => new CrossArmorTransferEquipmentRow(entry, IsConfirmedUnreplaced(entry, overlays))).ToArray();
 		foreach (var target in TargetChoices) target.PropertyChanged += OnTargetChoicePropertyChanged;
 		RefreshPlanCommand = new RelayCommand(_ => QueueRefreshPlan(), _ => !IsPlanning);
 		ApplyManualMappingCommand = new RelayCommand(_ => { if (SelectedTargetMapping is not null && SelectedManualSource is not null) SetManualMapping(SelectedTargetMapping, SelectedManualSource); }, _ => CanEditSelectedMapping && SelectedManualSource is not null);
@@ -214,6 +223,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		RestoreSelectedMappingCommand = new RelayCommand(_ => { if (SelectedTargetMapping is not null) RestoreAutomaticMapping(SelectedTargetMapping); }, _ => CanEditSelectedMapping);
 		SelectAllTargetsCommand = new RelayCommand(_ => SetAllTargetsSelected(true));
 		InvertTargetSelectionCommand = new RelayCommand(_ => SetAllTargetsSelected(null));
+		SelectAllUnreplacedTargetsCommand = new RelayCommand(_ => SelectAllUnreplacedTargets(), _ => CanSelectAllUnreplacedTargets);
 		SelectedSourceArmor = SourceArmorChoices.FirstOrDefault()?.Entry;
 		SelectedSourceHelmet = SourceHelmetChoices.FirstOrDefault()?.Entry;
 	}
@@ -397,6 +407,24 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		QueueRefreshPlan();
 	}
 
+	private void SelectAllUnreplacedTargets()
+	{
+		applyingTargetSelection = true;
+		try
+		{
+			foreach (var target in TargetChoices.Where(target => target.IsConfirmedUnreplaced)) target.IsSelected = true;
+		}
+		finally { applyingTargetSelection = false; }
+		QueueRefreshPlan();
+	}
+
+	private static bool IsConfirmedUnreplaced(EquipmentUnitCatalogEntry entry, IReadOnlyDictionary<string, GameDataArchiveOverlay>? overlays)
+	{
+		if (overlays is null || !overlays.TryGetValue(entry.ArchiveId, out var overlay)) return false;
+		var effectiveUnitKeys = overlay.EffectiveAssets.Select(asset => asset.AssetKey).ToHashSet();
+		return entry.Parts.Count > 0 && entry.Parts.All(part => !effectiveUnitKeys.Contains(part.UnitAssetKey));
+	}
+
 	private void QueueRefreshPlan()
 	{
 		_ = RefreshPlanAsync();
@@ -442,6 +470,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			{
 				IsPlanning = false;
 				RefreshPlanCommand.RaiseCanExecuteChanged();
+				SelectAllUnreplacedTargetsCommand.RaiseCanExecuteChanged();
 			}
 		}
 	}
@@ -543,6 +572,7 @@ public sealed class CrossArmorTransferEquipmentRow : INotifyPropertyChanged
 	public event PropertyChangedEventHandler? PropertyChanged;
 	public EquipmentUnitCatalogEntry Entry { get; }
 	public string Display => $"{Entry.DisplayName}（{Entry.Category}，{Entry.Parts.Count} 个可见部件）";
+	public bool IsConfirmedUnreplaced { get; }
 	public bool IsSelected
 	{
 		get => isSelected;
@@ -553,7 +583,11 @@ public sealed class CrossArmorTransferEquipmentRow : INotifyPropertyChanged
 			PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected)));
 		}
 	}
-	public CrossArmorTransferEquipmentRow(EquipmentUnitCatalogEntry entry) => Entry = entry;
+	public CrossArmorTransferEquipmentRow(EquipmentUnitCatalogEntry entry, bool isConfirmedUnreplaced = false)
+	{
+		Entry = entry;
+		IsConfirmedUnreplaced = isConfirmedUnreplaced;
+	}
 }
 
 // Purpose: Keeps a friendly selected-target label separate from the archive ID required for plan filtering.

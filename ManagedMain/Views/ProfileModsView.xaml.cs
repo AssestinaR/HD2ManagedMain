@@ -35,7 +35,7 @@ namespace ManagedMain.Views
         private readonly DispatcherTimer _autoScrollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(35) };
         private System.Windows.Point _lastMousePos;
         private const double EdgeZone = 48; // px from top/bottom that triggers auto-scroll
-        private const double AutoScrollMaxStep = 48; // max px per tick
+        private const double AutoScrollMaxStep = 3; // max px per tick during drag
 
         private System.Collections.Specialized.INotifyCollectionChanged? _modsIncc;
 

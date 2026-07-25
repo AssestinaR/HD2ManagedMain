@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Animation;
 using System.Windows.Media;
+using System.Windows.Input;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views
@@ -113,8 +114,21 @@ namespace HD2ModManager.Views
 
         private void OnListBackgroundMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
-            if (e.OriginalSource is DependencyObject source && FindAncestor<Border>(source) is { DataContext: ModCardViewModel }) return;
+            if (e.OriginalSource is DependencyObject source && FindAncestor<Border>(source)?.DataContext is ModCardViewModel card)
+            {
+                return;
+            }
             ClearTransientSelection();
+        }
+
+        private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
+        {
+            while (current is not null)
+            {
+                if (current is T found) return found;
+                current = VisualTreeHelper.GetParent(current);
+            }
+            return null;
         }
 
         private static void ClearTransientSelection()
@@ -178,14 +192,5 @@ namespace HD2ModManager.Views
             return (sender as FrameworkElement)?.DataContext as ModCardViewModel;
         }
 
-        private static T? FindAncestor<T>(DependencyObject current) where T : DependencyObject
-        {
-            while (current != null)
-            {
-                if (current is T match) return match;
-                current = VisualTreeHelper.GetParent(current);
-            }
-            return null;
-        }
     }
 }

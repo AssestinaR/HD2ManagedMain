@@ -40,7 +40,7 @@ namespace HD2ModManager.Views
 
         private void OnListBackgroundMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
-            if (e.OriginalSource is DependencyObject source && FindAncestor<Border>(source) is { DataContext: ProfileListItemViewModel }) return;
+            if (e.OriginalSource is DependencyObject source && FindAncestor<Border>(source)?.DataContext is ProfileListItemViewModel) return;
             ClearTransientSelection();
         }
 
@@ -97,5 +97,6 @@ namespace HD2ModManager.Views
             }
             return null;
         }
+
     }
 }

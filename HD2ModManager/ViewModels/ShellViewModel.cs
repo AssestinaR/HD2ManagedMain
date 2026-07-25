@@ -13,7 +13,7 @@ using HD2ModManager.Services;
 
 namespace HD2ModManager.ViewModels
 {
-    public sealed class ShellViewModel : BaseViewModel
+    public sealed class ShellViewModel : BaseViewModel, IAsyncDisposable
     {
         private readonly ProfileService _profileService;
         private readonly ModLibraryService _libraryService;
@@ -40,6 +40,8 @@ namespace HD2ModManager.ViewModels
         private bool _isMessagePreviewOpen;
         private System.Threading.CancellationTokenSource? _messagePreviewCancellation;
         private int _bottomBarStateVersion;
+        private readonly IModInformationCenter _informationCenter;
+        private int _disposed;
 
         public PageViewModel? CurrentPage => LeftPage;
         public PageViewModel? LeftPage
@@ -148,6 +150,7 @@ namespace HD2ModManager.ViewModels
             _profileService.Load();
 
             var informationCenter = CoreServices.CreateModInformationCenter(SettingsService.CreateStoragePaths());
+            _informationCenter = informationCenter;
             _libraryService = new ModLibraryService(System.IO.Path.Combine(configDir, "library.json"), informationCenter);
             // 启动必须先展示 UI；稳定 facts 的投影在后台恢复，任何异常都不能阻止管理器启动。
             _libraryService.Load(buildDerivedData: false);
@@ -166,7 +169,8 @@ namespace HD2ModManager.ViewModels
             };
             _deploymentCoordinator = CoreServices.CreateProfileDeploymentCoordinator(
                 SettingsService.CreateStoragePaths(),
-                SettingsService.GetGameDataFolder);
+                SettingsService.GetGameDataFolder,
+                informationCenter);
             _deploymentCoordinator.StatusChanged += OnDeploymentStatusChanged;
             _profileService.ActiveProfileDeploymentRequired += (_, _) => _deploymentCoordinator.NotifyActiveProfileChanged();
             _profileService.ActiveProfileDeactivationRequired += (_, _) => _ = _deploymentCoordinator.DeactivateAsync();
@@ -417,7 +421,7 @@ namespace HD2ModManager.ViewModels
         {
             LeftPageType = WorkspacePageType.GameDataBrowser;
             RightPageType = WorkspacePageType.GameDataArchiveDetails;
-            LeftPage = new GameDataBrowserPageViewModel(_libraryService, _profileService);
+            LeftPage = new GameDataBrowserPageViewModel(_libraryService, _profileService, _derivedState.InformationCenter);
             RightPage = new GameDataArchiveDetailsHostPageViewModel((GameDataBrowserPageViewModel)LeftPage);
             UpdateModeFromSlots();
             RaiseSlotFlags();
@@ -528,11 +532,9 @@ namespace HD2ModManager.ViewModels
 
                 if (libraryChanged)
                 {
+                    await _libraryService.SynchronizeAsync().ConfigureAwait(false);
                     _libraryService.NotifyImportCompleted();
-                }
-                if (importedModIds.Count > 0)
-                {
-                    StartImportedModAnalysis(importedModIds, importedSources);
+                    QueueCurrentPageRefresh("导入后库同步完成");
                 }
             }
             finally
@@ -541,31 +543,22 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        private async void StartImportedModAnalysis(IReadOnlyCollection<string> created, IReadOnlyCollection<string> sourcePaths)
+        public async ValueTask DisposeAsync()
         {
-            var sourceDescription = sourcePaths.Count == 1 ? sourcePaths.First() : $"{sourcePaths.Count} 个导入来源";
-            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.AnalyzeImportedMod, $"分析 {created.Count} 个导入 Mod", sourceDescription);
-            try
-            {
-                task.MarkRunning("正在建立内容索引");
-                var import = new ImportService(_libraryService, informationCenter: _derivedState.InformationCenter);
-                await import.AnalyzeImportedAsync(created, task.CancellationToken);
-                task.MarkCompleted();
-                LogService.Info($"导入内容分析完成：来源数={sourcePaths.Count}，Mod 数={created.Count}。已合并为一次库内容变更通知。");
-				QueueCurrentPageRefresh("导入内容分析完成");
-            }
-            catch (OperationCanceledException) { task.MarkCanceled(); }
-            catch (Exception ex)
-            {
-                task.MarkFailed(ex.Message);
-                LogService.Error($"导入内容分析失败：来源数={sourcePaths.Count}，错误={ex}");
-            }
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            _deploymentCoordinator.StatusChanged -= OnDeploymentStatusChanged;
+            _messagePreviewCancellation?.Cancel();
+            _messagePreviewCancellation?.Dispose();
+            _importProcessGate.Dispose();
+            await _derivedState.DisposeAsync().ConfigureAwait(false);
+            await _informationCenter.DisposeAsync().ConfigureAwait(false);
         }
 
         private void RunStartupChecks(string configDir)
         {
             try
             {
+                _libraryService.SynchronizeAsync().GetAwaiter().GetResult();
                 if (SettingsService.GetAutoCleanup())
                 {
                     new IntegrityService(_libraryService, _notificationService, configDir).CheckAndFix();
@@ -1029,7 +1022,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _backgroundTasks),
                 WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),
                 WorkspacePageType.AdvancedModDetails => new AdvancedModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),
-                WorkspacePageType.GameDataBrowser => new GameDataBrowserPageViewModel(_libraryService, _profileService),
+                WorkspacePageType.GameDataBrowser => new GameDataBrowserPageViewModel(_libraryService, _profileService, _derivedState.InformationCenter),
                 WorkspacePageType.GameDataArchiveDetails => new GameDataArchiveDetailsHostPageViewModel(null),
                 WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),
                 WorkspacePageType.MaterialPackaging => throw new InvalidOperationException("材质打包必须通过 Mod 详情创建。"),

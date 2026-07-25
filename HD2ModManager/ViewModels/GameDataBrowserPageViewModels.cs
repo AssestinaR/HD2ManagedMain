@@ -15,6 +15,7 @@ namespace HD2ModManager.ViewModels
     {
         private readonly ModLibraryService _library;
         private readonly ProfileService _profiles;
+        private readonly IModInformationCenter _informationCenter;
         private readonly IAssetArchiveIndexService _index;
         private CancellationTokenSource? _loadCancellation;
         private CancellationTokenSource? _detailsCancellation;
@@ -49,11 +50,12 @@ namespace HD2ModManager.ViewModels
         }
         public GameDataArchiveDetailsPageViewModel? SelectedDetails { get => _selectedDetails; private set => SetField(ref _selectedDetails, value); }
 
-        public GameDataBrowserPageViewModel(ModLibraryService library, ProfileService profiles)
+        public GameDataBrowserPageViewModel(ModLibraryService library, ProfileService profiles, IModInformationCenter informationCenter)
         {
             Title = "Game Data 资产";
             _library = library;
             _profiles = profiles;
+            _informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
             _index = CoreServices.CreateAssetArchiveIndexService(SettingsService.CreateStoragePaths());
             ArchivesView = CollectionViewSource.GetDefaultView(Archives);
             ArchivesView.Filter = FilterArchive;
@@ -79,7 +81,7 @@ namespace HD2ModManager.ViewModels
                     return;
                 }
 
-                var browser = CoreServices.CreateGameDataArchiveBrowserService(SettingsService.CreateStoragePaths());
+                var browser = CoreServices.CreateGameDataArchiveBrowserService(SettingsService.CreateStoragePaths(), _informationCenter);
                 var snapshot = await browser.BuildAsync(_library.Snapshot, _library.ModsRootDirectory, gameData, cancellationToken);
                 if (cancellationToken.IsCancellationRequested) return;
                 if (snapshot is null || snapshot.Archives.Count == 0)

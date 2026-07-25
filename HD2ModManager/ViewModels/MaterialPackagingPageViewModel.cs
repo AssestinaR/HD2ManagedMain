@@ -121,7 +121,7 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
             }
             if (ImportToLibrary)
             {
-                var importer = new ImportService(library);
+                var importer = new ImportService(library, informationCenter: library.InformationCenter);
                 foreach (var directory in result.OutputDirectories) await importer.ImportPathAsync(directory, default);
             }
             State = $"完成：{result.AssetCount} 个资源，{result.GraphEdgeCount} 条引用。{(ImportToLibrary ? "已导入 Mod 库。" : $"输出：{root}")}";

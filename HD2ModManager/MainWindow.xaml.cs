@@ -156,11 +156,12 @@ namespace HD2ModManager
             SubscribeToShell(e.NewValue as ShellViewModel);
         }
 
-        private void MainWindow_Closed(object? sender, EventArgs e)
+        private async void MainWindow_Closed(object? sender, EventArgs e)
         {
             if (DataContext is ShellViewModel shell)
             {
                 shell.PropertyChanged -= Shell_PropertyChanged;
+                await shell.DisposeAsync();
             }
         }
 

@@ -189,10 +189,54 @@ namespace HD2ModManager.Services
             return true;
         }
 
+        public async Task<bool> RemoveModsFromSelectedAsync(IReadOnlyList<string> nodeGuids, CancellationToken cancellationToken = default)
+        {
+            if (nodeGuids.Count == 0 || SelectedProfileId is not ProfileId profileId) return false;
+            var ids = nodeGuids.Where(guid => TryParseNodeId(guid, out _)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (ids.Count == 0) return false;
+            LibrarySnapshot snapshot = _snapshot;
+            foreach (var guid in ids)
+            {
+                if (!TryParseNodeId(guid, out var nodeId)) continue;
+                snapshot = await Task.Run(() => _manager.RemoveProfileEntryAsync(profileId, nodeId, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
+            }
+
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            Action apply = () =>
+            {
+                _snapshot = snapshot;
+                RebuildIndex();
+                NotifyIfActive(profileId);
+                Changed?.Invoke(this, EventArgs.Empty);
+            };
+            if (dispatcher is not null && !dispatcher.CheckAccess()) await dispatcher.InvokeAsync(apply);
+            else apply();
+            return true;
+        }
+
         public bool MoveModInSelected(string nodeGuid, int direction)
         {
             if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
             _snapshot = _manager.MoveProfileEntryAsync(profileId, nodeId, direction).AsTask().GetAwaiter().GetResult();
+            RebuildIndex();
+            NotifyIfActive(profileId);
+            Changed?.Invoke(this, EventArgs.Empty);
+            return true;
+        }
+
+        // Purpose: Apply a complete ordered Profile membership atomically.
+        public bool ReplaceSelectedEntries(IReadOnlyList<string> nodeGuids)
+        {
+            if (SelectedProfileId is not ProfileId profileId) return false;
+            var ids = nodeGuids.Select(guid => TryParseNodeId(guid, out var nodeId) ? (ModNodeId?)nodeId : null).Where(id => id.HasValue).Select(id => id!.Value).ToList();
+            var profile = _snapshot.Profiles.FirstOrDefault(item => item.Id == profileId);
+            if (profile is null) return false;
+            var entries = ids.Select((id, index) =>
+            {
+                var existing = profile.Entries.FirstOrDefault(entry => entry.NodeId == id);
+                return existing is null ? new ProfileEntry(id, index) : existing with { LoadOrder = index };
+            }).ToList();
+            _snapshot = _manager.UpsertProfileAsync(profile with { Entries = entries, ModifiedUtc = DateTimeOffset.UtcNow, Revision = checked(profile.Revision + 1) }).AsTask().GetAwaiter().GetResult();
             RebuildIndex();
             NotifyIfActive(profileId);
             Changed?.Invoke(this, EventArgs.Empty);

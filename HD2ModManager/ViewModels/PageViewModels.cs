@@ -79,7 +79,7 @@ namespace HD2ModManager.ViewModels
             _applyStatus = applyStatus;
             _backgroundTasks = backgroundTasks;
             _paths = SettingsService.CreateStoragePaths();
-            _repairBatch = CoreServices.CreateModRepairBatchService(_paths);
+            _repairBatch = CoreServices.CreateModRepairBatchService(_paths, _library.InformationCenter);
             RefreshDeploymentCapability();
             MoveLibraryToRecommendedCommand = new RelayCommand(MoveLibraryToRecommended);
             OpenDeveloperSettingsCommand = new RelayCommand(() => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:developers") { UseShellExecute = true }));
@@ -503,13 +503,17 @@ namespace HD2ModManager.ViewModels
             _thumbnailCancellation = new CancellationTokenSource();
             try
             {
-                var generated = await ThumbnailService.EnsureThumbnailsAsync(
-                    _profiles.SelectedProfile is null
-                        ? Array.Empty<string?>()
-                        : _profiles.GetSortedEntries(_profiles.SelectedProfile)
-                            .Select(entry => _library.Get(entry.NodeId.Value.ToString("N"))?.Image),
-                    72,
-                    _thumbnailCancellation.Token);
+                var generated = false;
+                if (_profiles.SelectedProfile is not null)
+                {
+                    foreach (var entry in _profiles.GetSortedEntries(_profiles.SelectedProfile))
+                    {
+                        _thumbnailCancellation.Token.ThrowIfCancellationRequested();
+                        var result = await _library.RequestThumbnailAsync(entry.NodeId.Value.ToString("N"), "Profile", cancellationToken: _thumbnailCancellation.Token);
+                        if (result.Data is { } facts)
+                            generated |= await ThumbnailService.EnsureThumbnailAsync(facts, 72, _thumbnailCancellation.Token);
+                    }
+                }
                 if (generated && !_thumbnailCancellation.IsCancellationRequested) Refresh();
             }
             catch (OperationCanceledException) { }

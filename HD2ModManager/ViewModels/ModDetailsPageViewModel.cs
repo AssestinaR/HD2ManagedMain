@@ -29,8 +29,7 @@ namespace HD2ModManager.ViewModels
 		private readonly IModSameKeyReconstructionService _sameKeyReconstruction;
         private readonly IEquipmentUnitCatalogService _equipmentUnitCatalog;
         private readonly IAdvancedModAnalysisService _advancedAnalysis;
-		private readonly IPatchGroupAnalysisProvider _dependencyGraphAnalysis;
-        private readonly IPatchGroupAnalysisProvider _fullPatchAnalysis;
+        private readonly IPatchGraphDiagnosticsService _patchGraphDiagnostics;
         private ModMaterialPackagingState? _materialState;
 		private bool _sameKeyReconstructionRunning;
         private bool _advancedAnalysisRunning;
@@ -48,6 +47,7 @@ namespace HD2ModManager.ViewModels
         private ModContentFacts? _detailContentFacts;
         private string _advancedAssetQuery = string.Empty;
         private bool _advancedOnlyIssues;
+        private int _detailRequestGeneration;
 
         public string ModId { get; }
         public ModEntity? Mod { get; private set; }
@@ -115,13 +115,12 @@ namespace HD2ModManager.ViewModels
             _notifications = notifications;
             _paths = SettingsService.CreateStoragePaths();
 			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService();
-            _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(_paths);
+            _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(_paths, _derivedState.InformationCenter);
             _sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(_paths, _derivedState.InformationCenter);
             _equipmentUnitCatalog = CoreServices.CreateEquipmentUnitCatalogService(_paths);
             _advancedAnalysis = CoreServices.CreateAdvancedModAnalysisService(_paths, _derivedState.InformationCenter);
-            _dependencyGraphAnalysis = CoreServices.CreateDependencyGraphAnalysisProvider();
-            _fullPatchAnalysis = CoreServices.CreateFullPatchAnalysisProvider();
-            _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(_paths);
+            _patchGraphDiagnostics = CoreServices.CreatePatchGraphDiagnosticsService();
+            _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(_paths, _derivedState.InformationCenter);
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
             UpdateImageCommand = new RelayCommand(UpdateImage, path => path is string imagePath && File.Exists(imagePath));
@@ -210,6 +209,8 @@ namespace HD2ModManager.ViewModels
             Mod.Image = destination;
             _library.Add(Mod);
             _library.Save();
+            if (TryGetCurrentNode(out var updatedNode))
+                _ = _derivedState.InformationCenter.InvalidateNodeAsync(updatedNode.Id);
             Refresh();
             _notifications?.Show($"已更新图像：{Mod.Name}");
             _ = RegenerateThumbnailAsync(destination);
@@ -219,13 +220,11 @@ namespace HD2ModManager.ViewModels
         {
             try
             {
-                await ThumbnailService.RegenerateThumbnailAsync(imagePath, 72).ConfigureAwait(false);
                 if (TryGetCurrentNode(out var node))
                 {
-                    await _derivedState.InformationCenter.RequestThumbnailAsync(
-                        node,
-                        _library.ModsRootDirectory,
-                        new ModInformationRequest(ModInformationKind.Thumbnail, "UserRefresh", RequireFresh: true)).ConfigureAwait(false);
+                    var facts = await _library.RequestThumbnailAsync(ModId, "UserRefresh", requireFresh: true).ConfigureAwait(false);
+                    if (facts.Data is { } thumbnailFacts)
+                        await ThumbnailService.EnsureThumbnailAsync(thumbnailFacts, 72).ConfigureAwait(false);
                 }
                 await _derivedState.RefreshAsync().ConfigureAwait(false);
             }
@@ -267,7 +266,7 @@ namespace HD2ModManager.ViewModels
             if (!TryGetCurrentNode(out var node)) return;
             try
             {
-                var state = await _advancedAnalysis.GetStateAsync(node, _library.ModsRootDirectory);
+                var state = await _advancedAnalysis.GetCachedStateAsync(node, _library.ModsRootDirectory);
                 if (_disposed) return;
                 _advancedAnalysisReady = state.IsReady;
 				if (state.IsReady) await RefreshAdvancedEquipmentStateAsync(node).ConfigureAwait(false);
@@ -361,6 +360,7 @@ namespace HD2ModManager.ViewModels
         private async Task RunDependencyGraphTestAsync()
         {
             if (!TryGetCurrentNode(out var node)) return;
+            var requestGeneration = _detailRequestGeneration;
             _dependencyGraphTestRunning = true;
             DependencyGraphTestSummary = "正在执行轻量引用链测试…";
             OnPropertyChanged(nameof(DependencyGraphTestSummary));
@@ -369,7 +369,8 @@ namespace HD2ModManager.ViewModels
             var stopwatch = Stopwatch.StartNew();
             try
             {
-                var analyses = await Task.Run(() => _dependencyGraphAnalysis.AnalyzeNodeAsync(node, _library.ModsRootDirectory).AsTask());
+                var analyses = await Task.Run(() => _patchGraphDiagnostics.AnalyzeDependencyGraphAsync(node, _library.ModsRootDirectory).AsTask());
+                if (!IsCurrentDetailRequest(node, requestGeneration)) return;
                 stopwatch.Stop();
                 var assets = analyses.Sum(analysis => analysis.Assets.Count);
                 var unitMaterials = analyses.Sum(analysis => analysis.References.Count(reference => reference.Kind == HD2ModAdaptation.Analysis.PatchReferenceKind.UnitMaterial));
@@ -398,14 +399,16 @@ namespace HD2ModManager.ViewModels
         private async Task CompareDependencyGraphAsync()
         {
             if (!TryGetCurrentNode(out var node)) return;
+            var requestGeneration = _detailRequestGeneration;
             _dependencyGraphComparisonRunning = true;
             DependencyGraphComparisonSummary = "正在分别读取轻量与完整引用链并比较去重关系…";
             OnPropertyChanged(nameof(DependencyGraphComparisonSummary));
             try
             {
                 var stopwatch = Stopwatch.StartNew();
-                var lightweight = await Task.Run(() => _dependencyGraphAnalysis.AnalyzeNodeAsync(node, _library.ModsRootDirectory).AsTask());
-                var full = await Task.Run(() => _fullPatchAnalysis.AnalyzeNodeAsync(node, _library.ModsRootDirectory).AsTask());
+                var lightweight = await Task.Run(() => _patchGraphDiagnostics.AnalyzeDependencyGraphAsync(node, _library.ModsRootDirectory).AsTask());
+                var full = await Task.Run(() => _patchGraphDiagnostics.AnalyzeFullPatchGraphAsync(node, _library.ModsRootDirectory).AsTask());
+                if (!IsCurrentDetailRequest(node, requestGeneration)) return;
                 stopwatch.Stop();
                 var comparison = CompareReferenceSets(lightweight, full);
                 var reportPath = WriteDependencyGraphComparisonReport(node, lightweight, full, comparison, stopwatch.Elapsed);
@@ -643,6 +646,7 @@ namespace HD2ModManager.ViewModels
 
         public void Refresh()
         {
+            _detailRequestGeneration++;
             Mod = _library.Get(ModId);
             OnPropertyChanged(nameof(Mod));
             OnPropertyChanged(nameof(Name));
@@ -1000,6 +1004,16 @@ namespace HD2ModManager.ViewModels
                     .Where(entry => entry.Parts.Count != 0)
                     .ToArray();
                 var allCandidates = await _equipmentUnitCatalog.GetEntriesAsync();
+                GameDataArchiveBrowserSnapshot? targetReplacementSnapshot = null;
+                try
+                {
+                    var browser = CoreServices.CreateGameDataArchiveBrowserService(_paths, _derivedState.InformationCenter);
+                    targetReplacementSnapshot = await browser.BuildAsync(_library.Snapshot, _library.ModsRootDirectory, SettingsService.GetGameDataFolder()).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
+                {
+                    _notifications?.Show($"未能读取装备替换状态，“全选未替换”按钮将不可用：{exception.Message}", NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                }
                 if (sourceCandidates.Length == 0)
                 {
                     _notifications?.Show("当前 Mod 没有可转移的真实 Unit 几何：索引未匹配、Unit 无法读取或所有匹配 mesh 均已极小化。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
@@ -1014,7 +1028,7 @@ namespace HD2ModManager.ViewModels
                     .Where(analysis => string.Equals(analysis.Input.PatchTocFilePath, sourcePatchPaths[0], StringComparison.OrdinalIgnoreCase))
                     .SelectMany(analysis => analysis.Entries)
                     .ToArray();
-				var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(_equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(), preparedSourceEntries, _paths);
+                var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(_equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(), preparedSourceEntries, _paths, targetReplacementSnapshot);
                 await OpenCrossArmorPlanOnUiThreadAsync(viewModel).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
@@ -1057,6 +1071,12 @@ namespace HD2ModManager.ViewModels
             node = default!;
             return Mod != null && TryParseNodeId(Mod.Guid, out var nodeId) && _library.Snapshot.Nodes.TryGetValue(nodeId, out node!);
         }
+
+        private bool IsCurrentDetailRequest(ModNode node, int requestGeneration)
+            => !_disposed
+                && requestGeneration == _detailRequestGeneration
+                && TryGetCurrentNode(out var currentNode)
+                && currentNode.Id == node.Id;
 
         private void RaiseMaterialCommandStates()
         {
