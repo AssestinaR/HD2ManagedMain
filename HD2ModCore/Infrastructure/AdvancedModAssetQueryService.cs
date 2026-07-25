@@ -7,13 +7,17 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Joins SQLite Mod facts, Game Data targets and transient Profile projections for the advanced table.
 public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 {
-	private readonly IModFactsStore factsStore;
+	private readonly IReferenceGraphQueryIndex referenceIndex;
+	private readonly IModInformationCenter informationCenter;
+	private readonly string modsRootDirectory;
 	private readonly IGameDataMappingFactsService mappingService;
 	private readonly IAssetArchiveIndexService indexService;
 
-	public AdvancedModAssetQueryService(IModFactsStore factsStore, IGameDataMappingFactsService mappingService, IAssetArchiveIndexService indexService)
+	public AdvancedModAssetQueryService(IModInformationCenter informationCenter, HD2ModCore.Infrastructure.StoragePaths paths, IReferenceGraphQueryIndex referenceIndex, IGameDataMappingFactsService mappingService, IAssetArchiveIndexService indexService)
 	{
-		this.factsStore = factsStore ?? throw new ArgumentNullException(nameof(factsStore));
+		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
+		modsRootDirectory = (paths ?? throw new ArgumentNullException(nameof(paths))).ModsDirectory;
+		this.referenceIndex = referenceIndex ?? throw new ArgumentNullException(nameof(referenceIndex));
 		this.mappingService = mappingService ?? throw new ArgumentNullException(nameof(mappingService));
 		this.indexService = indexService ?? throw new ArgumentNullException(nameof(indexService));
 	}
@@ -21,7 +25,7 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 	public async ValueTask<IReadOnlyList<AdvancedModAssetRow>> QueryAsync(ModNodeId nodeId, LibrarySnapshot librarySnapshot, ProfileOverrideGraph? profileGraph, ProfileMaterialDiagnostics? diagnostics, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(librarySnapshot);
-		var snapshot = await factsStore.TryLoadAsync(nodeId, cancellationToken).ConfigureAwait(false);
+		var snapshot = await LoadAnalysisAsync(nodeId, librarySnapshot, cancellationToken).ConfigureAwait(false);
 		if (snapshot is null || snapshot.Version <= 0 || snapshot.Analyses.Any(analysis => analysis.Depth is not (PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full))) return Array.Empty<AdvancedModAssetRow>();
 		var assets = snapshot.Analyses.SelectMany(analysis => analysis.Assets.Select(asset => (analysis, asset))).GroupBy(item => item.asset.AssetKey).ToArray();
 		var domainKeys = assets.Select(group => new AssetKey(group.Key.TypeId, group.Key.FileId)).ToHashSet();
@@ -35,7 +39,7 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 			var partSummary = partsByUnit.TryGetValue(key, out var parts) ? DescribeParts(parts) : "—";
 			mapping.Assets.TryGetValue(key, out var mapped);
 			var outgoing = snapshot.Analyses.SelectMany(analysis => analysis.References).Where(reference => reference.SourceAssetKey == group.Key).ToArray();
-			var incoming = await factsStore.FindConsumerFactsAsync(group.Key, cancellationToken).ConfigureAwait(false);
+			var incoming = await referenceIndex.FindConsumerFactsAsync(group.Key, cancellationToken).ConfigureAwait(false);
 			var chain = profileGraph?.AssetChains.FirstOrDefault(chain => chain.AssetKey == key);
 			var winner = chain?.Winner;
 			var nodeDiagnostics = diagnostics?.Items.Where(item => item.NodeId == nodeId && item.AssetKey == key).ToArray() ?? Array.Empty<ProfileMaterialDiagnostic>();
@@ -57,6 +61,17 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 				group.Sum(item => (long)item.asset.GpuResourceSize)));
 		}
 		return rows.OrderBy(row => row.TypeName).ThenBy(row => row.AssetKey.FileId).ToArray();
+	}
+
+	private async ValueTask<PatchGroupAnalysisCacheEntry?> LoadAnalysisAsync(ModNodeId nodeId, LibrarySnapshot librarySnapshot, CancellationToken cancellationToken)
+	{
+		if (!librarySnapshot.Nodes.TryGetValue(nodeId, out var node)) return null;
+		var result = await informationCenter.RequestAdvancedUnitAnalysisAsync(
+			node,
+			modsRootDirectory!,
+			new ModInformationRequest(ModInformationKind.AdvancedUnitAnalysis, "AdvancedAssetTable"),
+			cancellationToken).ConfigureAwait(false);
+		return result.Data is null ? null : new PatchGroupAnalysisCacheEntry(3, result.Data.NodeId, result.Data.RelativePath, [], result.Data.BuiltUtc, result.Data.Analyses);
 	}
 
 	private async ValueTask<string> BuildTargetSummaryAsync(
@@ -90,7 +105,7 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 		foreach (var materialConsumer in incoming.Where(consumer => consumer.Reference.Kind == PatchReferenceKind.MaterialTexture))
 		{
 			var material = materialConsumer.Reference.SourceAssetKey;
-			var unitConsumers = await factsStore.FindConsumerFactsAsync(material, cancellationToken).ConfigureAwait(false);
+			var unitConsumers = await referenceIndex.FindConsumerFactsAsync(material, cancellationToken).ConfigureAwait(false);
 			result.AddRange(DescribeUnitConsumers(unitConsumers.Where(consumer => consumer.Reference.Kind == PatchReferenceKind.UnitMaterial), librarySnapshot));
 		}
 		return result.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();

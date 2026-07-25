@@ -6,7 +6,7 @@ using HD2ModCore.Domain;
 namespace HD2ModCore.Infrastructure;
 
 // Purpose: Unifies top-level patch discovery, sidecar grouping and Adaptation-owned AssetKey analysis into one content snapshot.
-public sealed class ModContentFactsService : IAssetInventoryProducer
+public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInventoryGenerationProvider
 {
 	private readonly IPatchFileNameParser _fileNameParser;
 	private readonly IPatchGroupAnalysisProvider _analysisProvider;
@@ -83,23 +83,6 @@ public sealed class ModContentFactsService : IAssetInventoryProducer
 		return new ModContentFacts(node.Id, node.RelativePath, ComputeGeneration(allFiles), DateTimeOffset.UtcNow, groups, issues);
 	}
 
-	public async ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetLibraryFactsAsync(
-		LibrarySnapshot snapshot,
-		string modsRootDirectory,
-		IReadOnlySet<ModNodeId>? nodeIds = null,
-		CancellationToken cancellationToken = default)
-	{
-		ArgumentNullException.ThrowIfNull(snapshot);
-		var result = new Dictionary<ModNodeId, ModContentFacts>();
-		foreach (var node in snapshot.Nodes.Values)
-		{
-			if (nodeIds is not null && !nodeIds.Contains(node.Id)) continue;
-			cancellationToken.ThrowIfCancellationRequested();
-			result[node.Id] = await GetNodeFactsAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);
-		}
-		return result;
-	}
-
 	private IReadOnlyList<DiscoveredPatchGroup> DiscoverGroups(ModNode node, string directory, ICollection<CoreIssue> issues, CancellationToken cancellationToken)
 	{
 		var parsed = Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
@@ -144,6 +127,18 @@ public sealed class ModContentFactsService : IAssetInventoryProducer
 
 	private static bool IsFatalAnalysisIssue(string code)
 		=> code is "InvalidToc" or "MissingToc";
+
+	public string ComputeGeneration(ModNode node, string modsRootDirectory)
+	{
+		var directory = Path.Combine(modsRootDirectory, node.RelativePath);
+		if (!Directory.Exists(directory)) return ComputeGeneration(Array.Empty<ModPatchGroupFileFact>());
+		var files = Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+			.Select(path => new FileInfo(path))
+			.Select(info => (_fileNameParser.TryParse(info.Name, out var parsed), info, parsed))
+			.Where(item => item.Item1)
+			.Select(item => new ModPatchGroupFileFact(item.parsed!.SidecarKind, item.info.FullName, item.info.Name, item.info.Length, item.info.LastWriteTimeUtc));
+		return ComputeGeneration(files);
+	}
 
 	private static string ComputeGeneration(IEnumerable<ModPatchGroupFileFact> files)
 	{

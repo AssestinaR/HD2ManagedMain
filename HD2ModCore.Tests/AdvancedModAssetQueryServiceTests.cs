@@ -26,12 +26,18 @@ public sealed class AdvancedModAssetQueryServiceTests
 			var unit = new AdaptationAssetKey(UnitType, 1);
 			var materialKey = new AdaptationAssetKey(MaterialType, 2);
 			var texture = new AdaptationAssetKey(TextureType, 3);
-			var store = new SqliteModFactsStore(paths);
-			await store.SaveAsync(Cache(model, Facts(unit, [Reference(unit, materialKey, PatchReferenceKind.UnitMaterial)])));
-			await store.SaveAsync(Cache(material, Facts(materialKey, texture, [Reference(materialKey, texture, PatchReferenceKind.MaterialTexture)])));
+			var index = new StubReferenceIndex(
+				new ModAssetConsumerFact(model.Id, model.RelativePath, Reference(unit, materialKey, PatchReferenceKind.UnitMaterial)),
+				new ModAssetConsumerFact(material.Id, material.RelativePath, Reference(materialKey, texture, PatchReferenceKind.MaterialTexture)));
 			var library = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [model.Id] = model, [material.Id] = material }, [], null);
 			var mappings = new StubMappingService(materialKey, texture);
-			var service = new AdvancedModAssetQueryService(store, mappings, new StubIndexService());
+			var modelFacts = AdvancedFacts(model, Facts(unit, [Reference(unit, materialKey, PatchReferenceKind.UnitMaterial)]));
+			var materialFacts = AdvancedFacts(material, Facts(materialKey, texture, [Reference(materialKey, texture, PatchReferenceKind.MaterialTexture)]));
+			var service = new AdvancedModAssetQueryService(new FakeInformationCenter(new Dictionary<ModNodeId, AdvancedUnitAnalysisFacts>
+			{
+				[model.Id] = modelFacts,
+				[material.Id] = materialFacts
+				}), paths, index, mappings, new StubIndexService());
 
 			var rows = await service.QueryAsync(material.Id, library, null, null);
 
@@ -54,13 +60,12 @@ public sealed class AdvancedModAssetQueryServiceTests
 			var paths = new StoragePaths(root);
 			var node = Node("Armor");
 			var unit = new AdaptationAssetKey(UnitType, 1);
-			var store = new SqliteModFactsStore(paths);
-			await store.SaveAsync(Cache(node, Facts(unit, [])));
+			var index = new StubReferenceIndex();
 			var library = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [node.Id] = node }, [], null);
 			var unitKey = new HD2ModCore.Domain.AssetKey(UnitType, 1);
 			var part = new GameDataUnitPartFact("armor", unitKey, 0, 42, UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Stocky, "Torso_Armor_Stocky_lod0", 100, true, false, "test");
 
-			var rows = await new AdvancedModAssetQueryService(store, new StubMappingService(), new StubIndexService([part])).QueryAsync(node.Id, library, null, null);
+			var rows = await new AdvancedModAssetQueryService(new FakeInformationCenter(AdvancedFacts(node, Facts(unit, []))), paths, index, new StubMappingService(), new StubIndexService([part])).QueryAsync(node.Id, library, null, null);
 
 			Assert.Contains(rows, row => row.AssetKey == new HD2ModCore.Domain.AssetKey(UnitType, 1) && row.PartSummary == "胸口－护甲－健壮");
 		}
@@ -71,12 +76,18 @@ public sealed class AdvancedModAssetQueryServiceTests
 	}
 
 	private static ModNode Node(string name) => new(ModNodeId.New(), name, new ModNodeMetadata(name, null, DateTimeOffset.UtcNow, null), [], []);
-	private static PatchGroupAnalysisCacheEntry Cache(ModNode node, params PatchGroupAnalysis[] analyses) => new(3, node.Id, node.RelativePath, [], DateTimeOffset.UtcNow, analyses);
+	private static AdvancedUnitAnalysisFacts AdvancedFacts(ModNode node, params PatchGroupAnalysis[] analyses) => new(node.Id, node.RelativePath, "test", DateTimeOffset.UtcNow, analyses, []);
 	private static PatchGroupAnalysis Facts(AdaptationAssetKey first, IReadOnlyList<PatchAssetReference> references) => Facts([first], references);
 	private static PatchGroupAnalysis Facts(AdaptationAssetKey first, AdaptationAssetKey second, IReadOnlyList<PatchAssetReference> references) => Facts([first, second], references);
 	private static PatchGroupAnalysis Facts(IReadOnlyList<AdaptationAssetKey> assets, IReadOnlyList<PatchAssetReference> references)
 		=> new(new PatchGroupInput(Guid.NewGuid() + ".patch_0"), assets.Select(key => new PatchAssetFact(key, "facts.patch_0", 1, 0, 0, key.TypeId == UnitType, false, key.TypeId == MaterialType, key.TypeId == TextureType)).ToArray(), references, [], DateTimeOffset.UtcNow, "patch-group-v2");
 	private static PatchAssetReference Reference(AdaptationAssetKey source, AdaptationAssetKey target, PatchReferenceKind kind) => new(source, target, kind, 0);
+
+	private sealed class StubReferenceIndex(params ModAssetConsumerFact[] facts) : IReferenceGraphQueryIndex
+	{
+		public ValueTask<IReadOnlyList<ModAssetConsumerFact>> FindConsumerFactsAsync(AdaptationAssetKey targetAssetKey, CancellationToken cancellationToken = default)
+			=> ValueTask.FromResult<IReadOnlyList<ModAssetConsumerFact>>(facts.Where(fact => fact.Reference.TargetAssetKey == targetAssetKey).ToArray());
+	}
 
 	private sealed class StubMappingService(params AdaptationAssetKey[] mappedKeys) : IGameDataMappingFactsService
 	{

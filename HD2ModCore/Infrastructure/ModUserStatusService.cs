@@ -6,31 +6,22 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Projects expected and actual override facts into simple Mod statuses without exposing technical identities.
 public sealed class ModUserStatusService : IModUserStatusService
 {
-	private readonly IModContentFactsService _contentFactsService;
-	private readonly IModInformationCenter? _informationCenter;
+	private readonly IModInformationCenter _informationCenter;
 	private readonly IProfileOverrideGraphService _profileGraphService;
 	private readonly IDeployedOverrideGraphService _deployedGraphService;
 
-	public ModUserStatusService(IModContentFactsService contentFactsService, IProfileOverrideGraphService profileGraphService, IDeployedOverrideGraphService deployedGraphService)
-		: this(contentFactsService, profileGraphService, deployedGraphService, null)
+	public ModUserStatusService(IModInformationCenter informationCenter, IProfileOverrideGraphService profileGraphService, IDeployedOverrideGraphService deployedGraphService)
 	{
-	}
-
-	public ModUserStatusService(IModContentFactsService contentFactsService, IProfileOverrideGraphService profileGraphService, IDeployedOverrideGraphService deployedGraphService, IModInformationCenter? informationCenter)
-	{
-		_contentFactsService = contentFactsService ?? throw new ArgumentNullException(nameof(contentFactsService));
+		_informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		_profileGraphService = profileGraphService ?? throw new ArgumentNullException(nameof(profileGraphService));
 		_deployedGraphService = deployedGraphService ?? throw new ArgumentNullException(nameof(deployedGraphService));
-		_informationCenter = informationCenter;
 	}
 
 	public async ValueTask<IReadOnlyDictionary<ModNodeId, ModUserStatus>> GetStatusesAsync(LibrarySnapshot snapshot, ProfileId? selectedProfileId, string modsRootDirectory, string? gameDataDirectory, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(snapshot);
 		var active = snapshot.ActiveProfileId is { } activeId ? snapshot.Profiles.FirstOrDefault(profile => profile.Id == activeId) : null;
-		var content = _informationCenter is null
-			? await _contentFactsService.GetLibraryFactsAsync(snapshot, modsRootDirectory, null, cancellationToken).ConfigureAwait(false)
-			: await GetAssetInventoryAsync(snapshot, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+		var content = await GetAssetInventoryAsync(snapshot, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 		ProfileOverrideGraph? expected = null;
 		if (active is not null)
 		{
@@ -52,7 +43,7 @@ public sealed class ModUserStatusService : IModUserStatusService
 		var result = new Dictionary<ModNodeId, ModContentFacts>();
 		foreach (var node in snapshot.Nodes.Values)
 		{
-			var inventory = await _informationCenter!.RequestAssetInventoryAsync(node, modsRootDirectory, new ModInformationRequest(ModInformationKind.AssetInventory, "UserStatus"), cancellationToken).ConfigureAwait(false);
+			var inventory = await _informationCenter.RequestAssetInventoryAsync(node, modsRootDirectory, new ModInformationRequest(ModInformationKind.AssetInventory, "UserStatus"), cancellationToken).ConfigureAwait(false);
 			if (inventory.Data is not null) result[node.Id] = inventory.Data;
 		}
 		return result;

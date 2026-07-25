@@ -21,16 +21,16 @@ public sealed class ProfileOverrideGraphServiceTests
 			new ProfileEntry(secondId, 1),
 		], Revision: 4);
 		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [firstId] = first, [secondId] = second }, [profile], profile.Id);
-		var content = new FakeContentFactsService(new Dictionary<ModNodeId, ModContentFacts>
+		var content = new Dictionary<ModNodeId, ModContentFacts>
 		{
 			[firstId] = CreateFacts(first, "aaaaaaaaaaaaaaaa", assetKey, "gen-a"),
 			[secondId] = CreateFacts(second, "bbbbbbbbbbbbbbbb", assetKey, "gen-b"),
-		});
+		};
 		var mapping = new FakeMappingFactsService(new GameDataMappedAssetFact(assetKey, "body", "unit", AssetTypeCategory.Model,
 		[
 			new ArchiveMetadata("target-a", "Armor", "Armor A"),
 		]));
-		var service = new ProfileOverrideGraphService(content, mapping);
+		var service = new ProfileOverrideGraphService(new FakeInformationCenter(content), mapping);
 
 		var graph = await service.BuildAsync(profile, snapshot, "unused");
 
@@ -58,16 +58,16 @@ public sealed class ProfileOverrideGraphServiceTests
 			new ProfileEntry(secondId, 1),
 		]);
 		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [firstId] = first, [secondId] = second }, [profile]);
-		var content = new FakeContentFactsService(new Dictionary<ModNodeId, ModContentFacts>
+		var content = new Dictionary<ModNodeId, ModContentFacts>
 		{
 			[firstId] = CreateFacts(first, "aaaaaaaaaaaaaaaa", firstKey, "gen-a"),
 			[secondId] = CreateFacts(second, "bbbbbbbbbbbbbbbb", secondKey, "gen-b"),
-		});
+		};
 		var target = new ArchiveMetadata("target-a", "Armor", "Armor A");
 		var mapping = new FakeMappingFactsService(
 			new GameDataMappedAssetFact(firstKey, "body", "unit", AssetTypeCategory.Model, [target]),
 			new GameDataMappedAssetFact(secondKey, "helmet", "unit", AssetTypeCategory.Model, [target]));
-		var service = new ProfileOverrideGraphService(content, mapping);
+		var service = new ProfileOverrideGraphService(new FakeInformationCenter(content), mapping);
 
 		var graph = await service.BuildAsync(profile, snapshot, "unused");
 
@@ -88,12 +88,12 @@ public sealed class ProfileOverrideGraphServiceTests
 		var second = CreateNode(secondId, "Blue");
 		var profile = new Profile(ProfileId.New(), "Profile", DateTimeOffset.UtcNow, null, [new ProfileEntry(firstId, 0), new ProfileEntry(secondId, 1)]);
 		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [firstId] = first, [secondId] = second }, [profile]);
-		var content = new FakeContentFactsService(new Dictionary<ModNodeId, ModContentFacts>
+		var content = new Dictionary<ModNodeId, ModContentFacts>
 		{
 			[firstId] = CreateFacts(first, "aaaaaaaaaaaaaaaa", material, "red"),
 			[secondId] = CreateFacts(second, "bbbbbbbbbbbbbbbb", material, "blue"),
-		});
-		var service = new ProfileOverrideGraphService(content, new FakeMappingFactsService());
+		};
+		var service = new ProfileOverrideGraphService(new FakeInformationCenter(content), new FakeMappingFactsService());
 
 		var graph = await service.BuildAsync(profile, snapshot, "unused");
 
@@ -113,13 +113,13 @@ public sealed class ProfileOverrideGraphServiceTests
 		var profile = new Profile(ProfileId.New(), "Profile", DateTimeOffset.UtcNow, null, [new ProfileEntry(nodeId, 0)], Revision: 1);
 		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, [profile]);
 		var mapping = new FakeMappingFactsService(new GameDataMappedAssetFact(assetKey, "body", "unit", AssetTypeCategory.Model, []));
-		var firstService = new ProfileOverrideGraphService(new FakeContentFactsService(new Dictionary<ModNodeId, ModContentFacts>
+		var firstService = new ProfileOverrideGraphService(new FakeInformationCenter(new Dictionary<ModNodeId, ModContentFacts>
 		{
 			[nodeId] = CreateFacts(node, "aaaaaaaaaaaaaaaa", assetKey, "gen-a"),
 		}), mapping);
 		var first = await firstService.BuildAsync(profile, snapshot, "unused");
 		var revised = await firstService.BuildAsync(profile with { Revision = 2 }, snapshot, "unused");
-		var changedContentService = new ProfileOverrideGraphService(new FakeContentFactsService(new Dictionary<ModNodeId, ModContentFacts>
+		var changedContentService = new ProfileOverrideGraphService(new FakeInformationCenter(new Dictionary<ModNodeId, ModContentFacts>
 		{
 			[nodeId] = CreateFacts(node, "aaaaaaaaaaaaaaaa", assetKey, "gen-b"),
 		}), mapping);
@@ -140,15 +140,6 @@ public sealed class ProfileOverrideGraphServiceTests
 		var groupId = new ModPatchGroupId(node.Id, archive, 0);
 		var group = new ModPatchGroupFact(groupId, 0, [new ModPatchGroupFileFact(PatchSidecarKind.Base, archive + ".patch_0", archive + ".patch_0", 1, DateTimeOffset.UtcNow)], new HashSet<AssetKey> { assetKey }, []);
 		return new ModContentFacts(node.Id, node.RelativePath, generation, DateTimeOffset.UtcNow, [group], []);
-	}
-
-	private sealed class FakeContentFactsService : IModContentFactsService
-	{
-		private readonly IReadOnlyDictionary<ModNodeId, ModContentFacts> _facts;
-		public FakeContentFactsService(IReadOnlyDictionary<ModNodeId, ModContentFacts> facts) => _facts = facts;
-		public ValueTask<ModContentFacts> GetNodeFactsAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default) => ValueTask.FromResult(_facts[node.Id]);
-		public ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetLibraryFactsAsync(LibrarySnapshot snapshot, string modsRootDirectory, IReadOnlySet<ModNodeId>? nodeIds = null, CancellationToken cancellationToken = default)
-			=> ValueTask.FromResult<IReadOnlyDictionary<ModNodeId, ModContentFacts>>(_facts.Where(pair => nodeIds is null || nodeIds.Contains(pair.Key)).ToDictionary());
 	}
 
 	private sealed class FakeMappingFactsService : IGameDataMappingFactsService

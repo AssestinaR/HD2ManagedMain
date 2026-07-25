@@ -29,7 +29,8 @@ public sealed class LibraryDerivedDataServiceTests
 				DateTimeOffset.UtcNow,
 				new Dictionary<ModNodeId, ModNode> { [node.Id] = node },
 				Array.Empty<Profile>());
-			var service = CoreServices.CreateLibraryDerivedDataService(paths);
+			await using var informationCenter = CoreServices.CreateModInformationCenter(paths);
+			var service = CoreServices.CreateLibraryDerivedDataService(paths, informationCenter);
 
 			var derived = await service.BuildAsync(snapshot, modsRoot);
 

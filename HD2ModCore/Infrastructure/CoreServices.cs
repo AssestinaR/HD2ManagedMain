@@ -15,7 +15,10 @@ public static class CoreServices
 	public static IModFileFactsProducer CreateModFileFactsProducer()
 		=> new ModFileFactsProducer(CreatePatchFileIndexBuilder());
 	public static IModInformationCenter CreateModInformationCenter(StoragePaths paths)
-		=> new ModInformationCenter(CreateModFileFactsProducer(), CreateAssetInventoryProducer(), new JsonModFileFactsCache(paths), CreateReferenceGraphProducer(paths), CreateMaintenanceAnalysisProducer(paths), CreateUnitVersionInformationProducer(paths), new JsonModInformationCache(paths), CreateAdvancedUnitAnalysisProducer(paths), CreateModThumbnailProducer(), CreateModDataIndex(paths));
+	{
+		var referenceIndex = new SqliteModFactsStore(paths);
+		return new ModInformationCenter(CreateModFileFactsProducer(), CreateAssetInventoryProducer(), new JsonModFileFactsCache(paths), CreateReferenceGraphProducer(paths), CreateMaintenanceAnalysisProducer(paths), CreateUnitVersionInformationProducer(paths), new JsonModInformationCache(paths), CreateAdvancedUnitAnalysisProducer(paths), CreateModThumbnailProducer(), CreateModDataIndex(paths), referenceIndex);
+	}
 	public static IAdvancedUnitAnalysisProducer CreateAdvancedUnitAnalysisProducer(StoragePaths paths)
 		=> new AdvancedUnitAnalysisProducer(new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), HD2ModAdaptation.Analysis.PatchAnalysisDepth.Full));
 	public static IModThumbnailProducer CreateModThumbnailProducer() => new ModThumbnailProducer();
@@ -29,6 +32,7 @@ public static class CoreServices
 	public static ISameKeyReconstructionPlanningService CreateSameKeyReconstructionPlanningService(StoragePaths paths)
 		=> new SameKeyReconstructionPlanningService(
 			CreateAssetArchiveIndexService(paths));
+	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IModSameKeyReconstructionService CreateModSameKeyReconstructionService(StoragePaths paths)
 		=> CreateModSameKeyReconstructionService(paths, CreateModInformationCenter(paths));
 	public static IModSameKeyReconstructionService CreateModSameKeyReconstructionService(StoragePaths paths, IModInformationCenter informationCenter)
@@ -38,8 +42,11 @@ public static class CoreServices
 			CreateAssetArchiveIndexService(paths),
 			CreateFileSystemArchiveHashesProvider(paths),
 			CreateAdvancedModAnalysisService(paths, informationCenter));
+	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IModRepairBatchService CreateModRepairBatchService(StoragePaths paths)
 		=> new ModRepairBatchService(paths, CreateModSameKeyReconstructionService(paths), CreateAdvancedModAnalysisService(paths), CreatePatchFileNameParser());
+	public static IModRepairBatchService CreateModRepairBatchService(StoragePaths paths, IModInformationCenter informationCenter)
+		=> new ModRepairBatchService(paths, CreateModSameKeyReconstructionService(paths, informationCenter), CreateAdvancedModAnalysisService(paths, informationCenter), CreatePatchFileNameParser());
    public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths)
 		=> new AssetArchiveIndexService(paths);
 	public static IAdvancedEquipmentIndexService CreateAdvancedEquipmentIndexService(StoragePaths paths)
@@ -53,12 +60,8 @@ public static class CoreServices
 	public static IAssetMetadataSyncService CreateAssetMetadataSyncService(StoragePaths paths)
 		=> new GitHubAssetMetadataSyncService(new HttpClient(), paths);
 	public static IPatchGroupAnalysisProvider CreatePatchGroupAnalysisProvider(StoragePaths paths)
-		=> new CachedPatchGroupAnalysisProvider(
-			new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), PatchAnalysisDepth.DependencyGraph),
-			CreateModFactsStore(paths),
-			CreatePatchFileNameParser());
-	public static IModFactsStore CreateModFactsStore(StoragePaths paths) => new SqliteModFactsStore(paths);
-	public static IModContentFactsService CreateModContentFactsService(StoragePaths paths)
+		=> new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), PatchAnalysisDepth.DependencyGraph);
+	public static IAssetInventoryProducer CreateAssetInventoryProducer(StoragePaths paths)
 		=> new ModContentFactsService(CreatePatchFileNameParser(), CreatePatchGroupAnalysisProvider(paths));
 	public static IAssetInventoryProducer CreateAssetInventoryProducer()
 		=> new ModContentFactsService(CreatePatchFileNameParser(), new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), PatchAnalysisDepth.Inventory));
@@ -68,53 +71,58 @@ public static class CoreServices
 		=> new UnitVersionInformationProducer(CreatePatchGroupAnalysisProvider(paths));
 	public static IReferenceGraphProducer CreateReferenceGraphProducer(StoragePaths paths)
 		=> new ReferenceGraphProducer(CreatePatchGroupAnalysisProvider(paths));
+	public static IReferenceGraphQueryIndex CreateReferenceGraphQueryIndex(StoragePaths paths)
+		=> new SqliteModFactsStore(paths);
 	public static IMaintenanceAnalysisProducer CreateMaintenanceAnalysisProducer(StoragePaths paths)
 		=> new MaintenanceAnalysisProducer(CreateModCompatibilityAnalyzer(paths));
+	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IAdvancedModAnalysisService CreateAdvancedModAnalysisService(StoragePaths paths)
 		=> CreateAdvancedModAnalysisService(paths, CreateModInformationCenter(paths));
 	public static IAdvancedModAnalysisService CreateAdvancedModAnalysisService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new AdvancedModAnalysisService(informationCenter, new JsonModInformationCache(paths));
-	public static IAdvancedModAnalysisCacheStore CreateAdvancedModAnalysisCacheStore(StoragePaths paths) => new SqliteModFactsStore(paths);
-
+		=> new AdvancedModAnalysisService(informationCenter);
 	public static IPatchGroupAnalysisProvider CreateDependencyGraphAnalysisProvider()
 		=> new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), HD2ModAdaptation.Analysis.PatchAnalysisDepth.DependencyGraph);
 
 	public static IPatchGroupAnalysisProvider CreateFullPatchAnalysisProvider()
 		=> new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), HD2ModAdaptation.Analysis.PatchAnalysisDepth.Full);
+	public static IPatchGraphDiagnosticsService CreatePatchGraphDiagnosticsService()
+		=> new PatchGraphDiagnosticsService(CreateDependencyGraphAnalysisProvider(), CreateFullPatchAnalysisProvider());
 	public static IGameDataMappingFactsService CreateGameDataMappingFactsService(StoragePaths paths)
 		=> new GameDataMappingFactsService(CreateAssetArchiveIndexService(paths), CreateAssetMetadataCatalogProvider(paths), paths);
+	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IProfileOverrideGraphService CreateProfileOverrideGraphService(StoragePaths paths)
-	{
-		var contentFacts = CreateModContentFactsService(paths);
-		var informationCenter = CreateModInformationCenter(paths);
-		return CreateProfileOverrideGraphService(paths, informationCenter);
-	}
+		=> CreateProfileOverrideGraphService(paths, CreateModInformationCenter(paths));
 	public static IProfileOverrideGraphService CreateProfileOverrideGraphService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> CreateProfileOverrideGraphService(paths, CreateModContentFactsService(paths), informationCenter);
-	public static IProfileOverrideGraphService CreateProfileOverrideGraphService(StoragePaths paths, IModContentFactsService contentFacts, IModInformationCenter informationCenter)
-		=> new ProfileOverrideGraphService(contentFacts, CreateGameDataMappingFactsService(paths), informationCenter);
+		=> new ProfileOverrideGraphService(informationCenter, CreateGameDataMappingFactsService(paths));
+	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IProfileMaterialDiagnosticsService CreateProfileMaterialDiagnosticsService(StoragePaths paths)
-		=> new ProfileMaterialDiagnosticsService(CreateReferenceGraphProducer(paths), CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
+		=> CreateProfileMaterialDiagnosticsService(paths, CreateModInformationCenter(paths));
 	public static IProfileMaterialDiagnosticsService CreateProfileMaterialDiagnosticsService(StoragePaths paths, IModInformationCenter informationCenter)
 		=> new ProfileMaterialDiagnosticsService(informationCenter, CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
+	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IMaterialDeliveryFactsService CreateMaterialDeliveryFactsService(StoragePaths paths)
-		=> new MaterialDeliveryFactsService(CreateModFactsStore(paths));
+		=> CreateMaterialDeliveryFactsService(paths, CreateModInformationCenter(paths));
+	public static IMaterialDeliveryFactsService CreateMaterialDeliveryFactsService(StoragePaths paths, IModInformationCenter informationCenter)
+		=> new MaterialDeliveryFactsService(informationCenter, paths);
 	public static IEquipmentUnitCatalogService CreateEquipmentUnitCatalogService(StoragePaths paths)
 		=> new EquipmentUnitCatalogService(paths);
 	public static ICrossArmorTransferCandidateService CreateCrossArmorTransferCandidateService(StoragePaths paths)
 		=> new CrossArmorTransferCandidateService(CreateAssetArchiveIndexService(paths));
+	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IAdvancedModAssetQueryService CreateAdvancedModAssetQueryService(StoragePaths paths)
-		=> new AdvancedModAssetQueryService(CreateModFactsStore(paths), CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
+		=> CreateAdvancedModAssetQueryService(paths, CreateModInformationCenter(paths));
+	public static IAdvancedModAssetQueryService CreateAdvancedModAssetQueryService(StoragePaths paths, IModInformationCenter informationCenter)
+		=> new AdvancedModAssetQueryService(informationCenter, paths, CreateReferenceGraphQueryIndex(paths), CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
 	public static IMaterialPackagingApplicationService CreateMaterialPackagingApplicationService()
 		=> new MaterialPackagingApplicationService(CreatePatchFileNameParser());
 	public static IMaterialDependencyValidator CreateMaterialDependencyValidator()
 		=> new MaterialDependencyValidator(CreatePatchEntryPayloadReader(), new StingrayMaterialReferenceReader());
+	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths)
-		=> CreateLibraryDerivedDataService(paths, null);
-	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths, IModInformationCenter? informationCenter)
+		=> CreateLibraryDerivedDataService(paths, CreateModInformationCenter(paths));
+	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths, IModInformationCenter informationCenter)
 	{
-		var contentFacts = CreateModContentFactsService(paths);
-		return new LibraryDerivedDataService(contentFacts, new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths)), informationCenter);
+		return new LibraryDerivedDataService(informationCenter, new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths)));
 	}
    public static IReplacementTargetDeriver CreateReplacementTargetDeriver(StoragePaths paths)
 		=> new ReplacementTargetDeriver(paths, CreateAssetArchiveIndexService(paths));
@@ -132,23 +140,32 @@ public static class CoreServices
 		=> new JsonActivationStateStore();
 	public static IDeployedOverrideGraphService CreateDeployedOverrideGraphService()
 		=> new DeployedOverrideGraphService(CreateActivationStateStore(), CreatePatchFileNameParser());
+	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IModUserStatusService CreateModUserStatusService(StoragePaths paths)
 	{
-		var contentFacts = CreateModContentFactsService(paths);
 		var center = CreateModInformationCenter(paths);
-		return new ModUserStatusService(contentFacts, CreateProfileOverrideGraphService(paths, contentFacts, center), CreateDeployedOverrideGraphService(), center);
+		return new ModUserStatusService(center, CreateProfileOverrideGraphService(paths, center), CreateDeployedOverrideGraphService());
 	}
+	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IGameDataArchiveBrowserService CreateGameDataArchiveBrowserService(StoragePaths paths)
-		=> new GameDataArchiveBrowserService(CreateAssetArchiveIndexService(paths), CreateModContentFactsService(paths), CreateGameDataMappingFactsService(paths), CreateDeployedOverrideGraphService());
+		=> CreateGameDataArchiveBrowserService(paths, CreateModInformationCenter(paths));
+	public static IGameDataArchiveBrowserService CreateGameDataArchiveBrowserService(StoragePaths paths, IModInformationCenter informationCenter)
+		=> new GameDataArchiveBrowserService(CreateAssetArchiveIndexService(paths), informationCenter, CreateGameDataMappingFactsService(paths), CreateDeployedOverrideGraphService());
 	public static IApplyExecutor CreateApplyExecutor()
 		=> new ApplyExecutor(CreatePatchStateScanner(), CreatePatchFileNameParser(), CreateActivationStateStore());
 	public static DeploymentCapabilityService CreateDeploymentCapabilityService() => new();
+	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths)
-		=> new ProfileApplyService(CreateModInformationCenter(paths), CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService());
+		=> CreateProfileApplyService(paths, CreateModInformationCenter(paths));
+	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths, IModInformationCenter informationCenter)
+		=> new ProfileApplyService(informationCenter, CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService());
+	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IProfileDeploymentCoordinator CreateProfileDeploymentCoordinator(StoragePaths paths, Func<string?> gameDataDirectoryProvider, IDeploymentDelay? delay = null, TimeSpan? bufferDuration = null)
+		=> CreateProfileDeploymentCoordinator(paths, gameDataDirectoryProvider, CreateModInformationCenter(paths), delay, bufferDuration);
+	public static IProfileDeploymentCoordinator CreateProfileDeploymentCoordinator(StoragePaths paths, Func<string?> gameDataDirectoryProvider, IModInformationCenter informationCenter, IDeploymentDelay? delay = null, TimeSpan? bufferDuration = null)
 		=> new ProfileDeploymentCoordinator(
 			CreateModLibraryManager(paths),
-			CreateProfileApplyService(paths),
+			CreateProfileApplyService(paths, informationCenter),
 			CreateApplyExecutor(),
 			paths,
 			gameDataDirectoryProvider,
@@ -160,16 +177,20 @@ public static class CoreServices
 		=> new ConflictDetector(CreateAssetKeySetProvider(paths));
    public static IModLibraryStore CreateModLibraryStore(StoragePaths paths)
 		=> new JsonModLibraryStore(paths);
+	[Obsolete("Use the overload accepting IModInformationCenter so the application can share one center.")]
    public static IModLibraryImporter CreateModLibraryImporter(StoragePaths paths)
+		=> CreateModLibraryImporter(paths, CreateModInformationCenter(paths));
+   public static IModLibraryImporter CreateModLibraryImporter(StoragePaths paths, IModInformationCenter informationCenter)
 		=> new ModLibraryImporter(
 			paths,
 			CreateObjectTreeImporter(),
 			CreateArchiveObjectTreeImporter(),
 			CreateModLibraryStore(paths),
-			CreatePatchGroupAnalysisProvider(paths),
-			CreateModFactsStore(paths));
+			informationCenter: informationCenter);
    public static IModLibraryManager CreateModLibraryManager(StoragePaths paths)
-		=> new ModLibraryManager(paths, CreateModLibraryStore(paths), CreateModFactsStore(paths));
+		=> new ModLibraryManager(paths, CreateModLibraryStore(paths));
+	public static IModLibrarySynchronizer CreateModLibrarySynchronizer()
+		=> new ModLibrarySynchronizer(CreatePatchFileNameParser());
    public static IModExporter CreateModExporter(StoragePaths paths)
 		=> new ModExporter(paths);
    public static IModManifestImporter CreateModManifestImporter(StoragePaths paths)

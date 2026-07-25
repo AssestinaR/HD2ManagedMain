@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using HD2ModCore.Domain;
+using HD2ModCore.Application;
 using HD2ModCore.Infrastructure;
 using HD2ModManager.Models;
 
@@ -36,7 +37,8 @@ namespace HD2ModManager.Services
         private readonly StoragePaths _paths;
         private readonly HD2ModCore.Application.IModLibraryManager _manager;
         private readonly HD2ModCore.Application.ILibraryDerivedDataService _derivedDataService;
-        private readonly HD2ModCore.Application.IModInformationCenter? _informationCenter;
+        private readonly HD2ModCore.Application.IModInformationCenter _informationCenter;
+        private readonly HD2ModCore.Application.IModLibrarySynchronizer _synchronizer;
         private LibrarySnapshot _snapshot;
         private DerivedLibraryData _derivedData;
         private readonly Dictionary<string, ModEntity> _byGuid = new();
@@ -46,15 +48,17 @@ namespace HD2ModManager.Services
         public LibrarySnapshot Snapshot => _snapshot;
         public DerivedLibraryData DerivedData => _derivedData;
         public string ModsRootDirectory => _paths.ModsDirectory;
+        public HD2ModCore.Application.IModInformationCenter InformationCenter => _informationCenter;
         public event EventHandler<ModContentFactsChangedEventArgs>? ModContentFactsChanged;
         public event EventHandler? SnapshotChanged;
 
-        public ModLibraryService(string libraryPath, HD2ModCore.Application.IModInformationCenter? informationCenter = null)
+        public ModLibraryService(string libraryPath, HD2ModCore.Application.IModInformationCenter informationCenter)
         {
             _paths = SettingsService.CreateStoragePaths();
             _manager = CoreServices.CreateModLibraryManager(_paths);
-            _informationCenter = informationCenter;
-            _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, informationCenter);
+            _informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
+            _synchronizer = CoreServices.CreateModLibrarySynchronizer();
+            _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, _informationCenter);
             _snapshot = EmptySnapshot();
             _derivedData = EmptyDerivedData();
         }
@@ -68,6 +72,21 @@ namespace HD2ModManager.Services
 
         public Task RefreshDerivedDataAsync(CancellationToken cancellationToken = default)
             => RefreshDerivedDataAsync(guids: null, ModContentChangeKind.Changed, cancellationToken);
+
+        public async Task<bool> SynchronizeAsync(CancellationToken cancellationToken = default)
+        {
+            var result = await _synchronizer.SynchronizeAsync(_snapshot, _paths.ModsDirectory, cancellationToken).ConfigureAwait(false);
+            if (!result.FilesystemChanged) return false;
+
+            _snapshot = result.Snapshot;
+            await CoreServices.CreateModLibraryStore(_paths).SaveAsync(_snapshot, cancellationToken).ConfigureAwait(false);
+            foreach (var nodeId in result.ChangedNodeIds.Concat(result.MissingNodeIds))
+                await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+            RebuildIndex(buildDerivedData: false);
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            await RefreshDerivedDataAsync(result.AddedNodeIds.Concat(result.ChangedNodeIds).Select(id => id.Value.ToString("N")), ModContentChangeKind.Changed, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
 
         public async Task RefreshDerivedDataAsync(IEnumerable<string>? guids, CancellationToken cancellationToken = default)
             => await RefreshDerivedDataAsync(guids, ModContentChangeKind.Changed, cancellationToken).ConfigureAwait(false);
@@ -136,9 +155,7 @@ namespace HD2ModManager.Services
         {
             if (!TryParseNodeId(guid, out var nodeId)) return false;
             _snapshot = _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true).AsTask().GetAwaiter().GetResult();
-            CoreServices.CreateModFactsStore(_paths).DeleteAsync(nodeId).AsTask().GetAwaiter().GetResult();
-			new JsonModFileFactsCache(_paths).DeleteNodeAsync(nodeId).AsTask().GetAwaiter().GetResult();
-            _informationCenter?.InvalidateNodeAsync(nodeId).AsTask().GetAwaiter().GetResult();
+            _informationCenter.InvalidateNodeAsync(nodeId).AsTask().GetAwaiter().GetResult();
 			ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
             var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
             nodes.Remove(nodeId);
@@ -183,6 +200,26 @@ namespace HD2ModManager.Services
             if (string.IsNullOrWhiteSpace(maybeRelative)) return string.Empty;
             if (Path.IsPathRooted(maybeRelative)) return maybeRelative;
             return Path.GetFullPath(Path.Combine(_paths.ModsDirectory, maybeRelative.Replace('/', Path.DirectorySeparatorChar)));
+        }
+
+        // 缩略图源事实的唯一 UI 入口；ThumbnailService 不负责发现或判定图像来源。
+        public ValueTask<ModInformationResult<ModThumbnailFacts>> RequestThumbnailAsync(
+            string guid,
+            string source = "Manager",
+            bool requireFresh = false,
+            CancellationToken cancellationToken = default)
+        {
+            if (!TryParseNodeId(guid, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var node))
+            {
+                var issue = new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailNodeUnavailable", "The requested Mod is not present in the library.", guid);
+                return ValueTask.FromResult(new ModInformationResult<ModThumbnailFacts>(null, ModInformationStatus.Unavailable, ModInformationKind.Thumbnail, null, new[] { issue }));
+            }
+
+            return _informationCenter.RequestThumbnailAsync(
+                node,
+                _paths.ModsDirectory,
+                new ModInformationRequest(ModInformationKind.Thumbnail, source, RequireFresh: requireFresh),
+                cancellationToken);
         }
 
         public void ReplaceSnapshot(LibrarySnapshot snapshot, bool buildDerivedData = false)

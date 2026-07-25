@@ -7,15 +7,9 @@ namespace HD2ModCore.Application;
 public interface IAdvancedModAnalysisService
 {
 	ValueTask<AdvancedModAnalysisState> GetStateAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default);
+	ValueTask<AdvancedModAnalysisState> GetCachedStateAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default);
 	ValueTask<AdvancedModAnalysisState> AnalyzeAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default);
 	ValueTask<IReadOnlyList<PatchGroupAnalysis>> GetRequiredAnalysesAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default);
-}
-
-// Purpose: Persists the optional full-model analysis separately from imported lightweight facts.
-public interface IAdvancedModAnalysisCacheStore
-{
-	ValueTask<PatchGroupAnalysisCacheEntry?> TryLoadAdvancedAsync(ModNodeId nodeId, CancellationToken cancellationToken = default);
-	ValueTask SaveAdvancedAsync(PatchGroupAnalysisCacheEntry entry, CancellationToken cancellationToken = default);
 }
 
 public sealed record AdvancedModAnalysisState(

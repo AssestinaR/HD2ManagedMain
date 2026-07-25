@@ -9,17 +9,19 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 	private const ulong UnitTypeId = 0xe0a48d0be9a7453f;
 	private const ulong MaterialTypeId = 0xeac0b497876adedf;
 	private const ulong TextureTypeId = 0xcd4238c6a0c69e32;
-	private readonly IModFactsStore factsStore;
+	private readonly IModInformationCenter informationCenter;
+	private readonly string modsRootDirectory;
 
-	public MaterialDeliveryFactsService(IModFactsStore factsStore)
+	public MaterialDeliveryFactsService(IModInformationCenter informationCenter, HD2ModCore.Infrastructure.StoragePaths paths)
 	{
-		this.factsStore = factsStore ?? throw new ArgumentNullException(nameof(factsStore));
+		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
+		modsRootDirectory = (paths ?? throw new ArgumentNullException(nameof(paths))).ModsDirectory;
 	}
 
 	public async ValueTask<MaterialDeliveryFacts> GetAsync(ModNodeId nodeId, LibrarySnapshot librarySnapshot, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(librarySnapshot);
-		var source = await factsStore.TryLoadAsync(nodeId, cancellationToken).ConfigureAwait(false);
+		var source = await LoadAnalysisAsync(nodeId, librarySnapshot, cancellationToken).ConfigureAwait(false);
 		if (source is null || source.Version <= 0 || source.Analyses.Any(analysis => analysis.Depth is not (PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full)))
 		{
 			return new MaterialDeliveryFacts(nodeId, MaterialDeliveryMode.Unknown, 0, 0, 0, 0, 0, Array.Empty<MaterialDeliveryCandidate>(), new[] { "请先执行高级分析以建立完整材质引用缓存。" });
@@ -59,7 +61,7 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 		foreach (var node in snapshot.Nodes.Values.Where(node => node.Id != sourceNodeId).OrderBy(node => node.Metadata.Name, StringComparer.OrdinalIgnoreCase))
 		{
 			cancellationToken.ThrowIfCancellationRequested();
-			var cached = await factsStore.TryLoadAsync(node.Id, cancellationToken).ConfigureAwait(false);
+			var cached = await LoadAnalysisAsync(node.Id, snapshot, cancellationToken).ConfigureAwait(false);
 			if (cached is null || cached.Version <= 0 || cached.Analyses.Any(analysis => analysis.Depth is not (PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full))) continue;
 			var graph = BuildGraph(cached);
 			var covered = requiredExternalMaterials.Intersect(graph.Materials).ToHashSet();
@@ -73,6 +75,19 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 			.ThenBy(candidate => candidate.MissingTextureCount)
 			.ThenBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
 			.ToArray();
+	}
+
+	private async ValueTask<PatchGroupAnalysisCacheEntry?> LoadAnalysisAsync(ModNodeId nodeId, LibrarySnapshot snapshot, CancellationToken cancellationToken)
+	{
+		if (!snapshot.Nodes.TryGetValue(nodeId, out var node)) return null;
+		var result = await informationCenter.RequestAdvancedUnitAnalysisAsync(
+			node,
+			modsRootDirectory!,
+			new ModInformationRequest(ModInformationKind.AdvancedUnitAnalysis, "MaterialDelivery"),
+			cancellationToken).ConfigureAwait(false);
+		return result.Data is null
+			? null
+			: new PatchGroupAnalysisCacheEntry(3, result.Data.NodeId, result.Data.RelativePath, [], result.Data.BuiltUtc, result.Data.Analyses);
 	}
 
 	private static MaterialDeliveryMode ResolveMode(int embeddedCount, int externalCount, int missingEmbeddedTextureCount, IReadOnlyList<MaterialDeliveryCandidate> candidates)

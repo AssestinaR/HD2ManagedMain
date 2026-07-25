@@ -25,6 +25,8 @@ namespace HD2ModManager.ViewModels
         private string? _selectionAnchorGuid;
         private CancellationTokenSource? _searchCancellation;
         private CancellationTokenSource? _thumbnailCancellation;
+        private int _lifecycleVersion;
+        private bool _disposed;
 
         public BulkObservableCollection<ModCardViewModel> Items { get; } = new();
 
@@ -76,9 +78,11 @@ namespace HD2ModManager.ViewModels
             _notifications = notifications;
             _selection = selection;
             _hideSelectedProfileMembers = hideSelectedProfileMembers;
-            if (_selection != null) _selection.SelectionChanged += (_, _) => SyncSelectionFromCoordinator();
-            if (_profiles != null) _profiles.Changed += (_, _) => QueueStatusRefresh();
-            if (_derivedState != null) _derivedState.SnapshotChanged += (_, _) => RunOnUiThread(QueueStatusRefresh);
+            if (_selection != null) _selection.SelectionChanged += OnSelectionChanged;
+            if (_profiles != null) _profiles.Changed += OnProfileChanged;
+            if (_derivedState != null) _derivedState.SnapshotChanged += OnDerivedSnapshotChanged;
+            _library.SnapshotChanged += OnLibrarySnapshotChanged;
+            _library.ModContentFactsChanged += OnLibraryContentFactsChanged;
             RefreshCommand = new RelayCommand(Refresh);
             RemoveModCommand = new RelayCommand(() => { /* parameter passed via CommandParameter not used here */ });
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
@@ -102,6 +106,15 @@ namespace HD2ModManager.ViewModels
             if (_hideSelectedProfileMembers == visible) return;
             _hideSelectedProfileMembers = visible;
             Refresh();
+        }
+
+        public IReadOnlyList<string> GetSelectedIdsInDisplayOrder()
+            => Items.Where(card => card.IsSelected).Select(card => card.Mod.Guid).ToList();
+
+        public void ResetDragFilters()
+        {
+            Query = string.Empty;
+            ShowOnlyOutdated = false;
         }
 
         public void SelectRow(ModCardViewModel card, ModifierKeys modifiers)
@@ -208,7 +221,7 @@ namespace HD2ModManager.ViewModels
             try
             {
                 await Task.Delay(180, cancellationToken);
-                if (!cancellationToken.IsCancellationRequested) Refresh();
+                if (!_disposed && !cancellationToken.IsCancellationRequested && _searchCancellation?.Token == cancellationToken) Refresh();
             }
             catch (OperationCanceledException) { }
         }
@@ -223,6 +236,7 @@ namespace HD2ModManager.ViewModels
 
         private void QueueStatusRefresh()
         {
+            if (_disposed) return;
             RefreshUserStatuses();
             Refresh();
         }
@@ -230,16 +244,49 @@ namespace HD2ModManager.ViewModels
         private async void QueueThumbnailRefresh()
         {
             if (!SettingsService.GetEnableLibraryImages()) return;
+            var version = _lifecycleVersion;
             _thumbnailCancellation?.Cancel();
             _thumbnailCancellation?.Dispose();
-            _thumbnailCancellation = new CancellationTokenSource();
+            var cancellation = new CancellationTokenSource();
+            _thumbnailCancellation = cancellation;
+            var cancellationToken = cancellation.Token;
             try
             {
-                var generated = await ThumbnailService.EnsureThumbnailsAsync(_library.All().Select(mod => mod.Image), 72, _thumbnailCancellation.Token);
-                if (generated && !_thumbnailCancellation.IsCancellationRequested) Refresh();
+                var generated = false;
+                foreach (var mod in _library.All())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var result = await _library.RequestThumbnailAsync(mod.Guid, "Library", cancellationToken: cancellationToken);
+                    if (result.Data is { } facts)
+                        generated |= await ThumbnailService.EnsureThumbnailAsync(facts, 72, cancellationToken);
+                }
+                if (generated && IsCurrentThumbnailRefresh(version, cancellation)) Refresh();
             }
             catch (OperationCanceledException) { }
         }
+
+        private void OnSelectionChanged(object? sender, EventArgs e) => SyncSelectionFromCoordinator();
+
+        private void OnProfileChanged(object? sender, EventArgs e) => QueueStatusRefresh();
+
+        private void OnDerivedSnapshotChanged(object? sender, DerivedStateSnapshot e)
+            => RunOnUiThread(QueueStatusRefresh);
+
+        private void OnLibrarySnapshotChanged(object? sender, EventArgs e)
+            => RunOnUiThread(RefreshAndQueueThumbnailRefresh);
+
+        private void OnLibraryContentFactsChanged(object? sender, ModContentFactsChangedEventArgs e)
+            => RunOnUiThread(RefreshAndQueueThumbnailRefresh);
+
+        private void RefreshAndQueueThumbnailRefresh()
+        {
+            if (_disposed) return;
+            Refresh();
+            QueueThumbnailRefresh();
+        }
+
+        private bool IsCurrentThumbnailRefresh(int version, CancellationTokenSource cancellation)
+            => !_disposed && version == _lifecycleVersion && ReferenceEquals(_thumbnailCancellation, cancellation) && !cancellation.IsCancellationRequested;
 
         private static void RunOnUiThread(Action action)
         {
@@ -319,6 +366,14 @@ namespace HD2ModManager.ViewModels
 
         public override void Dispose()
         {
+            if (_disposed) return;
+            _disposed = true;
+            _lifecycleVersion++;
+            _selection?.SelectionChanged -= OnSelectionChanged;
+            if (_profiles != null) _profiles.Changed -= OnProfileChanged;
+            if (_derivedState != null) _derivedState.SnapshotChanged -= OnDerivedSnapshotChanged;
+            _library.SnapshotChanged -= OnLibrarySnapshotChanged;
+            _library.ModContentFactsChanged -= OnLibraryContentFactsChanged;
             _searchCancellation?.Cancel();
             _searchCancellation?.Dispose();
             _searchCancellation = null;

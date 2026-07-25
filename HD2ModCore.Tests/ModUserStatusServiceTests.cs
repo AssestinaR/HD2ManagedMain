@@ -20,13 +20,13 @@ public sealed class ModUserStatusServiceTests
 			[secondId] = CreateNode(secondId, "Second"),
 			[thirdId] = CreateNode(thirdId, "Stored"),
 		}, [profile], profile.Id);
-		var content = new FakeContentFactsService(snapshot.Nodes.Keys.ToDictionary(id => id, id => Facts(snapshot.Nodes[id])));
+		var contentFacts = snapshot.Nodes.Keys.ToDictionary(id => id, id => Facts(snapshot.Nodes[id]));
 		var graph = new FakeProfileGraphService(new ProfileOverrideGraph(profile.Id, profile.Revision, "graph", "mapping", DateTimeOffset.UtcNow, new Dictionary<ModNodeId, string>(), [], [],
 		[
 			new ProfileModCoverage(firstId, "First", 2, 0, 2),
 			new ProfileModCoverage(secondId, "Second", 2, 1, 1),
 		], []));
-		var service = new ModUserStatusService(content, graph, new FakeDeployedGraphService());
+		var service = new ModUserStatusService(new FakeInformationCenter(contentFacts), graph, new FakeDeployedGraphService());
 
 		var statuses = await service.GetStatusesAsync(snapshot, profile.Id, "mods", null);
 
@@ -42,13 +42,6 @@ public sealed class ModUserStatusServiceTests
 	private static ModContentFacts Facts(ModNode node)
 		=> new(node.Id, node.RelativePath, "content", DateTimeOffset.UtcNow, [], []);
 
-	private sealed class FakeContentFactsService : IModContentFactsService
-	{
-		private readonly IReadOnlyDictionary<ModNodeId, ModContentFacts> _facts;
-		public FakeContentFactsService(IReadOnlyDictionary<ModNodeId, ModContentFacts> facts) => _facts = facts;
-		public ValueTask<ModContentFacts> GetNodeFactsAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default) => ValueTask.FromResult(_facts[node.Id]);
-		public ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetLibraryFactsAsync(LibrarySnapshot snapshot, string modsRootDirectory, IReadOnlySet<ModNodeId>? nodeIds = null, CancellationToken cancellationToken = default) => ValueTask.FromResult(_facts);
-	}
 
 	private sealed class FakeProfileGraphService : IProfileOverrideGraphService
 	{

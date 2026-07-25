@@ -21,7 +21,7 @@ public sealed class ProfileMaterialDiagnosticsServiceTests
 		var material = new AdaptationAssetKey(MaterialType, 2);
 		var analysis = Analysis([new AdaptationAssetKey(UnitType, 1)], [Reference(new AdaptationAssetKey(UnitType, 1), material, PatchReferenceKind.UnitMaterial)]);
 		var profile = ProfileFor(model);
-		var service = new ProfileMaterialDiagnosticsService(new FakeProvider(new Dictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> { [model.Id] = [analysis] }), new EmptyMappingService());
+		var service = new ProfileMaterialDiagnosticsService(new FakeInformationCenter(new Dictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> { [model.Id] = [analysis] }), new EmptyMappingService());
 
 		var result = await service.BuildAsync(profile, Snapshot(profile, model), "unused");
 
@@ -47,7 +47,7 @@ public sealed class ProfileMaterialDiagnosticsServiceTests
 			[red.Id] = [Analysis([material, redTexture], [Reference(material, redTexture, PatchReferenceKind.MaterialTexture)])],
 			[blue.Id] = [Analysis([material, blueTexture], [Reference(material, blueTexture, PatchReferenceKind.MaterialTexture)])],
 		};
-		var service = new ProfileMaterialDiagnosticsService(new FakeProvider(data), new EmptyMappingService());
+		var service = new ProfileMaterialDiagnosticsService(new FakeInformationCenter(data), new EmptyMappingService());
 
 		var result = await service.BuildAsync(profile, Snapshot(profile, model, red, blue), "unused");
 
@@ -63,12 +63,6 @@ public sealed class ProfileMaterialDiagnosticsServiceTests
 	private static PatchGroupAnalysis Analysis(IReadOnlyList<AdaptationAssetKey> assets, IReadOnlyList<PatchAssetReference> references)
 		=> new(new PatchGroupInput("unused.patch_0"), assets.Select(key => new PatchAssetFact(key, "unused.patch_0", 0, 0, 0, key.TypeId == UnitType, false, key.TypeId == MaterialType, key.TypeId == TextureType)).ToArray(), references, [], DateTimeOffset.UtcNow, "patch-group-v2");
 	private static PatchAssetReference Reference(AdaptationAssetKey source, AdaptationAssetKey target, PatchReferenceKind kind) => new(source, target, kind, 0);
-
-	private sealed class FakeProvider(IReadOnlyDictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> analyses) : IPatchGroupAnalysisProvider
-	{
-		public ValueTask<IReadOnlyList<PatchGroupAnalysis>> AnalyzeNodeAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
-			=> ValueTask.FromResult(analyses.TryGetValue(node.Id, out var result) ? result : Array.Empty<PatchGroupAnalysis>());
-	}
 
 	private sealed class EmptyMappingService : IGameDataMappingFactsService
 	{

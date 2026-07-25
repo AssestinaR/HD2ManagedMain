@@ -14,7 +14,8 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	private readonly IObjectTreeImporter _folderImporter;
 	private readonly IArchiveObjectTreeImporter _archiveImporter;
 	private readonly IModLibraryStore _store;
-	private readonly IModFactsStore? _modFactsStore;
+	private readonly IModInformationCenter? _informationCenter;
+	private readonly IModDerivedDataCleanup? _legacyCleanup;
 	private readonly PatchFileNormalizer _normalizer;
 	private readonly SevenZipArchiveExtractor _archiveExtractor;
 	private readonly ImportTemporaryDirectoryManager _temporaryDirectories;
@@ -25,13 +26,15 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		IArchiveObjectTreeImporter archiveImporter,
 		IModLibraryStore store,
 		IPatchGroupAnalysisProvider? patchFactsProvider = null,
-		IModFactsStore? modFactsStore = null)
+		IModDerivedDataCleanup? derivedDataCleanup = null,
+		IModInformationCenter? informationCenter = null)
 	{
 		_paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		_folderImporter = folderImporter ?? throw new ArgumentNullException(nameof(folderImporter));
 		_archiveImporter = archiveImporter ?? throw new ArgumentNullException(nameof(archiveImporter));
 		_store = store ?? throw new ArgumentNullException(nameof(store));
-		_modFactsStore = modFactsStore;
+		_informationCenter = informationCenter;
+		_legacyCleanup = derivedDataCleanup;
 		_normalizer = new PatchFileNormalizer(new PatchFileNameParser());
 		_archiveExtractor = new SevenZipArchiveExtractor();
 		_temporaryDirectories = new ImportTemporaryDirectoryManager(_paths);
@@ -104,7 +107,10 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		{
 			try
 			{
-				if (_modFactsStore is not null) await _modFactsStore.DeleteAsync(node.Id).ConfigureAwait(false);
+				if (_informationCenter is not null)
+					await _informationCenter.InvalidateNodeAsync(node.Id).ConfigureAwait(false);
+				else if (_legacyCleanup is not null)
+					await _legacyCleanup.DeleteAsync(node.Id).ConfigureAwait(false);
 				var directory = Path.Combine(_paths.ModsDirectory, node.RelativePath);
 				if (Directory.Exists(directory))
 				{

@@ -26,7 +26,7 @@ namespace HD2ModManager.Services
             _onInfo = onInfo;
             _onError = onError;
             _paths = SettingsService.CreateStoragePaths();
-            _informationCenter = informationCenter ?? CoreServices.CreateModInformationCenter(_paths);
+            _informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter), "ImportService requires the shared IModInformationCenter.");
         }
 
         public Task EnqueueImportsAsync(IEnumerable<string> paths, CancellationToken ct = default)
@@ -47,7 +47,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var importer = CoreServices.CreateModLibraryImporter(_paths);
+                var importer = CoreServices.CreateModLibraryImporter(_paths, _informationCenter);
                 var before = _library.Snapshot.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
                 ImportResult result;
                 if (Directory.Exists(path))
@@ -77,6 +77,15 @@ namespace HD2ModManager.Services
                     .Where(node => before.TryGetValue(node.Id, out var previous) && !Equals(previous, node))
                     .Select(node => node.Id)
                     .ToArray();
+                foreach (var nodeId in importedGuids
+                    .Select(guid => Guid.TryParse(guid, out var value) ? new ModNodeId(value) : (ModNodeId?)null)
+                    .Concat(changedExistingNodeIds.Select(id => (ModNodeId?)id))
+                    .Where(id => id.HasValue)
+                    .Select(id => id!.Value)
+                    .Distinct())
+                {
+                    await _informationCenter.InvalidateNodeAsync(nodeId, ct).ConfigureAwait(false);
+                }
                 if (notifyLibraryChanged) _library.NotifyImportCompleted();
                 _onInfo?.Invoke($"Imported {result.SourceDisplayName}");
                 return importedGuids.Where(g => _library.Get(g) != null).ToList();

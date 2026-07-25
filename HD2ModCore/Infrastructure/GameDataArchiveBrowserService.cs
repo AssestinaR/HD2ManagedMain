@@ -7,14 +7,14 @@ namespace HD2ModCore.Infrastructure;
 public sealed class GameDataArchiveBrowserService : IGameDataArchiveBrowserService
 {
 	private readonly IAssetArchiveIndexService _indexService;
-	private readonly IModContentFactsService _contentFactsService;
+	private readonly IModInformationCenter _informationCenter;
 	private readonly IGameDataMappingFactsService _mappingFactsService;
 	private readonly IDeployedOverrideGraphService _deployedGraphService;
 
-	public GameDataArchiveBrowserService(IAssetArchiveIndexService indexService, IModContentFactsService contentFactsService, IGameDataMappingFactsService mappingFactsService, IDeployedOverrideGraphService deployedGraphService)
+	public GameDataArchiveBrowserService(IAssetArchiveIndexService indexService, IModInformationCenter informationCenter, IGameDataMappingFactsService mappingFactsService, IDeployedOverrideGraphService deployedGraphService)
 	{
 		_indexService = indexService ?? throw new ArgumentNullException(nameof(indexService));
-		_contentFactsService = contentFactsService ?? throw new ArgumentNullException(nameof(contentFactsService));
+		_informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		_mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
 		_deployedGraphService = deployedGraphService ?? throw new ArgumentNullException(nameof(deployedGraphService));
 	}
@@ -24,7 +24,7 @@ public sealed class GameDataArchiveBrowserService : IGameDataArchiveBrowserServi
 		var fingerprint = await _indexService.GetFingerprintAsync(cancellationToken).ConfigureAwait(false);
 		if (fingerprint is null) return null;
 		var archives = await _indexService.GetArchiveSummariesAsync(cancellationToken).ConfigureAwait(false);
-		var content = await _contentFactsService.GetLibraryFactsAsync(snapshot, modsRootDirectory, null, cancellationToken).ConfigureAwait(false);
+		var content = await GetAssetInventoryAsync(snapshot, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 		var allKeys = content.Values.SelectMany(facts => facts.PatchGroups).SelectMany(group => group.AssetKeys).ToHashSet();
 		var mapping = await _mappingFactsService.MapAsync(allKeys, cancellationToken).ConfigureAwait(false);
 		var deployed = await _deployedGraphService.BuildAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
@@ -73,6 +73,17 @@ public sealed class GameDataArchiveBrowserService : IGameDataArchiveBrowserServi
 			deployed.Issues.Where(issue => issue.NodeId is { } nodeId && GetValues(modsByArchive, archive.PackageName).Contains(nodeId)).ToList()))).ToList();
 		var names = snapshot.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value.Metadata.Name);
 		return new GameDataArchiveBrowserSnapshot(fingerprint, snapshot.ActiveProfileId, items, names, mapping.Issues.Concat(deployed.Issues).ToList());
+	}
+
+	private async ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetAssetInventoryAsync(LibrarySnapshot snapshot, string modsRootDirectory, CancellationToken cancellationToken)
+	{
+		var result = new Dictionary<ModNodeId, ModContentFacts>();
+		foreach (var node in snapshot.Nodes.Values)
+		{
+			var inventory = await _informationCenter.RequestAssetInventoryAsync(node, modsRootDirectory, new ModInformationRequest(ModInformationKind.AssetInventory, "GameDataArchiveBrowser"), cancellationToken).ConfigureAwait(false);
+			if (inventory.Data is not null) result[node.Id] = inventory.Data;
+		}
+		return result;
 	}
 
 	private static HashSet<T> GetSet<T>(IDictionary<string, HashSet<T>> dictionary, string key) where T : notnull

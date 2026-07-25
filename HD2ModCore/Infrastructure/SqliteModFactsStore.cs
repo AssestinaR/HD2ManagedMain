@@ -1,4 +1,3 @@
-using System.Text.Json;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
@@ -7,88 +6,12 @@ using Microsoft.Data.Sqlite;
 namespace HD2ModCore.Infrastructure;
 
 // Purpose: Stores stable per-Mod patch assets, references and evidence in an independently versioned SQLite database.
-public sealed class SqliteModFactsStore : IModFactsStore, IAdvancedModAnalysisCacheStore
+public sealed class SqliteModFactsStore : IReferenceGraphQueryIndex, IReferenceGraphIndexWriter, IModDerivedDataCleanup
 {
 	private const int SchemaVersion = 3;
-	private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 	private readonly StoragePaths paths;
 
 	public SqliteModFactsStore(StoragePaths paths) => this.paths = paths ?? throw new ArgumentNullException(nameof(paths));
-
-	public async ValueTask<PatchGroupAnalysisCacheEntry?> TryLoadAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)
-	{
-		await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-		await using var command = connection.CreateCommand();
-		command.CommandText = "SELECT cache_json FROM mod_fact_snapshots WHERE node_id = $node";
-		command.Parameters.AddWithValue("$node", nodeId.Value.ToString("N"));
-		var json = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
-		return json is null ? null : JsonSerializer.Deserialize<PatchGroupAnalysisCacheEntry>(json, JsonOptions);
-	}
-
-	public async ValueTask SaveAsync(PatchGroupAnalysisCacheEntry entry, CancellationToken cancellationToken = default)
-	{
-		ArgumentNullException.ThrowIfNull(entry);
-		await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-		await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-		var node = entry.NodeId.Value.ToString("N");
-		await ExecuteAsync(connection, transaction, "DELETE FROM asset_references WHERE node_id = $node; DELETE FROM mod_assets WHERE node_id = $node; DELETE FROM patch_groups WHERE node_id = $node;", node, cancellationToken).ConfigureAwait(false);
-		foreach (var analysis in entry.Analyses)
-		{
-			var groupId = analysis.Input.PatchTocFilePath;
-			await using (var groupCommand = connection.CreateCommand())
-			{
-				groupCommand.Transaction = (SqliteTransaction)transaction;
-				groupCommand.CommandText = "INSERT INTO patch_groups(group_id,node_id,patch_path,analyzer_version) VALUES($group,$node,$path,$version)";
-				groupCommand.Parameters.AddWithValue("$group", groupId); groupCommand.Parameters.AddWithValue("$node", node); groupCommand.Parameters.AddWithValue("$path", analysis.Input.PatchTocFilePath); groupCommand.Parameters.AddWithValue("$version", analysis.AnalyzerVersion);
-				await groupCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-			}
-			foreach (var asset in analysis.Assets)
-			{
-				await using var assetCommand = connection.CreateCommand(); assetCommand.Transaction = (SqliteTransaction)transaction;
-				assetCommand.CommandText = "INSERT INTO mod_assets(node_id,group_id,type_id,file_id,toc_size,stream_size,gpu_size) VALUES($node,$group,$type,$file,$toc,$stream,$gpu)";
-				assetCommand.Parameters.AddWithValue("$node", node); assetCommand.Parameters.AddWithValue("$group", groupId); assetCommand.Parameters.AddWithValue("$type", Hex(asset.AssetKey.TypeId)); assetCommand.Parameters.AddWithValue("$file", Hex(asset.AssetKey.FileId)); assetCommand.Parameters.AddWithValue("$toc", asset.TocDataSize); assetCommand.Parameters.AddWithValue("$stream", asset.StreamSize); assetCommand.Parameters.AddWithValue("$gpu", asset.GpuResourceSize);
-				await assetCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-			}
-			foreach (var reference in analysis.References)
-			{
-				await using var referenceCommand = connection.CreateCommand(); referenceCommand.Transaction = (SqliteTransaction)transaction;
-				referenceCommand.CommandText = "INSERT INTO asset_references(node_id,group_id,source_type_id,source_file_id,target_type_id,target_file_id,relation_kind,payload_offset,slot_id,reference_index) VALUES($node,$group,$st,$sf,$tt,$tf,$kind,$offset,$slot,$idx)";
-				referenceCommand.Parameters.AddWithValue("$node", node); referenceCommand.Parameters.AddWithValue("$group", groupId); referenceCommand.Parameters.AddWithValue("$st", Hex(reference.SourceAssetKey.TypeId)); referenceCommand.Parameters.AddWithValue("$sf", Hex(reference.SourceAssetKey.FileId)); referenceCommand.Parameters.AddWithValue("$tt", Hex(reference.TargetAssetKey.TypeId)); referenceCommand.Parameters.AddWithValue("$tf", Hex(reference.TargetAssetKey.FileId)); referenceCommand.Parameters.AddWithValue("$kind", (int)reference.Kind); referenceCommand.Parameters.AddWithValue("$offset", reference.PayloadRelativeOffset); referenceCommand.Parameters.AddWithValue("$slot", (object?)reference.SlotId ?? DBNull.Value); referenceCommand.Parameters.AddWithValue("$idx", (object?)reference.ReferenceIndex ?? DBNull.Value);
-				await referenceCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-			}
-		}
-		await using (var snapshotCommand = connection.CreateCommand())
-		{
-			snapshotCommand.Transaction = (SqliteTransaction)transaction;
-			snapshotCommand.CommandText = "INSERT INTO mod_fact_snapshots(node_id,relative_path,cache_json,built_utc) VALUES($node,$path,$json,$built) ON CONFLICT(node_id) DO UPDATE SET relative_path=excluded.relative_path,cache_json=excluded.cache_json,built_utc=excluded.built_utc";
-			snapshotCommand.Parameters.AddWithValue("$node", node); snapshotCommand.Parameters.AddWithValue("$path", entry.RelativePath); snapshotCommand.Parameters.AddWithValue("$json", JsonSerializer.Serialize(entry, JsonOptions)); snapshotCommand.Parameters.AddWithValue("$built", entry.BuiltAtUtc.UtcDateTime.ToString("O"));
-			await snapshotCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-		}
-		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-	}
-
-	public async ValueTask<PatchGroupAnalysisCacheEntry?> TryLoadAdvancedAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)
-	{
-		await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-		await using var command = connection.CreateCommand();
-		command.CommandText = "SELECT cache_json FROM advanced_mod_analysis_snapshots WHERE node_id = $node";
-		command.Parameters.AddWithValue("$node", nodeId.Value.ToString("N"));
-		var json = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
-		return json is null ? null : JsonSerializer.Deserialize<PatchGroupAnalysisCacheEntry>(json, JsonOptions);
-	}
-
-	public async ValueTask SaveAdvancedAsync(PatchGroupAnalysisCacheEntry entry, CancellationToken cancellationToken = default)
-	{
-		ArgumentNullException.ThrowIfNull(entry);
-		await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-		await using var command = connection.CreateCommand();
-		command.CommandText = "INSERT INTO advanced_mod_analysis_snapshots(node_id,relative_path,cache_json,built_utc) VALUES($node,$path,$json,$built) ON CONFLICT(node_id) DO UPDATE SET relative_path=excluded.relative_path,cache_json=excluded.cache_json,built_utc=excluded.built_utc";
-		command.Parameters.AddWithValue("$node", entry.NodeId.Value.ToString("N"));
-		command.Parameters.AddWithValue("$path", entry.RelativePath);
-		command.Parameters.AddWithValue("$json", JsonSerializer.Serialize(entry, JsonOptions));
-		command.Parameters.AddWithValue("$built", entry.BuiltAtUtc.UtcDateTime.ToString("O"));
-		await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-	}
 
 	public async ValueTask DeleteAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)
 	{
@@ -98,11 +21,31 @@ public sealed class SqliteModFactsStore : IModFactsStore, IAdvancedModAnalysisCa
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	public async ValueTask<IReadOnlyList<PatchAssetReference>> FindConsumersAsync(HD2ModAdaptation.PatchReconstruction.AssetKey targetAssetKey, CancellationToken cancellationToken = default)
+	public ValueTask DeleteNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)
+		=> DeleteAsync(nodeId, cancellationToken);
+
+	public ValueTask ReplaceNodeAsync(ReferenceGraphFacts facts, CancellationToken cancellationToken = default)
+		=> ReplaceNodeCoreAsync(facts.NodeId, facts.RelativePath, facts.Analyses, facts.BuiltUtc, cancellationToken);
+
+	public ValueTask ReplaceNodeAsync(AdvancedUnitAnalysisFacts facts, CancellationToken cancellationToken = default)
+		=> ReplaceNodeCoreAsync(facts.NodeId, facts.RelativePath, facts.Analyses, facts.BuiltUtc, cancellationToken);
+
+	private async ValueTask ReplaceNodeCoreAsync(ModNodeId nodeId, string relativePath, IReadOnlyList<PatchGroupAnalysis> analyses, DateTimeOffset builtUtc, CancellationToken cancellationToken)
 	{
-		return (await FindConsumerFactsAsync(targetAssetKey, cancellationToken).ConfigureAwait(false))
-			.Select(consumer => consumer.Reference)
-			.ToArray();
+		await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+		await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+		var node = nodeId.Value.ToString("N");
+		await ExecuteAsync(connection, transaction, "DELETE FROM asset_references WHERE node_id = $node; DELETE FROM mod_assets WHERE node_id = $node; DELETE FROM patch_groups WHERE node_id = $node;", node, cancellationToken).ConfigureAwait(false);
+		foreach (var analysis in analyses)
+		{
+			var groupId = $"{node}:{Path.GetFileName(analysis.Input.PatchTocFilePath)}";
+			await ExecuteAsync(connection, transaction, "INSERT OR REPLACE INTO patch_groups(group_id,node_id,patch_path,analyzer_version) VALUES($group,$node,$path,$version);", (node, groupId, analysis.Input.PatchTocFilePath, analysis.AnalyzerVersion), cancellationToken).ConfigureAwait(false);
+			foreach (var asset in analysis.Assets)
+				await ExecuteAsync(connection, transaction, "INSERT OR REPLACE INTO mod_assets(node_id,group_id,type_id,file_id,toc_size,stream_size,gpu_size) VALUES($node,$group,$type,$file,$toc,$stream,$gpu);", (node, groupId, Hex(asset.AssetKey.TypeId), Hex(asset.AssetKey.FileId), asset.TocDataSize, asset.StreamSize, asset.GpuResourceSize), cancellationToken).ConfigureAwait(false);
+			foreach (var reference in analysis.References)
+				await ExecuteAsync(connection, transaction, "INSERT INTO asset_references(node_id,group_id,source_type_id,source_file_id,target_type_id,target_file_id,relation_kind,payload_offset,slot_id,reference_index) VALUES($node,$group,$sourceType,$sourceFile,$targetType,$targetFile,$kind,$offset,$slot,$index);", (node, groupId, Hex(reference.SourceAssetKey.TypeId), Hex(reference.SourceAssetKey.FileId), Hex(reference.TargetAssetKey.TypeId), Hex(reference.TargetAssetKey.FileId), (int)reference.Kind, reference.PayloadRelativeOffset, reference.SlotId, reference.ReferenceIndex), cancellationToken).ConfigureAwait(false);
+		}
+		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 	}
 
 	public async ValueTask<IReadOnlyList<ModAssetConsumerFact>> FindConsumerFactsAsync(HD2ModAdaptation.PatchReconstruction.AssetKey targetAssetKey, CancellationToken cancellationToken = default)
@@ -130,6 +73,10 @@ public sealed class SqliteModFactsStore : IModFactsStore, IAdvancedModAnalysisCa
 	}
 
 	private static async ValueTask ExecuteAsync(SqliteConnection connection, System.Data.Common.DbTransaction transaction, string sql, string node, CancellationToken cancellationToken) { await using var command = connection.CreateCommand(); command.Transaction = (SqliteTransaction)transaction; command.CommandText = sql; command.Parameters.AddWithValue("$node", node); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
+	private static async ValueTask ExecuteAsync(SqliteConnection connection, System.Data.Common.DbTransaction transaction, string sql, (string Node, string Group, string Path, string Version) values, CancellationToken cancellationToken) => await ExecuteParametersAsync(connection, transaction, sql, cancellationToken, ("$node", values.Node), ("$group", values.Group), ("$path", values.Path), ("$version", values.Version));
+	private static async ValueTask ExecuteAsync(SqliteConnection connection, System.Data.Common.DbTransaction transaction, string sql, (string Node, string Group, string Type, string File, uint Toc, uint Stream, uint Gpu) values, CancellationToken cancellationToken) => await ExecuteParametersAsync(connection, transaction, sql, cancellationToken, ("$node", values.Node), ("$group", values.Group), ("$type", values.Type), ("$file", values.File), ("$toc", values.Toc), ("$stream", values.Stream), ("$gpu", values.Gpu));
+	private static async ValueTask ExecuteAsync(SqliteConnection connection, System.Data.Common.DbTransaction transaction, string sql, (string Node, string Group, string SourceType, string SourceFile, string TargetType, string TargetFile, int Kind, uint Offset, uint? Slot, int? Index) values, CancellationToken cancellationToken) => await ExecuteParametersAsync(connection, transaction, sql, cancellationToken, ("$node", values.Node), ("$group", values.Group), ("$sourceType", values.SourceType), ("$sourceFile", values.SourceFile), ("$targetType", values.TargetType), ("$targetFile", values.TargetFile), ("$kind", values.Kind), ("$offset", values.Offset), ("$slot", values.Slot), ("$index", values.Index));
+	private static async ValueTask ExecuteParametersAsync(SqliteConnection connection, System.Data.Common.DbTransaction transaction, string sql, CancellationToken cancellationToken, params (string Name, object? Value)[] values) { await using var command = connection.CreateCommand(); command.Transaction = (SqliteTransaction)transaction; command.CommandText = sql; foreach (var value in values) command.Parameters.AddWithValue(value.Name, value.Value ?? DBNull.Value); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
 	private static string Hex(ulong value) => value.ToString("x16");
 	private static ulong ParseHex(string value) => Convert.ToUInt64(value, 16);
 }

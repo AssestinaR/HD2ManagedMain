@@ -8,19 +8,27 @@ namespace HD2ModCore.Infrastructure;
 public sealed class AdvancedModAnalysisService : IAdvancedModAnalysisService
 {
 	private readonly IModInformationCenter _informationCenter;
-	private readonly IModInformationCache _informationCache;
 
-	public AdvancedModAnalysisService(IModInformationCenter informationCenter, IModInformationCache informationCache)
+	public AdvancedModAnalysisService(IModInformationCenter informationCenter)
 	{
 		_informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
-		_informationCache = informationCache ?? throw new ArgumentNullException(nameof(informationCache));
 	}
 
 	public async ValueTask<AdvancedModAnalysisState> GetStateAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
 	{
-		var generation = AdvancedUnitAnalysisProducer.ComputeGeneration(node, modsRootDirectory);
-		var cached = await _informationCache.TryLoadAsync<AdvancedUnitAnalysisFacts>(ModInformationKind.AdvancedUnitAnalysis, node.Id, generation, cancellationToken).ConfigureAwait(false);
-		return new AdvancedModAnalysisState(node.Id, cached is not null, cached is not null, cached?.BuiltUtc, cached?.Issues ?? Array.Empty<CoreIssue>());
+		var result = await _informationCenter.RequestAdvancedUnitAnalysisAsync(
+			node,
+			modsRootDirectory,
+			new ModInformationRequest(ModInformationKind.AdvancedUnitAnalysis, "AdvancedModAnalysisService"),
+			cancellationToken).ConfigureAwait(false);
+		return new AdvancedModAnalysisState(node.Id, result.Data is not null, result.Status is ModInformationStatus.Fresh or ModInformationStatus.Cached, result.Data?.BuiltUtc, result.Issues);
+	}
+
+	public async ValueTask<AdvancedModAnalysisState> GetCachedStateAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
+	{
+		var result = await _informationCenter.RequestAdvancedUnitAnalysisAsync(node, modsRootDirectory,
+			new ModInformationRequest(ModInformationKind.AdvancedUnitAnalysis, "AdvancedModAnalysisService", RequireFresh: false), cancellationToken).ConfigureAwait(false);
+		return new AdvancedModAnalysisState(node.Id, result.Data is not null, result.Status is ModInformationStatus.Cached, result.Data?.BuiltUtc, result.Issues);
 	}
 
 	public async ValueTask<AdvancedModAnalysisState> AnalyzeAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)

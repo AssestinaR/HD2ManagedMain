@@ -5,10 +5,11 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Media.Imaging;
+using HD2ModCore.Application;
 
 namespace HD2ModManager.Services
 {
-    // 作用：在后台生成并提供库列表使用的小尺寸图片缓存，避免 UI 线程读取原始大图。
+    // 作用：仅根据 ThumbnailSourceFacts 渲染并提供小尺寸图片缓存；源事实由信息中心负责。
     public static class ThumbnailService
     {
         private static readonly string CacheDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cache", "thumbs");
@@ -55,6 +56,29 @@ namespace HD2ModManager.Services
             if (string.IsNullOrWhiteSpace(originalPath) || !File.Exists(originalPath)) return null;
             var thumbnail = GetThumbPath(originalPath, decode);
             return File.Exists(thumbnail) ? thumbnail : null;
+        }
+
+        public static string? GetExistingThumbnailPath(ModThumbnailFacts? facts, int decode)
+        {
+            return facts?.SourcePath is { } source && File.Exists(source)
+                // 兼容现有同步 UI 绑定：当前模型只保存源路径，故 generation 暂不能安全加入磁盘 key。
+                ? GetExistingThumbnailPath(source, decode)
+                : null;
+        }
+
+        public static Task<bool> EnsureThumbnailAsync(ModThumbnailFacts facts, int decode, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(facts);
+            return Task.Run(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (string.IsNullOrWhiteSpace(facts.SourcePath) || !File.Exists(facts.SourcePath)) return false;
+                // generation 由信息中心负责事实缓存；此处沿用旧源路径 key，保证既有 UI 绑定和清理逻辑不变。
+                var thumbnail = GetThumbPath(facts.SourcePath, decode);
+                if (File.Exists(thumbnail)) return false;
+                EnsureThumb(facts.SourcePath, decode);
+                return true;
+            }, cancellationToken);
         }
 
         public static Task<bool> EnsureThumbnailsAsync(IEnumerable<string?> imagePaths, int decode, CancellationToken cancellationToken = default)

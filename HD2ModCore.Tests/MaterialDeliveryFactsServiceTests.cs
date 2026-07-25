@@ -18,8 +18,8 @@ public sealed class MaterialDeliveryFactsServiceTests
 	public async Task GetAsync_ClassifiesCompleteEmbeddedClosure()
 	{
 		var node = CreateNode("Embedded");
-		var store = new FakeStore([Entry(node, [Unit, Material, Texture], [new PatchAssetReference(Unit, Material, PatchReferenceKind.UnitMaterial, 0), new PatchAssetReference(Material, Texture, PatchReferenceKind.MaterialTexture, 0)])]);
-		var result = await new MaterialDeliveryFactsService(store).GetAsync(node.Id, Snapshot(node));
+		var facts = Entry(node, [Unit, Material, Texture], [new PatchAssetReference(Unit, Material, PatchReferenceKind.UnitMaterial, 0), new PatchAssetReference(Material, Texture, PatchReferenceKind.MaterialTexture, 0)]);
+		var result = await new MaterialDeliveryFactsService(new FakeInformationCenter(AdvancedFacts(facts)), new StoragePaths(Path.GetTempPath())).GetAsync(node.Id, Snapshot(node));
 
 		Assert.Equal(MaterialDeliveryMode.EmbeddedComplete, result.Mode);
 		Assert.True(result.CanRebuildAsWhole);
@@ -31,11 +31,12 @@ public sealed class MaterialDeliveryFactsServiceTests
 	{
 		var model = CreateNode("Model");
 		var materials = CreateNode("Materials");
-		var store = new FakeStore([
+		var entries = new[] {
 			Entry(model, [Unit], [new PatchAssetReference(Unit, Material, PatchReferenceKind.UnitMaterial, 0)]),
 			Entry(materials, [Material, Texture], [new PatchAssetReference(Material, Texture, PatchReferenceKind.MaterialTexture, 0)])
-		]);
-		var result = await new MaterialDeliveryFactsService(store).GetAsync(model.Id, Snapshot(model, materials));
+		};
+		var center = new FakeInformationCenter(entries.Select(AdvancedFacts).ToDictionary(facts => facts.NodeId));
+		var result = await new MaterialDeliveryFactsService(center, new StoragePaths(Path.GetTempPath())).GetAsync(model.Id, Snapshot(model, materials));
 
 		Assert.Equal(MaterialDeliveryMode.ExternalResolved, result.Mode);
 		Assert.True(result.CanRebuildModelOnly);
@@ -55,18 +56,10 @@ public sealed class MaterialDeliveryFactsServiceTests
 			"test");
 		return new PatchGroupAnalysisCacheEntry(3, node.Id, node.RelativePath, Array.Empty<PatchAssetSourceFileFingerprint>(), DateTimeOffset.UtcNow, [analysis]);
 	}
+	private static AdvancedUnitAnalysisFacts AdvancedFacts(PatchGroupAnalysisCacheEntry entry)
+		=> new(entry.NodeId, entry.RelativePath, "test", DateTimeOffset.UtcNow, entry.Analyses, []);
 
 	private static ModNode CreateNode(string name) => new(ModNodeId.New(), name, new ModNodeMetadata(name, null, DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
 	private static LibrarySnapshot Snapshot(params ModNode[] nodes) => new(1, DateTimeOffset.UtcNow, nodes.ToDictionary(node => node.Id), Array.Empty<Profile>());
 
-	private sealed class FakeStore : IModFactsStore
-	{
-		private readonly IReadOnlyDictionary<ModNodeId, PatchGroupAnalysisCacheEntry> entries;
-		public FakeStore(IEnumerable<PatchGroupAnalysisCacheEntry> entries) => this.entries = entries.ToDictionary(entry => entry.NodeId);
-		public ValueTask<PatchGroupAnalysisCacheEntry?> TryLoadAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.FromResult(entries.GetValueOrDefault(nodeId));
-		public ValueTask SaveAsync(PatchGroupAnalysisCacheEntry entry, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
-		public ValueTask DeleteAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
-		public ValueTask<IReadOnlyList<PatchAssetReference>> FindConsumersAsync(AssetKey targetAssetKey, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<PatchAssetReference>>(Array.Empty<PatchAssetReference>());
-		public ValueTask<IReadOnlyList<ModAssetConsumerFact>> FindConsumerFactsAsync(AssetKey targetAssetKey, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<ModAssetConsumerFact>>(Array.Empty<ModAssetConsumerFact>());
-	}
 }

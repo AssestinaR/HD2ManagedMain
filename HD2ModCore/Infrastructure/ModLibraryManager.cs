@@ -9,13 +9,11 @@ public sealed class ModLibraryManager : IModLibraryManager
 {
 	private readonly StoragePaths _paths;
 	private readonly IModLibraryStore _store;
-	private readonly IModFactsStore? _modFactsStore;
 
-	public ModLibraryManager(StoragePaths paths, IModLibraryStore store, IModFactsStore? modFactsStore = null)
+	public ModLibraryManager(StoragePaths paths, IModLibraryStore store)
 	{
 		_paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		_store = store ?? throw new ArgumentNullException(nameof(store));
-		_modFactsStore = modFactsStore;
 	}
 
 	public async ValueTask<LibrarySnapshot> LoadOrCreateAsync(CancellationToken cancellationToken = default)
@@ -75,8 +73,6 @@ public sealed class ModLibraryManager : IModLibraryManager
 		{
 			TryDeleteStoredRoot(node.RelativePath);
 		}
-		if (_modFactsStore is not null) await _modFactsStore.DeleteAsync(nodeId, cancellationToken).ConfigureAwait(false);
-
 		var updated = snapshot with { Nodes = nodes, Profiles = profiles, SavedUtc = DateTimeOffset.UtcNow };
 		await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
 		return updated;
@@ -228,6 +224,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 			},
 			cancellationToken).ConfigureAwait(false);
 	}
+
 
 	public async ValueTask<LibrarySnapshot> UpdateNodeMetadataAsync(ModNodeId nodeId, ModNodeMetadata metadata, CancellationToken cancellationToken = default)
 	{

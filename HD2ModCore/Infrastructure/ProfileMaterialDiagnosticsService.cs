@@ -12,43 +12,15 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 	private const ulong UnitTypeId = 0xe0a48d0be9a7453f;
 	private const ulong MaterialTypeId = 0xeac0b497876adedf;
 	private const ulong TextureTypeId = 0xcd4238c6a0c69e32;
-	private readonly IPatchGroupAnalysisProvider? analysisProvider;
-	private readonly IReferenceGraphProducer? referenceGraphProducer;
-	private readonly IModInformationCenter? informationCenter;
-	private readonly IModFactsStore? factsStore;
+	private readonly IModInformationCenter informationCenter;
 	private readonly IGameDataMappingFactsService mappingFactsService;
 	private readonly IAssetArchiveIndexService? indexService;
-
-	public ProfileMaterialDiagnosticsService(IPatchGroupAnalysisProvider analysisProvider, IGameDataMappingFactsService mappingFactsService)
-	{
-		this.analysisProvider = analysisProvider ?? throw new ArgumentNullException(nameof(analysisProvider));
-		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
-	}
-
-	public ProfileMaterialDiagnosticsService(IReferenceGraphProducer referenceGraphProducer, IGameDataMappingFactsService mappingFactsService, IAssetArchiveIndexService? indexService = null)
-	{
-		this.referenceGraphProducer = referenceGraphProducer ?? throw new ArgumentNullException(nameof(referenceGraphProducer));
-		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
-		this.indexService = indexService;
-	}
 
 	public ProfileMaterialDiagnosticsService(IModInformationCenter informationCenter, IGameDataMappingFactsService mappingFactsService, IAssetArchiveIndexService? indexService = null)
 	{
 		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
 		this.indexService = indexService;
-	}
-
-	public ProfileMaterialDiagnosticsService(IModFactsStore factsStore, IGameDataMappingFactsService mappingFactsService)
-	{
-		this.factsStore = factsStore ?? throw new ArgumentNullException(nameof(factsStore));
-		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
-	}
-
-	public ProfileMaterialDiagnosticsService(IModFactsStore factsStore, IGameDataMappingFactsService mappingFactsService, IAssetArchiveIndexService indexService)
-		: this(factsStore, mappingFactsService)
-	{
-		this.indexService = indexService ?? throw new ArgumentNullException(nameof(indexService));
 	}
 
 	public async ValueTask<ProfileMaterialDiagnostics> BuildAsync(Profile profile, LibrarySnapshot snapshot, string modsRootDirectory, CancellationToken cancellationToken = default)
@@ -152,22 +124,7 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 				cancellationToken).ConfigureAwait(false);
 			return result.Data?.Analyses ?? Array.Empty<PatchGroupAnalysis>();
 		}
-		if (referenceGraphProducer is not null)
-		{
-			var graph = await referenceGraphProducer.ProduceAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);
-			return graph.Analyses;
-		}
-		if (factsStore is not null)
-		{
-			var facts = await factsStore.TryLoadAsync(node.Id, cancellationToken).ConfigureAwait(false);
-			if (facts is not null && facts.Version == 7 && string.Equals(facts.RelativePath, node.RelativePath, StringComparison.OrdinalIgnoreCase)
-				&& facts.Analyses.All(analysis => analysis.Depth is PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full))
-			{
-				return facts.Analyses;
-			}
-			return Array.Empty<PatchGroupAnalysis>();
-		}
-		return await analysisProvider!.AnalyzeNodeAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+		return Array.Empty<PatchGroupAnalysis>();
 	}
 
 	private static DomainAssetKey ToDomain(HD2ModAdaptation.PatchReconstruction.AssetKey assetKey) => new(assetKey.TypeId, assetKey.FileId);

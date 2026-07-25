@@ -11,7 +11,6 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     private readonly ModLibraryService _library;
     private readonly ProfileService _profiles;
     private readonly StoragePaths _paths;
-    private readonly IModContentFactsService _contentFacts;
     private readonly IModInformationCenter _informationCenter;
     private readonly IProfileOverrideGraphService _profileGraph;
 	private readonly IProfileMaterialDiagnosticsService _profileMaterialDiagnostics;
@@ -29,14 +28,13 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     public IModInformationCenter InformationCenter => _informationCenter;
     public event EventHandler<DerivedStateSnapshot>? SnapshotChanged;
 
-    public DerivedStateCoordinator(ModLibraryService library, ProfileService profiles, IModInformationCenter? informationCenter = null)
+    public DerivedStateCoordinator(ModLibraryService library, ProfileService profiles, IModInformationCenter informationCenter)
     {
         _library = library ?? throw new ArgumentNullException(nameof(library));
         _profiles = profiles ?? throw new ArgumentNullException(nameof(profiles));
         _paths = SettingsService.CreateStoragePaths();
-        _contentFacts = CoreServices.CreateAssetInventoryProducer();
-        _informationCenter = informationCenter ?? new ModInformationCenter(CoreServices.CreateModFileFactsProducer(), _contentFacts, new JsonModFileFactsCache(_paths), CoreServices.CreateReferenceGraphProducer(_paths), CoreServices.CreateMaintenanceAnalysisProducer(_paths), CoreServices.CreateUnitVersionInformationProducer(_paths), new JsonModInformationCache(_paths), CoreServices.CreateAdvancedUnitAnalysisProducer(_paths), CoreServices.CreateModThumbnailProducer(), CoreServices.CreateModDataIndex(_paths));
-        _profileGraph = CoreServices.CreateProfileOverrideGraphService(_paths, _contentFacts, _informationCenter);
+        _informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
+        _profileGraph = CoreServices.CreateProfileOverrideGraphService(_paths, _informationCenter);
         _profileMaterialDiagnostics = CoreServices.CreateProfileMaterialDiagnosticsService(_paths, _informationCenter);
         _deployedGraph = CoreServices.CreateDeployedOverrideGraphService();
         _activeProfileSignature = GetActiveProfileSignature(_profiles.Snapshot);
@@ -222,7 +220,6 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
         await _gate.WaitAsync().ConfigureAwait(false);
         _gate.Release();
         _gate.Dispose();
-        await _informationCenter.DisposeAsync().ConfigureAwait(false);
     }
 }
 

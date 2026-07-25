@@ -7,4 +7,5 @@ public sealed record ModNode(
 	string RelativePath,
 	ModNodeMetadata Metadata,
 	IReadOnlyList<PatchGroupKey> PatchGroups,
-	IReadOnlyList<ModNodeId> Children);
+	IReadOnlyList<ModNodeId> Children,
+	string? ContentFingerprint = null);

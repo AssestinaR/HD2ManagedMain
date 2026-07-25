@@ -21,7 +21,7 @@ public sealed class GameDataArchiveBrowserServiceTests
 		], []);
 		var service = new GameDataArchiveBrowserService(
 			new FakeIndexService(),
-			new FakeContentService(content),
+			new FakeInformationCenter(content),
 			new FakeMappingService(key),
 			new FakeDeployedService(key, nodeId));
 
@@ -48,14 +48,6 @@ public sealed class GameDataArchiveBrowserServiceTests
 		public ValueTask BuildOrRebuildAsync(string gameDataDirectory, string archiveHashesJson, IProgress<IndexBuildProgress>? progress = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 		public ValueTask<IReadOnlyList<AssetArchiveMatch>> FindAssetArchivesAsync(IReadOnlySet<AssetKey> assetKeys, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 		public ValueTask<IReadOnlyDictionary<string, int>> VoteArchivesAsync(IReadOnlySet<AssetKey> assetKeys, IndexFilterSettings filterSettings, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-	}
-
-	private sealed class FakeContentService : IModContentFactsService
-	{
-		private readonly ModContentFacts _facts;
-		public FakeContentService(ModContentFacts facts) => _facts = facts;
-		public ValueTask<ModContentFacts> GetNodeFactsAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default) => ValueTask.FromResult(_facts);
-		public ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetLibraryFactsAsync(LibrarySnapshot snapshot, string modsRootDirectory, IReadOnlySet<ModNodeId>? nodeIds = null, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyDictionary<ModNodeId, ModContentFacts>>(new Dictionary<ModNodeId, ModContentFacts> { [_facts.NodeId] = _facts });
 	}
 
 	private sealed class FakeMappingService : IGameDataMappingFactsService
