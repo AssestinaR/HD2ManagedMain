@@ -26,6 +26,13 @@ internal sealed class FakeInformationCenter : IModInformationCenter
 		_facts = new Dictionary<ModNodeId, ModContentFacts>();
 		_referenceFacts = facts.ToDictionary(pair => pair.Key, pair => new ReferenceGraphFacts(pair.Key, "test", "test", DateTimeOffset.UtcNow, pair.Value, []));
 	}
+	public FakeInformationCenter(IReadOnlyDictionary<ModNodeId, ModContentFacts> facts, IReadOnlyDictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> referenceFacts)
+	{
+		_facts = facts;
+		_referenceFacts = referenceFacts.ToDictionary(pair => pair.Key, pair => new ReferenceGraphFacts(pair.Key, "test", "test", DateTimeOffset.UtcNow, pair.Value, []));
+	}
+	public FakeInformationCenter(ModContentFacts facts, IReadOnlyDictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> referenceFacts)
+		: this(new Dictionary<ModNodeId, ModContentFacts> { [facts.NodeId] = facts }, referenceFacts) { }
 	public event EventHandler<ModInformationDiagnostic>? DiagnosticRecorded;
 	public event EventHandler<ModInformationProductionStarted>? ProductionStarted;
 	public ValueTask<ModInformationResult<PatchFileIndex>> RequestFileFactsAsync(LibrarySnapshot snapshot, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();

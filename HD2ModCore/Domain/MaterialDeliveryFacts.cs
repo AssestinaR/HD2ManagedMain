@@ -1,3 +1,4 @@
+using HD2ModAdaptation.Analysis;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 
 namespace HD2ModCore.Domain;
@@ -7,6 +8,7 @@ public enum MaterialDeliveryMode
 {
 	Unknown,
 	NoMaterialDependencies,
+	MaterialOnly,
 	EmbeddedComplete,
 	EmbeddedIncomplete,
 	ExternalResolved,
@@ -22,6 +24,11 @@ public sealed record MaterialDeliveryCandidate(
 	bool IsComplete,
 	IReadOnlyCollection<AdaptationAssetKey>? ClosureAssetKeys = null);
 
+public sealed record MaterialReferenceFact(
+	AdaptationAssetKey SourceAssetKey,
+	AdaptationAssetKey TargetMaterialKey,
+	PatchReferenceKind Kind);
+
 public sealed record MaterialDeliveryFacts(
 	ModNodeId NodeId,
 	MaterialDeliveryMode Mode,
@@ -32,7 +39,10 @@ public sealed record MaterialDeliveryFacts(
 	int MissingEmbeddedTextureCount,
 	IReadOnlyList<MaterialDeliveryCandidate> Candidates,
 	IReadOnlyList<string> Notices,
-	IReadOnlyCollection<AdaptationAssetKey>? EmbeddedClosureAssetKeys = null)
+	IReadOnlyCollection<AdaptationAssetKey>? EmbeddedClosureAssetKeys = null,
+	bool IsMaterialOnly = false,
+	IReadOnlyCollection<AdaptationAssetKey>? GameDataMappedMaterialKeys = null,
+	IReadOnlyList<MaterialReferenceFact>? SelfMaterialReferences = null)
 {
 	public bool CanRebuildModelOnly => Mode == MaterialDeliveryMode.ExternalResolved;
 	public bool CanRebuildAsWhole => Mode == MaterialDeliveryMode.EmbeddedComplete;

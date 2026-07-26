@@ -6,5 +6,7 @@ public interface IMaterialDeliveryFactsService
 	ValueTask<MaterialDeliveryFacts> GetAsync(
 		ModNodeId nodeId,
 		LibrarySnapshot librarySnapshot,
-		CancellationToken cancellationToken = default);
+		CancellationToken cancellationToken = default,
+		bool includeCandidates = true,
+		bool includeGameDataMapping = true);
 }

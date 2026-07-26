@@ -103,7 +103,7 @@ public static class CoreServices
 	public static IMaterialDeliveryFactsService CreateMaterialDeliveryFactsService(StoragePaths paths)
 		=> CreateMaterialDeliveryFactsService(paths, CreateModInformationCenter(paths));
 	public static IMaterialDeliveryFactsService CreateMaterialDeliveryFactsService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new MaterialDeliveryFactsService(informationCenter, paths);
+		=> new MaterialDeliveryFactsService(informationCenter, paths, CreateGameDataMappingFactsService(paths));
 	public static IEquipmentUnitCatalogService CreateEquipmentUnitCatalogService(StoragePaths paths)
 		=> new EquipmentUnitCatalogService(paths);
 	public static ICrossArmorTransferCandidateService CreateCrossArmorTransferCandidateService(StoragePaths paths)

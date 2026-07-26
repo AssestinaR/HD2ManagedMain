@@ -25,9 +25,18 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 	public async ValueTask<IReadOnlyList<AdvancedModAssetRow>> QueryAsync(ModNodeId nodeId, LibrarySnapshot librarySnapshot, ProfileOverrideGraph? profileGraph, ProfileMaterialDiagnostics? diagnostics, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(librarySnapshot);
-		var snapshot = await LoadAnalysisAsync(nodeId, librarySnapshot, cancellationToken).ConfigureAwait(false);
-		if (snapshot is null || snapshot.Version <= 0 || snapshot.Analyses.Any(analysis => analysis.Depth is not (PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full))) return Array.Empty<AdvancedModAssetRow>();
-		var assets = snapshot.Analyses.SelectMany(analysis => analysis.Assets.Select(asset => (analysis, asset))).GroupBy(item => item.asset.AssetKey).ToArray();
+		if (!librarySnapshot.Nodes.TryGetValue(nodeId, out var node)) return Array.Empty<AdvancedModAssetRow>();
+		var inventoryResult = await informationCenter.RequestAssetInventoryAsync(node, modsRootDirectory, new ModInformationRequest(ModInformationKind.AssetInventory, "AdvancedAssetTable"), cancellationToken).ConfigureAwait(false);
+		var inventory = inventoryResult.Data;
+		if (inventory is null) return Array.Empty<AdvancedModAssetRow>();
+		var graphResult = await informationCenter.RequestReferenceGraphAsync(node, modsRootDirectory, new ModInformationRequest(ModInformationKind.ReferenceGraph, "AdvancedAssetTable"), cancellationToken).ConfigureAwait(false);
+		var graph = graphResult.Data;
+		var assets = inventory.PatchGroups
+			.SelectMany(group => group.AssetKeys.Select(key => (group, key)))
+			.GroupBy(item => item.key)
+			.ToArray();
+		var graphAssets = graph?.Analyses.SelectMany(analysis => analysis.Assets.Select(asset => (analysis, asset))).GroupBy(item => item.asset.AssetKey).ToDictionary(group => group.Key, group => group.ToArray())
+			?? new Dictionary<HD2ModAdaptation.PatchReconstruction.AssetKey, (PatchGroupAnalysis analysis, PatchAssetFact asset)[]>();
 		var domainKeys = assets.Select(group => new AssetKey(group.Key.TypeId, group.Key.FileId)).ToHashSet();
 		var mapping = await mappingService.MapAsync(domainKeys, cancellationToken).ConfigureAwait(false);
 		var unitKeys = domainKeys.Where(key => key.TypeId == 0xe0a48d0be9a7453f).ToHashSet();
@@ -36,10 +45,12 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 		foreach (var group in assets)
 		{
 			var key = new AssetKey(group.Key.TypeId, group.Key.FileId);
+			var analysisKey = new HD2ModAdaptation.PatchReconstruction.AssetKey(key.TypeId, key.FileId);
 			var partSummary = partsByUnit.TryGetValue(key, out var parts) ? DescribeParts(parts) : "—";
 			mapping.Assets.TryGetValue(key, out var mapped);
-			var outgoing = snapshot.Analyses.SelectMany(analysis => analysis.References).Where(reference => reference.SourceAssetKey == group.Key).ToArray();
-			var incoming = await referenceIndex.FindConsumerFactsAsync(group.Key, cancellationToken).ConfigureAwait(false);
+			var outgoing = graph?.Analyses.SelectMany(analysis => analysis.References).Where(reference => reference.SourceAssetKey == analysisKey).ToArray() ?? Array.Empty<PatchAssetReference>();
+			var incoming = await referenceIndex.FindConsumerFactsAsync(analysisKey, cancellationToken).ConfigureAwait(false);
+			graphAssets.TryGetValue(analysisKey, out var graphFacts);
 			var chain = profileGraph?.AssetChains.FirstOrDefault(chain => chain.AssetKey == key);
 			var winner = chain?.Winner;
 			var nodeDiagnostics = diagnostics?.Items.Where(item => item.NodeId == nodeId && item.AssetKey == key).ToArray() ?? Array.Empty<ProfileMaterialDiagnostic>();
@@ -51,27 +62,16 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 				mapped?.FileDisplayName ?? $"0x{key.FileId:x16}",
 				partSummary,
 				target,
-				$"引用 {outgoing.Length} / 被引用 {incoming.Count}",
+				graph is null ? $"引用图不可用；引用 {outgoing.Length} / 被引用 {incoming.Count}" : $"引用 {outgoing.Length} / 被引用 {incoming.Count}",
 				chain is null ? "无 Profile provider 链" : string.Join(" → ", chain.Entries.Select(entry => entry.ModName)),
 				profileStatus,
 				nodeDiagnostics.Length == 0 ? string.Empty : string.Join("；", nodeDiagnostics.Select(item => item.Summary).Distinct()),
-				string.Join("，", group.Select(item => Path.GetFileName(item.analysis.Input.PatchTocFilePath)).Distinct(StringComparer.OrdinalIgnoreCase)),
-				group.Sum(item => (long)item.asset.TocDataSize),
-				group.Sum(item => (long)item.asset.StreamSize),
-				group.Sum(item => (long)item.asset.GpuResourceSize)));
+				string.Join("，", graphFacts?.Select(item => Path.GetFileName(item.analysis.Input.PatchTocFilePath)).Concat(group.Select(item => item.group.Id.SourceArchiveHex)).Distinct(StringComparer.OrdinalIgnoreCase) ?? group.Select(item => item.group.Id.SourceArchiveHex).Distinct(StringComparer.OrdinalIgnoreCase)),
+				graphFacts?.Sum(item => (long)item.asset.TocDataSize) ?? 0,
+				graphFacts?.Sum(item => (long)item.asset.StreamSize) ?? 0,
+				graphFacts?.Sum(item => (long)item.asset.GpuResourceSize) ?? 0));
 		}
 		return rows.OrderBy(row => row.TypeName).ThenBy(row => row.AssetKey.FileId).ToArray();
-	}
-
-	private async ValueTask<PatchGroupAnalysisCacheEntry?> LoadAnalysisAsync(ModNodeId nodeId, LibrarySnapshot librarySnapshot, CancellationToken cancellationToken)
-	{
-		if (!librarySnapshot.Nodes.TryGetValue(nodeId, out var node)) return null;
-		var result = await informationCenter.RequestAdvancedUnitAnalysisAsync(
-			node,
-			modsRootDirectory!,
-			new ModInformationRequest(ModInformationKind.AdvancedUnitAnalysis, "AdvancedAssetTable"),
-			cancellationToken).ConfigureAwait(false);
-		return result.Data is null ? null : new PatchGroupAnalysisCacheEntry(3, result.Data.NodeId, result.Data.RelativePath, [], result.Data.BuiltUtc, result.Data.Analyses);
 	}
 
 	private async ValueTask<string> BuildTargetSummaryAsync(

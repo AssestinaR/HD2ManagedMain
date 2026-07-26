@@ -19,7 +19,7 @@ public sealed class MaterialDeliveryFactsServiceTests
 	{
 		var node = CreateNode("Embedded");
 		var facts = Entry(node, [Unit, Material, Texture], [new PatchAssetReference(Unit, Material, PatchReferenceKind.UnitMaterial, 0), new PatchAssetReference(Material, Texture, PatchReferenceKind.MaterialTexture, 0)]);
-		var result = await new MaterialDeliveryFactsService(new FakeInformationCenter(AdvancedFacts(facts)), new StoragePaths(Path.GetTempPath())).GetAsync(node.Id, Snapshot(node));
+		var result = await new MaterialDeliveryFactsService(new FakeInformationCenter(new Dictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> { [node.Id] = facts.Analyses }), new StoragePaths(Path.GetTempPath())).GetAsync(node.Id, Snapshot(node));
 
 		Assert.Equal(MaterialDeliveryMode.EmbeddedComplete, result.Mode);
 		Assert.True(result.CanRebuildAsWhole);
@@ -35,14 +35,59 @@ public sealed class MaterialDeliveryFactsServiceTests
 			Entry(model, [Unit], [new PatchAssetReference(Unit, Material, PatchReferenceKind.UnitMaterial, 0)]),
 			Entry(materials, [Material, Texture], [new PatchAssetReference(Material, Texture, PatchReferenceKind.MaterialTexture, 0)])
 		};
-		var center = new FakeInformationCenter(entries.Select(AdvancedFacts).ToDictionary(facts => facts.NodeId));
-		var result = await new MaterialDeliveryFactsService(center, new StoragePaths(Path.GetTempPath())).GetAsync(model.Id, Snapshot(model, materials));
+		var center = new FakeInformationCenter(entries.ToDictionary(entry => entry.NodeId, entry => (IReadOnlyList<PatchGroupAnalysis>)entry.Analyses));
+		var result = await new MaterialDeliveryFactsService(center, new StoragePaths(Path.GetTempPath())).GetAsync(model.Id, Snapshot(model, materials), includeCandidates: true);
 
 		Assert.Equal(MaterialDeliveryMode.ExternalResolved, result.Mode);
 		Assert.True(result.CanRebuildModelOnly);
 		var candidate = Assert.Single(result.Candidates);
 		Assert.Equal(materials.Metadata.Name, candidate.Name);
 		Assert.True(candidate.IsComplete);
+	}
+
+	[Fact]
+	public async Task GetAsync_WithoutCandidates_LeavesExternalMaterialUnresolved()
+	{
+		var model = CreateNode("Model");
+		var materials = CreateNode("Materials");
+		var entries = new[] {
+			Entry(model, [Unit], [new PatchAssetReference(Unit, Material, PatchReferenceKind.UnitMaterial, 0)]),
+			Entry(materials, [Material, Texture], [new PatchAssetReference(Material, Texture, PatchReferenceKind.MaterialTexture, 0)])
+		};
+		var center = new FakeInformationCenter(entries.ToDictionary(entry => entry.NodeId, entry => (IReadOnlyList<PatchGroupAnalysis>)entry.Analyses));
+		var result = await new MaterialDeliveryFactsService(center, new StoragePaths(Path.GetTempPath())).GetAsync(model.Id, Snapshot(model, materials), includeCandidates: false);
+
+		Assert.Equal(MaterialDeliveryMode.ExternalUnresolved, result.Mode);
+		Assert.Empty(result.Candidates);
+	}
+
+	[Fact]
+	public async Task GetAsync_ClassifiesMaterialOnlyModAndSelfReferences()
+	{
+		var node = CreateNode("MaterialsOnly");
+		var facts = Entry(node, [Material, Texture], [new PatchAssetReference(Material, Texture, PatchReferenceKind.MaterialTexture, 0)]);
+		var center = new FakeInformationCenter(new Dictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> { [node.Id] = facts.Analyses });
+
+		var result = await new MaterialDeliveryFactsService(center, new StoragePaths(Path.GetTempPath())).GetAsync(node.Id, Snapshot(node));
+
+		Assert.Equal(MaterialDeliveryMode.MaterialOnly, result.Mode);
+		Assert.True(result.IsMaterialOnly);
+		var selfReference = Assert.Single(result.SelfMaterialReferences!);
+		Assert.Equal(PatchReferenceKind.MaterialTexture, selfReference.Kind);
+	}
+
+	[Fact]
+	public async Task GetAsync_WithoutGameDataMapping_DoesNotRequireMappingServiceAndKeepsClassification()
+	{
+		var node = CreateNode("EmbeddedWithoutMapping");
+		var facts = Entry(node, [Unit, Material, Texture], [new PatchAssetReference(Unit, Material, PatchReferenceKind.UnitMaterial, 0), new PatchAssetReference(Material, Texture, PatchReferenceKind.MaterialTexture, 0)]);
+		var center = new FakeInformationCenter(new Dictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> { [node.Id] = facts.Analyses });
+
+		var result = await new MaterialDeliveryFactsService(center, new StoragePaths(Path.GetTempPath()), new ThrowingMappingService())
+			.GetAsync(node.Id, Snapshot(node), includeGameDataMapping: false);
+
+		Assert.Equal(MaterialDeliveryMode.EmbeddedComplete, result.Mode);
+		Assert.Empty(result.GameDataMappedMaterialKeys!);
 	}
 
 	private static PatchGroupAnalysisCacheEntry Entry(ModNode node, IReadOnlyCollection<AssetKey> assets, IReadOnlyCollection<PatchAssetReference> references)
@@ -56,10 +101,16 @@ public sealed class MaterialDeliveryFactsServiceTests
 			"test");
 		return new PatchGroupAnalysisCacheEntry(3, node.Id, node.RelativePath, Array.Empty<PatchAssetSourceFileFingerprint>(), DateTimeOffset.UtcNow, [analysis]);
 	}
-	private static AdvancedUnitAnalysisFacts AdvancedFacts(PatchGroupAnalysisCacheEntry entry)
+	private static ReferenceGraphFacts ReferenceFacts(PatchGroupAnalysisCacheEntry entry)
 		=> new(entry.NodeId, entry.RelativePath, "test", DateTimeOffset.UtcNow, entry.Analyses, []);
 
 	private static ModNode CreateNode(string name) => new(ModNodeId.New(), name, new ModNodeMetadata(name, null, DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
 	private static LibrarySnapshot Snapshot(params ModNode[] nodes) => new(1, DateTimeOffset.UtcNow, nodes.ToDictionary(node => node.Id), Array.Empty<Profile>());
+
+	private sealed class ThrowingMappingService : IGameDataMappingFactsService
+	{
+		public ValueTask<GameDataMappingFacts> MapAsync(IReadOnlySet<HD2ModCore.Domain.AssetKey> assetKeys, CancellationToken cancellationToken = default)
+			=> throw new InvalidOperationException("Mapping service should not be called when mapping is disabled.");
+	}
 
 }

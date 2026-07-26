@@ -15,6 +15,8 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
     private readonly ModLibraryService library;
     private readonly NotificationService? notifications;
     private readonly bool requireAllExternalMaterials;
+    private readonly ModMaterialPackagingState? initialPackagingState;
+    private readonly MaterialDeliveryFacts? initialDeliveryFacts;
     private string outputDirectory = Path.Combine(AppContext.BaseDirectory, "Output");
     private MaterialPackageCandidateViewModel? selectedCandidate;
     private bool importToLibrary;
@@ -45,7 +47,9 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
         ModLibraryService library,
         NotificationService? notifications,
         bool splitEmbeddedMaterials,
-        bool requireAllExternalMaterials = false)
+        bool requireAllExternalMaterials = false,
+        ModMaterialPackagingState? initialPackagingState = null,
+        MaterialDeliveryFacts? initialDeliveryFacts = null)
     {
         this.source = source;
         this.modsRootDirectory = modsRootDirectory;
@@ -53,12 +57,16 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
         this.library = library;
         this.notifications = notifications;
         this.requireAllExternalMaterials = requireAllExternalMaterials;
+        this.initialPackagingState = initialPackagingState;
+        this.initialDeliveryFacts = initialDeliveryFacts;
         RequiresCandidate = !splitEmbeddedMaterials;
         OperationTitle = splitEmbeddedMaterials ? "拆分内嵌材质" : requireAllExternalMaterials ? "嵌入外部材质" : "替换内嵌材质";
         Explanation = splitEmbeddedMaterials
             ? "将内嵌 Material/Texture 拆分为独立输出；不会修改源 Mod 或当前配置。"
             : "候选按精确 Material AssetKey 匹配；确认后生成独立候选，不会修改源 Mod 或当前配置。";
-        state = RequiresCandidate ? "正在读取 Mod 库中的材质候选…" : "选择输出方式后即可开始。";
+        state = RequiresCandidate
+            ? initialDeliveryFacts is null ? "正在读取 Mod 库中的材质候选…" : "正在复核信息中心提供的材质候选…"
+            : initialPackagingState is null ? "选择输出方式后即可开始。" : "已复用详情页材质检查结果；写出前仍会进行最终复核。";
         Title = OperationTitle;
         BrowseCommand = new RelayCommand(_ => Browse());
         GenerateCommand = new RelayCommand(async _ => await GenerateAsync(), _ => CanGenerate());
@@ -69,16 +77,40 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
     {
         try
         {
-            var candidates = await packaging.FindCandidatesAsync(source, library.Snapshot.Nodes.Values.ToArray(), modsRootDirectory, requireAllExternalMaterials);
+            LogService.Info($"{OperationTitle}候选读取开始：Mod={SourceName}，节点={source.Id.Value:N}，复用信息中心事实={initialDeliveryFacts is not null}。");
+            notifications?.Show("集成材质：正在读取材质候选和依赖闭包…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
+            IReadOnlyList<MaterialPackageCandidate> candidates;
+            if (initialDeliveryFacts is not null)
+            {
+                // 这里复用信息中心派生出的交付候选；GenerateAsync 仍会做最终 Payload 校验。
+                candidates = initialDeliveryFacts.Candidates
+                    .Where(candidate => library.Snapshot.Nodes.ContainsKey(candidate.NodeId))
+                    .Select(candidate => new MaterialPackageCandidate(
+                        candidate.NodeId,
+                        candidate.Name,
+                        candidate.IsComplete,
+                        candidate.CoveredMaterialCount,
+                        0,
+                        candidate.MissingTextureCount,
+                        candidate.IsComplete ? Array.Empty<string>() : new[] { "信息中心判断材质闭包不完整，写出前将再次验证。" }))
+                    .ToArray();
+            }
+            else
+            {
+                candidates = await packaging.FindCandidatesAsync(source, library.Snapshot.Nodes.Values.ToArray(), modsRootDirectory, requireAllExternalMaterials);
+            }
             Candidates = candidates.Select(candidate => new MaterialPackageCandidateViewModel(candidate)).ToArray();
             SelectedCandidate = Candidates.FirstOrDefault(candidate => candidate.IsCompatible);
             State = Candidates.Count == 0 ? "Mod 库中没有精确匹配 Material AssetKey 的材质包。" : $"找到 {Candidates.Count} 个候选，请选择完整适配项。";
+            notifications?.Show(Candidates.Count == 0 ? "集成材质：没有找到可用候选。" : $"集成材质：已找到 {Candidates.Count} 个候选，请选择后生成。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
+            LogService.Info($"{OperationTitle}候选读取完成：Mod={SourceName}，候选数={Candidates.Count}，可用数={Candidates.Count(candidate => candidate.IsCompatible)}。");
             OnPropertyChanged(nameof(Candidates));
             GenerateCommand.RaiseCanExecuteChanged();
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
         {
             State = $"读取材质候选失败：{exception.Message}";
+            LogService.Error($"{OperationTitle}候选读取异常：Mod={SourceName}，错误={exception}");
             notifications?.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(12));
         }
     }
@@ -100,11 +132,19 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
             : BuildDestinationDirectory();
         IsRunning = true;
         State = "正在验证 Payload 与资源图并生成材质候选…";
+        LogService.Info($"{OperationTitle}开始：Mod={SourceName}，节点={source.Id.Value:N}，输出={root}，导入库={ImportToLibrary}。");
+        notifications?.Show(
+            RequiresCandidate
+                ? "集成材质：正在进行最终 Payload 验证并写出材质候选…"
+                : "拆分材质：正在验证 Payload 与资源图并写出模型包、材质包…",
+            NotificationLevel.Info,
+            TimeSpan.FromSeconds(30));
         try
         {
             MaterialPackagingOperationResult result;
             if (!RequiresCandidate)
             {
+                // InspectAsync is intentionally repeated here as a final payload-level safety check.
                 result = await packaging.SplitAsync(source, modsRootDirectory, root);
             }
             else
@@ -116,6 +156,7 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
             if (!result.IsSuccessful)
             {
                 State = $"生成失败：{string.Join("；", result.Issues.Select(issue => issue.Message).Take(3))}";
+                LogService.Error($"{OperationTitle}失败：Mod={SourceName}，输出={root}，问题={string.Join(" | ", result.Issues.Select(issue => $"{issue.Code}: {issue.Message}"))}");
                 notifications?.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(12));
                 return;
             }
@@ -125,11 +166,13 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
                 foreach (var directory in result.OutputDirectories) await importer.ImportPathAsync(directory, default);
             }
             State = $"完成：{result.AssetCount} 个资源，{result.GraphEdgeCount} 条引用。{(ImportToLibrary ? "已导入 Mod 库。" : $"输出：{root}")}";
+            LogService.Info($"{OperationTitle}完成：Mod={SourceName}，资源={result.AssetCount}，引用={result.GraphEdgeCount}，输出={root}，导入库={ImportToLibrary}。");
             notifications?.Show("材质候选生成完成。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException or KeyNotFoundException)
         {
             State = $"生成材质候选失败：{exception.Message}";
+            LogService.Error($"{OperationTitle}异常：Mod={SourceName}，输出={root}，错误={exception}");
             notifications?.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(12));
         }
         finally { IsRunning = false; }

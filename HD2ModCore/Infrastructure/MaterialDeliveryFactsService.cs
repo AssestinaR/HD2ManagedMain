@@ -11,26 +11,42 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 	private const ulong TextureTypeId = 0xcd4238c6a0c69e32;
 	private readonly IModInformationCenter informationCenter;
 	private readonly string modsRootDirectory;
+	private readonly IGameDataMappingFactsService? mappingService;
 
-	public MaterialDeliveryFactsService(IModInformationCenter informationCenter, HD2ModCore.Infrastructure.StoragePaths paths)
+	public MaterialDeliveryFactsService(IModInformationCenter informationCenter, HD2ModCore.Infrastructure.StoragePaths paths, IGameDataMappingFactsService? mappingService = null)
 	{
 		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		modsRootDirectory = (paths ?? throw new ArgumentNullException(nameof(paths))).ModsDirectory;
+		this.mappingService = mappingService;
 	}
 
-	public async ValueTask<MaterialDeliveryFacts> GetAsync(ModNodeId nodeId, LibrarySnapshot librarySnapshot, CancellationToken cancellationToken = default)
+	public async ValueTask<MaterialDeliveryFacts> GetAsync(ModNodeId nodeId, LibrarySnapshot librarySnapshot, CancellationToken cancellationToken = default, bool includeCandidates = true, bool includeGameDataMapping = true)
 	{
 		ArgumentNullException.ThrowIfNull(librarySnapshot);
-		var source = await LoadAnalysisAsync(nodeId, librarySnapshot, cancellationToken).ConfigureAwait(false);
-		if (source is null || source.Version <= 0 || source.Analyses.Any(analysis => analysis.Depth is not (PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full)))
+		var source = await LoadReferenceGraphAsync(nodeId, librarySnapshot, cancellationToken).ConfigureAwait(false);
+		if (source is null)
 		{
-			return new MaterialDeliveryFacts(nodeId, MaterialDeliveryMode.Unknown, 0, 0, 0, 0, 0, Array.Empty<MaterialDeliveryCandidate>(), new[] { "请先执行高级分析以建立完整材质引用缓存。" });
+			return new MaterialDeliveryFacts(nodeId, MaterialDeliveryMode.Unknown, 0, 0, 0, 0, 0, Array.Empty<MaterialDeliveryCandidate>(), new[] { "当前 Mod 的 ReferenceGraph 信息不可用。" });
 		}
 
 		var sourceGraph = BuildGraph(source);
+		var mappedOriginalMaterials = !includeGameDataMapping || mappingService is null
+			? new HashSet<AssetKey>()
+			: (await mappingService.MapAsync(sourceGraph.Materials.Select(key => new HD2ModCore.Domain.AssetKey(key.TypeId, key.FileId)).ToHashSet(), cancellationToken).ConfigureAwait(false)).Assets
+				.Where(pair => pair.Value.TargetArchives.Count != 0)
+				.Select(pair => new AssetKey(pair.Key.TypeId, pair.Key.FileId))
+				.ToHashSet();
+		var isMaterialOnly = sourceGraph.UnitCount == 0 && sourceGraph.Materials.Count != 0;
+		var selfMaterialReferences = sourceGraph.References
+			.Where(reference => reference.Kind is PatchReferenceKind.UnitMaterial or PatchReferenceKind.MaterialTexture
+				&& sourceGraph.Assets.Contains(reference.SourceAssetKey)
+				&& sourceGraph.Assets.Contains(reference.TargetAssetKey)
+				&& (reference.TargetAssetKey.TypeId == MaterialTypeId || reference.SourceAssetKey.TypeId == MaterialTypeId))
+			.Select(reference => new MaterialReferenceFact(reference.SourceAssetKey, reference.TargetAssetKey, reference.Kind))
+			.ToArray();
 		if (sourceGraph.UnitCount == 0)
 		{
-			return new MaterialDeliveryFacts(nodeId, MaterialDeliveryMode.NoMaterialDependencies, 0, 0, 0, 0, 0, Array.Empty<MaterialDeliveryCandidate>(), new[] { "当前 Mod 不含 Unit；不需要模型重建材质策略。" });
+			return new MaterialDeliveryFacts(nodeId, isMaterialOnly ? MaterialDeliveryMode.MaterialOnly : MaterialDeliveryMode.NoMaterialDependencies, 0, 0, 0, 0, 0, Array.Empty<MaterialDeliveryCandidate>(), new[] { isMaterialOnly ? "当前 Mod 仅包含材质/贴图资产。" : "当前 Mod 不含 Unit；不需要模型重建材质策略。" }, GameDataMappedMaterialKeys: mappedOriginalMaterials, SelfMaterialReferences: selfMaterialReferences, IsMaterialOnly: isMaterialOnly);
 		}
 		if (sourceGraph.RequiredMaterials.Count == 0)
 		{
@@ -41,7 +57,7 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 		var external = sourceGraph.RequiredMaterials.Except(sourceGraph.Materials).ToHashSet();
 		var missingEmbeddedTextures = GetMissingTextures(embedded, sourceGraph);
 		var embeddedClosure = GetClosureKeys(embedded, sourceGraph);
-		var candidates = external.Count == 0
+		var candidates = !includeCandidates || external.Count == 0
 			? Array.Empty<MaterialDeliveryCandidate>()
 			: await FindCandidatesAsync(nodeId, external, librarySnapshot, cancellationToken).ConfigureAwait(false);
 		var notices = new List<string>();
@@ -52,7 +68,7 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 		if (mode == MaterialDeliveryMode.EmbeddedComplete) notices.Add("材质闭包完整，可作为整体 Mod 重建。" );
 		if (mode == MaterialDeliveryMode.Mixed) notices.Add("内嵌与外部材质混用；后续重建前需要用户确认交付策略。" );
 
-		return new MaterialDeliveryFacts(nodeId, mode, sourceGraph.UnitCount, sourceGraph.RequiredMaterials.Count, embedded.Count, external.Count, missingEmbeddedTextures.Count, candidates, notices, embeddedClosure);
+		return new MaterialDeliveryFacts(nodeId, mode, sourceGraph.UnitCount, sourceGraph.RequiredMaterials.Count, embedded.Count, external.Count, missingEmbeddedTextures.Count, candidates, notices, embeddedClosure, isMaterialOnly, mappedOriginalMaterials, selfMaterialReferences);
 	}
 
 	private async ValueTask<IReadOnlyList<MaterialDeliveryCandidate>> FindCandidatesAsync(ModNodeId sourceNodeId, IReadOnlySet<AssetKey> requiredExternalMaterials, LibrarySnapshot snapshot, CancellationToken cancellationToken)
@@ -61,8 +77,9 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 		foreach (var node in snapshot.Nodes.Values.Where(node => node.Id != sourceNodeId).OrderBy(node => node.Metadata.Name, StringComparer.OrdinalIgnoreCase))
 		{
 			cancellationToken.ThrowIfCancellationRequested();
-			var cached = await LoadAnalysisAsync(node.Id, snapshot, cancellationToken).ConfigureAwait(false);
-			if (cached is null || cached.Version <= 0 || cached.Analyses.Any(analysis => analysis.Depth is not (PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full))) continue;
+			// 候选扫描只消费已有 ReferenceGraph 产品；不可用节点降级为“不参与候选”，不触发高级分析。
+			var cached = await LoadReferenceGraphAsync(node.Id, snapshot, cancellationToken).ConfigureAwait(false);
+			if (cached is null) continue;
 			var graph = BuildGraph(cached);
 			var covered = requiredExternalMaterials.Intersect(graph.Materials).ToHashSet();
 			if (covered.Count == 0) continue;
@@ -77,17 +94,15 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 			.ToArray();
 	}
 
-	private async ValueTask<PatchGroupAnalysisCacheEntry?> LoadAnalysisAsync(ModNodeId nodeId, LibrarySnapshot snapshot, CancellationToken cancellationToken)
+	private async ValueTask<ReferenceGraphFacts?> LoadReferenceGraphAsync(ModNodeId nodeId, LibrarySnapshot snapshot, CancellationToken cancellationToken)
 	{
 		if (!snapshot.Nodes.TryGetValue(nodeId, out var node)) return null;
-		var result = await informationCenter.RequestAdvancedUnitAnalysisAsync(
+		var result = await informationCenter.RequestReferenceGraphAsync(
 			node,
 			modsRootDirectory!,
-			new ModInformationRequest(ModInformationKind.AdvancedUnitAnalysis, "MaterialDelivery"),
+			new ModInformationRequest(ModInformationKind.ReferenceGraph, "MaterialDelivery"),
 			cancellationToken).ConfigureAwait(false);
-		return result.Data is null
-			? null
-			: new PatchGroupAnalysisCacheEntry(3, result.Data.NodeId, result.Data.RelativePath, [], result.Data.BuiltUtc, result.Data.Analyses);
+		return result.Data;
 	}
 
 	private static MaterialDeliveryMode ResolveMode(int embeddedCount, int externalCount, int missingEmbeddedTextureCount, IReadOnlyList<MaterialDeliveryCandidate> candidates)
@@ -108,7 +123,7 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 			.Concat(graph.MaterialTextures.Where(pair => materials.Contains(pair.Material) && graph.Textures.Contains(pair.Texture)).Select(pair => pair.Texture))
 			.ToHashSet();
 
-	private static PatchGraph BuildGraph(PatchGroupAnalysisCacheEntry snapshot)
+	private static PatchGraph BuildGraph(ReferenceGraphFacts snapshot)
 	{
 		var analyses = snapshot.Analyses;
 		var assets = analyses.SelectMany(analysis => analysis.Assets).Select(asset => asset.AssetKey).ToHashSet();
@@ -118,6 +133,8 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 			assets.Where(key => key.TypeId == MaterialTypeId).ToHashSet(),
 			assets.Where(key => key.TypeId == TextureTypeId).ToHashSet(),
 			references.Where(reference => reference.Kind == PatchReferenceKind.UnitMaterial).Select(reference => reference.TargetAssetKey).ToHashSet(),
+			assets,
+			references,
 			references.Where(reference => reference.Kind == PatchReferenceKind.MaterialTexture).Select(reference => (reference.SourceAssetKey, reference.TargetAssetKey)).ToArray());
 	}
 
@@ -126,5 +143,7 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 		IReadOnlySet<AssetKey> Materials,
 		IReadOnlySet<AssetKey> Textures,
 		IReadOnlySet<AssetKey> RequiredMaterials,
+		IReadOnlySet<AssetKey> Assets,
+		IReadOnlyList<PatchAssetReference> References,
 		IReadOnlyList<(AssetKey Material, AssetKey Texture)> MaterialTextures);
 }

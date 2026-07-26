@@ -36,6 +36,10 @@ namespace HD2ModManager.ViewModels
         private bool _advancedAnalysisRunning;
         private bool _advancedAnalysisReady;
 		private bool _advancedAnalysisHasEquipment;
+        private IReadOnlyList<PatchGroupAnalysis>? _cachedAdvancedAnalyses;
+        private ModNodeId? _cachedAdvancedAnalysesNodeId;
+        private MaterialDeliveryFacts? _cachedMaterialDeliveryFacts;
+        private ModNodeId? _cachedMaterialDeliveryFactsNodeId;
 		private bool _dependencyGraphTestRunning;
         private bool _dependencyGraphComparisonRunning;
         private readonly IAdvancedModAssetQueryService _advancedAssetQueryService;
@@ -72,13 +76,16 @@ namespace HD2ModManager.ViewModels
         public string MaterialPackagingSummary { get; private set; } = "材质操作基于导入后的轻量引用图；无需执行高级分析。";
         public string MaterialDeliverySummary { get; private set; } = "导入后的轻量引用图完成后即可读取材质交付事实。";
         public string SameKeyReconstructionSummary { get; private set; } = "仅更新失效 Unit，并将结果直接写入 Manager 的 Output 文件夹；不会自动导入或部署。";
-		public string AdvancedAnalysisSummary { get; private set; } = "正在检查高级缓存。";
+        public string AdvancedAnalysisSummary { get; private set; } = "尚未执行高级分析；点击“模型解析”后才读取 Unit 完整结构。";
         public string DependencyGraphTestSummary { get; private set; } = "仅读取 Unit 材质绑定表与 Material 贴图表；结果会写入 logs。";
         public string DependencyGraphComparisonSummary { get; private set; } = "可用完整 Unit 解析对比轻量引用链的去重关系集合。";
         public bool CanRunAdvancedAnalysis => !_disposed && !_advancedAnalysisRunning && HasPatchGroups && TryGetCurrentNode(out _);
 		public bool CanRunDependencyGraphTest => !_disposed && !_dependencyGraphTestRunning && TryGetCurrentNode(out _);
         public bool CanCompareDependencyGraph => !_disposed && !_dependencyGraphComparisonRunning && TryGetCurrentNode(out _);
-        public bool CanSplitEmbeddedMaterials => !_disposed && _materialState is { HasEmbeddedMaterials: true } && TryGetCurrentNode(out _);
+        // 内嵌材质是否存在属于轻量 ReferenceGraph 事实；包装检查只负责写出前的最终安全复核。
+        public bool CanSplitEmbeddedMaterials => !_disposed
+            && ((_materialState?.HasEmbeddedMaterials == true) || (_cachedMaterialDeliveryFacts?.EmbeddedMaterialCount > 0))
+            && TryGetCurrentNode(out _);
         public bool CanReplaceEmbeddedMaterials => !_disposed && TryGetCurrentNode(out _);
         public bool CanEmbedExternalMaterials => !_disposed && TryGetCurrentNode(out _);
         public bool CanRebuildSameKey => !_disposed && !_sameKeyReconstructionRunning && _advancedAnalysisReady && _advancedAnalysisHasEquipment && TryGetCurrentNode(out _);
@@ -147,7 +154,6 @@ namespace HD2ModManager.ViewModels
             _derivedState.SnapshotChanged += _snapshotChangedHandler;
             Refresh();
 			_ = RefreshInformationProductsAsync();
-			_ = RefreshAdvancedAnalysisStateAsync();
         }
 
         private async Task RefreshInformationProductsAsync()
@@ -155,6 +161,8 @@ namespace HD2ModManager.ViewModels
             if (_disposed || !TryGetCurrentNode(out var node)) return;
             try
             {
+                // 先请求轻量材质事实，使“拆分内嵌材质”不必等待后续 Unit 版本检查或包装器扫描。
+                _ = RefreshMaterialDeliveryFactsAsync(CancellationToken.None);
                 var assetInventory = await _derivedState.InformationCenter.RequestAssetInventoryAsync(
                     node,
                     _library.ModsRootDirectory,
@@ -257,10 +265,27 @@ namespace HD2ModManager.ViewModels
             var cancellationToken = _advancedDetailsCancellation.Token;
             try
             {
-                await Task.WhenAll(
-                    RefreshAdvancedAssetsAsync(cancellationToken),
-                    RefreshMaterialDeliveryFactsAsync(cancellationToken),
-                    RefreshMaterialPackagingStateAsync(cancellationToken)).ConfigureAwait(false);
+                // 高级分析和材质交付候选均不得因页面 Loaded 自动生产；高级分析只由“模型解析”按钮启动。
+                await RefreshAdvancedAssetsAsync(cancellationToken).ConfigureAwait(false);
+
+                // 材质包装检查是独立的附加信息，失败时不得阻止轻量资产表格显示。
+                try
+                {
+                    await RefreshMaterialPackagingStateAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // 页面明确取消刷新时保持取消语义；资产表格已经先完成加载。
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    await RunOnUiThreadAsync(() =>
+                    {
+                        MaterialPackagingSummary = $"材质分析失败：{exception.Message}";
+                        OnPropertyChanged(nameof(MaterialPackagingSummary));
+                    });
+                }
             }
             catch (OperationCanceledException)
             {
@@ -272,35 +297,6 @@ namespace HD2ModManager.ViewModels
         {
             _advancedDetailsLoaded = false;
             _advancedDetailsCancellation?.Cancel();
-        }
-
-        private async Task RefreshAdvancedAnalysisStateAsync()
-        {
-            if (!TryGetCurrentNode(out var node)) return;
-            try
-            {
-                var state = await _advancedAnalysis.GetCachedStateAsync(node, _library.ModsRootDirectory);
-                if (_disposed) return;
-                _advancedAnalysisReady = state.IsReady;
-				if (state.IsReady) await RefreshAdvancedEquipmentStateAsync(node).ConfigureAwait(false);
-				else _advancedAnalysisHasEquipment = false;
-                AdvancedAnalysisSummary = state.IsReady
-                    ? $"高级缓存已就绪：{state.BuiltUtc:yyyy-MM-dd HH:mm:ss}。"
-                    : "尚未执行高级分析。Unit 更新和更换护甲计划已禁用；材质操作可直接使用轻量引用图。";
-            }
-            catch (Exception exception)
-            {
-                _advancedAnalysisReady = false;
-				_advancedAnalysisHasEquipment = false;
-                AdvancedAnalysisSummary = $"高级缓存状态读取失败：{exception.Message}";
-            }
-            RunOnUiThread(() =>
-            {
-                OnPropertyChanged(nameof(AdvancedAnalysisSummary));
-                OnPropertyChanged(nameof(CanRunAdvancedAnalysis));
-                RaiseMaterialCommandStates();
-                RaiseSameKeyReconstructionCommandState();
-            });
         }
 
         private async Task RunAdvancedAnalysisAsync()
@@ -325,7 +321,6 @@ namespace HD2ModManager.ViewModels
                     _advancedAnalysisReady = result.IsReady;
                 });
                 await RefreshAdvancedEquipmentStateAsync(node).ConfigureAwait(false);
-                await RefreshAdvancedDetailsAsync();
             }
             catch (Exception exception)
             {
@@ -356,6 +351,8 @@ namespace HD2ModManager.ViewModels
             try
             {
                 var analyses = await _advancedAnalysis.GetRequiredAnalysesAsync(node, _library.ModsRootDirectory).ConfigureAwait(false);
+                _cachedAdvancedAnalyses = analyses;
+				_cachedAdvancedAnalysesNodeId = node.Id;
                 var unitKeys = analyses.SelectMany(analysis => analysis.Assets)
                     .Where(asset => asset.AssetKey.TypeId == 0xe0a48d0be9a7453f)
                     .Select(asset => new AssetKey(asset.AssetKey.TypeId, asset.AssetKey.FileId))
@@ -616,7 +613,22 @@ namespace HD2ModManager.ViewModels
 
         private async Task RefreshAdvancedAssetsAsync(CancellationToken cancellationToken)
         {
-            if (Mod is null || !TryParseNodeId(Mod.Guid, out var nodeId)) return;
+            if (Mod is null || !TryParseNodeId(Mod.Guid, out var nodeId))
+            {
+                await RunOnUiThreadAsync(() =>
+                {
+                    AdvancedAssetState = "稳定资产事实不可用：当前 Mod 标识无效。";
+                    AdvancedAssets.ReplaceWith(Array.Empty<AdvancedModAssetRowViewModel>());
+                    OnPropertyChanged(nameof(AdvancedAssetState));
+                });
+                return;
+            }
+
+            await RunOnUiThreadAsync(() =>
+            {
+                AdvancedAssetState = "正在读取稳定资产事实…";
+                OnPropertyChanged(nameof(AdvancedAssetState));
+            });
             try
             {
                 var active = _profiles.ActiveProfile;
@@ -626,17 +638,28 @@ namespace HD2ModManager.ViewModels
                 if (_disposed || cancellationToken.IsCancellationRequested) return;
                 await RunOnUiThreadAsync(() =>
                 {
-                    AdvancedAssetState = _allAdvancedAssets.Count == 0 ? "轻量引用图尚未完成；请等待导入后的后台分析。" : $"共 {_allAdvancedAssets.Count} 个 AssetKey（轻量引用图）";
+                    AdvancedAssetState = _allAdvancedAssets.Count == 0
+                        ? "稳定资产事实读取完成，但当前没有 AssetKey（轻量引用图可能尚未完成）。"
+                        : $"稳定资产事实读取完成：共 {_allAdvancedAssets.Count} 个 AssetKey（轻量引用图）";
                     ApplyAdvancedAssetFilter();
                 });
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException)
+            {
+                await RunOnUiThreadAsync(() =>
+                {
+                    AdvancedAssetState = "稳定资产事实读取已取消。";
+                    OnPropertyChanged(nameof(AdvancedAssetState));
+                });
+                throw;
+            }
             catch (Exception exception)
             {
                 await RunOnUiThreadAsync(() =>
                 {
                     AdvancedAssetState = $"稳定资产事实读取失败：{exception.Message}";
-					OnPropertyChanged(nameof(AdvancedAssetState));
+                    AdvancedAssets.ReplaceWith(Array.Empty<AdvancedModAssetRowViewModel>());
+                    OnPropertyChanged(nameof(AdvancedAssetState));
                 });
             }
         }
@@ -917,7 +940,9 @@ namespace HD2ModManager.ViewModels
             if (Mod is null || !TryParseNodeId(Mod.Guid, out var nodeId)) return;
             try
             {
-                var facts = await _materialDeliveryFacts.GetAsync(nodeId, _library.Snapshot, cancellationToken);
+                var facts = await _materialDeliveryFacts.GetAsync(nodeId, _library.Snapshot, cancellationToken, includeCandidates: false, includeGameDataMapping: false);
+                _cachedMaterialDeliveryFacts = facts;
+				_cachedMaterialDeliveryFactsNodeId = nodeId;
                 if (_disposed || cancellationToken.IsCancellationRequested) return;
                 var lines = new List<string>
                 {
@@ -928,6 +953,7 @@ namespace HD2ModManager.ViewModels
                 {
                     lines.Add("库内材质候选：" + string.Join("；", facts.Candidates.Take(3).Select(candidate => $"{candidate.Name}（覆盖 {candidate.CoveredMaterialCount}，缺贴图 {candidate.MissingTextureCount}{(candidate.IsComplete ? "，完整" : string.Empty)}）")) + (facts.Candidates.Count > 3 ? $"；另有 {facts.Candidates.Count - 3} 个" : string.Empty));
                 }
+                lines.Add($"纯材质 Mod：{(facts.IsMaterialOnly ? "是" : "否")}；可映射原版材质 {facts.GameDataMappedMaterialKeys?.Count ?? 0} 个；自身材质引用 {facts.SelfMaterialReferences?.Count ?? 0} 条");
                 lines.AddRange(facts.Notices);
                 MaterialDeliverySummary = string.Join(Environment.NewLine, lines);
             }
@@ -936,12 +962,17 @@ namespace HD2ModManager.ViewModels
             {
                 MaterialDeliverySummary = $"稳定材质交付事实读取失败：{exception.Message}";
             }
-            RunOnUiThread(() => OnPropertyChanged(nameof(MaterialDeliverySummary)));
+            RunOnUiThread(() =>
+            {
+                OnPropertyChanged(nameof(MaterialDeliverySummary));
+                RaiseMaterialCommandStates();
+            });
         }
 
         private static string MaterialDeliveryModeName(MaterialDeliveryMode mode) => mode switch
         {
             MaterialDeliveryMode.NoMaterialDependencies => "无材质依赖",
+            MaterialDeliveryMode.MaterialOnly => "纯材质 Mod",
             MaterialDeliveryMode.EmbeddedComplete => "内嵌闭包完整（整体重建）",
             MaterialDeliveryMode.EmbeddedIncomplete => "内嵌闭包不完整",
             MaterialDeliveryMode.ExternalResolved => "外部材质已解析（仅重建模型）",
@@ -957,6 +988,8 @@ namespace HD2ModManager.ViewModels
             var destination = Path.Combine(outputRoot, $"{SanitizeFileName(source.Metadata.Name)}+{DateTime.Now:yyyyMMdd-HHmmssfff}+SameKey重建");
             _sameKeyReconstructionRunning = true;
             SameKeyReconstructionSummary = "正在读取 Payload 并生成 Same-key 重建结果…";
+            LogService.Info($"修复 patch 开始：Mod={source.Metadata.Name}，节点={source.Id.Value:N}，输出={destination}。");
+            _notifications?.Show("修复 patch：正在读取模型、材质和 Game Data 事实并生成重建方案…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
             OnPropertyChanged(nameof(SameKeyReconstructionSummary));
             RaiseSameKeyReconstructionCommandState();
             try
@@ -969,16 +1002,19 @@ namespace HD2ModManager.ViewModels
                 if (!result.IsSuccessful)
                 {
                     SameKeyReconstructionSummary = $"重建失败：{string.Join("；", result.Issues.Select(issue => issue.Message).Take(3))}";
+                    LogService.Error($"修复 patch 失败：Mod={source.Metadata.Name}，输出={destination}，问题={string.Join(" | ", result.Issues.Select(issue => $"{issue.Code}: {issue.Message}"))}");
                     _notifications?.Show(SameKeyReconstructionSummary, NotificationLevel.Error, TimeSpan.FromSeconds(12));
                     return;
                 }
 
                 SameKeyReconstructionSummary = $"重建完成：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。输出：{result.OutputDirectory}";
+                LogService.Info($"修复 patch 完成：Mod={source.Metadata.Name}，Unit={result.OutputUnitCount}，替换Mesh={result.ReplacementMeshCount}，极小化Mesh={result.MinifiedMeshCount}，输出={result.OutputDirectory}。");
                 _notifications?.Show("Same-key 重建结果已写入 Output 文件夹。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException or KeyNotFoundException)
             {
                 SameKeyReconstructionSummary = $"重建失败：{exception.Message}";
+                LogService.Error($"修复 patch 异常：Mod={source.Metadata.Name}，输出={destination}，错误={exception}");
                 _notifications?.Show(SameKeyReconstructionSummary, NotificationLevel.Error, TimeSpan.FromSeconds(12));
             }
             finally
@@ -994,8 +1030,14 @@ namespace HD2ModManager.ViewModels
             if (!TryGetCurrentNode(out var source)) return;
             try
             {
-                _notifications?.Show("正在使用高级缓存中的 Unit 事实生成装备目录…", NotificationLevel.Info, TimeSpan.FromSeconds(8));
-                var analyses = await _advancedAnalysis.GetRequiredAnalysesAsync(source, _library.ModsRootDirectory).ConfigureAwait(false);
+                LogService.Info($"替换护甲计划开始：Mod={source.Metadata.Name}，节点={source.Id.Value:N}。");
+                _notifications?.Show("替换护甲：正在使用高级缓存中的 Unit 事实生成装备目录…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
+                var analyses = _cachedAdvancedAnalysesNodeId == source.Id
+                    ? _cachedAdvancedAnalyses
+                    : null;
+                analyses ??= await _advancedAnalysis.GetRequiredAnalysesAsync(source, _library.ModsRootDirectory).ConfigureAwait(false);
+                _cachedAdvancedAnalyses = analyses;
+				_cachedAdvancedAnalysesNodeId = source.Id;
                 var unitKeys = analyses.SelectMany(analysis => analysis.Assets)
 					.Where(asset => asset.AssetKey.TypeId == 0xe0a48d0be9a7453f)
 					.Select(asset => new AssetKey(asset.AssetKey.TypeId, asset.AssetKey.FileId))
@@ -1027,11 +1069,13 @@ namespace HD2ModManager.ViewModels
                 }
                 if (sourceCandidates.Length == 0)
                 {
+                    LogService.Info($"替换护甲计划结束：Mod={source.Metadata.Name}，没有可转移的真实 Unit 几何。");
                     _notifications?.Show("当前 Mod 没有可转移的真实 Unit 几何：索引未匹配、Unit 无法读取或所有匹配 mesh 均已极小化。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
                     return;
                 }
                 if (sourcePatchPaths.Length != 1)
                 {
+                    LogService.Info($"替换护甲计划结束：Mod={source.Metadata.Name}，Patch组数={sourcePatchPaths.Length}，当前流程要求一个 Patch 主文件组。");
                     _notifications?.Show("跨护甲验证候选目前仅支持源 Mod 含一个 Patch 主文件组。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
                     return;
                 }
@@ -1041,9 +1085,12 @@ namespace HD2ModManager.ViewModels
                     .ToArray();
                 var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(_equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(), preparedSourceEntries, _paths, targetReplacementSnapshot);
                 await OpenCrossArmorPlanOnUiThreadAsync(viewModel).ConfigureAwait(false);
+                LogService.Info($"替换护甲计划完成：Mod={source.Metadata.Name}，源候选={sourceCandidates.Length}，目标候选={allCandidates.Count}，源Patch={sourcePatchPaths[0]}。");
+                _notifications?.Show("替换护甲：映射计划已准备完成，请确认目标部件后生成候选。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
             {
+                LogService.Error($"替换护甲计划异常：Mod={source.Metadata.Name}，错误={exception}");
                 RunOnUiThread(() => _notifications?.Show($"读取跨护甲计划失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(12)));
             }
         }
@@ -1074,7 +1121,9 @@ namespace HD2ModManager.ViewModels
                 _library,
                 _notifications,
                 splitEmbeddedMaterials,
-                requireAllExternalMaterials));
+                requireAllExternalMaterials,
+                _materialState,
+                _cachedMaterialDeliveryFactsNodeId == source.Id ? _cachedMaterialDeliveryFacts : null));
         }
 
         private bool TryGetCurrentNode(out ModNode node)
