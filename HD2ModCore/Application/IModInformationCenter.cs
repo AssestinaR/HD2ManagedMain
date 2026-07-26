@@ -50,5 +50,10 @@ public interface IModInformationCenter : IAsyncDisposable
 		ModInformationRequest request,
 		CancellationToken cancellationToken = default);
 
+	ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(
+		       IReadOnlyCollection<AssetKey> assetKeys,
+		       ModNodeId? excludedNodeId = null,
+		       CancellationToken cancellationToken = default);
+
 	ValueTask InvalidateNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default);
 }

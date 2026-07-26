@@ -87,7 +87,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			try
 			{
 				var cached = await _informationCache.TryLoadAsync<ModContentFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
-				if (cached is not null)
+				if (cached is not null && IsNodeRequestCurrent(node.Id, nodeCancellation))
 				{
 					_modDataIndex?.Update(cached);
 					return new ModInformationResult<ModContentFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
@@ -98,6 +98,8 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 				_ = exception;
 			}
 		}
+		if (!IsNodeRequestCurrent(node.Id, nodeCancellation))
+			nodeCancellation = BeginNodeRequest(node.Id);
 		var entry = new Lazy<Task<ModInformationResult<ModContentFacts>>>(
 			() => ProduceAssetInventoryAndRemoveAsync(key, node, modsRootDirectory, effectiveRequest, nodeCancellation),
 			LazyThreadSafetyMode.ExecutionAndPublication);
@@ -119,12 +121,14 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
 		{
 			var cached = await _informationCache.TryLoadAsync<ReferenceGraphFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
-			if (cached is not null)
+			if (cached is not null && IsNodeRequestCurrent(node.Id, nodeCancellation))
 			{
 				_modDataIndex?.Update(cached);
 				return new ModInformationResult<ReferenceGraphFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
 			}
 		}
+		if (!IsNodeRequestCurrent(node.Id, nodeCancellation))
+			nodeCancellation = BeginNodeRequest(node.Id);
 		var entry = new Lazy<Task<ModInformationResult<ReferenceGraphFacts>>>(() => ProduceReferenceGraphAndRemoveAsync(key, node, modsRootDirectory, effectiveRequest, nodeCancellation), LazyThreadSafetyMode.ExecutionAndPublication);
 		var existing = _referenceTasks.GetOrAdd(key, entry);
 		return await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false);
@@ -204,6 +208,11 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var existing = _thumbnailTasks.GetOrAdd(key, entry);
 		return await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false);
 	}
+
+	public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default)
+		=> _modDataIndex is null
+			? ValueTask.FromResult(new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0))
+			: _modDataIndex.GetAssetRelationSummaryAsync(assetKeys, excludedNodeId, cancellationToken);
 
 	private CancellationTokenSource GetNodeCancellation(ModNodeId nodeId)
 		=> _nodeCancellations.GetOrAdd(nodeId, static _ => new CancellationTokenSource());

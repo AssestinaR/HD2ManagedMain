@@ -83,7 +83,7 @@ namespace HD2ModManager.ViewModels
         public bool CanRebuildSameKey => !_disposed && !_sameKeyReconstructionRunning && _advancedAnalysisReady && _advancedAnalysisHasEquipment && TryGetCurrentNode(out _);
         public bool CanPlanCrossArmorTransfer => !_disposed && _advancedAnalysisReady && _advancedAnalysisHasEquipment && TryGetCurrentNode(out _);
         private bool HasPatchGroups => Mod?.FileGroups?.Count > 0;
-        public ObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
+        public BulkObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
         public bool AdvancedOnlyIssues { get => _advancedOnlyIssues; set { if (SetField(ref _advancedOnlyIssues, value)) ApplyAdvancedAssetFilter(); } }
         public string AdvancedAssetState { get; private set; } = "正在加载稳定资产事实。";
@@ -638,9 +638,9 @@ namespace HD2ModManager.ViewModels
                     || row.ResourceName.Contains(query, StringComparison.OrdinalIgnoreCase)
                     || row.TargetSummary.Contains(query, StringComparison.OrdinalIgnoreCase)
                     || row.AssetKey.ToString().Contains(query, StringComparison.OrdinalIgnoreCase))
-                .Select(row => new AdvancedModAssetRowViewModel(row));
-            AdvancedAssets.Clear();
-            foreach (var row in rows) AdvancedAssets.Add(row);
+                .Select(row => new AdvancedModAssetRowViewModel(row))
+                .ToList();
+            AdvancedAssets.ReplaceWith(rows);
             OnPropertyChanged(nameof(AdvancedAssetState));
         }
 
@@ -752,19 +752,17 @@ namespace HD2ModManager.ViewModels
             if (facts is null) return;
             try
             {
-                var index = CoreServices.CreateModDataIndex(_paths);
                 var assets = facts.PatchGroups.SelectMany(group => group.AssetKeys).Distinct().ToArray();
-                var providers = 0;
-                var consumers = 0;
-                foreach (var asset in assets)
-                {
-                    providers += (await index.FindProvidersAsync(asset)).Count(entry => entry.NodeId != nodeId);
-                    consumers += (await index.FindConsumersAsync(asset)).Count(entry => entry.NodeId != nodeId);
-                }
+                var summary = await _derivedState.InformationCenter.GetAssetRelationSummaryAsync(assets, nodeId);
                 RunOnUiThread(() =>
                 {
                     if (_disposed) return;
-                    DataIndexSummary = $"跨 Mod 索引：关联提供者 {providers} 个，引用消费者 {consumers} 个。";
+                    DataIndexSummary = summary.Status switch
+                    {
+                        ModDataIndexStatus.Unavailable => "跨 Mod 资产索引尚未就绪/不可用。",
+                        ModDataIndexStatus.Partial => "跨 Mod 资产索引正在补齐。",
+                        _ => $"跨 Mod 索引：关联提供者 {summary.ProviderCount} 个，引用消费者 {summary.ConsumerCount} 个。"
+                    };
                     OnPropertyChanged(nameof(DataIndexSummary));
                 });
             }

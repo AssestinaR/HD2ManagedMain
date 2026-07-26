@@ -16,6 +16,7 @@ public sealed class ModDataIndex : IModDataIndex
 	private readonly string? _persistencePath;
 	private readonly object _persistenceLock = new();
 	private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+	private volatile ModDataIndexStatus _status = ModDataIndexStatus.Unavailable;
 
 	public ModDataIndex()
 	{
@@ -31,12 +32,14 @@ public sealed class ModDataIndex : IModDataIndex
 	public void Update(ModContentFacts inventory)
 	{
 		_providers[inventory.NodeId] = inventory.PatchGroups.SelectMany(group => group.AssetKeys.Select(key => new ModDataIndexEntry(inventory.NodeId, inventory.RelativePath, group.Id.SourceArchiveHex, group.Id.SourcePatchIndex, new AssetKey(key.TypeId, key.FileId), "Provider"))).ToArray();
+		if (_status == ModDataIndexStatus.Unavailable) _status = ModDataIndexStatus.Partial;
 		RebuildNode(inventory.NodeId);
 	}
 
 	public void Update(ReferenceGraphFacts graph)
 	{
 		_consumers[graph.NodeId] = graph.Analyses.SelectMany(analysis => analysis.References.Select(reference => new ModDataIndexEntry(graph.NodeId, graph.RelativePath, Path.GetFileName(analysis.Input.PatchTocFilePath), 0, new AssetKey(reference.TargetAssetKey.TypeId, reference.TargetAssetKey.FileId), "Consumer"))).ToArray();
+		if (_status == ModDataIndexStatus.Unavailable) _status = ModDataIndexStatus.Partial;
 		RebuildNode(graph.NodeId);
 	}
 
@@ -45,6 +48,22 @@ public sealed class ModDataIndex : IModDataIndex
 
 	public ValueTask<IReadOnlyList<ModDataIndexEntry>> FindConsumersAsync(AssetKey assetKey, CancellationToken cancellationToken = default)
 		=> ValueTask.FromResult<IReadOnlyList<ModDataIndexEntry>>(_entries.Values.SelectMany(value => value).Where(entry => entry.Relation == "Consumer" && entry.AssetKey == assetKey).ToArray());
+
+	public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(assetKeys);
+		if (_status == ModDataIndexStatus.Unavailable) return ValueTask.FromResult(new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0));
+		var requested = assetKeys.ToHashSet();
+		var counts = _entries.Values
+			.SelectMany(value => value)
+			.Where(entry => (!excludedNodeId.HasValue || entry.NodeId != excludedNodeId.Value) && requested.Contains(entry.AssetKey))
+			.GroupBy(entry => entry.Relation)
+			.ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
+		return ValueTask.FromResult(new ModDataIndexSummary(
+			_status,
+			counts.GetValueOrDefault("Provider"),
+			counts.GetValueOrDefault("Consumer")));
+	}
 
 	public ValueTask<ModDataIndexEntry?> ResolveFinalProviderAsync(AssetKey assetKey, Profile profile, CancellationToken cancellationToken = default)
 	{
@@ -69,6 +88,7 @@ public sealed class ModDataIndex : IModDataIndex
 		_entries.TryRemove(nodeId, out _);
 		_providers.TryRemove(nodeId, out _);
 		_consumers.TryRemove(nodeId, out _);
+		if (_entries.IsEmpty) _status = ModDataIndexStatus.Unavailable;
 		Persist();
 		return ValueTask.CompletedTask;
 	}
@@ -94,6 +114,7 @@ public sealed class ModDataIndex : IModDataIndex
 				_providers[group.Key] = group.ToArray();
 			foreach (var group in envelope.Entries.Where(entry => entry.Relation == "Consumer").GroupBy(entry => entry.NodeId))
 				_consumers[group.Key] = group.ToArray();
+			_status = envelope.Entries.Count == 0 ? ModDataIndexStatus.Unavailable : ModDataIndexStatus.Ready;
 		}
 		catch (IOException) { }
 		catch (JsonException) { }

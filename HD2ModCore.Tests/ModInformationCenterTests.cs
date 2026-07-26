@@ -127,6 +127,27 @@ public sealed class ModInformationCenterTests
 	}
 
 	[Fact]
+	public async Task RequestAssetInventoryAsync_InvalidatedCacheHit_DoesNotUpdateIndex()
+	{
+		var node = CreateNode();
+		var cached = new ModContentFacts(node.Id, node.RelativePath, "generation", DateTimeOffset.UtcNow, [], []);
+		var cache = new BlockingInformationCache(cached);
+		var index = new RecordingModDataIndex();
+		var center = new HD2ModCore.Infrastructure.ModInformationCenter(
+			new FailingFileFactsProducer(), new ThrowingAssetInventoryProducer(), informationCache: cache, modDataIndex: index);
+
+		var request = center.RequestAssetInventoryAsync(node, Path.GetTempPath(), new ModInformationRequest(ModInformationKind.AssetInventory, "Test", "generation")).AsTask();
+		await cache.Started.Task;
+		await center.InvalidateNodeAsync(node.Id);
+		cache.Release();
+
+		var result = await request;
+		Assert.NotEqual(ModInformationStatus.Cached, result.Status);
+		Assert.Empty(index.UpdatedNodeIds);
+		await center.DisposeAsync();
+	}
+
+	[Fact]
 	public async Task RequestAssetInventoryAsync_CorruptJsonCache_FallsBackToProduction()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2-information-corrupt-" + Guid.NewGuid().ToString("N"));
@@ -250,11 +271,32 @@ public sealed class ModInformationCenterTests
 		public ValueTask DeleteNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 	}
 
+	private sealed class BlockingInformationCache(ModContentFacts cached) : IModInformationCache
+	{
+		public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		public ValueTask<T?> TryLoadAsync<T>(ModInformationKind kind, ModNodeId nodeId, string generation, CancellationToken cancellationToken = default)
+		{
+			Started.TrySetResult();
+			return new ValueTask<T?>(WaitAsync<T>());
+		}
+		private async Task<T?> WaitAsync<T>()
+		{
+			await _release.Task;
+			return typeof(T) == typeof(ModContentFacts) ? (T?)(object)cached : default;
+		}
+		public void Release() => _release.TrySetResult();
+		public ValueTask<ModInformationCacheEntry<T>?> TryLoadLatestAsync<T>(ModInformationKind kind, ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.FromResult<ModInformationCacheEntry<T>?>(default);
+		public ValueTask SaveAsync<T>(ModInformationKind kind, ModNodeId nodeId, string generation, T data, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+		public ValueTask DeleteNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+	}
+
 	private sealed class RecordingModDataIndex : HD2ModCore.Application.IModDataIndex
 	{
 		public List<ModNodeId> UpdatedNodeIds { get; } = [];
 		public ValueTask<IReadOnlyList<ModDataIndexEntry>> FindProvidersAsync(AssetKey assetKey, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<ModDataIndexEntry>>([]);
 		public ValueTask<IReadOnlyList<ModDataIndexEntry>> FindConsumersAsync(AssetKey assetKey, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<ModDataIndexEntry>>([]);
+		public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default) => ValueTask.FromResult(new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0));
 		public ValueTask<ModDataIndexEntry?> ResolveFinalProviderAsync(AssetKey assetKey, Profile profile, CancellationToken cancellationToken = default) => ValueTask.FromResult<ModDataIndexEntry?>(null);
 		public ValueTask RemoveNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 		public void Update(ModContentFacts inventory) => UpdatedNodeIds.Add(inventory.NodeId);

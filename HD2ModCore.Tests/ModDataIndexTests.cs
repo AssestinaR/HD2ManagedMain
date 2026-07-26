@@ -36,10 +36,36 @@ public sealed class ModDataIndexTests
 
 		Assert.Single(await index.FindProvidersAsync(asset));
 		Assert.Single(await index.FindConsumersAsync(asset));
+		var summary = await index.GetAssetRelationSummaryAsync([asset], consumerNode);
+		Assert.Equal(ModDataIndexStatus.Partial, summary.Status);
+		Assert.Equal(1, summary.ProviderCount);
+		Assert.Equal(0, summary.ConsumerCount);
 
 		await index.RemoveNodeAsync(providerNode);
 		Assert.Empty(await index.FindProvidersAsync(asset));
 		Assert.Single(await index.FindConsumersAsync(asset));
+	}
+
+	[Fact]
+	public async Task EmptyIndex_IsUnavailableRatherThanZeroSummary()
+	{
+		var index = new ModDataIndex();
+		var summary = await index.GetAssetRelationSummaryAsync([new AssetKey(1, 2)]);
+
+		Assert.Equal(ModDataIndexStatus.Unavailable, summary.Status);
+		Assert.Equal(0, summary.ProviderCount);
+		Assert.Equal(0, summary.ConsumerCount);
+	}
+
+	[Fact]
+	public async Task UpdateOnlyIndex_IsPartialUntilPersisted()
+	{
+		var index = new ModDataIndex();
+		index.Update(CreateInventory(new ModNodeId(Guid.NewGuid()), new AssetKey(1, 2), "partial"));
+
+		var summary = await index.GetAssetRelationSummaryAsync([new AssetKey(1, 2)]);
+
+		Assert.Equal(ModDataIndexStatus.Partial, summary.Status);
 	}
 
 	[Fact]
@@ -59,10 +85,14 @@ public sealed class ModDataIndexTests
 			var restored = new ModDataIndex(paths);
 			var profile = new Profile(ProfileId.New(), "test", DateTimeOffset.UtcNow, null, [new ProfileEntry(earlier, 0), new ProfileEntry(later, 1)]);
 			var provider = await restored.ResolveFinalProviderAsync(asset, profile);
+			var summary = await restored.GetAssetRelationSummaryAsync([asset]);
 
 			Assert.NotNull(provider);
 			Assert.Equal(later, provider.NodeId);
 			Assert.Equal(2, (await restored.FindProvidersAsync(asset)).Count);
+			Assert.Equal(ModDataIndexStatus.Ready, summary.Status);
+			Assert.Equal(2, summary.ProviderCount);
+			Assert.Equal(0, summary.ConsumerCount);
 		}
 		finally
 		{

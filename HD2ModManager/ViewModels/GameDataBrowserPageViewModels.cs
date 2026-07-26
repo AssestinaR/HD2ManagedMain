@@ -27,7 +27,7 @@ namespace HD2ModManager.ViewModels
         private bool _isLoading;
         private string _loadState = "正在准备资产浏览。";
 
-        public ObservableCollection<GameDataArchiveRowViewModel> Archives { get; } = new();
+        public BulkObservableCollection<GameDataArchiveRowViewModel> Archives { get; } = new();
         public ICollectionView ArchivesView { get; }
         public IReadOnlyList<string> StatusFilters { get; } = new[] { "全部", "未替换", "Mod 库中存在", "当前配置启用", "已生效", "竞争生效", "异常" };
         public ObservableCollection<string> CategoryFilters { get; } = new() { "全部" };
@@ -68,8 +68,9 @@ namespace HD2ModManager.ViewModels
         {
             _loadCancellation?.Cancel();
             _loadCancellation?.Dispose();
-            _loadCancellation = new CancellationTokenSource();
-            var cancellationToken = _loadCancellation.Token;
+            var loadCancellation = new CancellationTokenSource();
+            _loadCancellation = loadCancellation;
+            var cancellationToken = loadCancellation.Token;
             IsLoading = true;
             LoadState = "正在读取 archive 索引摘要。";
             try
@@ -83,20 +84,22 @@ namespace HD2ModManager.ViewModels
 
                 var browser = CoreServices.CreateGameDataArchiveBrowserService(SettingsService.CreateStoragePaths(), _informationCenter);
                 var snapshot = await browser.BuildAsync(_library.Snapshot, _library.ModsRootDirectory, gameData, cancellationToken);
-                if (cancellationToken.IsCancellationRequested) return;
+                if (!ReferenceEquals(_loadCancellation, loadCancellation) || cancellationToken.IsCancellationRequested) return;
                 if (snapshot is null || snapshot.Archives.Count == 0)
                 {
                     LoadState = "当前资产索引不可用或没有 archive；请先在设置中建立资产索引。";
                     return;
                 }
 
-                Archives.Clear();
-                foreach (var item in snapshot.Archives) Archives.Add(new GameDataArchiveRowViewModel(item, snapshot.ModNames));
+                var archiveRows = snapshot.Archives
+                    .Select(item => new GameDataArchiveRowViewModel(item, snapshot.ModNames))
+                    .ToList();
+                Archives.ReplaceWith(archiveRows);
                 CategoryFilters.Clear();
                 CategoryFilters.Add("全部");
-                foreach (var category in Archives.Select(row => row.Category).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase)) CategoryFilters.Add(category);
+                foreach (var category in archiveRows.Select(row => row.Category).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase)) CategoryFilters.Add(category);
                 ResetFilters();
-                Summary = $"Archive {snapshot.Fingerprint.ArchivesIndexed}/{snapshot.Fingerprint.ArchivesTotal}，AssetKey {snapshot.Fingerprint.AssetKeysTotal} · 已生效 {Archives.Count(row => row.ReplacementStatus == "已生效")} · 竞争 {Archives.Count(row => row.ReplacementStatus == "竞争生效")} · 异常 {Archives.Count(row => row.ReplacementStatus == "异常")}";
+                Summary = $"Archive {snapshot.Fingerprint.ArchivesIndexed}/{snapshot.Fingerprint.ArchivesTotal}，AssetKey {snapshot.Fingerprint.AssetKeysTotal} · 已生效 {archiveRows.Count(row => row.ReplacementStatus == "已生效")} · 竞争 {archiveRows.Count(row => row.ReplacementStatus == "竞争生效")} · 异常 {archiveRows.Count(row => row.ReplacementStatus == "异常")}";
                 BuiltText = $"构建时间：{snapshot.Fingerprint.BuiltUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
                 SourceText = $"来源：{snapshot.Fingerprint.GameDataDirectory}";
                 LoadState = "选择左侧 archive 查看 AssetKey 详情。";
@@ -104,23 +107,42 @@ namespace HD2ModManager.ViewModels
             }
             catch (OperationCanceledException) { }
             catch (Exception exception) { LoadState = $"读取 Game Data 资产索引失败：{exception.Message}"; }
-            finally { IsLoading = false; }
+            finally
+            {
+                if (ReferenceEquals(_loadCancellation, loadCancellation))
+                {
+                    IsLoading = false;
+                    _loadCancellation = null;
+                }
+                loadCancellation.Dispose();
+            }
         }
 
         private async Task LoadSelectedDetailsAsync(GameDataArchiveRowViewModel? row)
         {
             _detailsCancellation?.Cancel(); _detailsCancellation?.Dispose();
             if (row is null) { SelectedDetails = null; return; }
-            _detailsCancellation = new CancellationTokenSource();
-            var cancellationToken = _detailsCancellation.Token;
+            var detailsCancellation = new CancellationTokenSource();
+            _detailsCancellation = detailsCancellation;
+            var cancellationToken = detailsCancellation.Token;
             SelectedDetails = GameDataArchiveDetailsPageViewModel.Loading(row);
             try
             {
                 var details = await _index.GetArchiveDetailsAsync(row.PackageName, cancellationToken);
-                if (!cancellationToken.IsCancellationRequested) SelectedDetails = details is null ? GameDataArchiveDetailsPageViewModel.NotFound(row) : new GameDataArchiveDetailsPageViewModel(details, row);
+                if (ReferenceEquals(_detailsCancellation, detailsCancellation) && !cancellationToken.IsCancellationRequested)
+                    SelectedDetails = details is null ? GameDataArchiveDetailsPageViewModel.NotFound(row) : new GameDataArchiveDetailsPageViewModel(details, row);
             }
             catch (OperationCanceledException) { }
-            catch (Exception exception) { if (!cancellationToken.IsCancellationRequested) SelectedDetails = GameDataArchiveDetailsPageViewModel.Failed(row, exception.Message); }
+            catch (Exception exception)
+            {
+                if (ReferenceEquals(_detailsCancellation, detailsCancellation) && !cancellationToken.IsCancellationRequested)
+                    SelectedDetails = GameDataArchiveDetailsPageViewModel.Failed(row, exception.Message);
+            }
+            finally
+            {
+                if (ReferenceEquals(_detailsCancellation, detailsCancellation)) _detailsCancellation = null;
+                detailsCancellation.Dispose();
+            }
         }
 
         public void Sort(string propertyName)
@@ -169,7 +191,7 @@ namespace HD2ModManager.ViewModels
         public string EffectiveMod { get; private set; } = "—";
         public string ContentSummary { get; private set; } = "从左侧选择 archive 后显示 AssetKey。";
         public string LoadState { get; private set; } = "等待选择";
-        public ObservableCollection<GameDataArchiveAssetRowViewModel> Assets { get; } = new();
+        public BulkObservableCollection<GameDataArchiveAssetRowViewModel> Assets { get; } = new();
         public ICollectionView AssetsView { get; }
         public ObservableCollection<string> TypeFilters { get; } = new() { "全部" };
         public IReadOnlyList<string> ReplacementFilters { get; } = new[] { "全部", "已生效", "未生效" };
@@ -186,9 +208,12 @@ namespace HD2ModManager.ViewModels
         public GameDataArchiveDetailsPageViewModel(GameDataArchiveDetails details, GameDataArchiveRowViewModel row) : this()
         {
             DisplayName = row.DisplayName; PackageName = row.PackageName; Category = row.Category; ReplacementStatus = row.ReplacementStatus; EffectivePatchGroup = row.EffectivePatchGroup; EffectiveMod = row.EffectiveMod;
-            foreach (var asset in details.Assets) Assets.Add(new GameDataArchiveAssetRowViewModel(asset, row));
-            foreach (var typeName in Assets.Select(asset => asset.TypeName).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase)) TypeFilters.Add(typeName);
-            ContentSummary = $"共 {Assets.Count} 个 AssetKey"; LoadState = "详情已加载。";
+            var assetRows = details.Assets
+                .Select(asset => new GameDataArchiveAssetRowViewModel(asset, row))
+                .ToList();
+            Assets.ReplaceWith(assetRows);
+            foreach (var typeName in assetRows.Select(asset => asset.TypeName).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase)) TypeFilters.Add(typeName);
+            ContentSummary = $"共 {assetRows.Count} 个 AssetKey"; LoadState = "详情已加载。";
         }
         public static GameDataArchiveDetailsPageViewModel Loading(GameDataArchiveRowViewModel row) => CreateState(row, "正在读取 AssetKey 详情。");
         public static GameDataArchiveDetailsPageViewModel NotFound(GameDataArchiveRowViewModel row) => CreateState(row, "未找到该 archive 的详情。");

@@ -8,6 +8,7 @@ public interface IModDataIndex
 {
 	ValueTask<IReadOnlyList<ModDataIndexEntry>> FindProvidersAsync(AssetKey assetKey, CancellationToken cancellationToken = default);
 	ValueTask<IReadOnlyList<ModDataIndexEntry>> FindConsumersAsync(AssetKey assetKey, CancellationToken cancellationToken = default);
+	ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default);
 	ValueTask<ModDataIndexEntry?> ResolveFinalProviderAsync(AssetKey assetKey, Profile profile, CancellationToken cancellationToken = default);
 	ValueTask RemoveNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default);
 	void Update(ModContentFacts inventory);
@@ -15,3 +16,12 @@ public interface IModDataIndex
 }
 
 public sealed record ModDataIndexEntry(ModNodeId NodeId, string RelativePath, string SourceArchiveHex, int PatchIndex, AssetKey AssetKey, string Relation);
+
+public enum ModDataIndexStatus
+{
+	Unavailable,
+	Partial,
+	Ready
+}
+
+public sealed record ModDataIndexSummary(ModDataIndexStatus Status, int ProviderCount, int ConsumerCount);

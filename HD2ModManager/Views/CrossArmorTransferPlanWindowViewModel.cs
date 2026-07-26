@@ -164,7 +164,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		.ThenBy(mapping => mapping.PhysicalTarget.MeshInfoIndex)
 		.ToArray()
 		?? Array.Empty<CrossArmorTransferMapping>();
-	public ObservableCollection<CrossArmorTargetArchiveFilterOption> TargetArchiveFilters { get; } = new();
+	public BulkObservableCollection<CrossArmorTargetArchiveFilterOption> TargetArchiveFilters { get; } = new();
 	public CrossArmorTargetArchiveFilterOption? SelectedTargetArchiveFilter
 	{
 		get => selectedTargetArchiveFilter;
@@ -434,8 +434,9 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	{
 		planCancellation?.Cancel();
 		planCancellation?.Dispose();
-		planCancellation = new CancellationTokenSource();
-		var cancellationToken = planCancellation.Token;
+		var currentCancellation = new CancellationTokenSource();
+		planCancellation = currentCancellation;
+		var cancellationToken = currentCancellation.Token;
 		var generation = ++planGeneration;
 		IsPlanning = true;
 		PlanState = "正在重新规划来源与目标 mesh。";
@@ -445,7 +446,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		{
 			var additionalSources = new[] { SelectedSourceArmor, SelectedSourceHelmet }.Where(source => source is not null && !ReferenceEquals(source, SelectedSource)).Select(source => source!.ArchiveId).ToArray();
 			var nextPlan = await Task.Run(() => catalogService.CreatePlanAsync(sourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray(), AllowManualMappings, additionalSources, cancellationToken).AsTask(), cancellationToken);
-			if (cancellationToken.IsCancellationRequested || generation != planGeneration) return;
+			if (!ReferenceEquals(planCancellation, currentCancellation) || cancellationToken.IsCancellationRequested || generation != planGeneration) return;
 			plan = nextPlan;
 			PlanState = "计划已更新。";
 			OnPropertyChanged(nameof(SourceParts));
@@ -462,16 +463,18 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		catch (OperationCanceledException) { }
 		catch (Exception exception)
 		{
-			if (!cancellationToken.IsCancellationRequested) PlanState = $"计划读取失败：{exception.Message}";
+			if (ReferenceEquals(planCancellation, currentCancellation) && !cancellationToken.IsCancellationRequested) PlanState = $"计划读取失败：{exception.Message}";
 		}
 		finally
 		{
-			if (generation == planGeneration)
+			if (ReferenceEquals(planCancellation, currentCancellation) && generation == planGeneration)
 			{
 				IsPlanning = false;
 				RefreshPlanCommand.RaiseCanExecuteChanged();
 				SelectAllUnreplacedTargetsCommand.RaiseCanExecuteChanged();
 			}
+			if (ReferenceEquals(planCancellation, currentCancellation)) planCancellation = null;
+			currentCancellation.Dispose();
 		}
 	}
 
@@ -494,8 +497,10 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private void RefreshTargetArchiveFilters()
 	{
 		var selectedArchiveIds = TargetChoices.Where(row => row.IsSelected).Select(row => row.Entry.ArchiveId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-		TargetArchiveFilters.Clear();
-		TargetArchiveFilters.Add(new CrossArmorTargetArchiveFilterOption("全部", null));
+		var filters = new List<CrossArmorTargetArchiveFilterOption>
+		{
+			new CrossArmorTargetArchiveFilterOption("全部", null)
+		};
 		foreach (var archive in TargetMappings
 			.Where(mapping => mapping.UsedByArchiveIds.Any(selectedArchiveIds.Contains))
 			.SelectMany(mapping => mapping.UsedByArchiveIds)
@@ -504,8 +509,9 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			.Order(StringComparer.OrdinalIgnoreCase))
 		{
 			var friendlyName = TargetChoices.FirstOrDefault(choice => string.Equals(choice.Entry.ArchiveId, archive, StringComparison.OrdinalIgnoreCase))?.Entry.DisplayName ?? archive;
-			TargetArchiveFilters.Add(new CrossArmorTargetArchiveFilterOption(friendlyName, archive));
+			filters.Add(new CrossArmorTargetArchiveFilterOption(friendlyName, archive));
 		}
+		TargetArchiveFilters.ReplaceWith(filters);
 		selectedTargetArchiveFilter = TargetArchiveFilters[0];
 		OnPropertyChanged(nameof(SelectedTargetArchiveFilter));
 	}
