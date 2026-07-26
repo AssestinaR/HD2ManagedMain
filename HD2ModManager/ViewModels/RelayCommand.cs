@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading.Tasks;
 using System.Windows.Input;
 
 namespace HD2ModManager.ViewModels
@@ -27,5 +28,21 @@ namespace HD2ModManager.ViewModels
 
             _ = dispatcher.InvokeAsync(() => CanExecuteChanged?.Invoke(this, EventArgs.Empty));
         }
+    }
+
+    public sealed class AsyncRelayCommand : ICommand
+    {
+        private readonly Func<object?, Task> _execute;
+        private readonly Func<object?, bool>? _canExecute;
+        public AsyncRelayCommand(Func<Task> execute) : this(_ => execute(), null) { }
+        public AsyncRelayCommand(Func<object?, Task> execute, Func<object?, bool>? canExecute = null)
+        {
+            _execute = execute ?? throw new ArgumentNullException(nameof(execute));
+            _canExecute = canExecute;
+        }
+        public bool CanExecute(object? parameter) => _canExecute?.Invoke(parameter) ?? true;
+        public async void Execute(object? parameter) => await _execute(parameter).ConfigureAwait(true);
+        public event EventHandler? CanExecuteChanged;
+        public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
     }
 }

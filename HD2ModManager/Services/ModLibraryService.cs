@@ -41,8 +41,10 @@ namespace HD2ModManager.Services
         private readonly HD2ModCore.Application.IModLibrarySynchronizer _synchronizer;
         private LibrarySnapshot _snapshot;
         private DerivedLibraryData _derivedData;
-        private readonly Dictionary<string, ModEntity> _byGuid = new();
+        private Dictionary<string, ModEntity> _byGuid = new(StringComparer.OrdinalIgnoreCase);
         private readonly SemaphoreSlim _derivedRefreshGate = new(1, 1);
+        private readonly SemaphoreSlim _libraryMutationGate = new(1, 1);
+        private long _stateVersion;
 
         public ReadOnlyDictionary<string, ModEntity> ByGuid => new(_byGuid);
         public LibrarySnapshot Snapshot => _snapshot;
@@ -70,13 +72,51 @@ namespace HD2ModManager.Services
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
         }
 
+        public async Task LoadAsync(bool buildDerivedData = true, CancellationToken cancellationToken = default)
+        {
+            var loadVersion = Volatile.Read(ref _stateVersion);
+            var loadedSnapshot = await _manager.LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+            DerivedLibraryData? loadedDerivedData = null;
+            if (buildDerivedData)
+            {
+                loadedDerivedData = await _derivedDataService.BuildAsync(
+                    loadedSnapshot,
+                    _paths.ModsDirectory,
+                    SettingsService.GetGameDataFolder(),
+                    null,
+                    cancellationToken).AsTask().ConfigureAwait(false);
+            }
+
+            if (loadVersion != Volatile.Read(ref _stateVersion))
+            {
+                LogService.Info("跳过过期的后台模组库加载结果：用户操作已先行提交。");
+                return;
+            }
+
+            _snapshot = loadedSnapshot;
+            if (loadedDerivedData is not null) _derivedData = loadedDerivedData;
+            RebuildEntityIndex(includePatchFiles: buildDerivedData);
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+        }
+
         public Task RefreshDerivedDataAsync(CancellationToken cancellationToken = default)
             => RefreshDerivedDataAsync(guids: null, ModContentChangeKind.Changed, cancellationToken);
 
         public async Task<bool> SynchronizeAsync(CancellationToken cancellationToken = default)
         {
-            var result = await _synchronizer.SynchronizeAsync(_snapshot, _paths.ModsDirectory, cancellationToken).ConfigureAwait(false);
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+            var synchronizeVersion = Volatile.Read(ref _stateVersion);
+            var synchronizeSnapshot = _snapshot;
+            var result = await _synchronizer.SynchronizeAsync(synchronizeSnapshot, _paths.ModsDirectory, cancellationToken).ConfigureAwait(false);
             if (!result.FilesystemChanged) return false;
+
+            if (synchronizeVersion != Volatile.Read(ref _stateVersion))
+            {
+                LogService.Info("跳过过期的后台模组库同步结果：用户操作已先行提交。");
+                return false;
+            }
 
             _snapshot = result.Snapshot;
             await CoreServices.CreateModLibraryStore(_paths).SaveAsync(_snapshot, cancellationToken).ConfigureAwait(false);
@@ -86,6 +126,11 @@ namespace HD2ModManager.Services
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             await RefreshDerivedDataAsync(result.AddedNodeIds.Concat(result.ChangedNodeIds).Select(id => id.Value.ToString("N")), ModContentChangeKind.Changed, cancellationToken).ConfigureAwait(false);
             return true;
+            }
+            finally
+            {
+                _libraryMutationGate.Release();
+            }
         }
 
         public async Task RefreshDerivedDataAsync(IEnumerable<string>? guids, CancellationToken cancellationToken = default)
@@ -96,28 +141,39 @@ namespace HD2ModManager.Services
             await _derivedRefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var snapshot = _snapshot;
                 var nodeIds = guids is null
                     ? null
                     : guids.Select(ParseNodeId).Where(id => id.HasValue).Select(id => id!.Value).ToHashSet();
-                var rebuilt = await _derivedDataService.BuildAsync(snapshot, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), nodeIds, cancellationToken).AsTask().ConfigureAwait(false);
+                while (true)
+                {
+                    var snapshot = _snapshot;
+                    var refreshVersion = Volatile.Read(ref _stateVersion);
+                    var rebuilt = await _derivedDataService.BuildAsync(snapshot, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), nodeIds, cancellationToken).AsTask().ConfigureAwait(false);
+                    if (refreshVersion != Volatile.Read(ref _stateVersion))
+                    {
+                        LogService.Info("丢弃过期的派生数据构建结果并重试：模组库快照已变化。");
+                        cancellationToken.ThrowIfCancellationRequested();
+                        continue;
+                    }
 
-                if (nodeIds is null)
-                {
-                    _derivedData = rebuilt;
-                }
-                else
-                {
-                    var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
-                    foreach (var pair in rebuilt.Nodes) nodes[pair.Key] = pair.Value;
-					var issues = _derivedData.Issues.Where(issue => issue.NodeId is null || !nodeIds!.Contains(issue.NodeId.Value)).Concat(rebuilt.Issues).ToList();
-                    _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues);
-                }
-				if (nodeIds is null) RebuildEntityIndex(); else UpdateEntityIndex(nodeIds);
-                IReadOnlyCollection<ModNodeId> changedNodeIds = nodeIds is null ? rebuilt.Nodes.Keys.ToArray() : nodeIds;
-                if (changedNodeIds.Count > 0)
-                {
-                    ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(changedNodeIds, changeKind));
+                    if (nodeIds is null)
+                    {
+                        _derivedData = rebuilt;
+                    }
+                    else
+                    {
+                        var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
+                        foreach (var pair in rebuilt.Nodes) nodes[pair.Key] = pair.Value;
+						var issues = _derivedData.Issues.Where(issue => issue.NodeId is null || !nodeIds!.Contains(issue.NodeId.Value)).Concat(rebuilt.Issues).ToList();
+                        _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues);
+					}
+					if (nodeIds is null) RebuildEntityIndex(); else UpdateEntityIndex(nodeIds);
+                    IReadOnlyCollection<ModNodeId> changedNodeIds = nodeIds is null ? rebuilt.Nodes.Keys.ToArray() : nodeIds;
+                    if (changedNodeIds.Count > 0)
+                    {
+                        ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(changedNodeIds, changeKind));
+                    }
+                    break;
                 }
             }
             finally
@@ -128,14 +184,36 @@ namespace HD2ModManager.Services
 
         public void Save()
         {
+            _libraryMutationGate.Wait();
+            try
+            {
             var store = CoreServices.CreateModLibraryStore(_paths);
             store.SaveAsync(_snapshot).AsTask().GetAwaiter().GetResult();
+            Interlocked.Increment(ref _stateVersion);
             RebuildIndex(buildDerivedData: false);
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
+        public async Task SaveAsync(CancellationToken cancellationToken = default)
+        {
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await CoreServices.CreateModLibraryStore(_paths).SaveAsync(_snapshot, cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _stateVersion);
+                RebuildIndex(buildDerivedData: false);
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            }
+            finally { _libraryMutationGate.Release(); }
         }
 
         public bool Add(ModEntity mod)
         {
+            _libraryMutationGate.Wait();
+            try
+            {
             if (!TryParseNodeId(mod.Guid, out var nodeId)) return false;
             if (!_snapshot.Nodes.TryGetValue(nodeId, out var node)) return false;
 
@@ -147,14 +225,42 @@ namespace HD2ModManager.Services
             };
 
             _snapshot = _manager.UpdateNodeMetadataAsync(nodeId, metadata).AsTask().GetAwaiter().GetResult();
+            Interlocked.Increment(ref _stateVersion);
             RebuildIndex(buildDerivedData: false);
             return true;
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
+        public async Task<bool> AddAsync(ModEntity mod, CancellationToken cancellationToken = default)
+        {
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (!TryParseNodeId(mod.Guid, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var node)) return false;
+                var metadata = node.Metadata with
+                {
+                    Name = string.IsNullOrWhiteSpace(mod.Name) ? node.Metadata.Name : mod.Name,
+                    Notes = mod.Description,
+                    ModifiedUtc = DateTimeOffset.UtcNow,
+                };
+                _snapshot = await _manager.UpdateNodeMetadataAsync(nodeId, metadata, cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _stateVersion);
+                RebuildIndex(buildDerivedData: false);
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                return true;
+            }
+            finally { _libraryMutationGate.Release(); }
         }
 
         public bool Remove(string guid)
         {
+            _libraryMutationGate.Wait();
+            try
+            {
             if (!TryParseNodeId(guid, out var nodeId)) return false;
             _snapshot = _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true).AsTask().GetAwaiter().GetResult();
+            Interlocked.Increment(ref _stateVersion);
             _informationCenter.InvalidateNodeAsync(nodeId).AsTask().GetAwaiter().GetResult();
 			ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
             var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
@@ -164,10 +270,36 @@ namespace HD2ModManager.Services
             ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(new[] { nodeId }, ModContentChangeKind.Removed));
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             return true;
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
+        public async Task<bool> RemoveAsync(string guid, CancellationToken cancellationToken = default)
+        {
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (!TryParseNodeId(guid, out var nodeId)) return false;
+                _snapshot = await _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true, cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _stateVersion);
+                await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+                ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
+                var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
+                nodes.Remove(nodeId);
+                _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray());
+                RebuildIndex(buildDerivedData: false);
+                ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(new[] { nodeId }, ModContentChangeKind.Removed));
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                return true;
+            }
+            finally { _libraryMutationGate.Release(); }
         }
 
         public bool Rename(string guid, string newName)
         {
+            _libraryMutationGate.Wait();
+            try
+            {
             if (string.IsNullOrWhiteSpace(newName)) return false;
             if (!TryParseNodeId(guid, out var nodeId)) return false;
             if (!_snapshot.Nodes.TryGetValue(nodeId, out var node)) return false;
@@ -178,17 +310,37 @@ namespace HD2ModManager.Services
                 ModifiedUtc = DateTimeOffset.UtcNow,
             };
             _snapshot = _manager.UpdateNodeMetadataAsync(nodeId, metadata).AsTask().GetAwaiter().GetResult();
+            Interlocked.Increment(ref _stateVersion);
             RebuildIndex(buildDerivedData: false);
             return true;
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
+        public async Task<bool> RenameAsync(string guid, string newName, CancellationToken cancellationToken = default)
+        {
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (string.IsNullOrWhiteSpace(newName) || !TryParseNodeId(guid, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var node)) return false;
+                var metadata = node.Metadata with { Name = newName.Trim(), ModifiedUtc = DateTimeOffset.UtcNow };
+                _snapshot = await _manager.UpdateNodeMetadataAsync(nodeId, metadata, cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _stateVersion);
+                RebuildIndex(buildDerivedData: false);
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                return true;
+            }
+            finally { _libraryMutationGate.Release(); }
         }
 
         public ModEntity? Get(string guid)
         {
-            _byGuid.TryGetValue(guid, out var m);
+            var index = Volatile.Read(ref _byGuid);
+            index.TryGetValue(guid, out var m);
             return m;
         }
 
-        public IEnumerable<ModEntity> All() => _byGuid.Values;
+        public IEnumerable<ModEntity> All() => Volatile.Read(ref _byGuid).Values;
 
         public DerivedModNodeData? GetDerivedData(string guid)
         {
@@ -225,6 +377,7 @@ namespace HD2ModManager.Services
         public void ReplaceSnapshot(LibrarySnapshot snapshot, bool buildDerivedData = false)
         {
             _snapshot = snapshot ?? EmptySnapshot();
+            Interlocked.Increment(ref _stateVersion);
             RebuildIndex(buildDerivedData);
         }
 
@@ -240,27 +393,31 @@ namespace HD2ModManager.Services
                 _derivedData = _derivedDataService.BuildAsync(_snapshot, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), null).AsTask().GetAwaiter().GetResult();
             }
 
-            RebuildEntityIndex();
+            RebuildEntityIndex(includePatchFiles: buildDerivedData);
         }
 
-        private void RebuildEntityIndex()
+        private void RebuildEntityIndex(bool includePatchFiles = true)
         {
-            _byGuid.Clear();
+            var rebuilt = new Dictionary<string, ModEntity>(StringComparer.OrdinalIgnoreCase);
             foreach (var node in _snapshot.Nodes.Values.OrderBy(n => n.Metadata.Name, StringComparer.OrdinalIgnoreCase))
             {
-                _byGuid[node.Id.Value.ToString("N")] = ToEntity(node);
+                rebuilt[node.Id.Value.ToString("N")] = ToEntity(node, includePatchFiles);
             }
+            Volatile.Write(ref _byGuid, rebuilt);
         }
 
         private void UpdateEntityIndex(IEnumerable<ModNodeId> nodeIds)
         {
+            var updated = new Dictionary<string, ModEntity>(Volatile.Read(ref _byGuid), StringComparer.OrdinalIgnoreCase);
             foreach (var nodeId in nodeIds)
             {
-                if (_snapshot.Nodes.TryGetValue(nodeId, out var node)) _byGuid[nodeId.Value.ToString("N")] = ToEntity(node);
+                if (_snapshot.Nodes.TryGetValue(nodeId, out var node)) updated[nodeId.Value.ToString("N")] = ToEntity(node);
+                else updated.Remove(nodeId.Value.ToString("N"));
             }
+            Volatile.Write(ref _byGuid, updated);
         }
 
-        private ModEntity ToEntity(ModNode node)
+        private ModEntity ToEntity(ModNode node, bool includePatchFiles = true)
         {
             var derived = _derivedData.Find(node.Id);
             return new ModEntity
@@ -272,16 +429,17 @@ namespace HD2ModManager.Services
                 SourcePath = node.RelativePath,
                 CreatedAt = node.Metadata.CreatedUtc.UtcDateTime,
                 UpdatedAt = (node.Metadata.ModifiedUtc ?? node.Metadata.CreatedUtc).UtcDateTime,
-                FileGroups = (GetPatchFiles(node, derived).Where(f => f.SidecarKind == PatchSidecarKind.Base)
+                FileGroups = (includePatchFiles ? GetPatchFiles(node, derived) : Array.Empty<IndexedPatchFile>())
+                    .Where(f => f.SidecarKind == PatchSidecarKind.Base)
                     .OrderBy(f => f.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
                     .ThenBy(f => f.NormalizedOrder)
                     .Select(f => new FileGroup
-                {
-                    HexPrefix = f.ArchiveHex16,
-                    PatchN = f.SourcePatchIndex,
-                    RelativePath = node.RelativePath,
-                    Files = new List<string> { f.FileName }
-                }) ?? Enumerable.Empty<FileGroup>()).ToList(),
+                    {
+                        HexPrefix = f.ArchiveHex16,
+                        PatchN = f.SourcePatchIndex,
+                        RelativePath = node.RelativePath,
+                        Files = new List<string> { f.FileName }
+                    }).ToList(),
             };
         }
 

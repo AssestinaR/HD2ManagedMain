@@ -1,6 +1,5 @@
 ﻿using System;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -569,10 +568,23 @@ namespace HD2ModManager
             e.Handled = true;
         }
 
-        private void OnCopySelectedMessagesClick(object sender, RoutedEventArgs e)
+        private void OnMessageItemClick(object sender, MouseButtonEventArgs e)
         {
-            if (DataContext is ShellViewModel shell) shell.CopySelectedMessagesCommand.Execute(MessageList.SelectedItems);
+            if (e.OriginalSource is DependencyObject source && FindVisualParent<Button>(source) is not null) return;
+            if (sender is FrameworkElement element && element.DataContext is HD2ModManager.Services.MessageCenterItem item
+                && DataContext is ShellViewModel shell) shell.CopyMessageCommand.Execute(item);
             e.Handled = true;
+        }
+
+        private static T? FindVisualParent<T>(DependencyObject source) where T : DependencyObject
+        {
+            var current = source;
+            while (current is not null)
+            {
+                if (current is T match) return match;
+                current = System.Windows.Media.VisualTreeHelper.GetParent(current);
+            }
+            return null;
         }
 
         private static void ScrollMessagesToEnd(ListBox listBox)
@@ -699,13 +711,6 @@ namespace HD2ModManager
         {
             if (ReferenceEquals(currentHost.Content, nextPage)) return;
 
-            var transitionStopwatch = Stopwatch.StartNew();
-            var previousMetrics = CaptureVisualMetrics(currentHost);
-            var currentMetricsBefore = CaptureVisualMetrics(currentHost);
-            var pageName = nextPage?.GetType().Name ?? "空页面";
-            var firstLayoutLogged = false;
-            var firstRenderLogged = false;
-
             currentHost.BeginAnimation(OpacityProperty, null);
             previousHost.BeginAnimation(OpacityProperty, null);
             previousHost.Content = currentHost.Content;
@@ -713,39 +718,8 @@ namespace HD2ModManager
             currentHost.Content = nextPage;
             currentHost.Opacity = 0;
 
-            EventHandler? layoutUpdated = null;
-            layoutUpdated = (_, _) =>
-            {
-                if (firstLayoutLogged || !ReferenceEquals(currentHost.Content, nextPage)) return;
-                firstLayoutLogged = true;
-                var metrics = CaptureVisualMetrics(currentHost);
-                LogService.Info($"UI 观测：{pageName} 首次布局，耗时 {transitionStopwatch.ElapsedMilliseconds}ms；新页视觉={metrics.VisualCount}，ListBox={metrics.ListBoxCount}，列表项={metrics.ListItemCount}，图片={metrics.ImageCount}；旧页视觉={previousMetrics.VisualCount}，旧页列表项={previousMetrics.ListItemCount}，替换前视觉={currentMetricsBefore.VisualCount}。 ");
-                currentHost.LayoutUpdated -= layoutUpdated;
-            };
-            currentHost.LayoutUpdated += layoutUpdated;
-
-            EventHandler? rendering = null;
-            rendering = (_, _) =>
-            {
-                if (firstRenderLogged || !ReferenceEquals(currentHost.Content, nextPage)) return;
-                firstRenderLogged = true;
-                var metrics = CaptureVisualMetrics(currentHost);
-                LogService.Info($"UI 观测：{pageName} 首次 Rendering，耗时 {transitionStopwatch.ElapsedMilliseconds}ms；新页视觉={metrics.VisualCount}，ListBox={metrics.ListBoxCount}，列表项={metrics.ListItemCount}，图片={metrics.ImageCount}。 ");
-                CompositionTarget.Rendering -= rendering;
-            };
-            CompositionTarget.Rendering += rendering;
-
             _ = currentHost.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Render, new Action(() =>
             {
-                if (!ReferenceEquals(currentHost.Content, nextPage))
-                {
-                    currentHost.LayoutUpdated -= layoutUpdated;
-                    CompositionTarget.Rendering -= rendering;
-                    return;
-                }
-
-                var metrics = CaptureVisualMetrics(currentHost);
-                LogService.Info($"UI 性能：{pageName} 完成首帧布局后开始真实页面转场，等待耗时 {transitionStopwatch.ElapsedMilliseconds}ms；新页视觉={metrics.VisualCount}，ListBox={metrics.ListBoxCount}，列表项={metrics.ListItemCount}，图片={metrics.ImageCount}；旧页视觉={previousMetrics.VisualCount}，旧页列表项={previousMetrics.ListItemCount}。");
                 var duration = TimeSpan.FromMilliseconds(200);
                 var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
                 currentHost.BeginAnimation(OpacityProperty, new DoubleAnimation(1, duration) { EasingFunction = easing });

@@ -278,17 +278,12 @@
 					<Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
 					<DockPanel Margin="4,2,2,2">
 						<TextBlock Text="消息" FontWeight="SemiBold" VerticalAlignment="Center"/>
-						<Button DockPanel.Dock="Right" Style="{StaticResource AppQuietButton}" Content="复制所选" Padding="7,3" Click="OnCopySelectedMessagesClick"/>
 					</DockPanel>
-                    <ListBox Grid.Row="1" x:Name="MessageList" ItemsSource="{Binding MessageItems}" Style="{StaticResource ModListBox}" BorderThickness="0" SelectionMode="Extended" Loaded="OnMessageListLoaded" Padding="0">
+                    <ListBox Grid.Row="1" x:Name="MessageList" ItemsSource="{Binding MessageItems}" Style="{StaticResource ModListBox}" BorderThickness="0" SelectionMode="Single" Loaded="OnMessageListLoaded" Padding="0">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Border Style="{StaticResource ModListRowContainer}" Height="Auto" Padding="5,4" Margin="0,1">
-									<Border.ContextMenu>
-										<ContextMenu>
-											<MenuItem Header="复制消息" Command="{Binding DataContext.CopyMessageCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"/>
-										</ContextMenu>
-									</Border.ContextMenu>
+                                <Border Style="{StaticResource ModListRowContainer}" Height="Auto" Padding="5,4" Margin="0,1"
+                                    MouseLeftButtonUp="OnMessageItemClick">
                                     <Grid>
                                         <Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <Path Grid.Column="0" Width="16" Height="16" VerticalAlignment="Center" Data="M8,2 A6,6 0 1 0 8,14 A6,6 0 1 0 8,2 M8,5 L8,9 M8,11 L8,11.2" Stroke="{StaticResource Accent}" StrokeThickness="1.4" StrokeStartLineCap="Round"/>
@@ -297,7 +292,6 @@
                                             <TextBlock Text="{Binding Detail}" Foreground="{StaticResource TextSecondary}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
                                         </StackPanel>
                                         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-											<Button Style="{StaticResource AppQuietButton}" Content="复制" Padding="6,2" Command="{Binding DataContext.CopyMessageCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"/>
                                             <Button Style="{StaticResource AppQuietButton}" Content="取消" Command="{Binding DataContext.CancelTaskCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}"/>
                                             <Button Style="{StaticResource AppQuietButton}" Content="重试" Command="{Binding DataContext.RetryTaskCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding CanRetry, Converter={StaticResource BoolToVis}}"/>
                                         </StackPanel>

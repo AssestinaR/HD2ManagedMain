@@ -7,6 +7,7 @@ using System.Collections.Specialized;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Threading;
 
 namespace HD2ModManager.Services
 {
@@ -30,6 +31,7 @@ namespace HD2ModManager.Services
 		RepairMods,
         Deployment,
         DeactivateProfile,
+        InformationCenter,
         Other,
     }
 
@@ -72,8 +74,9 @@ namespace HD2ModManager.Services
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
         public bool IsActive => Status is BackgroundTaskStatus.Queued or BackgroundTaskStatus.Running;
         public CancellationToken CancellationToken => _cancellation.Token;
-        public bool CanCancel => IsActive;
-        public bool CanRetry => Retry is not null && !IsActive;
+        public bool CanCancel => !IsInformationCenter && IsActive;
+        public bool CanRetry => !IsInformationCenter && Retry is not null && !IsActive;
+        public bool IsInformationCenter { get; }
         public Func<Task>? Retry { get; }
         public string StatusText => Status switch
         {
@@ -115,6 +118,7 @@ namespace HD2ModManager.Services
             UserVisibleReason = userVisibleReason;
             SuggestedAction = suggestedAction;
             Retry = retry;
+            IsInformationCenter = kind == BackgroundTaskKind.InformationCenter;
             _status = BackgroundTaskStatus.Queued;
         }
 
@@ -208,6 +212,8 @@ namespace HD2ModManager.Services
     public sealed class BackgroundTaskService
     {
         private readonly ObservableCollection<BackgroundTaskItem> _tasks = new();
+        private readonly Dispatcher? _dispatcher = Application.Current?.Dispatcher;
+        private int _changeQueued;
         public ReadOnlyObservableCollection<BackgroundTaskItem> Tasks { get; }
 
         public BackgroundTaskService()
@@ -253,8 +259,24 @@ namespace HD2ModManager.Services
 
         public ReadOnlyObservableCollection<BackgroundTaskItem> Snapshot => Tasks;
 
-        private void OnTasksChanged(object? sender, NotifyCollectionChangedEventArgs e) => Changed?.Invoke(this, EventArgs.Empty);
-        private void OnTaskPropertyChanged(object? sender, PropertyChangedEventArgs e) => Changed?.Invoke(this, EventArgs.Empty);
+        private void OnTasksChanged(object? sender, NotifyCollectionChangedEventArgs e) => QueueChanged();
+        private void OnTaskPropertyChanged(object? sender, PropertyChangedEventArgs e) => QueueChanged();
+
+        private void QueueChanged()
+        {
+            if (_dispatcher is null)
+            {
+                Changed?.Invoke(this, EventArgs.Empty);
+                return;
+            }
+
+            if (Interlocked.Exchange(ref _changeQueued, 1) != 0) return;
+            _ = _dispatcher.BeginInvoke(new Action(() =>
+            {
+                Interlocked.Exchange(ref _changeQueued, 0);
+                Changed?.Invoke(this, EventArgs.Empty);
+            }), System.Windows.Threading.DispatcherPriority.Background);
+        }
 
         private static void RunOnUi(Action action)
         {
@@ -265,7 +287,7 @@ namespace HD2ModManager.Services
                 return;
             }
 
-            dispatcher.Invoke(action);
+            _ = dispatcher.BeginInvoke(action, System.Windows.Threading.DispatcherPriority.Background);
         }
     }
 }

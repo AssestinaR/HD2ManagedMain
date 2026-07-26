@@ -27,7 +27,7 @@ namespace HD2ModManager.ViewModels
             _profiles = profiles;
             _notifications = notifications;
             _refresh = refresh;
-            ConfirmEditCommand = new RelayCommand(ConfirmEdit);
+            ConfirmEditCommand = new RelayCommand(async _ => await ConfirmEditAsync());
             CancelEditCommand = new RelayCommand(CancelEdit);
             BeginMoveCommand = new RelayCommand(_ => BeginMove());
             BeginInsertCommand = new RelayCommand(_ => BeginInsert());
@@ -164,7 +164,7 @@ namespace HD2ModManager.ViewModels
             RefreshState();
         }
 
-        private void ConfirmEdit(object? _)
+        private async Task ConfirmEditAsync()
         {
             if (_editMode == "SwitchProfile")
             {
@@ -176,7 +176,7 @@ namespace HD2ModManager.ViewModels
             }
             if (_editMode == "CreateProfile")
             {
-                _profiles.CreateNew(EditText);
+                await _profiles.CreateNewAsync(EditText);
                 EndEditWithoutRefresh();
                 RefreshState();
                 _refresh();
@@ -186,7 +186,7 @@ namespace HD2ModManager.ViewModels
             {
                 var oldName = _profiles.SelectedKey;
                 if (!string.IsNullOrWhiteSpace(oldName) && !string.IsNullOrWhiteSpace(EditText))
-                    _profiles.Rename(oldName, EditText.Trim());
+                    await _profiles.RenameAsync(oldName, EditText.Trim());
                 EndEditWithoutRefresh();
                 RefreshState();
                 _refresh();
@@ -194,7 +194,7 @@ namespace HD2ModManager.ViewModels
             }
             if (_editMode is "Move" or "Insert")
             {
-                ConfirmPositionEdit();
+                await ConfirmPositionEditAsync();
                 return;
             }
             if (string.IsNullOrWhiteSpace(_editModId) || string.IsNullOrWhiteSpace(_editMode)) return;
@@ -203,21 +203,20 @@ namespace HD2ModManager.ViewModels
             if (string.Equals(_editMode, "Name", StringComparison.Ordinal))
             {
                 if (string.IsNullOrWhiteSpace(EditText)) return;
-                if (!_library.Rename(mod.Guid, EditText.Trim())) return;
+                if (!await _library.RenameAsync(mod.Guid, EditText.Trim())) return;
                 _notifications.Show($"已重命名：{EditText.Trim()}");
             }
             else
             {
                 mod.Description = EditText;
-                _library.Add(mod);
-                _library.Save();
+                if (!await _library.AddAsync(mod)) return;
                 _notifications.Show($"已更新备注：{mod.Name}");
             }
             CancelEdit();
             _refresh();
         }
 
-        private void ConfirmPositionEdit()
+        private async Task ConfirmPositionEditAsync()
         {
             if (!int.TryParse(EditText?.Trim(), out var requested)) return;
             var ids = (_editModId ?? string.Empty).Split('|', StringSplitOptions.RemoveEmptyEntries).ToList();
@@ -239,7 +238,7 @@ namespace HD2ModManager.ViewModels
                 var additions = ids.Where(id => !ordered.Contains(id, StringComparer.OrdinalIgnoreCase)).ToList();
                 ordered.InsertRange(target - 1, additions);
             }
-            if (_profiles.ReplaceSelectedEntries(ordered))
+            if (await _profiles.ReplaceSelectedEntriesAsync(ordered))
             {
                 _notifications.Show(_editMode == "Move" ? "已移动配置项。" : "已插入配置项。");
                 CancelEdit();

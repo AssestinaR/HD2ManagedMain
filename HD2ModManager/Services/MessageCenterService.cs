@@ -2,6 +2,9 @@ using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
+using System.Threading;
+using System.Windows;
+using System.Windows.Threading;
 
 namespace HD2ModManager.Services
 {
@@ -28,7 +31,20 @@ namespace HD2ModManager.Services
         public bool CanCancel => _task?.CanCancel == true;
         public bool CanRetry => _task?.CanRetry == true;
         public BackgroundTaskItem? Task => _task;
-		public string CopyText => string.IsNullOrWhiteSpace(Detail) ? Title : $"{Title}{Environment.NewLine}{Detail}";
+        public string CopyText
+        {
+            get
+            {
+                if (_task is null) return string.IsNullOrWhiteSpace(Detail) ? Title : $"{Title}{Environment.NewLine}{Detail}";
+                var lines = new[]
+                {
+                    $"标题：{Title}", $"来源：{_task.Origin}", $"状态：{_task.StatusText}", $"阶段：{_task.Stage}",
+                    $"创建时间：{_task.CreatedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}", $"开始时间：{_task.StartedAt?.ToLocalTime():yyyy-MM-dd HH:mm:ss}",
+                    $"完成时间：{_task.FinishedAt?.ToLocalTime():yyyy-MM-dd HH:mm:ss}", $"详情：{_task.Detail}", $"错误：{_task.Error}"
+                };
+                return string.Join(Environment.NewLine, lines);
+            }
+        }
     }
 
     public sealed class MessageCenterService
@@ -36,6 +52,8 @@ namespace HD2ModManager.Services
         private readonly NotificationService _notifications;
         private readonly BackgroundTaskService _tasks;
         private readonly ObservableCollection<MessageCenterItem> _items = new();
+        private readonly Dispatcher? _dispatcher;
+        private int _refreshQueued;
 
         public ReadOnlyObservableCollection<MessageCenterItem> Items { get; }
         public event EventHandler? Changed;
@@ -44,6 +62,7 @@ namespace HD2ModManager.Services
         {
             _notifications = notifications;
             _tasks = tasks;
+            _dispatcher = Application.Current?.Dispatcher;
             Items = new ReadOnlyObservableCollection<MessageCenterItem>(_items);
             _notifications.Changed += (_, _) => Refresh();
             _tasks.Changed += (_, _) => Refresh();
@@ -51,6 +70,17 @@ namespace HD2ModManager.Services
         }
 
         public void Refresh()
+        {
+            if (_dispatcher is not null)
+            {
+                if (Interlocked.Exchange(ref _refreshQueued, 1) == 0)
+                    _ = _dispatcher.InvokeAsync(() => { Interlocked.Exchange(ref _refreshQueued, 0); RefreshCore(); }, DispatcherPriority.DataBind);
+                return;
+            }
+            RefreshCore();
+        }
+
+        private void RefreshCore()
         {
             var items = _notifications.History.Select(item => new MessageCenterItem(item))
                 .Concat(_tasks.Tasks.Select(task => new MessageCenterItem(task)))

@@ -260,6 +260,7 @@ namespace HD2ModManager.ViewModels
         private string _query = string.Empty;
         private CancellationTokenSource? _searchCancellation;
         private CancellationTokenSource? _thumbnailCancellation;
+        private bool _disposed;
 
         public BulkObservableCollection<ProfileListItemViewModel> Items { get; } = new();
         public ObservableCollection<string> Profiles { get; } = new();
@@ -330,18 +331,17 @@ namespace HD2ModManager.ViewModels
             _derivedState = derivedState;
             _selection = selection;
             _bottomBar = bottomBar;
-            if (_selection != null) _selection.SelectionChanged += (_, _) => SyncSelectionFromCoordinator();
-            _profiles.Changed += (_, _) => QueueStatusRefresh();
-            _derivedState.SnapshotChanged += (_, _) => RunOnUiThread(QueueStatusRefresh);
-            CreateProfileCommand = new RelayCommand(CreateProfile);
-            RemoveSelectedProfileCommand = new RelayCommand(RemoveSelectedProfile);
-            RenameProfileCommand = new RelayCommand(RenameProfile);
-            ActivateProfileCommand = new RelayCommand(ActivateProfile);
-            DeactivateProfileCommand = new RelayCommand(DeactivateProfile);
+            if (_selection != null) _selection.SelectionChanged += OnSelectionChanged;
+            _profiles.Changed += OnProfileChanged;
+            CreateProfileCommand = new RelayCommand(async _ => await CreateProfileAsync());
+            RemoveSelectedProfileCommand = new RelayCommand(async _ => await RemoveSelectedProfileAsync());
+            RenameProfileCommand = new RelayCommand(async _ => await RenameProfileAsync());
+            ActivateProfileCommand = new RelayCommand(async _ => await ActivateProfileAsync());
+            DeactivateProfileCommand = new RelayCommand(async _ => await DeactivateProfileAsync());
             RefreshCommand = new RelayCommand(Refresh);
-            RemoveModCommand = new RelayCommand(RemoveMod);
-            MoveUpCommand = new RelayCommand(parameter => MoveMod(parameter, -1));
-            MoveDownCommand = new RelayCommand(parameter => MoveMod(parameter, 1));
+            RemoveModCommand = new RelayCommand(async parameter => await RemoveModAsync(parameter));
+            MoveUpCommand = new RelayCommand(async parameter => await MoveModAsync(parameter, -1));
+            MoveDownCommand = new RelayCommand(async parameter => await MoveModAsync(parameter, 1));
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
             PageActions.Add(new PageActionViewModel("＋", "新建配置", CreateProfileCommand, order: 10, kind: "CreateProfile"));
             PageActions.Add(new PageActionViewModel("⇄", "切换当前配置", new RelayCommand(_ => _bottomBar?.BeginSwitchProfile()), order: 12, kind: "SwitchProfile"));
@@ -403,35 +403,35 @@ namespace HD2ModManager.ViewModels
             RefreshSelectionFlags();
         }
 
-        private void CreateProfile()
+        private async Task CreateProfileAsync()
         {
             if (_bottomBar is not null) _bottomBar.BeginCreateProfile();
-            else { _profiles.CreateNew(); Refresh(); }
+            else { await _profiles.CreateNewAsync(); Refresh(); }
         }
 
-        private void ActivateProfile()
+        private async Task ActivateProfileAsync()
         {
-            _profiles.ActivateSelected();
+            await _profiles.ActivateSelectedAsync();
             Refresh();
         }
 
-        private void DeactivateProfile()
+        private async Task DeactivateProfileAsync()
         {
-            _profiles.DisableActive();
+            await _profiles.DisableActiveAsync();
             Refresh();
         }
 
-        private void RemoveSelectedProfile()
+        private async Task RemoveSelectedProfileAsync()
         {
             var key = _profiles.SelectedKey;
             if (string.IsNullOrWhiteSpace(key)) return;
             var confirm = System.Windows.MessageBox.Show($"确定删除当前配置“{key}”？\n这只会移除配置，不会删除库中的 Mod 文件。", "删除配置", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
             if (confirm != System.Windows.MessageBoxResult.Yes) return;
-            _profiles.Remove(key);
+            await _profiles.RemoveAsync(key);
             Refresh();
         }
 
-        private void RenameProfile()
+        private async Task RenameProfileAsync()
         {
             var key = _profiles.SelectedKey;
             if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(RenameText)) return;
@@ -439,26 +439,26 @@ namespace HD2ModManager.ViewModels
             if (string.Equals(key, newName, StringComparison.OrdinalIgnoreCase)) return;
             var confirm = System.Windows.MessageBox.Show($"将配置“{key}”重命名为“{newName}”？", "重命名配置", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
             if (confirm != System.Windows.MessageBoxResult.Yes) return;
-            _profiles.Rename(key, RenameText);
+            await _profiles.RenameAsync(key, RenameText);
             Refresh();
         }
 
-        private void RemoveMod(object? parameter)
+        private async Task RemoveModAsync(object? parameter)
         {
             var guid = parameter as string;
             if (string.IsNullOrWhiteSpace(guid)) return;
             var modName = _library.Get(guid)?.Name ?? guid;
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
             {
-                _ = shell.RemoveModFromSelectedProfileAsync(guid, modName);
+                await shell.RemoveModFromSelectedProfileAsync(guid, modName);
             }
         }
 
-        private void MoveMod(object? parameter, int direction)
+        private async Task MoveModAsync(object? parameter, int direction)
         {
             var guid = parameter as string;
             if (string.IsNullOrWhiteSpace(guid)) return;
-            _profiles.MoveModInSelected(guid, direction);
+            await _profiles.MoveModInSelectedAsync(guid, direction);
             Refresh();
         }
 
@@ -499,6 +499,8 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ItemCountText));
         }
 
+        public void RefreshFromShell() => QueueStatusRefresh();
+
         private async void QueueThumbnailRefresh()
         {
             if (!SettingsService.GetEnableLibraryImages()) return;
@@ -510,17 +512,26 @@ namespace HD2ModManager.ViewModels
             try
             {
                 var generated = false;
-                if (_profiles.SelectedProfile is not null)
+                var entries = await Task.Run(() => _profiles.SelectedProfile is { } profile
+                    ? _profiles.GetSortedEntries(profile).Select(entry => entry.NodeId.Value.ToString("N")).ToList()
+                    : new List<string>()).ConfigureAwait(false);
+                foreach (var guid in entries)
                 {
-                    foreach (var entry in _profiles.GetSortedEntries(_profiles.SelectedProfile))
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        var result = await _library.RequestThumbnailAsync(entry.NodeId.Value.ToString("N"), "Profile", cancellationToken: cancellationToken);
-                        if (result.Data is { } facts)
-                            generated |= await ThumbnailService.EnsureThumbnailAsync(facts, 72, cancellationToken);
-                    }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var result = await Task.Run(() => _library.RequestThumbnailAsync(guid, "Profile", cancellationToken: CancellationToken.None).AsTask())
+                        .WaitAsync(cancellationToken).ConfigureAwait(false);
+                    if (result.Data is { } facts)
+                        generated |= await Task.Run(() => ThumbnailService.EnsureThumbnailAsync(facts, 72, CancellationToken.None))
+                            .WaitAsync(cancellationToken).ConfigureAwait(false);
                 }
-                if (generated && !cancellationToken.IsCancellationRequested && ReferenceEquals(_thumbnailCancellation, cancellationSource)) Refresh();
+                if (generated && !cancellationToken.IsCancellationRequested && ReferenceEquals(_thumbnailCancellation, cancellationSource))
+                {
+                    // 中心生产不随页面取消；页面令牌只取消本页的等待和显示。
+                    RunOnUiThread(() =>
+                    {
+                        if (!_disposed && ReferenceEquals(_thumbnailCancellation, cancellationSource)) Refresh();
+                    });
+                }
             }
             catch (OperationCanceledException) { }
             finally
@@ -558,6 +569,7 @@ namespace HD2ModManager.ViewModels
 
         private void QueueStatusRefresh()
         {
+            if (_disposed) return;
             Refresh();
             QueueThumbnailRefresh();
             _ = RefreshUserStatusesAsync();
@@ -569,6 +581,10 @@ namespace HD2ModManager.ViewModels
             if (dispatcher is null || dispatcher.CheckAccess()) action();
             else _ = dispatcher.InvokeAsync(action);
         }
+
+        private void OnSelectionChanged(object? sender, EventArgs e) => SyncSelectionFromCoordinator();
+
+        private void OnProfileChanged(object? sender, EventArgs e) => RunOnUiThread(QueueStatusRefresh);
 
         private void ToggleSelection(object? parameter)
         {
@@ -603,14 +619,18 @@ namespace HD2ModManager.ViewModels
             SelectedProfileKey = profileName;
         }
 
-        internal void RenameCurrentProfile(string? newName)
+        internal async Task RenameCurrentProfileAsync(string? newName)
         {
             RenameText = newName ?? string.Empty;
-            RenameProfile();
+            await RenameProfileAsync();
         }
 
         public override void Dispose()
         {
+            if (_disposed) return;
+            _disposed = true;
+            _selection?.SelectionChanged -= OnSelectionChanged;
+            _profiles.Changed -= OnProfileChanged;
             _searchCancellation?.Cancel();
             _searchCancellation?.Dispose();
             _searchCancellation = null;
@@ -664,7 +684,7 @@ namespace HD2ModManager.ViewModels
 
         public void SyncFromPage() => NewName = _page.SelectedProfileKey ?? string.Empty;
 
-        private void Confirm() => _page.RenameCurrentProfile(NewName);
+        private async void Confirm() => await _page.RenameCurrentProfileAsync(NewName);
     }
 
     public sealed class ProfileListItemViewModel : BaseViewModel

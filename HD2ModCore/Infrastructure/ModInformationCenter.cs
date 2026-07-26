@@ -32,6 +32,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	private readonly CancellationTokenSource _shutdown = new();
 	private readonly object _nodeStateGate = new();
 	public event EventHandler<ModInformationDiagnostic>? DiagnosticRecorded;
+	public event EventHandler<ModInformationProductionStarted>? ProductionStarted;
 
 	public ModInformationCenter(IModFileFactsProducer fileFactsProducer, IAssetInventoryProducer assetInventoryProducer, IModFileFactsCache? fileFactsCache = null, IReferenceGraphProducer? referenceGraphProducer = null, IMaintenanceAnalysisProducer? maintenanceProducer = null, IUnitVersionInformationProducer? unitVersionProducer = null, IModInformationCache? informationCache = null, IAdvancedUnitAnalysisProducer? advancedUnitAnalysisProducer = null, IModThumbnailProducer? thumbnailProducer = null, IModDataIndex? modDataIndex = null, IReferenceGraphIndexWriter? referenceGraphIndexWriter = null)
 	{
@@ -120,12 +121,16 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var key = $"{node.Id}|{effectiveRequest.Kind}|{generation}";
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
 		{
-			var cached = await _informationCache.TryLoadAsync<ReferenceGraphFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
-			if (cached is not null && IsNodeRequestCurrent(node.Id, nodeCancellation))
+			try
 			{
-				_modDataIndex?.Update(cached);
-				return new ModInformationResult<ReferenceGraphFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
+				var cached = await _informationCache.TryLoadAsync<ReferenceGraphFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
+				if (cached is not null && IsNodeRequestCurrent(node.Id, nodeCancellation))
+				{
+					_modDataIndex?.Update(cached);
+					return new ModInformationResult<ReferenceGraphFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
+				}
 			}
+			catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException) { _ = exception; }
 		}
 		if (!IsNodeRequestCurrent(node.Id, nodeCancellation))
 			nodeCancellation = BeginNodeRequest(node.Id);
@@ -180,8 +185,12 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var key = $"{node.Id}|{effectiveRequest.Kind}|{generation}";
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
 		{
-			var cached = await _informationCache.TryLoadAsync<AdvancedUnitAnalysisFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
-			if (cached is not null) return new ModInformationResult<AdvancedUnitAnalysisFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
+			try
+			{
+				var cached = await _informationCache.TryLoadAsync<AdvancedUnitAnalysisFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
+				if (cached is not null) return new ModInformationResult<AdvancedUnitAnalysisFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
+			}
+			catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException) { _ = exception; }
 		}
 		var entry = new Lazy<Task<ModInformationResult<AdvancedUnitAnalysisFacts>>>(() => ProduceAdvancedUnitAnalysisAndRemoveAsync(key, node, modsRootDirectory, effectiveRequest, nodeCancellation), LazyThreadSafetyMode.ExecutionAndPublication);
 		var existing = _advancedUnitAnalysisTasks.GetOrAdd(key, entry);
@@ -201,8 +210,12 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var key = $"{node.Id}|{effectiveRequest.Kind}|{generation}";
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
 		{
-			var cached = await _informationCache.TryLoadAsync<ModThumbnailFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
-			if (cached is not null) return new ModInformationResult<ModThumbnailFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
+			try
+			{
+				var cached = await _informationCache.TryLoadAsync<ModThumbnailFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
+				if (cached is not null) return new ModInformationResult<ModThumbnailFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
+			}
+			catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException) { _ = exception; }
 		}
 		var entry = new Lazy<Task<ModInformationResult<ModThumbnailFacts>>>(() => ProduceThumbnailAndRemoveAsync(key, node, modsRootDirectory, effectiveRequest, nodeCancellation), LazyThreadSafetyMode.ExecutionAndPublication);
 		var existing = _thumbnailTasks.GetOrAdd(key, entry);
@@ -244,8 +257,12 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var key = $"{node.Id}|{effectiveRequest.Kind}|{generation}";
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
 		{
-			var cached = await _informationCache.TryLoadAsync<ModUnitVersionFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
-			if (cached is not null) return new ModInformationResult<ModUnitVersionFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
+			try
+			{
+				var cached = await _informationCache.TryLoadAsync<ModUnitVersionFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
+				if (cached is not null) return new ModInformationResult<ModUnitVersionFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
+			}
+			catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException) { _ = exception; }
 		}
 		var entry = new Lazy<Task<ModInformationResult<ModUnitVersionFacts>>>(() => ProduceUnitVersionAndRemoveAsync(key, node, modsRootDirectory, effectiveRequest, nodeCancellation), LazyThreadSafetyMode.ExecutionAndPublication);
 		var existing = _unitVersionTasks.GetOrAdd(key, entry);
@@ -265,8 +282,12 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var key = $"{node.Id}|{effectiveRequest.Kind}|{generation}";
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
 		{
-			var cached = await _informationCache.TryLoadAsync<MaintenanceAnalysisFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
-			if (cached is not null) return new ModInformationResult<MaintenanceAnalysisFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
+			try
+			{
+				var cached = await _informationCache.TryLoadAsync<MaintenanceAnalysisFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
+				if (cached is not null) return new ModInformationResult<MaintenanceAnalysisFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
+			}
+			catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException) { _ = exception; }
 		}
 		var entry = new Lazy<Task<ModInformationResult<MaintenanceAnalysisFacts>>>(() => ProduceMaintenanceAndRemoveAsync(key, node, modsRootDirectory, effectiveRequest, nodeCancellation), LazyThreadSafetyMode.ExecutionAndPublication);
 		var existing = _maintenanceTasks.GetOrAdd(key, entry);
@@ -276,16 +297,22 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	private async Task<ModInformationResult<PatchFileIndex>> ProduceFileFactsAndRemoveAsync(string key, LibrarySnapshot snapshot, string root, ModInformationRequest request, IReadOnlyDictionary<ModNodeId, CancellationTokenSource> nodeStates)
 	{
 		var started = DateTimeOffset.UtcNow;
+		ModInformationResult<PatchFileIndex>? completed = null;
 		try
 		{
-			var result = await ProduceFileFactsAsync(snapshot, root, request, nodeStates, _shutdown.Token).ConfigureAwait(false);
-			DiagnosticRecorded?.Invoke(this, new ModInformationDiagnostic(request.Source, request.Kind, null, result.Generation, started, DateTimeOffset.UtcNow, result.CacheHit, result.WasCoalesced, result.Status, result.Issues));
-			return result;
+			completed = await ProduceFileFactsAsync(key, snapshot, root, request, nodeStates, _shutdown.Token, started).ConfigureAwait(false);
+			return completed;
 		}
-		finally { _fileTasks.TryRemove(key, out _); }
+		finally
+		{
+			RecordDiagnostic(completed is null
+				? new ModInformationDiagnostic(request.Source, request.Kind, null, request.Generation, started, DateTimeOffset.UtcNow, false, false, ModInformationStatus.Failed, []) { OperationKey = key }
+				: new ModInformationDiagnostic(request.Source, request.Kind, null, completed.Generation, started, DateTimeOffset.UtcNow, completed.CacheHit, completed.WasCoalesced, completed.Status, completed.Issues) { OperationKey = key });
+			_fileTasks.TryRemove(key, out _);
+		}
 	}
 
-	private async Task<ModInformationResult<PatchFileIndex>> ProduceFileFactsAsync(LibrarySnapshot snapshot, string root, ModInformationRequest request, IReadOnlyDictionary<ModNodeId, CancellationTokenSource> nodeStates, CancellationToken cancellationToken)
+	private async Task<ModInformationResult<PatchFileIndex>> ProduceFileFactsAsync(string key, LibrarySnapshot snapshot, string root, ModInformationRequest request, IReadOnlyDictionary<ModNodeId, CancellationTokenSource> nodeStates, CancellationToken cancellationToken, DateTimeOffset started)
 	{
 		var generation = request.Generation ?? ComputeFileGeneration(snapshot, root);
 		if (!request.RequireFresh && _fileFactsCache is not null)
@@ -301,13 +328,17 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 				_ = exception;
 			}
 		}
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, null, generation, started, key));
 		try
 		{
 			var data = await _fileFactsProducer.ProduceAsync(snapshot, root, cancellationToken).ConfigureAwait(false);
 			if (_fileFactsCache is not null && snapshot.Nodes.Keys.All(nodeId => IsNodeRequestCurrent(nodeId, nodeStates[nodeId])))
 			{
 				try { await _fileFactsCache.SaveAsync(generation, data, cancellationToken).ConfigureAwait(false); }
-				catch (Exception exception) { _ = exception; }
+				catch (Exception exception)
+				{
+					data = data with { Issues = [.. data.Issues, CreateCacheSaveIssue(ModInformationKind.FileFacts, generation, root, exception)] };
+				}
 			}
 			return new ModInformationResult<PatchFileIndex>(data, ModInformationStatus.Fresh, ModInformationKind.FileFacts, generation, data.Issues, false, false);
 		}
@@ -362,34 +393,40 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	private async Task<ModInformationResult<ModContentFacts>> ProduceAssetInventoryAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
 		var started = DateTimeOffset.UtcNow;
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key));
+		ModInformationResult<ModContentFacts>? completed = null;
 		try
 		{
-			var result = await ProduceAssetInventoryAsync(node, root, request, nodeCancellation).ConfigureAwait(false);
-			DiagnosticRecorded?.Invoke(this, new ModInformationDiagnostic(request.Source, request.Kind, node.Id, result.Generation, started, DateTimeOffset.UtcNow, result.CacheHit, result.WasCoalesced, result.Status, result.Issues));
-			return result;
+			completed = await ProduceAssetInventoryAsync(node, root, request, nodeCancellation).ConfigureAwait(false);
+			return completed;
 		}
-		finally { _assetTasks.TryRemove(key, out _); }
+		finally
+		{
+			RecordDiagnostic(CreateDiagnostic(request, node.Id, key, started, completed));
+			_assetTasks.TryRemove(key, out _);
+		}
 	}
 
 	private async Task<ModInformationResult<ModContentFacts>> ProduceAssetInventoryAsync(ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
 		var cancellationToken = nodeCancellation.Token;
-		var stale = await TryLoadStaleAsync<ModContentFacts>(ModInformationKind.AssetInventory, node.Id, cancellationToken).ConfigureAwait(false);
+		ModInformationCacheEntry<ModContentFacts>? stale = null;
 		try
 		{
+			stale = await TryLoadStaleAsync<ModContentFacts>(ModInformationKind.AssetInventory, node.Id, cancellationToken).ConfigureAwait(false);
 			var data = await _assetInventoryProducer.GetNodeFactsAsync(node, root, cancellationToken).ConfigureAwait(false);
 			if (!IsNodeRequestCurrent(node.Id, nodeCancellation))
 				return CreateFailedOrStale(stale, ModInformationKind.AssetInventory, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "AssetInventoryInvalidated", "AssetInventory production completed after the node was invalidated.", node.RelativePath, node.Id));
 			if (_informationCache is not null)
 			{
-				try { await _informationCache.SaveAsync(ModInformationKind.AssetInventory, node.Id, data.ContentGeneration, data, cancellationToken).ConfigureAwait(false); }
-				catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
+				try { await _informationCache.SaveAsync(ModInformationKind.AssetInventory, node.Id, request.Generation ?? data.ContentGeneration, data, cancellationToken).ConfigureAwait(false); }
+				catch (Exception exception)
 				{
-					_ = exception;
+					data = data with { Issues = [.. data.Issues, CreateCacheSaveIssue(ModInformationKind.AssetInventory, request.Generation ?? data.ContentGeneration, node.RelativePath, exception)] };
 				}
 			}
 			_modDataIndex?.Update(data);
-			return new ModInformationResult<ModContentFacts>(data, ModInformationStatus.Fresh, ModInformationKind.AssetInventory, data.ContentGeneration, data.Issues, false, false);
+			return new ModInformationResult<ModContentFacts>(data, ModInformationStatus.Fresh, ModInformationKind.AssetInventory, request.Generation ?? data.ContentGeneration, data.Issues, false, false);
 		}
 		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
 		{
@@ -404,84 +441,105 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	private async Task<ModInformationResult<ReferenceGraphFacts>> ProduceReferenceGraphAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
 		var started = DateTimeOffset.UtcNow;
-		var stale = await TryLoadStaleAsync<ReferenceGraphFacts>(ModInformationKind.ReferenceGraph, node.Id, nodeCancellation.Token).ConfigureAwait(false);
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key));
+		ModInformationResult<ReferenceGraphFacts>? completed = null;
+		ModInformationCacheEntry<ReferenceGraphFacts>? stale = null;
 		try
 		{
+			stale = await TryLoadStaleAsync<ReferenceGraphFacts>(ModInformationKind.ReferenceGraph, node.Id, nodeCancellation.Token).ConfigureAwait(false);
 			var data = await _referenceGraphProducer!.ProduceAsync(node, root, nodeCancellation.Token).ConfigureAwait(false);
 			if (!IsNodeRequestCurrent(node.Id, nodeCancellation))
-				return CreateFailedOrStale(stale, ModInformationKind.ReferenceGraph, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ReferenceGraphInvalidated", "ReferenceGraph production completed after the node was invalidated.", node.RelativePath, node.Id));
+				return completed = CreateFailedOrStale(stale, ModInformationKind.ReferenceGraph, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ReferenceGraphInvalidated", "ReferenceGraph production completed after the node was invalidated.", node.RelativePath, node.Id));
 			var result = new ModInformationResult<ReferenceGraphFacts>(data, ModInformationStatus.Fresh, ModInformationKind.ReferenceGraph, data.Generation, data.Issues);
-			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.ReferenceGraph, node.Id, data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
+			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.ReferenceGraph, node.Id, request.Generation ?? data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
 			if (_referenceGraphIndexWriter is not null) await _referenceGraphIndexWriter.ReplaceNodeAsync(data, nodeCancellation.Token).ConfigureAwait(false);
 			_modDataIndex?.Update(data);
-			DiagnosticRecorded?.Invoke(this, new ModInformationDiagnostic(request.Source, request.Kind, node.Id, result.Generation, started, DateTimeOffset.UtcNow, false, false, result.Status, result.Issues));
-			return result;
+			completed = result;
+			return completed;
 		}
 		catch (OperationCanceledException)
 		{
-			return CreateFailedOrStale(stale, ModInformationKind.ReferenceGraph, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ReferenceGraphInvalidated", "ReferenceGraph production was canceled because the node was invalidated.", node.RelativePath, node.Id));
+			return completed = CreateFailedOrStale(stale, ModInformationKind.ReferenceGraph, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ReferenceGraphInvalidated", "ReferenceGraph production was canceled because the node was invalidated.", node.RelativePath, node.Id));
 		}
 		catch (Exception exception)
 		{
-			return CreateFailedOrStale(stale, ModInformationKind.ReferenceGraph, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "ReferenceGraphProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
+			return completed = CreateFailedOrStale(stale, ModInformationKind.ReferenceGraph, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "ReferenceGraphProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
 		}
-		finally { _referenceTasks.TryRemove(key, out _); }
+		finally
+		{
+			RecordDiagnostic(CreateDiagnostic(request, node.Id, key, started, completed));
+			_referenceTasks.TryRemove(key, out _);
+		}
 	}
 
 	private async Task<ModInformationResult<MaintenanceAnalysisFacts>> ProduceMaintenanceAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
 		var started = DateTimeOffset.UtcNow;
-		var stale = await TryLoadStaleAsync<MaintenanceAnalysisFacts>(ModInformationKind.MaintenanceAnalysis, node.Id, nodeCancellation.Token).ConfigureAwait(false);
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key));
+		ModInformationResult<MaintenanceAnalysisFacts>? completed = null;
+		ModInformationCacheEntry<MaintenanceAnalysisFacts>? stale = null;
 		try
 		{
+			stale = await TryLoadStaleAsync<MaintenanceAnalysisFacts>(ModInformationKind.MaintenanceAnalysis, node.Id, nodeCancellation.Token).ConfigureAwait(false);
 			var inventoryRequest = new ModInformationRequest(ModInformationKind.AssetInventory, $"{request.Source}:MaintenancePrerequisite", request.Generation, request.RequireFresh);
 			var inventory = await RequestAssetInventoryAsync(node, root, inventoryRequest, nodeCancellation.Token).ConfigureAwait(false);
 			if (inventory.Data is null)
 			{
-				return new ModInformationResult<MaintenanceAnalysisFacts>(null, ModInformationStatus.Failed, ModInformationKind.MaintenanceAnalysis, inventory.Generation, inventory.Issues, inventory.CacheHit, true);
+				return completed = new ModInformationResult<MaintenanceAnalysisFacts>(null, ModInformationStatus.Failed, ModInformationKind.MaintenanceAnalysis, inventory.Generation, inventory.Issues, inventory.CacheHit, true);
 			}
 			var data = await _maintenanceProducer!.ProduceAsync(node, inventory.Data, nodeCancellation.Token).ConfigureAwait(false);
 			if (!IsNodeRequestCurrent(node.Id, nodeCancellation))
-				return CreateFailedOrStale(stale, ModInformationKind.MaintenanceAnalysis, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "MaintenanceAnalysisInvalidated", "Maintenance analysis completed after the node was invalidated.", node.RelativePath, node.Id));
-			var result = new ModInformationResult<MaintenanceAnalysisFacts>(data, ModInformationStatus.Fresh, ModInformationKind.MaintenanceAnalysis, data.Generation, data.Issues);
-			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.MaintenanceAnalysis, node.Id, data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
-			DiagnosticRecorded?.Invoke(this, new ModInformationDiagnostic(request.Source, request.Kind, node.Id, result.Generation, started, DateTimeOffset.UtcNow, false, false, result.Status, result.Issues));
-			return result;
+				return completed = CreateFailedOrStale(stale, ModInformationKind.MaintenanceAnalysis, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "MaintenanceAnalysisInvalidated", "Maintenance analysis completed after the node was invalidated.", node.RelativePath, node.Id));
+			var result = new ModInformationResult<MaintenanceAnalysisFacts>(data, ModInformationStatus.Fresh, ModInformationKind.MaintenanceAnalysis, request.Generation ?? data.Generation, data.Issues);
+			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.MaintenanceAnalysis, node.Id, request.Generation ?? data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
+			completed = result;
+			return completed;
 		}
 		catch (OperationCanceledException)
 		{
-			return CreateFailedOrStale(stale, ModInformationKind.MaintenanceAnalysis, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "MaintenanceAnalysisInvalidated", "Maintenance analysis was canceled because the node was invalidated.", node.RelativePath, node.Id));
+			return completed = CreateFailedOrStale(stale, ModInformationKind.MaintenanceAnalysis, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "MaintenanceAnalysisInvalidated", "Maintenance analysis was canceled because the node was invalidated.", node.RelativePath, node.Id));
 		}
 		catch (Exception exception)
 		{
-			return CreateFailedOrStale(stale, ModInformationKind.MaintenanceAnalysis, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "MaintenanceAnalysisProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
+			return completed = CreateFailedOrStale(stale, ModInformationKind.MaintenanceAnalysis, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "MaintenanceAnalysisProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
 		}
-		finally { _maintenanceTasks.TryRemove(key, out _); }
+		finally
+		{
+			RecordDiagnostic(CreateDiagnostic(request, node.Id, key, started, completed));
+			_maintenanceTasks.TryRemove(key, out _);
+		}
 	}
 
 	private async Task<ModInformationResult<ModUnitVersionFacts>> ProduceUnitVersionAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
 		var started = DateTimeOffset.UtcNow;
-		var stale = await TryLoadStaleAsync<ModUnitVersionFacts>(ModInformationKind.UnitVersion, node.Id, nodeCancellation.Token).ConfigureAwait(false);
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key));
+		ModInformationResult<ModUnitVersionFacts>? completed = null;
+		ModInformationCacheEntry<ModUnitVersionFacts>? stale = null;
 		try
 		{
+			stale = await TryLoadStaleAsync<ModUnitVersionFacts>(ModInformationKind.UnitVersion, node.Id, nodeCancellation.Token).ConfigureAwait(false);
 			var data = await _unitVersionProducer!.ProduceAsync(node, root, nodeCancellation.Token).ConfigureAwait(false);
 			if (!IsNodeRequestCurrent(node.Id, nodeCancellation))
-				return CreateFailedOrStale(stale, ModInformationKind.UnitVersion, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "UnitVersionInvalidated", "Unit version production completed after the node was invalidated.", node.RelativePath, node.Id));
-			var result = new ModInformationResult<ModUnitVersionFacts>(data, ModInformationStatus.Fresh, ModInformationKind.UnitVersion, data.Generation, data.Issues);
-			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.UnitVersion, node.Id, data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
-			DiagnosticRecorded?.Invoke(this, new ModInformationDiagnostic(request.Source, request.Kind, node.Id, result.Generation, started, DateTimeOffset.UtcNow, false, false, result.Status, result.Issues));
-			return result;
+				return completed = CreateFailedOrStale(stale, ModInformationKind.UnitVersion, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "UnitVersionInvalidated", "Unit version production completed after the node was invalidated.", node.RelativePath, node.Id));
+			var result = new ModInformationResult<ModUnitVersionFacts>(data, ModInformationStatus.Fresh, ModInformationKind.UnitVersion, request.Generation ?? data.Generation, data.Issues);
+			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.UnitVersion, node.Id, request.Generation ?? data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
+			completed = result;
+			return completed;
 		}
 		catch (Exception exception) when (exception is not OperationCanceledException)
 		{
-			return CreateFailedOrStale(stale, ModInformationKind.UnitVersion, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "UnitVersionProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
+			return completed = CreateFailedOrStale(stale, ModInformationKind.UnitVersion, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "UnitVersionProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
 		}
 		catch (OperationCanceledException)
 		{
-			return CreateFailedOrStale(stale, ModInformationKind.UnitVersion, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "UnitVersionInvalidated", "Unit version production was canceled because the node was invalidated.", node.RelativePath, node.Id));
+			return completed = CreateFailedOrStale(stale, ModInformationKind.UnitVersion, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "UnitVersionInvalidated", "Unit version production was canceled because the node was invalidated.", node.RelativePath, node.Id));
 		}
-		finally { _unitVersionTasks.TryRemove(key, out _); }
+		finally
+		{
+			RecordDiagnostic(CreateDiagnostic(request, node.Id, key, started, completed));
+			_unitVersionTasks.TryRemove(key, out _);
+		}
 	}
 
 	private static async Task<ModInformationResult<T>> AwaitEntryAsync<T>(Lazy<Task<ModInformationResult<T>>> entry, bool owner, CancellationToken cancellationToken)
@@ -513,46 +571,66 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 
 	private async Task<ModInformationResult<ModThumbnailFacts>> ProduceThumbnailAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
-		var stale = await TryLoadStaleAsync<ModThumbnailFacts>(ModInformationKind.Thumbnail, node.Id, nodeCancellation.Token).ConfigureAwait(false);
+		var started = DateTimeOffset.UtcNow;
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key));
+		ModInformationResult<ModThumbnailFacts>? completed = null;
+		ModInformationCacheEntry<ModThumbnailFacts>? stale = null;
 		try
 		{
+			stale = await TryLoadStaleAsync<ModThumbnailFacts>(ModInformationKind.Thumbnail, node.Id, nodeCancellation.Token).ConfigureAwait(false);
 			var data = await _thumbnailProducer!.ProduceAsync(node, root, nodeCancellation.Token).ConfigureAwait(false);
 			if (!IsNodeRequestCurrent(node.Id, nodeCancellation))
-				return CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailInvalidated", "Thumbnail production completed after the node was invalidated.", node.RelativePath, node.Id));
-			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.Thumbnail, node.Id, data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
-			return new ModInformationResult<ModThumbnailFacts>(data, ModInformationStatus.Fresh, request.Kind, data.Generation, data.Issues);
+				return completed = CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailInvalidated", "Thumbnail production completed after the node was invalidated.", node.RelativePath, node.Id));
+			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.Thumbnail, node.Id, request.Generation ?? data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
+			var result = new ModInformationResult<ModThumbnailFacts>(data, ModInformationStatus.Fresh, request.Kind, request.Generation ?? data.Generation, data.Issues);
+			completed = result;
+			return completed;
 		}
 		catch (OperationCanceledException)
 		{
-			return CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailInvalidated", "Thumbnail production was canceled.", node.RelativePath, node.Id));
+			return completed = CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailInvalidated", "Thumbnail production was canceled.", node.RelativePath, node.Id));
 		}
 		catch (Exception exception)
 		{
-			return CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "ThumbnailProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
+			return completed = CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "ThumbnailProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
 		}
-		finally { _thumbnailTasks.TryRemove(key, out _); }
+		finally
+		{
+			RecordDiagnostic(CreateDiagnostic(request, node.Id, key, started, completed));
+			_thumbnailTasks.TryRemove(key, out _);
+		}
 	}
 
 	private async Task<ModInformationResult<AdvancedUnitAnalysisFacts>> ProduceAdvancedUnitAnalysisAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
-		var stale = await TryLoadStaleAsync<AdvancedUnitAnalysisFacts>(ModInformationKind.AdvancedUnitAnalysis, node.Id, nodeCancellation.Token).ConfigureAwait(false);
+		var started = DateTimeOffset.UtcNow;
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key));
+		ModInformationResult<AdvancedUnitAnalysisFacts>? completed = null;
+		ModInformationCacheEntry<AdvancedUnitAnalysisFacts>? stale = null;
 		try
 		{
+			stale = await TryLoadStaleAsync<AdvancedUnitAnalysisFacts>(ModInformationKind.AdvancedUnitAnalysis, node.Id, nodeCancellation.Token).ConfigureAwait(false);
 			var data = await _advancedUnitAnalysisProducer!.ProduceAsync(node, root, nodeCancellation.Token).ConfigureAwait(false);
 			if (!IsNodeRequestCurrent(node.Id, nodeCancellation))
-				return CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "AdvancedUnitAnalysisInvalidated", "Advanced Unit analysis completed after the node was invalidated.", node.RelativePath, node.Id));
-			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.AdvancedUnitAnalysis, node.Id, data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
-			return new ModInformationResult<AdvancedUnitAnalysisFacts>(data, ModInformationStatus.Fresh, request.Kind, data.Generation, data.Issues);
+				return completed = CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "AdvancedUnitAnalysisInvalidated", "Advanced Unit analysis completed after the node was invalidated.", node.RelativePath, node.Id));
+			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.AdvancedUnitAnalysis, node.Id, request.Generation ?? data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
+			var result = new ModInformationResult<AdvancedUnitAnalysisFacts>(data, ModInformationStatus.Fresh, request.Kind, request.Generation ?? data.Generation, data.Issues);
+			completed = result;
+			return completed;
 		}
 		catch (OperationCanceledException)
 		{
-			return CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "AdvancedUnitAnalysisInvalidated", "Advanced Unit analysis was canceled.", node.RelativePath, node.Id));
+			return completed = CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "AdvancedUnitAnalysisInvalidated", "Advanced Unit analysis was canceled.", node.RelativePath, node.Id));
 		}
 		catch (Exception exception)
 		{
-			return CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "AdvancedUnitAnalysisProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
+			return completed = CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "AdvancedUnitAnalysisProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
 		}
-		finally { _advancedUnitAnalysisTasks.TryRemove(key, out _); }
+		finally
+		{
+			RecordDiagnostic(CreateDiagnostic(request, node.Id, key, started, completed));
+			_advancedUnitAnalysisTasks.TryRemove(key, out _);
+		}
 	}
 
 	private async ValueTask<ModInformationCacheEntry<T>?> TryLoadStaleAsync<T>(ModInformationKind kind, ModNodeId nodeId, CancellationToken cancellationToken)
@@ -561,6 +639,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		try { return await _informationCache.TryLoadLatestAsync<T>(kind, nodeId, cancellationToken).ConfigureAwait(false); }
 		catch (IOException) { return default; }
 		catch (JsonException) { return default; }
+		catch (UnauthorizedAccessException) { return default; }
 		catch (OperationCanceledException) { return default; }
 	}
 
@@ -568,4 +647,24 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		=> stale is null
 			? new ModInformationResult<T>(default, ModInformationStatus.Failed, kind, requestedGeneration, [issue], false, true)
 			: new ModInformationResult<T>(stale.Data, ModInformationStatus.Stale, kind, stale.Generation, [issue], false, true, true);
+
+	private static ModInformationDiagnostic CreateDiagnostic<T>(ModInformationRequest request, ModNodeId nodeId, string key, DateTimeOffset started, ModInformationResult<T>? result)
+		=> result is null
+			? new ModInformationDiagnostic(request.Source, request.Kind, nodeId, request.Generation, started, DateTimeOffset.UtcNow, false, false, ModInformationStatus.Failed, []) { OperationKey = key }
+			: new ModInformationDiagnostic(request.Source, request.Kind, nodeId, result.Generation, started, DateTimeOffset.UtcNow, result.CacheHit, result.WasCoalesced, result.Status, result.Issues) { OperationKey = key };
+
+	private static CoreIssue CreateCacheSaveIssue(ModInformationKind kind, string generation, string path, Exception exception)
+		=> new(CoreIssueSeverity.Warning, "InformationCacheSaveFailed", $"内容已生成，但 {kind} 缓存保存失败（generation: {generation}）：{exception.Message}", path, ExceptionMessage: exception.ToString());
+
+	private void RecordProductionStarted(ModInformationProductionStarted value)
+	{
+		try { ProductionStarted?.Invoke(this, value); }
+		catch { }
+	}
+
+	private void RecordDiagnostic(ModInformationDiagnostic value)
+	{
+		try { DiagnosticRecorded?.Invoke(this, value); }
+		catch { }
+	}
 }

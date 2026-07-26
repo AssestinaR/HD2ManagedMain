@@ -63,23 +63,23 @@ namespace HD2ModManager.Views
             }
         }
 
-        private void OnRenameModClick(object sender, RoutedEventArgs e)
+        private async void OnRenameModClick(object sender, RoutedEventArgs e)
         {
             EnsureVM();
             var card = GetCard(sender);
             if (card == null) return;
             var oldName = card.Mod.Name;
             var newName = Microsoft.VisualBasic.Interaction.InputBox("输入新名称:", "Rename", oldName);
-            VM?.RenameMod(card, newName);
+            if (VM != null) await VM.RenameModAsync(card, newName);
         }
 
-        private void OnEditDescriptionClick(object sender, RoutedEventArgs e)
+        private async void OnEditDescriptionClick(object sender, RoutedEventArgs e)
         {
             EnsureVM();
             var card = GetCard(sender);
             if (card == null) return;
             var newDesc = Microsoft.VisualBasic.Interaction.InputBox("编辑备注:", "Description", card.Mod.Description ?? string.Empty);
-            VM?.UpdateDescription(card, newDesc);
+            if (VM != null) await VM.UpdateDescriptionAsync(card, newDesc);
         }
 
         private void OnEditImageClick(object sender, RoutedEventArgs e)

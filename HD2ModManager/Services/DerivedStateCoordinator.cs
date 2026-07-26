@@ -23,6 +23,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     private bool _deployedDirty = true;
     private CancellationTokenSource? _refreshCancellation;
     private (ProfileId? Id, long Revision) _activeProfileSignature;
+    private long _refreshVersion;
 
     public DerivedStateSnapshot Snapshot { get { lock (_sync) return _snapshot; } }
     public IModInformationCenter InformationCenter => _informationCenter;
@@ -50,10 +51,11 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     {
         lock (_sync)
         {
+            var version = ++_refreshVersion;
             _refreshCancellation?.Cancel();
             _refreshCancellation?.Dispose();
             _refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            return RefreshCoreAsync(_refreshCancellation.Token);
+            return RefreshCoreAsync(_refreshCancellation.Token, version);
         }
     }
 
@@ -63,12 +65,14 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
         return ModUserStatusProjector.Project(_profiles.Snapshot, selectedProfileId, snapshot.ContentFacts, snapshot.ExpectedGraph, snapshot.MaterialDiagnostics, snapshot.DeployedGraph);
     }
 
-    private async Task RefreshCoreAsync(CancellationToken cancellationToken)
+    private async Task RefreshCoreAsync(CancellationToken cancellationToken, long refreshVersion)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var profileSnapshot = _profiles.Snapshot;
+            var profileSignature = GetActiveProfileSignature(profileSnapshot);
+            var librarySnapshotSignature = _library.Snapshot.SavedUtc;
             var current = Snapshot;
             IReadOnlyDictionary<ModNodeId, ModContentFacts> content = current.ContentFacts;
             ProfileOverrideGraph? expected = current.ExpectedGraph;
@@ -122,6 +126,10 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
             var next = new DerivedStateSnapshot(content, expected, materialDiagnostics, deployed, DateTimeOffset.UtcNow, null);
             lock (_sync)
             {
+                if (refreshVersion != _refreshVersion
+                    || profileSignature != GetActiveProfileSignature(_profiles.Snapshot)
+                    || librarySnapshotSignature != _library.Snapshot.SavedUtc)
+                    return;
                 _contentDirty = false;
                 _expectedDirty = false;
                 _deployedDirty = false;
@@ -132,6 +140,10 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
         catch (OperationCanceledException) { }
         catch (Exception exception)
         {
+            lock (_sync)
+            {
+                if (refreshVersion != _refreshVersion) return;
+            }
             var failed = Snapshot with { LastError = exception.Message };
             lock (_sync) _snapshot = failed;
             SnapshotChanged?.Invoke(this, failed);

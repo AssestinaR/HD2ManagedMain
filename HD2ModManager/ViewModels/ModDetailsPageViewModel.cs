@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Input;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
@@ -95,7 +96,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand UpdateImageCommand { get; }
         public RelayCommand OpenFolderCommand { get; }
         public RelayCommand AddToProfileCommand { get; }
-        public RelayCommand DeleteCommand { get; }
+        public ICommand DeleteCommand { get; }
         public RelayCommand OpenAdvancedDetailsCommand { get; }
         public RelayCommand SplitEmbeddedMaterialsCommand { get; }
         public RelayCommand ReplaceEmbeddedMaterialsCommand { get; }
@@ -123,10 +124,10 @@ namespace HD2ModManager.ViewModels
             _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(_paths, _derivedState.InformationCenter);
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
-            UpdateImageCommand = new RelayCommand(UpdateImage, path => path is string imagePath && File.Exists(imagePath));
+            UpdateImageCommand = new RelayCommand(async path => await UpdateImageAsync(path), path => path is string imagePath && File.Exists(imagePath));
             OpenFolderCommand = new RelayCommand(OpenFolder);
             AddToProfileCommand = new RelayCommand(AddToProfile);
-            DeleteCommand = new RelayCommand(Delete);
+            DeleteCommand = new AsyncRelayCommand(DeleteAsync);
             OpenAdvancedDetailsCommand = new RelayCommand(OpenAdvancedDetails);
             SplitEmbeddedMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: true), _ => CanSplitEmbeddedMaterials);
             ReplaceEmbeddedMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: false, requireAllExternalMaterials: false), _ => CanReplaceEmbeddedMaterials);
@@ -197,7 +198,7 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        private void UpdateImage(object? parameter)
+        private async Task UpdateImageAsync(object? parameter)
         {
             if (parameter is not string sourceImagePath || Mod is null) return;
 
@@ -205,15 +206,27 @@ namespace HD2ModManager.ViewModels
             if (string.IsNullOrWhiteSpace(modDirectory) || !Directory.Exists(modDirectory)) return;
 
             var destination = Path.Combine(modDirectory, "icon" + Path.GetExtension(sourceImagePath).ToLowerInvariant());
-            File.Copy(sourceImagePath, destination, overwrite: true);
-            Mod.Image = destination;
-            _library.Add(Mod);
-            _library.Save();
-            if (TryGetCurrentNode(out var updatedNode))
-                _ = _derivedState.InformationCenter.InvalidateNodeAsync(updatedNode.Id);
-            Refresh();
-            _notifications?.Show($"已更新图像：{Mod.Name}");
-            _ = RegenerateThumbnailAsync(destination);
+            try
+            {
+                await Task.Run(() => File.Copy(sourceImagePath, destination, overwrite: true)).ConfigureAwait(false);
+                var updatedMod = Mod;
+                updatedMod.Image = destination;
+                await _library.AddAsync(updatedMod).ConfigureAwait(false);
+                await _library.SaveAsync().ConfigureAwait(false);
+                RunOnUiThread(() =>
+                {
+                    if (_disposed) return;
+                    if (TryGetCurrentNode(out var updatedNode))
+                        _ = _derivedState.InformationCenter.InvalidateNodeAsync(updatedNode.Id);
+                    Refresh();
+                    _notifications?.Show($"已更新图像：{updatedMod.Name}");
+                    _ = RegenerateThumbnailAsync(destination);
+                });
+            }
+            catch (Exception exception)
+            {
+                RunOnUiThread(() => _notifications?.Show($"更新图像失败：{exception.Message}", NotificationLevel.Error));
+            }
         }
 
         private async Task RegenerateThumbnailAsync(string imagePath)
@@ -1101,15 +1114,14 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        private void Delete()
+        private async Task DeleteAsync()
         {
             if (Mod == null) return;
             var name = Mod.Name;
             var confirm = System.Windows.MessageBox.Show($"确定删除 Mod“{name}”？\n这会同时删除库中的已存储文件。", "删除 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
             if (confirm != System.Windows.MessageBoxResult.Yes) return;
             ThumbnailService.CancelPendingGeneration();
-            _library.Remove(Mod.Guid);
-            _library.Save();
+            if (!await _library.RemoveAsync(Mod.Guid).ConfigureAwait(true)) return;
             Mod = null;
             _notifications?.Show($"已删除：{name}");
             var shell = System.Windows.Application.Current?.MainWindow as HD2ModManager.MainWindow;

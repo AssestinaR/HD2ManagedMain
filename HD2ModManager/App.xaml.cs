@@ -21,6 +21,12 @@ namespace HD2ModManager
             base.OnStartup(e);
         }
 
+        protected override void OnExit(ExitEventArgs e)
+        {
+            SettingsService.FlushAsync().GetAwaiter().GetResult();
+            base.OnExit(e);
+        }
+
         private static void ApplyLocalization()
         {
             var lang = HD2ModManager.Services.SettingsService.GetLanguage() ?? System.Globalization.CultureInfo.CurrentUICulture.IetfLanguageTag;

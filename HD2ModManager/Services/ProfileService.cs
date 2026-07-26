@@ -1,6 +1,5 @@
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
-using System.Diagnostics;
 
 namespace HD2ModManager.Services
 {
@@ -9,8 +8,10 @@ namespace HD2ModManager.Services
     {
         private readonly HD2ModCore.Application.IModLibraryManager _manager;
         private LibrarySnapshot _snapshot;
-        private readonly Dictionary<string, ProfileId> _profileIds = new(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, ProfileId> _profileIds = new(StringComparer.OrdinalIgnoreCase);
         private string? _selectedProfileName;
+        private long _stateVersion;
+        private readonly SemaphoreSlim _writeGate = new(1, 1);
 
         public ProfileService(string profilesPath)
         {
@@ -34,8 +35,32 @@ namespace HD2ModManager.Services
 
         public void Load()
         {
-            _snapshot = _manager.LoadOrCreateAsync().AsTask().GetAwaiter().GetResult();
+            _writeGate.Wait();
+            try
+            {
+                _snapshot = _manager.LoadOrCreateAsync().AsTask().GetAwaiter().GetResult();
+                RebuildIndex();
+            }
+            finally { _writeGate.Release(); }
+        }
+
+        public async Task LoadAsync(CancellationToken cancellationToken = default)
+        {
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+            var loadVersion = Volatile.Read(ref _stateVersion);
+            var snapshot = await _manager.LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+            if (loadVersion != Volatile.Read(ref _stateVersion))
+            {
+                LogService.Info("跳过过期的后台配置加载结果：用户操作已先行提交。");
+                return;
+            }
+
+            _snapshot = snapshot;
             RebuildIndex();
+            }
+            finally { _writeGate.Release(); }
         }
 
         public void ReloadFromLibrary()
@@ -44,24 +69,58 @@ namespace HD2ModManager.Services
             Changed?.Invoke(this, EventArgs.Empty);
         }
 
+        public async Task ReloadFromLibraryAsync(CancellationToken cancellationToken = default)
+        {
+            await LoadAsync(cancellationToken).ConfigureAwait(false);
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
+
         public IReadOnlyList<Profile> All() => Profiles;
 
         public string CreateNew(string? requestedName = null)
         {
+            _writeGate.Wait();
+            try
+            {
             var name = CreateUniqueName(requestedName);
             var profile = new Profile(ProfileId.New(), name, DateTimeOffset.UtcNow, null, Array.Empty<ProfileEntry>());
             _snapshot = _manager.UpsertProfileAsync(profile).AsTask().GetAwaiter().GetResult();
+            Interlocked.Increment(ref _stateVersion);
             _selectedProfileName = name;
             SettingsService.SetSelectedProfileKey(_selectedProfileName);
             RebuildIndex();
             Changed?.Invoke(this, EventArgs.Empty);
             return name;
+            }
+            finally { _writeGate.Release(); }
+        }
+
+        public async Task<string> CreateNewAsync(string? requestedName = null, CancellationToken cancellationToken = default)
+        {
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var name = CreateUniqueName(requestedName);
+                var profile = new Profile(ProfileId.New(), name, DateTimeOffset.UtcNow, null, Array.Empty<ProfileEntry>());
+                _snapshot = await _manager.UpsertProfileAsync(profile, cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _stateVersion);
+                _selectedProfileName = name;
+                SettingsService.SetSelectedProfileKey(_selectedProfileName);
+                RebuildIndex();
+                Changed?.Invoke(this, EventArgs.Empty);
+                return name;
+            }
+            finally { _writeGate.Release(); }
         }
 
         public bool Remove(string name)
         {
+            _writeGate.Wait();
+            try
+            {
             if (!_profileIds.TryGetValue(name, out var id)) return false;
             _snapshot = _manager.DeleteProfileAsync(id).AsTask().GetAwaiter().GetResult();
+            Interlocked.Increment(ref _stateVersion);
             if (string.Equals(_selectedProfileName, name, StringComparison.OrdinalIgnoreCase))
             {
                 _selectedProfileName = _snapshot.Profiles.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault()?.Name;
@@ -70,6 +129,28 @@ namespace HD2ModManager.Services
             RebuildIndex();
             Changed?.Invoke(this, EventArgs.Empty);
             return true;
+            }
+            finally { _writeGate.Release(); }
+        }
+
+        public async Task<bool> RemoveAsync(string name, CancellationToken cancellationToken = default)
+        {
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (!_profileIds.TryGetValue(name, out var id)) return false;
+                _snapshot = await _manager.DeleteProfileAsync(id, cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _stateVersion);
+                if (string.Equals(_selectedProfileName, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    _selectedProfileName = _snapshot.Profiles.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault()?.Name;
+                    SettingsService.SetSelectedProfileKey(_selectedProfileName);
+                }
+                RebuildIndex();
+                Changed?.Invoke(this, EventArgs.Empty);
+                return true;
+            }
+            finally { _writeGate.Release(); }
         }
 
         public void Select(string name)
@@ -84,116 +165,153 @@ namespace HD2ModManager.Services
 
         public bool ActivateSelected()
         {
-            if (SelectedProfileId is not ProfileId profileId) return false;
-            _snapshot = _manager.SetActiveProfileAsync(profileId).AsTask().GetAwaiter().GetResult();
+            return Task.Run(() => ActivateSelectedAsync()).GetAwaiter().GetResult();
+        }
+
+        public async Task<bool> ActivateSelectedAsync(CancellationToken cancellationToken = default)
+        {
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (SelectedProfileId is not ProfileId profileId) return false;
+                _snapshot = await _manager.SetActiveProfileAsync(profileId, cancellationToken).ConfigureAwait(false);
+            Interlocked.Increment(ref _stateVersion);
             ActiveProfileDeploymentRequired?.Invoke(this, EventArgs.Empty);
             Changed?.Invoke(this, EventArgs.Empty);
             return true;
+            }
+            finally { _writeGate.Release(); }
         }
 
         public bool DisableActive()
         {
-            if (_snapshot.ActiveProfileId is null) return false;
-            _snapshot = _manager.SetActiveProfileAsync(null).AsTask().GetAwaiter().GetResult();
+            return Task.Run(() => DisableActiveAsync()).GetAwaiter().GetResult();
+        }
+
+        public async Task<bool> DisableActiveAsync(CancellationToken cancellationToken = default)
+        {
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (_snapshot.ActiveProfileId is null) return false;
+                _snapshot = await _manager.SetActiveProfileAsync(null, cancellationToken).ConfigureAwait(false);
+            Interlocked.Increment(ref _stateVersion);
             ActiveProfileDeactivationRequired?.Invoke(this, EventArgs.Empty);
             Changed?.Invoke(this, EventArgs.Empty);
             return true;
+            }
+            finally { _writeGate.Release(); }
         }
 
         public bool Rename(string oldName, string newName)
         {
-            if (string.IsNullOrWhiteSpace(oldName) || string.IsNullOrWhiteSpace(newName)) return false;
-            if (!_profileIds.TryGetValue(oldName, out var id)) return false;
+            return Task.Run(() => RenameAsync(oldName, newName)).GetAwaiter().GetResult();
+        }
 
+        public async Task<bool> RenameAsync(string oldName, string newName, CancellationToken cancellationToken = default)
+        {
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                _snapshot = _manager.RenameProfileAsync(id, newName).AsTask().GetAwaiter().GetResult();
-            }
-            catch
-            {
-                return false;
-            }
+                if (string.IsNullOrWhiteSpace(oldName) || string.IsNullOrWhiteSpace(newName)) return false;
+                if (!_profileIds.TryGetValue(oldName, out var id)) return false;
+                try
+                {
+                    _snapshot = await _manager.RenameProfileAsync(id, newName, cancellationToken).ConfigureAwait(false);
+                    Interlocked.Increment(ref _stateVersion);
+                }
+                catch
+                {
+                    return false;
+                }
 
-            var normalized = newName.Trim();
-            if (string.Equals(_selectedProfileName, oldName, StringComparison.OrdinalIgnoreCase))
-            {
-                _selectedProfileName = normalized;
-                SettingsService.SetSelectedProfileKey(normalized);
+                var normalized = newName.Trim();
+                if (string.Equals(_selectedProfileName, oldName, StringComparison.OrdinalIgnoreCase))
+                {
+                    _selectedProfileName = normalized;
+                    SettingsService.SetSelectedProfileKey(normalized);
+                }
+                RebuildIndex();
+                Changed?.Invoke(this, EventArgs.Empty);
+                return true;
             }
-            RebuildIndex();
-            Changed?.Invoke(this, EventArgs.Empty);
-            return true;
+            finally { _writeGate.Release(); }
         }
 
         public bool AddModToSelected(string nodeGuid)
         {
+            _writeGate.Wait();
+            try
+            {
             if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
             _snapshot = _manager.AddProfileEntryAsync(profileId, nodeId).AsTask().GetAwaiter().GetResult();
+            Interlocked.Increment(ref _stateVersion);
             RebuildIndex();
             NotifyIfActive(profileId);
             Changed?.Invoke(this, EventArgs.Empty);
             return true;
+            }
+            finally { _writeGate.Release(); }
         }
 
         public async Task<bool> AddModToSelectedAsync(string nodeGuid, CancellationToken cancellationToken = default)
         {
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
             if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
-            var stopwatch = Stopwatch.StartNew();
-            LogService.Info($"配置性能：开始加入配置。Profile={profileId.Value:N}，Mod={nodeId.Value:N}。");
+            var operationVersion = Interlocked.Increment(ref _stateVersion);
             var snapshot = await Task.Run(
                 () => _manager.AddProfileEntryAsync(profileId, nodeId, cancellationToken).AsTask(),
                 cancellationToken).ConfigureAwait(false);
-            LogService.Info($"配置性能：加入配置 Core 写入完成，耗时 {stopwatch.ElapsedMilliseconds}ms。Profile={profileId.Value:N}，Mod={nodeId.Value:N}。");
-            var dispatcher = System.Windows.Application.Current?.Dispatcher;
-            if (dispatcher is not null && !dispatcher.CheckAccess())
-            {
-                await dispatcher.InvokeAsync(() => ApplyAddedProfileSnapshot(snapshot, profileId));
-            }
-            else
-            {
-                ApplyAddedProfileSnapshot(snapshot, profileId);
-            }
-            LogService.Info($"配置性能：加入配置 UI 快照提交完成，总耗时 {stopwatch.ElapsedMilliseconds}ms。Profile={profileId.Value:N}，Mod={nodeId.Value:N}。");
+            // 提交内存快照必须在写门内直接完成；绝不能在持门时等待 UI Dispatcher。
+            ApplyAddedProfileSnapshot(snapshot, profileId, operationVersion);
             return true;
+            }
+            finally { _writeGate.Release(); }
         }
 
         public bool RemoveModFromSelected(string nodeGuid)
         {
+            _writeGate.Wait();
+            try
+            {
             if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
             _snapshot = _manager.RemoveProfileEntryAsync(profileId, nodeId).AsTask().GetAwaiter().GetResult();
+            Interlocked.Increment(ref _stateVersion);
             RebuildIndex();
             NotifyIfActive(profileId);
             Changed?.Invoke(this, EventArgs.Empty);
             return true;
+            }
+            finally { _writeGate.Release(); }
         }
 
         public async Task<bool> RemoveModFromSelectedAsync(string nodeGuid, CancellationToken cancellationToken = default)
         {
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
             if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
-            var stopwatch = Stopwatch.StartNew();
-            LogService.Info($"配置性能：开始从配置移除。Profile={profileId.Value:N}，Mod={nodeId.Value:N}。");
+            var operationVersion = Interlocked.Increment(ref _stateVersion);
             var snapshot = await Task.Run(
                 () => _manager.RemoveProfileEntryAsync(profileId, nodeId, cancellationToken).AsTask(),
                 cancellationToken).ConfigureAwait(false);
-            LogService.Info($"配置性能：配置移除 Core 写入完成，耗时 {stopwatch.ElapsedMilliseconds}ms。Profile={profileId.Value:N}，Mod={nodeId.Value:N}。");
-            var dispatcher = System.Windows.Application.Current?.Dispatcher;
-            if (dispatcher is not null && !dispatcher.CheckAccess())
-            {
-                await dispatcher.InvokeAsync(() => ApplyAddedProfileSnapshot(snapshot, profileId));
-            }
-            else
-            {
-                ApplyAddedProfileSnapshot(snapshot, profileId);
-            }
-            LogService.Info($"配置性能：配置移除 UI 快照提交完成，总耗时 {stopwatch.ElapsedMilliseconds}ms。Profile={profileId.Value:N}，Mod={nodeId.Value:N}。");
+            ApplyAddedProfileSnapshot(snapshot, profileId, operationVersion);
             return true;
+            }
+            finally { _writeGate.Release(); }
         }
 
         public async Task<bool> RemoveModsFromSelectedAsync(IReadOnlyList<string> nodeGuids, CancellationToken cancellationToken = default)
         {
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
             if (nodeGuids.Count == 0 || SelectedProfileId is not ProfileId profileId) return false;
             var ids = nodeGuids.Where(guid => TryParseNodeId(guid, out _)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             if (ids.Count == 0) return false;
+            var operationVersion = Interlocked.Increment(ref _stateVersion);
             LibrarySnapshot snapshot = _snapshot;
             foreach (var guid in ids)
             {
@@ -201,46 +319,89 @@ namespace HD2ModManager.Services
                 snapshot = await Task.Run(() => _manager.RemoveProfileEntryAsync(profileId, nodeId, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
             }
 
-            var dispatcher = System.Windows.Application.Current?.Dispatcher;
             Action apply = () =>
             {
+                if (operationVersion != Volatile.Read(ref _stateVersion)) return;
                 _snapshot = snapshot;
                 RebuildIndex();
                 NotifyIfActive(profileId);
                 Changed?.Invoke(this, EventArgs.Empty);
             };
-            if (dispatcher is not null && !dispatcher.CheckAccess()) await dispatcher.InvokeAsync(apply);
-            else apply();
+            // 写门内完成快照提交，不把 Dispatcher 当作提交锁的一部分。
+            apply();
             return true;
+            }
+            finally { _writeGate.Release(); }
         }
 
         public bool MoveModInSelected(string nodeGuid, int direction)
         {
-            if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
-            _snapshot = _manager.MoveProfileEntryAsync(profileId, nodeId, direction).AsTask().GetAwaiter().GetResult();
+            return Task.Run(() => MoveModInSelectedAsync(nodeGuid, direction)).GetAwaiter().GetResult();
+        }
+
+        public async Task<bool> MoveModInSelectedAsync(string nodeGuid, int direction, CancellationToken cancellationToken = default)
+        {
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+                _snapshot = await _manager.MoveProfileEntryAsync(profileId, nodeId, direction, cancellationToken).ConfigureAwait(false);
+            Interlocked.Increment(ref _stateVersion);
             RebuildIndex();
             NotifyIfActive(profileId);
             Changed?.Invoke(this, EventArgs.Empty);
             return true;
+            }
+            finally { _writeGate.Release(); }
         }
 
         // Purpose: Apply a complete ordered Profile membership atomically.
         public bool ReplaceSelectedEntries(IReadOnlyList<string> nodeGuids)
         {
-            if (SelectedProfileId is not ProfileId profileId) return false;
-            var ids = nodeGuids.Select(guid => TryParseNodeId(guid, out var nodeId) ? (ModNodeId?)nodeId : null).Where(id => id.HasValue).Select(id => id!.Value).ToList();
-            var profile = _snapshot.Profiles.FirstOrDefault(item => item.Id == profileId);
-            if (profile is null) return false;
-            var entries = ids.Select((id, index) =>
+            _writeGate.Wait();
+            try
             {
-                var existing = profile.Entries.FirstOrDefault(entry => entry.NodeId == id);
-                return existing is null ? new ProfileEntry(id, index) : existing with { LoadOrder = index };
-            }).ToList();
-            _snapshot = _manager.UpsertProfileAsync(profile with { Entries = entries, ModifiedUtc = DateTimeOffset.UtcNow, Revision = checked(profile.Revision + 1) }).AsTask().GetAwaiter().GetResult();
-            RebuildIndex();
-            NotifyIfActive(profileId);
-            Changed?.Invoke(this, EventArgs.Empty);
-            return true;
+                if (SelectedProfileId is not ProfileId profileId) return false;
+                var ids = nodeGuids.Select(guid => TryParseNodeId(guid, out var nodeId) ? (ModNodeId?)nodeId : null).Where(id => id.HasValue).Select(id => id!.Value).ToList();
+                var profile = _snapshot.Profiles.FirstOrDefault(item => item.Id == profileId);
+                if (profile is null) return false;
+                var entries = ids.Select((id, index) =>
+                {
+                    var existing = profile.Entries.FirstOrDefault(entry => entry.NodeId == id);
+                    return existing is null ? new ProfileEntry(id, index) : existing with { LoadOrder = index };
+                }).ToList();
+                _snapshot = _manager.UpsertProfileAsync(profile with { Entries = entries, ModifiedUtc = DateTimeOffset.UtcNow, Revision = checked(profile.Revision + 1) }).AsTask().GetAwaiter().GetResult();
+                Interlocked.Increment(ref _stateVersion);
+                RebuildIndex();
+                NotifyIfActive(profileId);
+                Changed?.Invoke(this, EventArgs.Empty);
+                return true;
+            }
+            finally { _writeGate.Release(); }
+        }
+
+        public async Task<bool> ReplaceSelectedEntriesAsync(IReadOnlyList<string> nodeGuids, CancellationToken cancellationToken = default)
+        {
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (SelectedProfileId is not ProfileId profileId) return false;
+                var ids = nodeGuids.Select(guid => TryParseNodeId(guid, out var nodeId) ? (ModNodeId?)nodeId : null).Where(id => id.HasValue).Select(id => id!.Value).ToList();
+                var profile = _snapshot.Profiles.FirstOrDefault(item => item.Id == profileId);
+                if (profile is null) return false;
+                var entries = ids.Select((id, index) =>
+                {
+                    var existing = profile.Entries.FirstOrDefault(entry => entry.NodeId == id);
+                    return existing is null ? new ProfileEntry(id, index) : existing with { LoadOrder = index };
+                }).ToList();
+                _snapshot = await _manager.UpsertProfileAsync(profile with { Entries = entries, ModifiedUtc = DateTimeOffset.UtcNow, Revision = checked(profile.Revision + 1) }, cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _stateVersion);
+                RebuildIndex();
+                NotifyIfActive(profileId);
+                Changed?.Invoke(this, EventArgs.Empty);
+                return true;
+            }
+            finally { _writeGate.Release(); }
         }
 
         public IReadOnlyList<ProfileEntry> GetSortedEntries(Profile profile)
@@ -250,22 +411,23 @@ namespace HD2ModManager.Services
 
         private void RebuildIndex()
         {
-            _profileIds.Clear();
+            var rebuilt = new Dictionary<string, ProfileId>(StringComparer.OrdinalIgnoreCase);
             foreach (var profile in _snapshot.Profiles.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase))
             {
-                _profileIds[profile.Name] = profile.Id;
+                rebuilt[profile.Name] = profile.Id;
             }
 
             var persisted = SettingsService.GetSelectedProfileKey();
-            if (!string.IsNullOrWhiteSpace(persisted) && _profileIds.ContainsKey(persisted))
+            if (!string.IsNullOrWhiteSpace(persisted) && rebuilt.ContainsKey(persisted))
             {
                 _selectedProfileName = persisted;
             }
-            else if (_selectedProfileName == null || !_profileIds.ContainsKey(_selectedProfileName))
+            else if (_selectedProfileName == null || !rebuilt.ContainsKey(_selectedProfileName))
             {
-                _selectedProfileName = _profileIds.Keys.FirstOrDefault();
+                _selectedProfileName = rebuilt.Keys.FirstOrDefault();
                 SettingsService.SetSelectedProfileKey(_selectedProfileName);
             }
+            Volatile.Write(ref _profileIds, rebuilt);
         }
 
         public void NotifyActiveModContentChanged()
@@ -318,8 +480,9 @@ namespace HD2ModManager.Services
             Nodes: new Dictionary<ModNodeId, ModNode>(),
             Profiles: Array.Empty<Profile>());
 
-        private void ApplyAddedProfileSnapshot(LibrarySnapshot snapshot, ProfileId profileId)
+        private void ApplyAddedProfileSnapshot(LibrarySnapshot snapshot, ProfileId profileId, long operationVersion)
         {
+            if (operationVersion != Volatile.Read(ref _stateVersion)) return;
             _snapshot = snapshot;
             RebuildIndex();
             NotifyIfActive(profileId);

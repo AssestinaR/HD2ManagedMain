@@ -2,6 +2,8 @@
 using System.IO;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 using HD2ModCore.Infrastructure;
 using Microsoft.Win32;
 
@@ -10,6 +12,9 @@ namespace HD2ModManager.Services
     public static class SettingsService
     {
         private static readonly string SettingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
+        private static readonly object SettingsGate = new();
+        private static SettingsModel? _cachedSettings;
+        private static Task _pendingSave = Task.CompletedTask;
 
         private class SettingsModel
         {
@@ -58,10 +63,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.EnableLibraryImages = enabled;
-                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(SettingsPath, json);
+                Update(model => model.EnableLibraryImages = enabled);
                 return true;
             }
             catch { return false; }
@@ -83,10 +85,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.AutoUpdateAssetMetadata = enabled;
-                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(SettingsPath, json);
+                Update(model => model.AutoUpdateAssetMetadata = enabled);
                 return true;
             }
             catch { return false; }
@@ -98,9 +97,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.LastAssetMetadataCheckUtc = value;
-                Save(model);
+                Update(model => model.LastAssetMetadataCheckUtc = value);
                 return true;
             }
             catch { return false; }
@@ -112,9 +109,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.AssetMetadataCheckIntervalHours = NormalizeInterval(value);
-                Save(model);
+                Update(model => model.AssetMetadataCheckIntervalHours = NormalizeInterval(value));
                 return true;
             }
             catch { return false; }
@@ -126,9 +121,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.AutoCheckGameDataIndex = enabled;
-                Save(model);
+                Update(model => model.AutoCheckGameDataIndex = enabled);
                 return true;
             }
             catch { return false; }
@@ -140,9 +133,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.LastGameDataIndexCheckUtc = value;
-                Save(model);
+                Update(model => model.LastGameDataIndexCheckUtc = value);
                 return true;
             }
             catch { return false; }
@@ -154,9 +145,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.GameDataIndexCheckIntervalHours = NormalizeInterval(value);
-                Save(model);
+                Update(model => model.GameDataIndexCheckIntervalHours = NormalizeInterval(value));
                 return true;
             }
             catch { return false; }
@@ -176,10 +165,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.AssetMetadataRepository = string.IsNullOrWhiteSpace(repository) ? DefaultAssetMetadataRepository : repository;
-                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(SettingsPath, json);
+                Update(model => model.AssetMetadataRepository = string.IsNullOrWhiteSpace(repository) ? DefaultAssetMetadataRepository : repository);
                 return true;
             }
             catch { return false; }
@@ -201,10 +187,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.AutoCleanup = enabled;
-                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(SettingsPath, json);
+                Update(model => model.AutoCleanup = enabled);
                 return true;
             }
             catch { return false; }
@@ -214,10 +197,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.Language = culture;
-                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(SettingsPath, json);
+                Update(model => model.Language = culture);
                 return true;
             }
             catch { return false; }
@@ -239,10 +219,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.SelectedProfileKey = key;
-                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(SettingsPath, json);
+                Update(model => model.SelectedProfileKey = key);
                 return true;
             }
             catch { return false; }
@@ -250,11 +227,16 @@ namespace HD2ModManager.Services
 
         private static SettingsModel? LoadAll()
         {
+            lock (SettingsGate)
+            {
+                if (_cachedSettings is not null) return _cachedSettings;
+            }
             try
             {
                 if (!File.Exists(SettingsPath)) return null;
                 var json = File.ReadAllText(SettingsPath);
-                return JsonSerializer.Deserialize<SettingsModel>(json);
+                var loaded = JsonSerializer.Deserialize<SettingsModel>(json);
+                lock (SettingsGate) return _cachedSettings ??= loaded;
             }
             catch { return null; }
         }
@@ -266,7 +248,56 @@ namespace HD2ModManager.Services
         }
 
         private static void Save(SettingsModel model)
-            => File.WriteAllText(SettingsPath, JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true }));
+        {
+            lock (SettingsGate)
+            {
+                // 在 gate 内捕获不可变快照，避免旧 setter 快照覆盖较新的内存设置。
+                _cachedSettings = model;
+                var snapshot = Clone(model);
+                var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+                _pendingSave = _pendingSave.ContinueWith(
+                    _ => File.WriteAllTextAsync(SettingsPath, json),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default).Unwrap();
+            }
+        }
+
+        private static void Update(Action<SettingsModel> update)
+        {
+            lock (SettingsGate)
+            {
+                var model = _cachedSettings ?? LoadAllUnsafe() ?? new SettingsModel();
+                update(model);
+                _cachedSettings = model;
+                var snapshot = Clone(model);
+                var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+                _pendingSave = _pendingSave.ContinueWith(
+                    _ => File.WriteAllTextAsync(SettingsPath, json),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default).Unwrap();
+            }
+        }
+
+        private static SettingsModel? LoadAllUnsafe()
+        {
+            try
+            {
+                if (!File.Exists(SettingsPath)) return null;
+                return JsonSerializer.Deserialize<SettingsModel>(File.ReadAllText(SettingsPath));
+            }
+            catch { return null; }
+        }
+
+        private static SettingsModel Clone(SettingsModel model)
+            => JsonSerializer.Deserialize<SettingsModel>(JsonSerializer.Serialize(model)) ?? new SettingsModel();
+
+        // 退出前调用，等待已排队的设置写入完成；普通 setter 不再阻塞 UI 文件 IO。
+        public static Task FlushAsync()
+        {
+            lock (SettingsGate) return _pendingSave;
+        }
 
         public static string GetDefaultModLibraryFolder()
         {
@@ -289,13 +320,14 @@ namespace HD2ModManager.Services
 
         public static void EnsureDefaultModLibraryFolder()
         {
-            var model = LoadAll() ?? new SettingsModel();
-            if (!string.IsNullOrWhiteSpace(model.ModLibraryFolder)) return;
             var portable = GetPortableModLibraryFolder();
-            model.ModLibraryFolder = Directory.Exists(portable) && Directory.EnumerateFileSystemEntries(portable).Any()
-                ? portable
-                : GetDefaultModLibraryFolder();
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true }));
+            Update(model =>
+            {
+                if (!string.IsNullOrWhiteSpace(model.ModLibraryFolder)) return;
+                model.ModLibraryFolder = Directory.Exists(portable) && Directory.EnumerateFileSystemEntries(portable).Any()
+                    ? portable
+                    : GetDefaultModLibraryFolder();
+            });
         }
 
         public static StoragePaths CreateStoragePaths()
@@ -317,10 +349,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.ModLibraryFolder = folder;
-                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(SettingsPath, json);
+                Update(model => model.ModLibraryFolder = folder);
                 return true;
             }
             catch { return false; }
@@ -355,10 +384,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var model = LoadAll() ?? new SettingsModel();
-                model.GameDataFolder = folder;
-                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(SettingsPath, json);
+                Update(model => model.GameDataFolder = folder);
                 return true;
             }
             catch { return false; }

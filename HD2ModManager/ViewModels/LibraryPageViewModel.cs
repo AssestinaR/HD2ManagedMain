@@ -62,8 +62,8 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ToggleSelectionCommand { get; }
         public RelayCommand AddToProfileCommand { get; }
         public RelayCommand OpenFolderCommand { get; }
-        public RelayCommand RenameCommand { get; }
-        public RelayCommand EditDescriptionCommand { get; }
+        public ICommand RenameCommand { get; }
+        public ICommand EditDescriptionCommand { get; }
         public RelayCommand EditImageCommand { get; }
         public RelayCommand RemoveCommand { get; }
         private bool _isCompact = true;
@@ -80,17 +80,15 @@ namespace HD2ModManager.ViewModels
             _hideSelectedProfileMembers = hideSelectedProfileMembers;
             if (_selection != null) _selection.SelectionChanged += OnSelectionChanged;
             if (_profiles != null) _profiles.Changed += OnProfileChanged;
-            if (_derivedState != null) _derivedState.SnapshotChanged += OnDerivedSnapshotChanged;
-            _library.SnapshotChanged += OnLibrarySnapshotChanged;
             _library.ModContentFactsChanged += OnLibraryContentFactsChanged;
             RefreshCommand = new RelayCommand(Refresh);
             RemoveModCommand = new RelayCommand(() => { /* parameter passed via CommandParameter not used here */ });
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
             AddToProfileCommand = new RelayCommand(parameter => AddToProfile(parameter as ModCardViewModel));
             OpenFolderCommand = new RelayCommand(parameter => OpenFolder(parameter as ModCardViewModel));
-            RenameCommand = new RelayCommand(_ => { });
-            EditDescriptionCommand = new RelayCommand(_ => { });
-            EditImageCommand = new RelayCommand(_ => { });
+            RenameCommand = new AsyncRelayCommand(parameter => RenameModAsync(parameter as ModCardViewModel, parameter is string name ? name : string.Empty));
+            EditDescriptionCommand = new AsyncRelayCommand(parameter => UpdateDescriptionAsync(parameter as ModCardViewModel, parameter is string description ? description : string.Empty));
+            EditImageCommand = new RelayCommand(parameter => _ = UpdateIconAsync(parameter as ModCardViewModel, parameter is string path ? path : string.Empty));
             RemoveCommand = new RelayCommand(parameter => RemoveMod(parameter as ModCardViewModel));
             QueueStatusRefresh();
             QueueThumbnailRefresh();
@@ -153,6 +151,18 @@ namespace HD2ModManager.ViewModels
             return ok;
         }
 
+        public async Task RenameModAsync(ModCardViewModel? card, string newName)
+        {
+            if (card == null || string.IsNullOrWhiteSpace(newName) || newName == card.Mod.Name) return;
+            try
+            {
+                if (await _library.RenameAsync(card.Mod.Guid, newName))
+                    _notifications?.Show($"已重命名：{newName.Trim()}");
+                Refresh();
+            }
+            catch (System.Exception ex) { _notifications?.Show($"重命名失败：{ex.Message}", NotificationLevel.Error); }
+        }
+
         public void UpdateDescription(ModCardViewModel? card, string? description)
         {
             if (card == null) return;
@@ -163,17 +173,45 @@ namespace HD2ModManager.ViewModels
             Refresh();
         }
 
+        public async Task UpdateDescriptionAsync(ModCardViewModel? card, string? description)
+        {
+            if (card == null) return;
+            try
+            {
+                card.Mod.Description = description ?? string.Empty;
+                if (await _library.AddAsync(card.Mod))
+                    _notifications?.Show($"已更新备注：{card.Mod.Name}");
+                Refresh();
+            }
+            catch (System.Exception ex) { _notifications?.Show($"更新备注失败：{ex.Message}", NotificationLevel.Error); }
+        }
+
         public void UpdateIcon(ModCardViewModel? card, string sourceImagePath)
+            => _ = UpdateIconAsync(card, sourceImagePath);
+
+        private async Task UpdateIconAsync(ModCardViewModel? card, string sourceImagePath)
         {
             if (card == null || string.IsNullOrWhiteSpace(sourceImagePath)) return;
             var modDir = _library.ResolveAbsolutePath(card.Mod.SourcePath);
             if (string.IsNullOrWhiteSpace(modDir) || !System.IO.Directory.Exists(modDir)) return;
             var destination = System.IO.Path.Combine(modDir, "icon" + System.IO.Path.GetExtension(sourceImagePath).ToLowerInvariant());
-            System.IO.File.Copy(sourceImagePath, destination, overwrite: true);
-            card.Mod.Image = destination;
-            _notifications?.Show($"已更新图标：{card.Mod.Name}");
-            Refresh();
-            QueueThumbnailRefresh();
+            try
+            {
+                await Task.Run(() => System.IO.File.Copy(sourceImagePath, destination, overwrite: true)).ConfigureAwait(false);
+                card.Mod.Image = destination;
+                await _library.AddAsync(card.Mod).ConfigureAwait(false);
+                RunOnUiThread(() =>
+                {
+                    if (_disposed) return;
+                    _notifications?.Show($"已更新图标：{card.Mod.Name}");
+                    Refresh();
+                    QueueThumbnailRefresh();
+                });
+            }
+            catch (System.Exception ex)
+            {
+                RunOnUiThread(() => _notifications?.Show($"更新图标失败：{ex.Message}", NotificationLevel.Error));
+            }
         }
 
         public void Refresh()
@@ -206,6 +244,8 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(EmptyMessage));
             OnPropertyChanged(nameof(ItemCountText));
         }
+
+        public void RefreshFromShell() => QueueStatusRefresh();
 
         private async void QueueSearchRefresh()
         {
@@ -249,10 +289,13 @@ namespace HD2ModManager.ViewModels
             {
                 var generated = false;
                 // 先固定本次刷新快照，避免异步请求期间库同步修改底层字典。
-                foreach (var mod in _library.All().ToList())
+                var mods = await Task.Run(() => _library.All().ToList(), cancellationToken).ConfigureAwait(false);
+                foreach (var mod in mods)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var result = await _library.RequestThumbnailAsync(mod.Guid, "Library", cancellationToken: cancellationToken);
+                    var result = await Task.Run(
+                        () => _library.RequestThumbnailAsync(mod.Guid, "Library", cancellationToken: cancellationToken).AsTask(),
+                        cancellationToken).ConfigureAwait(false);
                     if (result.Data is { } facts)
                         generated |= await ThumbnailService.EnsureThumbnailAsync(facts, 72, cancellationToken);
                 }
@@ -263,13 +306,7 @@ namespace HD2ModManager.ViewModels
 
         private void OnSelectionChanged(object? sender, EventArgs e) => SyncSelectionFromCoordinator();
 
-        private void OnProfileChanged(object? sender, EventArgs e) => QueueStatusRefresh();
-
-        private void OnDerivedSnapshotChanged(object? sender, DerivedStateSnapshot e)
-            => RunOnUiThread(QueueStatusRefresh);
-
-        private void OnLibrarySnapshotChanged(object? sender, EventArgs e)
-            => RunOnUiThread(RefreshAndQueueThumbnailRefresh);
+        private void OnProfileChanged(object? sender, EventArgs e) => RunOnUiThread(QueueStatusRefresh);
 
         private void OnLibraryContentFactsChanged(object? sender, ModContentFactsChangedEventArgs e)
             => RunOnUiThread(RefreshAndQueueThumbnailRefresh);
@@ -291,7 +328,7 @@ namespace HD2ModManager.ViewModels
             else _ = dispatcher.InvokeAsync(action);
         }
 
-        private void RemoveMod(ModCardViewModel? card)
+        private async void RemoveMod(ModCardViewModel? card)
         {
             if (card == null) return;
             var confirm = System.Windows.MessageBox.Show($"确定删除 Mod“{card.Mod.Name}”？\n这会同时删除库中的已存储文件。", "删除 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
@@ -299,8 +336,7 @@ namespace HD2ModManager.ViewModels
             try
             {
                 ThumbnailService.CancelPendingGeneration();
-                _library.Remove(card.Mod.Guid);
-                _library.Save();
+                await _library.RemoveAsync(card.Mod.Guid);
                 _notifications?.Show($"已删除：{card.Mod.Name}");
             }
             catch (System.Exception ex)
@@ -367,8 +403,6 @@ namespace HD2ModManager.ViewModels
             _lifecycleVersion++;
             _selection?.SelectionChanged -= OnSelectionChanged;
             if (_profiles != null) _profiles.Changed -= OnProfileChanged;
-            if (_derivedState != null) _derivedState.SnapshotChanged -= OnDerivedSnapshotChanged;
-            _library.SnapshotChanged -= OnLibrarySnapshotChanged;
             _library.ModContentFactsChanged -= OnLibraryContentFactsChanged;
             _searchCancellation?.Cancel();
             _searchCancellation?.Dispose();

@@ -12,4 +12,7 @@ public sealed record ModInformationDiagnostic(
 	bool CacheHit,
 	bool WasCoalesced,
 	ModInformationStatus Status,
-	IReadOnlyList<CoreIssue> Issues);
+	IReadOnlyList<CoreIssue> Issues)
+{
+	public string? OperationKey { get; init; }
+}

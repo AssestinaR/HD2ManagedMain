@@ -40,6 +40,8 @@ namespace HD2ModManager.ViewModels
         private bool _isMessagePreviewOpen;
         private System.Threading.CancellationTokenSource? _messagePreviewCancellation;
         private readonly IModInformationCenter _informationCenter;
+        private readonly System.Collections.Generic.Dictionary<string, BackgroundTaskItem> _informationTasks = new(StringComparer.Ordinal);
+        private readonly CancellationTokenSource _lifetimeCancellation = new();
         private int _disposed;
 
         public PageViewModel? CurrentPage => LeftPage;
@@ -99,7 +101,6 @@ namespace HD2ModManager.ViewModels
         public RelayCommand CancelTaskCommand { get; }
         public RelayCommand RetryTaskCommand { get; }
         public RelayCommand CopyMessageCommand { get; }
-        public RelayCommand CopySelectedMessagesCommand { get; }
 
         public bool IsHomeActive => CurrentMode == WorkspaceMode.Home;
         public bool ShowHomeTitle => IsHomeActive;
@@ -141,24 +142,19 @@ namespace HD2ModManager.ViewModels
             var configDir = System.IO.Path.Combine(baseDir, "config");
             System.IO.Directory.CreateDirectory(configDir);
 
-            if (string.IsNullOrWhiteSpace(SettingsService.GetGameDataFolder())) SettingsService.TryDetectAndSetGameDataFolder();
-            SettingsService.EnsureDefaultModLibraryFolder();
-
             _profileService = new ProfileService(configDir);
-            _profileService.Load();
 
             var informationCenter = CoreServices.CreateModInformationCenter(SettingsService.CreateStoragePaths());
             _informationCenter = informationCenter;
             _libraryService = new ModLibraryService(System.IO.Path.Combine(configDir, "library.json"), informationCenter);
-            // 启动必须先展示 UI；稳定 facts 的投影在后台恢复，任何异常都不能阻止管理器启动。
-            _libraryService.Load(buildDerivedData: false);
-            _profileService.ReloadFromLibrary();
             _derivedState = new DerivedStateCoordinator(_libraryService, _profileService, informationCenter);
             _importQueue = new ImportQueueService();
             _backgroundTasks = new BackgroundTaskService();
             _applyStatus = new ApplyStatusService();
             _notificationService = new NotificationService();
             _messageCenter = new MessageCenterService(_notificationService, _backgroundTasks);
+            _informationCenter.ProductionStarted += OnInformationProductionStarted;
+            _informationCenter.DiagnosticRecorded += OnInformationDiagnosticRecorded;
             _bottomBar = new BottomBarCoordinator(_selection, _libraryService, _profileService, _notificationService, RefreshCurrentPage);
             _deploymentCoordinator = CoreServices.CreateProfileDeploymentCoordinator(
                 SettingsService.CreateStoragePaths(),
@@ -177,8 +173,7 @@ namespace HD2ModManager.ViewModels
                     _profileService.NotifyActiveModContentChanged();
                 }
             };
-            _libraryService.SnapshotChanged += (_, _) => RefreshOnUiThread(HandleLibrarySnapshotChanged);
-            _profileService.Changed += (_, _) => QueueCurrentPageRefresh("配置变更");
+            _libraryService.SnapshotChanged += (_, _) => QueueLibrarySnapshotChanged();
             _derivedState.SnapshotChanged += (_, _) => QueueCurrentPageRefresh("派生状态变更");
             _backgroundTasks.Changed += (_, _) => RefreshOnUiThread(() =>
             {
@@ -192,8 +187,6 @@ namespace HD2ModManager.ViewModels
                 ShowMessagePreview();
             });
 			_ = Task.Run(() => new ImportTemporaryDirectoryManager(SettingsService.CreateStoragePaths()).CleanupStaleDirectories());
-
-            RunStartupChecks(configDir);
 
             ShowHomeCommand = new RelayCommand(() => Navigate(WorkspaceMode.Home));
             ShowProfileCommand = new RelayCommand(() => Navigate(WorkspaceMode.ProfileOnly));
@@ -211,29 +204,58 @@ namespace HD2ModManager.ViewModels
             CancelTaskCommand = new RelayCommand(CancelTask, task => task is BackgroundTaskItem { CanCancel: true });
             RetryTaskCommand = new RelayCommand(async task => await RetryTaskAsync(task), task => task is BackgroundTaskItem { CanRetry: true });
             CopyMessageCommand = new RelayCommand(CopyMessage, item => item is MessageCenterItem);
-            CopySelectedMessagesCommand = new RelayCommand(CopySelectedMessages, items => items is System.Collections.IEnumerable);
             _selection.SelectionChanged += (_, _) => RaiseSelectionFlags();
 
             Navigate(WorkspaceMode.Home);
-            _ = RestoreStableLibraryProjectionAsync();
-            _ = _derivedState.RefreshAsync();
-            _ = CheckGameDataIndexOnStartupAsync();
+            // 启动维护不得阻塞 ShellViewModel 构造；库元数据、同步、稳定投影按顺序在后台执行。
+            // 启动检查在构造函数返回后才调度，避免 async 方法首个 await 前的同步工作阻塞 UI。
+            _ = Task.Run(() => InitializeLibraryAndRunStartupChecksAsync(configDir, _lifetimeCancellation.Token));
+            _ = Task.Run(() => CheckGameDataIndexOnStartupAsync(_lifetimeCancellation.Token));
         }
 
-        private async Task RestoreStableLibraryProjectionAsync()
+        private async Task InitializeLibraryAndRunStartupChecksAsync(string configDir, CancellationToken cancellationToken)
         {
             try
             {
-                await _libraryService.RefreshDerivedDataAsync().ConfigureAwait(false);
+                await Task.Run(() =>
+                {
+                    if (string.IsNullOrWhiteSpace(SettingsService.GetGameDataFolder())) SettingsService.TryDetectAndSetGameDataFolder();
+                    SettingsService.EnsureDefaultModLibraryFolder();
+                }, cancellationToken).ConfigureAwait(false);
+                await _libraryService.LoadAsync(buildDerivedData: false, cancellationToken).ConfigureAwait(false);
+                await _profileService.ReloadFromLibraryAsync(cancellationToken).ConfigureAwait(false);
+                await RunStartupChecksAsync(configDir, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                LogService.Info("启动模组库元数据加载已取消。");
+            }
+            catch (Exception exception)
+            {
+                LogService.Error($"启动模组库元数据加载失败：{exception}");
+                await System.Windows.Application.Current!.Dispatcher.InvokeAsync(() =>
+                    _notificationService.Show("已启动，但模组库元数据加载失败；可在库页刷新后重试。", NotificationLevel.Warning, TimeSpan.FromSeconds(8)));
+            }
+        }
+
+        private async Task RestoreStableLibraryProjectionAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await _libraryService.RefreshDerivedDataAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                LogService.Info("稳定模组库投影恢复已取消。");
             }
             catch (Exception exception)
             {
                 LogService.Error($"Stable library projection restore failed: {exception}");
-                System.Windows.Application.Current?.Dispatcher.Invoke(() => _notificationService.Show("已启动，但稳定资产事实恢复失败；可在库页刷新后重试。", NotificationLevel.Warning, TimeSpan.FromSeconds(8)));
+                _ = System.Windows.Application.Current?.Dispatcher.InvokeAsync(() => _notificationService.Show("已启动，但稳定资产事实恢复失败；可在库页刷新后重试。", NotificationLevel.Warning, TimeSpan.FromSeconds(8)));
             }
         }
 
-        private async Task CheckGameDataIndexOnStartupAsync()
+        private async Task CheckGameDataIndexOnStartupAsync(CancellationToken cancellationToken)
         {
             if (!SettingsService.GetAutoCheckGameDataIndex() || !IsCheckDue(
                     SettingsService.GetLastGameDataIndexCheckUtc(),
@@ -252,10 +274,12 @@ namespace HD2ModManager.ViewModels
                 suggestedAction: "若检测到过期，请在“设置与资产”中明确启动索引重建。");
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 task.MarkRunning("正在检查索引指纹");
                 var archiveHashes = await System.IO.File.ReadAllTextAsync(paths.ArchiveHashesPath).ConfigureAwait(false);
                 var index = CoreServices.CreateAssetArchiveIndexService(paths);
-                var status = await index.GetIndexStatusAsync(gameData, archiveHashes, task.CancellationToken).ConfigureAwait(false);
+                using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(task.CancellationToken, cancellationToken);
+                var status = await index.GetIndexStatusAsync(gameData, archiveHashes, linkedCancellation.Token).ConfigureAwait(false);
                 SettingsService.SetLastGameDataIndexCheckUtc(DateTime.UtcNow);
                 if (status.IsCurrent)
                 {
@@ -539,22 +563,39 @@ namespace HD2ModManager.ViewModels
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            _lifetimeCancellation.Cancel();
             _deploymentCoordinator.StatusChanged -= OnDeploymentStatusChanged;
+            _informationCenter.ProductionStarted -= OnInformationProductionStarted;
+            _informationCenter.DiagnosticRecorded -= OnInformationDiagnosticRecorded;
             _messagePreviewCancellation?.Cancel();
             _messagePreviewCancellation?.Dispose();
+            DisposeCurrentPages();
             _importProcessGate.Dispose();
+            _lifetimeCancellation.Dispose();
             await _derivedState.DisposeAsync().ConfigureAwait(false);
             await _informationCenter.DisposeAsync().ConfigureAwait(false);
         }
 
-        private void RunStartupChecks(string configDir)
+        private void DisposeCurrentPages()
+        {
+            var left = _leftPage;
+            var right = _rightPage;
+            _leftPage = null;
+            _rightPage = null;
+            if (left is IDisposable leftDisposable) leftDisposable.Dispose();
+            if (!ReferenceEquals(right, left) && right is IDisposable rightDisposable) rightDisposable.Dispose();
+        }
+
+        private async Task RunStartupChecksAsync(string configDir, CancellationToken cancellationToken)
         {
             try
             {
-                _libraryService.SynchronizeAsync().GetAwaiter().GetResult();
+                // SynchronizeAsync 包含同步目录扫描；整个调用必须在线程池执行。
+                await Task.Run(() => _libraryService.SynchronizeAsync(cancellationToken), cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 if (SettingsService.GetAutoCleanup())
                 {
-                    new IntegrityService(_libraryService, _notificationService, configDir).CheckAndFix();
+                    await new IntegrityService(_libraryService, _notificationService, configDir).CheckAndFixAsync().ConfigureAwait(false);
                 }
 
                 if (string.IsNullOrWhiteSpace(SettingsService.GetGameDataFolder()))
@@ -568,13 +609,25 @@ namespace HD2ModManager.ViewModels
 
                 if (SettingsService.GetAutoUpdateAssetMetadata())
                 {
-                    _ = UpdateAssetMetadataOnStartupAsync();
+                    _ = UpdateAssetMetadataOnStartupAsync(cancellationToken);
                 }
+
+                await RestoreStableLibraryProjectionAsync(cancellationToken).ConfigureAwait(false);
+                await _derivedState.RefreshAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch { }
+            catch (OperationCanceledException)
+            {
+                LogService.Info("启动模组库同步已取消。");
+            }
+            catch (Exception exception)
+            {
+                LogService.Error($"启动模组库同步或完整性检查失败：{exception}");
+                System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                    _notificationService.Show("已启动，但模组库启动同步或完整性检查失败；可在库页刷新后重试。", NotificationLevel.Warning, TimeSpan.FromSeconds(8))));
+            }
         }
 
-        private async Task UpdateAssetMetadataOnStartupAsync()
+        private async Task UpdateAssetMetadataOnStartupAsync(CancellationToken cancellationToken)
         {
             if (!IsCheckDue(
                     SettingsService.GetLastAssetMetadataCheckUtc(),
@@ -592,23 +645,28 @@ namespace HD2ModManager.ViewModels
                 task.MarkRunning("正在同步资产元数据");
                 var paths = SettingsService.CreateStoragePaths();
                 var sync = CoreServices.CreateAssetMetadataSyncService(paths);
-                var result = await sync.SyncAsync(SettingsService.GetAssetMetadataRepository()).ConfigureAwait(false);
+                var result = await sync.SyncAsync(SettingsService.GetAssetMetadataRepository(), cancellationToken).ConfigureAwait(false);
                 if (result.Success)
                 {
                     SettingsService.SetLastAssetMetadataCheckUtc(DateTime.UtcNow);
                     task.MarkCompleted();
-                    System.Windows.Application.Current.Dispatcher.Invoke(() => _notificationService.Show("资产信息已自动更新", NotificationLevel.Info, TimeSpan.FromSeconds(4)));
+                    _ = System.Windows.Application.Current.Dispatcher.InvokeAsync(() => _notificationService.Show("资产信息已自动更新", NotificationLevel.Info, TimeSpan.FromSeconds(4)));
                 }
                 else
                 {
                     task.MarkFailed(result.ErrorMessage ?? "未知错误");
-                    System.Windows.Application.Current.Dispatcher.Invoke(() => _notificationService.Show($"资产信息自动更新失败：{result.ErrorMessage}", NotificationLevel.Warning, TimeSpan.FromSeconds(6)));
+                    _ = System.Windows.Application.Current.Dispatcher.InvokeAsync(() => _notificationService.Show($"资产信息自动更新失败：{result.ErrorMessage}", NotificationLevel.Warning, TimeSpan.FromSeconds(6)));
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                task.MarkCanceled();
+                LogService.Info("启动资产元数据更新已取消。");
             }
             catch (Exception ex)
             {
                 task.MarkFailed(ex.Message);
-                System.Windows.Application.Current.Dispatcher.Invoke(() => _notificationService.Show($"资产信息自动更新失败：{ex.Message}", NotificationLevel.Warning, TimeSpan.FromSeconds(6)));
+                _ = System.Windows.Application.Current.Dispatcher.InvokeAsync(() => _notificationService.Show($"资产信息自动更新失败：{ex.Message}", NotificationLevel.Warning, TimeSpan.FromSeconds(6)));
             }
         }
 
@@ -714,9 +772,7 @@ namespace HD2ModManager.ViewModels
             {
                 await Task.Delay(80);
                 Interlocked.Exchange(ref _pageRefreshQueued, 0);
-                var stopwatch = Stopwatch.StartNew();
                 RefreshCurrentPage();
-                LogService.Info($"UI 性能：合并页面刷新，原因={reason}，耗时 {stopwatch.ElapsedMilliseconds}ms。");
             });
         }
 
@@ -728,10 +784,10 @@ namespace HD2ModManager.ViewModels
                     home.Refresh();
                     break;
                 case ProfilePageViewModel profile:
-                    profile.Refresh();
+                    profile.RefreshFromShell();
                     break;
                 case LibraryPageViewModel library:
-                    library.Refresh();
+                    library.RefreshFromShell();
                     break;
                 case ModDetailsPageViewModel details:
                     details.Refresh();
@@ -751,11 +807,31 @@ namespace HD2ModManager.ViewModels
             catch { }
         }
 
-        private void HandleLibrarySnapshotChanged()
+        private void QueueLibrarySnapshotChanged()
         {
-            _profileService.ReloadFromLibrary();
-            CloseDeletedModDetails();
-            RefreshCurrentPage();
+            if (Volatile.Read(ref _disposed) != 0) return;
+            _ = Task.Run(() => HandleLibrarySnapshotChangedAsync(_lifetimeCancellation.Token));
+        }
+
+        private async Task HandleLibrarySnapshotChangedAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await _profileService.ReloadFromLibraryAsync(cancellationToken).ConfigureAwait(false);
+                if (cancellationToken.IsCancellationRequested || Volatile.Read(ref _disposed) != 0) return;
+                RefreshOnUiThread(() =>
+                {
+                    if (Volatile.Read(ref _disposed) != 0) return;
+                    CloseDeletedModDetails();
+                    // Profile/Library 页面各自订阅库与配置变化；这里只触发一次合并刷新，避免组合页重复重建两侧列表。
+                    QueueCurrentPageRefresh("模组库快照变更");
+                });
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+            catch (Exception exception)
+            {
+                LogService.Error($"库快照变更后的配置重载失败：{exception}");
+            }
         }
 
         private void ToggleMessagePanel()
@@ -768,12 +844,52 @@ namespace HD2ModManager.ViewModels
             if (value is MessageCenterItem item && !string.IsNullOrWhiteSpace(item.CopyText)) System.Windows.Clipboard.SetText(item.CopyText);
         }
 
-        private static void CopySelectedMessages(object? value)
+        private void OnInformationProductionStarted(object? sender, ModInformationProductionStarted value)
         {
-            if (value is not System.Collections.IEnumerable items) return;
-            var text = string.Join(Environment.NewLine + Environment.NewLine, items.Cast<object>().OfType<MessageCenterItem>().Select(item => item.CopyText));
-            if (!string.IsNullOrWhiteSpace(text)) System.Windows.Clipboard.SetText(text);
+            LogService.Info($"信息中心开始生产：类型={value.Kind}，节点={value.NodeId?.Value.ToString("N") ?? "全局"}，generation={value.Generation ?? "空"}，来源={value.Source}，operation={value.OperationKey}。缓存未命中或要求刷新。");
+            RefreshOnUiThread(() =>
+            {
+                if (_informationTasks.ContainsKey(value.OperationKey)) return;
+                var task = _backgroundTasks.Enqueue(BackgroundTaskKind.InformationCenter,
+                    $"生成{GetInformationKindText(value.Kind)}信息{(value.NodeId is null ? string.Empty : $"（Mod {value.NodeId}）")}",
+                    $"generation={value.Generation ?? "自动"}", value.Source);
+                task.MarkRunning($"正在生成{GetInformationKindText(value.Kind)}");
+                _informationTasks[value.OperationKey] = task;
+            });
         }
+
+        private void OnInformationDiagnosticRecorded(object? sender, ModInformationDiagnostic value)
+        {
+            var issues = value.Issues.Count == 0
+                ? string.Empty
+                : $"，问题={string.Join(" | ", value.Issues.Take(5).Select(issue => $"{issue.Code}:{issue.Message}"))}";
+            LogService.Info($"信息中心诊断：类型={value.Kind}，节点={value.NodeId?.Value.ToString("N") ?? "全局"}，generation={value.Generation ?? "空"}，状态={value.Status}，缓存命中={value.CacheHit}，合并请求={value.WasCoalesced}，耗时={(value.CompletedUtc - value.StartedUtc).TotalMilliseconds:F0}ms，operation={value.OperationKey}{issues}。");
+            RefreshOnUiThread(() =>
+            {
+                if (value.OperationKey is null || !_informationTasks.TryGetValue(value.OperationKey, out var task)) return;
+                if (value.Status == ModInformationStatus.Failed)
+                    task.MarkFailed(string.Join("；", value.Issues.Select(issue => issue.Message)));
+                else
+                {
+                    task.MarkCompleted();
+                    if (value.Status is ModInformationStatus.Stale or ModInformationStatus.Unavailable)
+                        task.UpdateStage(value.Status == ModInformationStatus.Stale ? "已完成（结果过期，已使用旧数据）" : "已完成（信息不可用）");
+                }
+                // 诊断是该 OperationKey 的唯一终态；历史任务仍由 BackgroundTaskService 保留。
+                _informationTasks.Remove(value.OperationKey);
+            });
+        }
+
+        private static string GetInformationKindText(ModInformationKind kind) => kind switch
+        {
+            ModInformationKind.AssetInventory => "资产",
+            ModInformationKind.ReferenceGraph => "引用",
+            ModInformationKind.AdvancedUnitAnalysis => "高级分析",
+            ModInformationKind.Thumbnail => "缩略图",
+            ModInformationKind.UnitVersion => "版本",
+            ModInformationKind.MaintenanceAnalysis => "维护分析",
+            _ => "文件",
+        };
 
         private static void CancelTask(object? parameter)
         {
@@ -950,9 +1066,22 @@ namespace HD2ModManager.ViewModels
             {
                 var confirm = System.Windows.MessageBox.Show($"确定删除选中的 {ids.Count} 个 Mod？\n这会同时删除库中的已存储文件。", "批量删除 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
                 if (confirm != System.Windows.MessageBoxResult.Yes) return;
-                foreach (var guid in ids) _libraryService.Remove(guid);
-                _libraryService.Save();
-                _notificationService.Show($"已删除：{ids.Count} 个 Mod");
+                var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "批量删除 Mod", $"{ids.Count} 个 Mod");
+                task.MarkRunning("正在删除");
+                try
+                {
+                    var removed = 0;
+                    foreach (var guid in ids)
+                    {
+                        task.CancellationToken.ThrowIfCancellationRequested();
+                        if (await _libraryService.RemoveAsync(guid, task.CancellationToken)) removed++;
+                    }
+                    await _libraryService.SaveAsync(task.CancellationToken);
+                    task.MarkCompleted();
+                    _notificationService.Show($"已删除：{removed} 个 Mod");
+                }
+                catch (OperationCanceledException) { task.MarkCanceled(); return; }
+                catch (Exception exception) { task.MarkFailed(exception.Message); return; }
             }
             else if (string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase))
             {
@@ -1006,7 +1135,6 @@ namespace HD2ModManager.ViewModels
 
         private PageViewModel CreatePage(WorkspacePageType pageType)
         {
-            var stopwatch = Stopwatch.StartNew();
             PageViewModel page = pageType switch
             {
                 WorkspacePageType.Home => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
@@ -1021,7 +1149,6 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.MaterialPackaging => throw new InvalidOperationException("材质打包必须通过 Mod 详情创建。"),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
             };
-            LogService.Info($"UI 性能：创建 {pageType} ViewModel 耗时 {stopwatch.ElapsedMilliseconds}ms。");
             return page;
         }
 

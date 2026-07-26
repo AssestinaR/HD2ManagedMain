@@ -7,6 +7,7 @@ namespace HD2ModCore.Application;
 public interface IModInformationCenter : IAsyncDisposable
 {
 	event EventHandler<ModInformationDiagnostic>? DiagnosticRecorded;
+	event EventHandler<ModInformationProductionStarted>? ProductionStarted;
 
 	ValueTask<ModInformationResult<PatchFileIndex>> RequestFileFactsAsync(
 		LibrarySnapshot snapshot,

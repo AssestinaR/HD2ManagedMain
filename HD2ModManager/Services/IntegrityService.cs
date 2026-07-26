@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace HD2ModManager.Services
 {
@@ -18,7 +19,7 @@ namespace HD2ModManager.Services
             _configDir = configDir;
         }
 
-        public void CheckAndFix()
+        public async Task CheckAndFixAsync()
         {
             var missingRecords = new List<string>();
             var updated = false;
@@ -93,13 +94,13 @@ namespace HD2ModManager.Services
             {
                 foreach (var gid in removeModGuids)
                 {
-                    try { _library.Remove(gid); updated = true; } catch { }
+                    try { if (await _library.RemoveAsync(gid).ConfigureAwait(false)) updated = true; } catch { }
                 }
             }
 
             if (updated)
             {
-                _library.Save();
+                await _library.SaveAsync().ConfigureAwait(false);
             }
         }
 

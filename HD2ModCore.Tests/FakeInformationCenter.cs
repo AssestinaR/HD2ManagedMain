@@ -27,6 +27,7 @@ internal sealed class FakeInformationCenter : IModInformationCenter
 		_referenceFacts = facts.ToDictionary(pair => pair.Key, pair => new ReferenceGraphFacts(pair.Key, "test", "test", DateTimeOffset.UtcNow, pair.Value, []));
 	}
 	public event EventHandler<ModInformationDiagnostic>? DiagnosticRecorded;
+	public event EventHandler<ModInformationProductionStarted>? ProductionStarted;
 	public ValueTask<ModInformationResult<PatchFileIndex>> RequestFileFactsAsync(LibrarySnapshot snapshot, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 	public ValueTask<ModInformationResult<ModContentFacts>> RequestAssetInventoryAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default)
 	{
