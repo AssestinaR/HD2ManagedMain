@@ -90,41 +90,37 @@ public sealed class SdkStyleMeshReencoder
 		var bindPoseRetarget = rebuildTargetInverseJointMatrices
 			? BuildBindPoseRetargetContext(targetModel, targetMeshInfoIndex, sourceModel, sourceMeshInfoIndex)
 			: null;
-		var materialByVertex = BuildVertexMaterialMap(sourceRawMesh, targetRawMesh);
 		var rebuiltTargetBoneInfo = canonicalBoneHashOrder is not null
 			? BuildCanonicalTargetBakedBoneInfo(sourceRawMesh, targetRawMesh, sourceBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, canonicalBoneHashOrder)
 			: rebuildTargetInverseJointMatrices
 				? BuildCompleteSourceOrderedBoneInfo(sourceBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, preserveCompleteSourcePalette)
 			: remapBuilder.SetRemap(targetBoneInfo, BuildSectionRemapBoneNames(sourceRawMesh, targetRawMesh, sourceBoneInfo, sourceModel.TransformNameHashes, targetModel), targetModel.TransformNameHashes);
 		rebuiltTargetBoneInfo = AttachTargetBoneMatrices(rebuiltTargetBoneInfo, BuildTargetMatrixMap(targetModel, targetRawMesh));
-		var updatedVertices = sourceRawMesh.Vertices.Select(vertex => new UnitRawVertexRecord(
-			vertex.Index,
-			EncodeTargetVertex(vertex, targetStream, sourceBoneInfo, rebuiltTargetBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, materialByVertex.TryGetValue(vertex.Index, out var materials) ? materials.Source : 0, materialByVertex.TryGetValue(vertex.Index, out materials) ? materials.Target : 0, meshSpaceTransform, transformMeshSpace || rebuildTargetInverseJointMatrices, bindPoseRetarget),
-			Array.Empty<UnitVertexComponentValue>())).ToArray();
+		var encodedVertices = new List<UnitRawVertexRecord>();
+		var encodedVertexByMaterial = new Dictionary<(uint VertexIndex, uint SourceMaterialIndex, uint TargetMaterialIndex), uint>();
+		var encodedVertexMetadata = new List<(uint SourceVertexIndex, VertexMaterialIndexes Materials)>();
+		var updatedSections = sourceRawMesh.Sections.Select((sourceSection, sectionIndex) =>
+		{
+			var targetMaterialIndex = targetRawMesh.Sections[sectionIndex].MaterialIndex;
+			var triangles = sourceSection.Triangles.Select(triangle => new UnitTriangleIndices(
+				GetOrEncodeVertex(triangle.A, sourceSection.MaterialIndex, targetMaterialIndex),
+				GetOrEncodeVertex(triangle.B, sourceSection.MaterialIndex, targetMaterialIndex),
+				GetOrEncodeVertex(triangle.C, sourceSection.MaterialIndex, targetMaterialIndex))).ToArray();
+			return new UnitRawMeshSectionData(targetMaterialIndex, targetRawMesh.Sections[sectionIndex].MaterialSlotId, triangles);
+		}).ToArray();
+		var updatedVertices = encodedVertices.ToArray();
 		if (canonicalBoneHashOrder is not null)
 		{
-			ValidateCanonicalTargetBakeRoundTrip(sourceRawMesh, updatedVertices, materialByVertex, targetStream, sourceBoneInfo, rebuiltTargetBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes);
+			ValidateCanonicalTargetBakeRoundTrip(sourceRawMesh, updatedVertices, encodedVertexMetadata, targetStream, sourceBoneInfo, rebuiltTargetBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes);
 		}
-		var vertexIndexMap = BuildVertexIndexMap(sourceRawMesh);
-		var updatedSections = sourceRawMesh.Sections.Select((sourceSection, index) => new UnitRawMeshSectionData(
-			targetRawMesh.Sections[index].MaterialIndex,
-			targetRawMesh.Sections[index].MaterialSlotId,
-			sourceSection.Triangles.Select(triangle => new UnitTriangleIndices(
-				vertexIndexMap[triangle.A],
-				vertexIndexMap[triangle.B],
-				vertexIndexMap[triangle.C])).ToArray())).ToArray();
-		var compactedVertices = vertexIndexMap
-			.OrderBy(pair => pair.Value)
-			.Select(pair => updatedVertices[(int)pair.Key] with { Index = pair.Value })
-			.ToArray();
 		var updatedRawMesh = targetRawMesh with
 		{
 			Sections = updatedSections,
 			Triangles = updatedSections.SelectMany(section => section.Triangles).ToArray(),
-			Vertices = compactedVertices
+			Vertices = updatedVertices
 		};
 		var targetBoneInfoIndex = GetBoneInfoIndex(targetModel, targetRawMesh);
-		var requires32BitIndices = targetStream.IndexBufferType != 1 && compactedVertices.Length > ushort.MaxValue;
+		var requires32BitIndices = targetStream.IndexBufferType != 1 && updatedVertices.Length > ushort.MaxValue;
 		var materialBindings = propagateSourceMaterials
 			? ApplySourceMaterialBindings(targetModel.Materials, targetRawMesh, sourceRawMesh, sourceModel, sourceMeshInfoIndex, allowedSourceMaterialIds)
 			: new SourceMaterialBindings(targetModel.Materials, Array.Empty<ulong>());
@@ -139,6 +135,22 @@ public sealed class SdkStyleMeshReencoder
 			RawMeshData = targetModel.RawMeshData.Select(mesh => mesh.MeshInfoIndex == targetMeshInfoIndex ? updatedRawMesh : mesh).ToArray()
 		};
 		return new SdkStyleMeshReencodeResult(updatedModel, targetMeshInfoIndex, sourceMeshInfoIndex, targetBoneInfoIndex, rebuiltTargetBoneInfo, materialBindings.SourceMaterialIds);
+
+		uint GetOrEncodeVertex(uint sourceVertexIndex, uint sourceMaterialIndex, uint targetMaterialIndex)
+		{
+			if (sourceVertexIndex >= sourceRawMesh.Vertices.Count) throw new InvalidDataException("A source section references a vertex outside the source mesh.");
+			var key = (sourceVertexIndex, sourceMaterialIndex, targetMaterialIndex);
+			if (encodedVertexByMaterial.TryGetValue(key, out var existing)) return existing;
+			var vertex = sourceRawMesh.Vertices[(int)sourceVertexIndex];
+			var encodedIndex = checked((uint)encodedVertices.Count);
+			encodedVertices.Add(new UnitRawVertexRecord(
+				encodedIndex,
+				EncodeTargetVertex(vertex, targetStream, sourceBoneInfo, rebuiltTargetBoneInfo, sourceModel.TransformNameHashes, targetModel.TransformNameHashes, sourceMaterialIndex, targetMaterialIndex, meshSpaceTransform, transformMeshSpace || rebuildTargetInverseJointMatrices, bindPoseRetarget),
+				Array.Empty<UnitVertexComponentValue>()));
+			encodedVertexMetadata.Add((sourceVertexIndex, new VertexMaterialIndexes(sourceMaterialIndex, targetMaterialIndex)));
+			encodedVertexByMaterial.Add(key, encodedIndex);
+			return encodedIndex;
+		}
 	}
 
 	private SdkStyleMeshReencodeResult ReencodeWithRebuiltSections(UnitMeshModel targetModel, UnitRawMeshData targetRawMesh, UnitMeshModel sourceModel, UnitRawMeshData sourceRawMesh, int sourceMeshInfoIndex, Matrix4x4 meshSpaceTransform, bool preserveSourceSectionMetadata)
@@ -463,10 +475,12 @@ public sealed class SdkStyleMeshReencoder
 			if (sourceRemap.FakeIndices.Any(index => index >= sourceBoneInfo.RealIndices.Count)) throw new InvalidDataException("A source BoneInfo remap points outside its real-index table.");
 			if (requireCompletePalette && sourceRemap.FakeIndices.Any(sourceRealIndexPosition => !sourceRealIndexPositions.ContainsKey(sourceRealIndexPosition)))
 				throw new InvalidDataException("A source material remap references a palette bone absent from the complete target palette.");
-			var fakeIndices = sourceRemap.FakeIndices
-				.Where(sourceRealIndexPositions.ContainsKey)
-				.Select(sourceRealIndexPosition => sourceRealIndexPositions[sourceRealIndexPosition])
-				.ToArray();
+			var fakeIndices = requireCompletePalette
+				? Enumerable.Range(0, sourceToTargetRealIndices.Count).Select(index => checked((uint)index)).ToArray()
+				: sourceRemap.FakeIndices
+					.Where(sourceRealIndexPositions.ContainsKey)
+					.Select(sourceRealIndexPosition => sourceRealIndexPositions[sourceRealIndexPosition])
+					.ToArray();
 			remaps.Add(new UnitBoneRemap(sourceRemap.MaterialIndex, remapOffset, fakeIndices));
 			remapOffset = checked(remapOffset + (uint)(fakeIndices.Length * sizeof(uint)));
 		}
@@ -510,8 +524,11 @@ public sealed class SdkStyleMeshReencoder
 		var remaps = new List<UnitBoneRemap>(remapCount);
 		for (var materialIndex = 0; materialIndex < remapCount; materialIndex++)
 		{
-			var sectionIndex = Array.FindIndex(targetMesh.Sections.ToArray(), section => section.MaterialIndex == checked((uint)materialIndex));
-			var hashes = sectionIndex < 0 ? Array.Empty<uint>() : sectionHashes[sectionIndex];
+			// Source and target material bindings are not guaranteed to preserve
+			// section identity. Keep every active mesh bone addressable from each
+			// rebuilt material remap; unused palette entries are harmless, while a
+			// missing entry makes vertex encoding fail irrecoverably.
+			var hashes = activeHashes.ToArray();
 			var fakeIndices = hashes.Select(hash =>
 			{
 				var targetTransformIndex = IndexOf(targetTransformHashes, hash);
@@ -778,13 +795,14 @@ public sealed class SdkStyleMeshReencoder
 		return new TargetVertexSkinning(indicesByGroup, weightsByGroup);
 	}
 
-	private static void ValidateCanonicalTargetBakeRoundTrip(UnitRawMeshData sourceMesh, IReadOnlyList<UnitRawVertexRecord> encodedVertices, IReadOnlyDictionary<uint, VertexMaterialIndexes> materialByVertex, UnitStreamInfo targetStream, UnitBoneInfo sourceBoneInfo, UnitBoneInfo targetBoneInfo, IReadOnlyList<uint> sourceTransformHashes, IReadOnlyList<uint> targetTransformHashes)
+	private static void ValidateCanonicalTargetBakeRoundTrip(UnitRawMeshData sourceMesh, IReadOnlyList<UnitRawVertexRecord> encodedVertices, IReadOnlyList<(uint SourceVertexIndex, VertexMaterialIndexes Materials)> encodedVertexMetadata, UnitStreamInfo targetStream, UnitBoneInfo sourceBoneInfo, UnitBoneInfo targetBoneInfo, IReadOnlyList<uint> sourceTransformHashes, IReadOnlyList<uint> targetTransformHashes)
 	{
-		foreach (var encodedVertex in encodedVertices)
+		for (var index = 0; index < encodedVertices.Count; index++)
 		{
-			if (!materialByVertex.TryGetValue(encodedVertex.Index, out var materials)) continue;
-			if (encodedVertex.Index >= sourceMesh.Vertices.Count) throw new InvalidDataException("Encoded vertex index is outside the source mesh.");
-			var expected = BuildTargetSkinning(sourceMesh.Vertices[(int)encodedVertex.Index], targetStream, sourceBoneInfo, targetBoneInfo, sourceTransformHashes, targetTransformHashes, materials.Source, materials.Target, requireCompleteBoneRemap: true);
+			var encodedVertex = encodedVertices[index];
+			var metadata = encodedVertexMetadata[index];
+			if (metadata.SourceVertexIndex >= sourceMesh.Vertices.Count) throw new InvalidDataException("Encoded vertex source index is outside the source mesh.");
+			var expected = BuildTargetSkinning(sourceMesh.Vertices[(int)metadata.SourceVertexIndex], targetStream, sourceBoneInfo, targetBoneInfo, sourceTransformHashes, targetTransformHashes, metadata.Materials.Source, metadata.Materials.Target, requireCompleteBoneRemap: true);
 			foreach (var component in targetStream.Components.Where(component => component.Type is 6 or 7))
 			{
 				var actual = ReadEncodedSkinningComponent(encodedVertex.Data, targetStream, component);

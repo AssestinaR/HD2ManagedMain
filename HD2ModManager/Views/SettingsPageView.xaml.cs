@@ -15,7 +15,6 @@ namespace HD2ModManager.Views
         private void SettingsPageView_Loaded(object sender, System.Windows.RoutedEventArgs e)
         {
             if (DataContext is not SettingsPageViewModel vm) return;
-            vm.PromptLanguageIfMissing();
             vm.Refresh();
         }
 

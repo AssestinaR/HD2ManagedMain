@@ -222,6 +222,11 @@ namespace HD2ModManager.ViewModels
                     if (string.IsNullOrWhiteSpace(SettingsService.GetGameDataFolder())) SettingsService.TryDetectAndSetGameDataFolder();
                     SettingsService.EnsureDefaultModLibraryFolder();
                 }, cancellationToken).ConfigureAwait(false);
+                if (!SettingsService.IsGameDataFolderValid())
+                {
+                    _ = System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
+                        _notificationService.Show("游戏目录不正确或尚未设置。请在设置页点击“重置”按钮，让程序自动查找游戏目录。", NotificationLevel.Warning, TimeSpan.FromSeconds(10)));
+                }
                 await _libraryService.LoadAsync(buildDerivedData: false, cancellationToken).ConfigureAwait(false);
                 await _profileService.ReloadFromLibraryAsync(cancellationToken).ConfigureAwait(false);
                 await RunStartupChecksAsync(configDir, cancellationToken).ConfigureAwait(false);
@@ -593,11 +598,6 @@ namespace HD2ModManager.ViewModels
                 // SynchronizeAsync 包含同步目录扫描；整个调用必须在线程池执行。
                 await Task.Run(() => _libraryService.SynchronizeAsync(cancellationToken), cancellationToken).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
-                if (SettingsService.GetAutoCleanup())
-                {
-                    await new IntegrityService(_libraryService, _notificationService, configDir).CheckAndFixAsync().ConfigureAwait(false);
-                }
-
                 if (string.IsNullOrWhiteSpace(SettingsService.GetGameDataFolder()))
                 {
                     var detected = SettingsService.TryDetectAndSetGameDataFolder();

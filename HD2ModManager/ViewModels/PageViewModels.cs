@@ -508,7 +508,6 @@ namespace HD2ModManager.ViewModels
 
         private async void QueueThumbnailRefresh()
         {
-            if (!SettingsService.GetEnableLibraryImages()) return;
             _thumbnailCancellation?.Cancel();
             _thumbnailCancellation?.Dispose();
             var cancellationSource = new CancellationTokenSource();
@@ -749,26 +748,6 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        public bool AutoCleanup
-        {
-            get => SettingsService.GetAutoCleanup();
-            set
-            {
-                SettingsService.SetAutoCleanup(value);
-                OnPropertyChanged(nameof(AutoCleanup));
-            }
-        }
-
-        public bool EnableLibraryImages
-        {
-            get => SettingsService.GetEnableLibraryImages();
-            set
-            {
-                SettingsService.SetEnableLibraryImages(value);
-                OnPropertyChanged(nameof(EnableLibraryImages));
-            }
-        }
-
         public bool AutoUpdateAssetMetadata
         {
             get => SettingsService.GetAutoUpdateAssetMetadata();
@@ -891,8 +870,6 @@ namespace HD2ModManager.ViewModels
         public void Refresh()
         {
             OnPropertyChanged(nameof(Language));
-            OnPropertyChanged(nameof(AutoCleanup));
-            OnPropertyChanged(nameof(EnableLibraryImages));
             OnPropertyChanged(nameof(AutoUpdateAssetMetadata));
             OnPropertyChanged(nameof(AssetMetadataCheckIntervalHours));
             OnPropertyChanged(nameof(AssetMetadataLastCheckText));
@@ -1014,7 +991,7 @@ namespace HD2ModManager.ViewModels
             {
                 task?.MarkRunning("正在准备资产索引");
                 AssetIndexState = "建立中";
-                AssetIndexSummary = "正在快速扫描 Archive TOC 与资源映射；跨护甲 Unit 数据会在首次使用时按需建立。";
+                AssetIndexSummary = "正在扫描 Archive TOC、资源映射，并增量分析新的 Armor Unit 部件。";
                 var archiveHashes = await File.ReadAllTextAsync(_paths.ArchiveHashesPath);
                 var index = CoreServices.CreateAssetArchiveIndexService(_paths);
 				var lastProgressUpdate = 0L;
@@ -1028,8 +1005,16 @@ namespace HD2ModManager.ViewModels
                     AssetIndexCounts = $"Archive {item.Current}/{item.Total}";
                 });
                 await Task.Run(() => index.BuildOrRebuildAsync(gameData, archiveHashes, progress, task?.CancellationToken ?? CancellationToken.None).AsTask());
+                task?.UpdateStage("正在增量分析 Armor Unit 部件");
+                var equipmentIndex = CoreServices.CreateAdvancedEquipmentIndexService(_paths);
+                var equipmentProgress = new Progress<IndexBuildProgress>(item =>
+                {
+                    task?.UpdateStage(item.Current <= 0 ? item.CurrentArchiveId ?? "正在分析 Armor Unit" : $"正在分析 Armor Unit {item.Current}/{item.Total}");
+                    task?.UpdateProgress(item.Total <= 0 ? null : (double)item.Current / item.Total);
+                });
+                await Task.Run(() => equipmentIndex.BuildOrRefreshAsync(gameData, equipmentProgress, task?.CancellationToken ?? CancellationToken.None).AsTask());
                 task?.MarkCompleted();
-                AssetIndexHint = "基础索引已重建；跨护甲护甲/头盔数据会在首次使用该功能时单独建立。";
+                AssetIndexHint = "基础资产索引已重建；新的 Armor Unit 部件已增量分析，已有部件事实已复用。";
                 await RefreshAssetIndexStatusAsync();
             }
             catch (OperationCanceledException)

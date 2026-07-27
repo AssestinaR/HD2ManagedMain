@@ -13,15 +13,13 @@
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
                 <StackPanel>
                     <TextBlock Text="通用" Style="{StaticResource AppCardTitle}"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
                         <TextBlock Text="Language" Width="150" VerticalAlignment="Center"/>
                         <ComboBox Style="{StaticResource AppComboBox}" Width="180" SelectedValue="{Binding Language, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag">
                             <ComboBoxItem Content="English" Tag="en-US"/>
                             <ComboBoxItem Content="中文" Tag="zh-CN"/>
                         </ComboBox>
                     </StackPanel>
-                    <CheckBox Style="{StaticResource AppToggleSwitch}" Content="启用自动清理（启动时清理无效项）" IsChecked="{Binding AutoCleanup, Mode=TwoWay}" Margin="0,12,0,0"/>
-                    <CheckBox Style="{StaticResource AppToggleSwitch}" Content="启用库页图片" IsChecked="{Binding EnableLibraryImages, Mode=TwoWay}" Margin="0,8,0,0"/>
                 </StackPanel>
             </Border>
 

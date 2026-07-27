@@ -58,6 +58,7 @@ namespace HD2ModManager.ViewModels
         public string SelectionSummary => _selection.Summary;
         public string EditLabel => _editMode is "Move" or "Insert" ? string.Empty
             : _editMode == "CreateProfile" ? "新建配置："
+            : _editMode == "SwitchProfile" ? "选择配置："
             : _editMode == "RenameProfile" ? "重命名配置："
             : string.Equals(_editMode, "Description", StringComparison.Ordinal) ? "修改备注：" : "修改名称：";
         public string PositionLabel => _editMode == "Move" ? "移动到："

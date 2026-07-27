@@ -663,9 +663,14 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			.Count();
 		var sourceTriangleCount = source.Triangles.Count;
 		var outputTriangleCount = output.Triangles.Count;
-		if (sourceReferencedVertexCount != output.Vertices.Count || sourceTriangleCount != outputTriangleCount)
+		var outputReferencedVertexCount = output.Sections
+			.SelectMany(section => section.Triangles)
+			.SelectMany(triangle => new[] { triangle.A, triangle.B, triangle.C })
+			.Distinct()
+			.Count();
+		if (outputReferencedVertexCount != output.Vertices.Count || output.Vertices.Count < sourceReferencedVertexCount || sourceTriangleCount != outputTriangleCount)
 		{
-			throw new InvalidDataException($"输出 target mesh {outputMeshInfoIndex} 的几何数量与来源不一致：顶点 {output.Vertices.Count}/{sourceReferencedVertexCount}，三角形 {outputTriangleCount}/{sourceTriangleCount}。" );
+			throw new InvalidDataException($"输出 target mesh {outputMeshInfoIndex} 的几何数量与来源不一致：顶点 {output.Vertices.Count}/{sourceReferencedVertexCount}（来源共享顶点允许拆分），三角形 {outputTriangleCount}/{sourceTriangleCount}。" );
 		}
 	}
 

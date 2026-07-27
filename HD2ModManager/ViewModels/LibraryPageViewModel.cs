@@ -22,6 +22,7 @@ namespace HD2ModManager.ViewModels
         private bool _hideSelectedProfileMembers;
         private readonly ObservableCollection<string> _selectedGuids = new();
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string?> _thumbnailSources = new(StringComparer.OrdinalIgnoreCase);
         private string? _selectionAnchorGuid;
         private CancellationTokenSource? _searchCancellation;
         private CancellationTokenSource? _thumbnailCancellation;
@@ -237,7 +238,8 @@ namespace HD2ModManager.ViewModels
                 {
                     var derived = _library.GetDerivedData(mod.Guid);
                     _userStatuses.TryGetValue(mod.Guid, out var status);
-                    return new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, derived?.UnitCompatibility, status);
+                    _thumbnailSources.TryGetValue(mod.Guid, out var thumbnailSource);
+                    return new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, derived?.UnitCompatibility, status, thumbnailSource);
                 })
                 .ToList();
             Items.ReplaceWith(cards);
@@ -278,7 +280,6 @@ namespace HD2ModManager.ViewModels
 
         private async void QueueThumbnailRefresh()
         {
-            if (!SettingsService.GetEnableLibraryImages()) return;
             var version = _lifecycleVersion;
             _thumbnailCancellation?.Cancel();
             _thumbnailCancellation?.Dispose();
@@ -287,7 +288,6 @@ namespace HD2ModManager.ViewModels
             var cancellationToken = cancellation.Token;
             try
             {
-                var generated = false;
                 // 先固定本次刷新快照，避免异步请求期间库同步修改底层字典。
                 var mods = await Task.Run(() => _library.All().ToList(), cancellationToken).ConfigureAwait(false);
                 foreach (var mod in mods)
@@ -297,9 +297,13 @@ namespace HD2ModManager.ViewModels
                         () => _library.RequestThumbnailAsync(mod.Guid, "Library", cancellationToken: cancellationToken).AsTask(),
                         cancellationToken).ConfigureAwait(false);
                     if (result.Data is { } facts)
-                        generated |= await ThumbnailService.EnsureThumbnailAsync(facts, 72, cancellationToken);
+                    {
+                        await ThumbnailService.EnsureThumbnailAsync(facts, 72, cancellationToken);
+                        _thumbnailSources[mod.Guid] = facts.SourcePath;
+                    }
                 }
-                if (generated && IsCurrentThumbnailRefresh(version, cancellation)) Refresh();
+                if (IsCurrentThumbnailRefresh(version, cancellation))
+                    RunOnUiThread(Refresh);
             }
             catch (OperationCanceledException) { }
         }
@@ -416,11 +420,12 @@ namespace HD2ModManager.ViewModels
     public class ModCardViewModel : BaseViewModel
     {
         public HD2ModManager.Models.ModEntity Mod { get; }
+        private string? _thumbnailSourcePath;
         public ModAssetSummary? AssetSummary { get; }
         public string Name => Mod.Name;
         public string AssetSummaryText => ModAssetSummaryFormatter.Format(AssetSummary);
-        public string? ImagePath => ThumbnailService.GetExistingThumbnailPath(Mod.Image, 72);
-        public bool ShowImage => SettingsService.GetEnableLibraryImages();
+        public string? ImagePath => ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+        public bool ShowImage => true;
         public string? Description => Mod.Description;
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
@@ -432,9 +437,22 @@ namespace HD2ModManager.ViewModels
         public string UserStatusSummary => UserStatus?.Summary ?? "正在读取状态。";
         public bool HasUserStatus => UserStatus is not null;
 
-        public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null)
+        public void SetThumbnailSource(string? sourcePath)
+        {
+            if (string.Equals(_thumbnailSourcePath, sourcePath, StringComparison.OrdinalIgnoreCase))
+            {
+                OnPropertyChanged(nameof(ImagePath));
+                return;
+            }
+
+            _thumbnailSourcePath = sourcePath;
+            OnPropertyChanged(nameof(ImagePath));
+        }
+
+        public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null, string? thumbnailSourcePath = null)
         {
             Mod = mod;
+            _thumbnailSourcePath = thumbnailSourcePath ?? mod.Image;
             AssetSummary = assetSummary;
 			UnitCompatibility = unitCompatibility;
             UserStatus = userStatus;

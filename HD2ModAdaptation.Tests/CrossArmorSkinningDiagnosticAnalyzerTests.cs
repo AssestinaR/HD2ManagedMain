@@ -36,6 +36,16 @@ public sealed class CrossArmorSkinningDiagnosticAnalyzerTests
 		Assert.Contains(diagnostic.Samples.SelectMany(sample => sample.Influences), influence => influence.Failure is not null);
 	}
 
+	[Fact]
+	public void Analyze_AllowsVertexSharedByDifferentMaterialSections()
+	{
+		var model = CreateModelWithSharedVertexAcrossMaterials();
+
+		var diagnostic = new CrossArmorSkinningDiagnosticAnalyzer().Analyze(model, 0);
+
+		Assert.Equal(0, diagnostic.InvalidActiveInfluenceCount);
+	}
+
 	private static UnitMeshModel CreateModel(uint[] indices, float[] weights, IReadOnlyList<uint> fakeIndices)
 	{
 		var components = new UnitVertexComponentValue[]
@@ -52,5 +62,20 @@ public sealed class CrossArmorSkinningDiagnosticAnalyzerTests
 			TransformNameHashes = [0x10, 0x20],
 			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), Array.Empty<UnitTransformMatrix>(), Array.Empty<UnitTransformEntry>(), [0x10, 0x20])
 		};
+	}
+
+	private static UnitMeshModel CreateModelWithSharedVertexAcrossMaterials()
+	{
+		var model = CreateModel([0, 0, 0, 0], [1f, 0f, 0f, 0f], [0]);
+		var rawMesh = model.RawMeshData[0] with
+		{
+			Sections =
+			[
+				new UnitRawMeshSectionData(0, 20, [new UnitTriangleIndices(0, 0, 0)]),
+				new UnitRawMeshSectionData(1, 21, [new UnitTriangleIndices(0, 0, 0)])
+			],
+			Triangles = [new UnitTriangleIndices(0, 0, 0), new UnitTriangleIndices(0, 0, 0)]
+		};
+		return model with { RawMeshData = [rawMesh], BoneInfos = [model.BoneInfos[0] with { Remaps = [new UnitBoneRemap(0, 0, [0]), new UnitBoneRemap(1, 0, [0])] }] };
 	}
 }

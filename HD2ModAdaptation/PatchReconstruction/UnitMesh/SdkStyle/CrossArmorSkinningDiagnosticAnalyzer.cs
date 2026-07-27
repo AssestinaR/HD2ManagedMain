@@ -17,7 +17,7 @@ public sealed class CrossArmorSkinningDiagnosticAnalyzer
 			?? throw new KeyNotFoundException($"The source Unit does not contain MeshInfo {sourceMeshInfoIndex}.");
 		var boneInfoIndex = sourceModel.BoneInfos.Count == 0 ? -1 : mesh.LodIndex >= 0 && mesh.LodIndex < sourceModel.BoneInfos.Count ? mesh.LodIndex : 0;
 		var boneInfo = boneInfoIndex < 0 ? null : sourceModel.BoneInfos[boneInfoIndex];
-		var materialByVertex = BuildVertexMaterialMap(mesh);
+		var materialsByVertex = BuildVertexMaterialMap(mesh);
 		var samples = new List<CrossArmorVertexSkinningSample>();
 		var activeInfluenceCount = 0;
 		var lowWeightInfluenceCount = 0;
@@ -41,6 +41,7 @@ public sealed class CrossArmorSkinningDiagnosticAnalyzer
 			}
 			var indices = FindComponent(vertex, 6)?.UIntValues ?? Array.Empty<uint>();
 			var weights = FindComponent(vertex, 7)?.FloatValues ?? Array.Empty<float>();
+			var materialIndexes = materialsByVertex.GetValueOrDefault(vertex.Index, Array.Empty<uint>());
 			if (indices.Length == 0 && weights.Length == 0) continue;
 			var activeWeight = 0f;
 			var influences = new List<CrossArmorBoneInfluenceSample>();
@@ -55,14 +56,14 @@ public sealed class CrossArmorSkinningDiagnosticAnalyzer
 				}
 				activeInfluenceCount++;
 				activeWeight += weight;
-				var resolved = TryResolveBoneHash(fakeIndex, materialByVertex.GetValueOrDefault(vertex.Index), boneInfo, sourceModel.TransformNameHashes, out var hash, out var transformIndex, out var failure);
+				var resolved = TryResolveBoneHashForMaterials(fakeIndex, materialIndexes, boneInfo, sourceModel.TransformNameHashes, out var hash, out var transformIndex, out var failure);
 				if (!resolved) invalidInfluenceCount++;
 				influences.Add(new CrossArmorBoneInfluenceSample(influence, fakeIndex, weight, resolved ? $"0x{hash:x8}" : null, transformIndex, failure));
 			}
 			if (activeWeight <= ActiveWeightThreshold) zeroWeightVertexCount++;
 			if ((influences.Any(item => item.Failure is not null) || activeWeight <= ActiveWeightThreshold || MathF.Abs(activeWeight - 1f) > 0.02f) && samples.Count < MaximumSamples)
 			{
-				samples.Add(new CrossArmorVertexSkinningSample(vertex.Index, materialByVertex.GetValueOrDefault(vertex.Index), position.Take(3).ToArray(), activeWeight, influences));
+					samples.Add(new CrossArmorVertexSkinningSample(vertex.Index, materialIndexes.FirstOrDefault(), position.Take(3).ToArray(), activeWeight, influences));
 			}
 		}
 		var hasBounds = float.IsFinite(min.X);
@@ -81,18 +82,27 @@ public sealed class CrossArmorSkinningDiagnosticAnalyzer
 			samples);
 	}
 
-	private static IReadOnlyDictionary<uint, uint> BuildVertexMaterialMap(UnitRawMeshData mesh)
+	private static IReadOnlyDictionary<uint, IReadOnlyList<uint>> BuildVertexMaterialMap(UnitRawMeshData mesh)
 	{
-		var result = new Dictionary<uint, uint>();
+		var result = new Dictionary<uint, HashSet<uint>>();
 		foreach (var section in mesh.Sections)
 		{
 			foreach (var index in section.Triangles.SelectMany(triangle => new[] { triangle.A, triangle.B, triangle.C }))
 			{
-				if (result.TryGetValue(index, out var existing) && existing != section.MaterialIndex) throw new InvalidDataException("A source vertex belongs to multiple material remaps.");
-				result[index] = section.MaterialIndex;
+				if (!result.TryGetValue(index, out var materials)) result[index] = materials = new HashSet<uint>();
+				materials.Add(section.MaterialIndex);
 			}
 		}
-		return result;
+		return result.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<uint>)pair.Value.OrderBy(value => value).ToArray());
+	}
+
+	private static bool TryResolveBoneHashForMaterials(uint fakeIndex, IReadOnlyList<uint> materialIndexes, UnitBoneInfo? boneInfo, IReadOnlyList<uint> transformHashes, out uint hash, out uint? transformIndex, out string? failure)
+	{
+		foreach (var materialIndex in materialIndexes)
+		{
+			if (TryResolveBoneHash(fakeIndex, materialIndex, boneInfo, transformHashes, out hash, out transformIndex, out failure)) return true;
+		}
+		return TryResolveBoneHash(fakeIndex, materialIndexes.FirstOrDefault(), boneInfo, transformHashes, out hash, out transformIndex, out failure);
 	}
 
 	private static bool TryResolveBoneHash(uint fakeIndex, uint materialIndex, UnitBoneInfo? boneInfo, IReadOnlyList<uint> transformHashes, out uint hash, out uint? transformIndex, out string? failure)

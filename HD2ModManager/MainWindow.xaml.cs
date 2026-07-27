@@ -186,6 +186,9 @@ namespace HD2ModManager
                 messageShell.CloseMessagePanel();
             }
             if (DataContext is not ShellViewModel { BottomBar.HasTemporaryEditor: true } shell) return;
+            // ComboBox 的下拉项由独立 Popup 承载，选择项时焦点会暂时离开底栏视觉树；
+            // 切换配置编辑器需要保留这段焦点特权，避免选择目标时底栏被提前收起。
+            if (shell.BottomBar.IsProfileSwitchEditor) return;
             if (e.OriginalSource is DependencyObject source && IsDescendantOf(source, BottomContextBar)) return;
             shell.CancelBottomBarEdit();
         }

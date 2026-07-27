@@ -6,7 +6,7 @@ namespace HD2ModManager.Services
     public static class LogService
     {
         private static readonly object _lock = new object();
-        private static string LogPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs", $"manager_{DateTime.UtcNow:yyyyMMdd}.log");
+        private static string LogPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs", $"manager_{DateTime.Now:yyyyMMdd}.log");
 
         public static void Info(string message)
         {
@@ -28,7 +28,7 @@ namespace HD2ModManager.Services
                 var path = LogPath;
                 var dir = Path.GetDirectoryName(path)!;
                 if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-                var line = $"[{DateTime.UtcNow:O}] {level} {message}";
+                var line = $"[{DateTimeOffset.Now:O}] {level} {message}";
                 lock (_lock)
                 {
                     File.AppendAllText(path, line + Environment.NewLine);

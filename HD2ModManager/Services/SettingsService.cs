@@ -22,8 +22,6 @@ namespace HD2ModManager.Services
             public string? SelectedProfileKey { get; set; }
             public string? ModLibraryFolder { get; set; }
             public string? GameDataFolder { get; set; }
-            public bool AutoCleanup { get; set; } = false;
-            public bool EnableLibraryImages { get; set; } = true;
             public bool AutoUpdateAssetMetadata { get; set; } = false;
             public string? AssetMetadataRepository { get; set; }
             public DateTime? LastAssetMetadataCheckUtc { get; set; }
@@ -45,28 +43,6 @@ namespace HD2ModManager.Services
                 return model?.Language;
             }
             catch { return null; }
-        }
-
-        public static bool GetEnableLibraryImages()
-        {
-            try
-            {
-                if (!File.Exists(SettingsPath)) return true; // default enabled
-                var json = File.ReadAllText(SettingsPath);
-                var model = JsonSerializer.Deserialize<SettingsModel>(json);
-                return model?.EnableLibraryImages ?? true;
-            }
-            catch { return true; }
-        }
-
-        public static bool SetEnableLibraryImages(bool enabled)
-        {
-            try
-            {
-                Update(model => model.EnableLibraryImages = enabled);
-                return true;
-            }
-            catch { return false; }
         }
 
         public static bool GetAutoUpdateAssetMetadata()
@@ -166,28 +142,6 @@ namespace HD2ModManager.Services
             try
             {
                 Update(model => model.AssetMetadataRepository = string.IsNullOrWhiteSpace(repository) ? DefaultAssetMetadataRepository : repository);
-                return true;
-            }
-            catch { return false; }
-        }
-
-        public static bool GetAutoCleanup()
-        {
-            try
-            {
-                if (!File.Exists(SettingsPath)) return false;
-                var json = File.ReadAllText(SettingsPath);
-                var model = JsonSerializer.Deserialize<SettingsModel>(json);
-                return model?.AutoCleanup ?? false;
-            }
-            catch { return false; }
-        }
-
-        public static bool SetAutoCleanup(bool enabled)
-        {
-            try
-            {
-                Update(model => model.AutoCleanup = enabled);
                 return true;
             }
             catch { return false; }
@@ -378,6 +332,19 @@ namespace HD2ModManager.Services
                 return p ?? string.Empty;
             }
             catch { return string.Empty; }
+        }
+
+        public static bool IsGameDataFolderValid(string? folder = null)
+        {
+            try
+            {
+                var dataFolder = string.IsNullOrWhiteSpace(folder) ? GetGameDataFolder() : folder;
+                if (string.IsNullOrWhiteSpace(dataFolder) || !Directory.Exists(dataFolder)) return false;
+                var gameDirectory = Directory.GetParent(Path.GetFullPath(dataFolder))?.FullName;
+                return !string.IsNullOrWhiteSpace(gameDirectory)
+                    && File.Exists(Path.Combine(gameDirectory, "bin", "helldivers2.exe"));
+            }
+            catch { return false; }
         }
 
         public static bool SetGameDataFolder(string? folder)

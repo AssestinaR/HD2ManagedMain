@@ -11,10 +11,10 @@ using AdaptationStreamLayoutFact = HD2ModAdaptation.Analysis.GameDataStreamLayou
 
 namespace HD2ModCore.Infrastructure;
 
-// Purpose: Builds optional armor and helmet mesh facts only when cross-armor transfer needs them.
+// Purpose: Builds optional incremental Armor Unit mesh facts for cross-armor transfer.
 public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexService
 {
-	private const string Version = "equipment-v1-parts-and-stream-layouts";
+	private const string Version = "equipment-v2-armor-incremental-parts-and-stream-layouts";
 	private readonly StoragePaths paths;
 	private readonly IGameDataArchiveIndexer archiveIndexer;
 	private readonly UnitMeshPartClassifier classifier = new();
@@ -45,17 +45,19 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		var archives = await ReadArchivesAsync(cancellationToken).ConfigureAwait(false);
 		if (archives.Count == 0) throw new InvalidDataException("基础索引中没有可用 Archive。");
 		var equipmentArchiveIds = archives.Where(item => IsEquipmentCategory(item.Category)).Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-		if (equipmentArchiveIds.Count == 0) throw new InvalidDataException("基础索引中没有可用的 armor 或 helmet Archive。");
+		if (equipmentArchiveIds.Count == 0) throw new InvalidDataException("基础索引中没有可用的 armor Archive。");
 		var metadata = archives.ToDictionary(item => item.Id, item => new GameDataArchiveMetadata(item.Hex, item.Name, item.Category), StringComparer.OrdinalIgnoreCase);
 		var adapterProgress = new Progress<GameDataArchiveIndexProgress>(item => progress?.Report(new IndexBuildProgress(item.Current, Math.Max(item.Total, 1), $"{item.Stage}：{item.Item}")));
 		var index = await archiveIndexer.BuildAsync(new GameDataArchiveInput(directory, archives.Select(item => item.Id).ToArray(), metadata, IncludeStreamLayouts: true), adapterProgress, cancellationToken).ConfigureAwait(false);
 		var boneNames = LoadBoneNames(paths.BoneHashesPath);
-		var parts = new List<GameDataUnitPartFact>();
 		var units = index.Archives.Where(archive => equipmentArchiveIds.Contains(archive.PackageName)).SelectMany(archive => archive.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).Select(entry => (archive.PackageName, entry))).ToArray();
+		var analyzedUnits = await ReadAnalyzedUnitsAsync(cancellationToken).ConfigureAwait(false);
+		var unitsToAnalyze = units.Where(item => !analyzedUnits.Contains((item.PackageName, new CoreAssetKey(item.entry.AssetKey.TypeId, item.entry.AssetKey.FileId)))).ToArray();
+		var parts = new List<GameDataUnitPartFact>();
 		var resolver = new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(directory);
 		var reader = new GameDataUnitMeshReader(resolver);
 		var current = 0;
-		foreach (var (archiveId, entry) in units)
+		foreach (var (archiveId, entry) in unitsToAnalyze)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			progress?.Report(new IndexBuildProgress(++current, Math.Max(units.Length, 1), $"分析装备 Unit：{archiveId}"));
@@ -83,14 +85,30 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 	}
 
 	private static bool IsEquipmentCategory(string category)
-		=> category.Contains("armor", StringComparison.OrdinalIgnoreCase) || category.Contains("helmet", StringComparison.OrdinalIgnoreCase);
+		=> category.Contains("armor", StringComparison.OrdinalIgnoreCase)
+			&& !category.Contains("helmet", StringComparison.OrdinalIgnoreCase);
+
+	private async ValueTask<HashSet<(string ArchiveId, CoreAssetKey UnitAssetKey)>> ReadAnalyzedUnitsAsync(CancellationToken cancellationToken)
+	{
+		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		await using var command = connection.CreateCommand();
+		command.CommandText = "SELECT DISTINCT p.archive_id,p.unit_type_id,p.unit_file_id FROM game_data_unit_parts p JOIN archives a ON a.archive_id=p.archive_id WHERE lower(a.category) LIKE '%armor%' AND lower(a.category) NOT LIKE '%helmet%'";
+		var result = new HashSet<(string, CoreAssetKey)>();
+		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+			result.Add((reader.GetString(0), new CoreAssetKey(unchecked((ulong)reader.GetInt64(1)), unchecked((ulong)reader.GetInt64(2)))));
+		return result;
+	}
 
 	private async ValueTask SaveAsync(IReadOnlyList<GameDataUnitPartFact> parts, IReadOnlyList<AdaptationStreamLayoutFact> layouts, CancellationToken cancellationToken)
 	{
 		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False");
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-		await ExecuteAsync(connection, transaction, "DELETE FROM game_data_stream_layouts; DELETE FROM game_data_unit_parts;", cancellationToken).ConfigureAwait(false);
+		await ExecuteAsync(connection, transaction, "DELETE FROM game_data_unit_parts WHERE archive_id NOT IN (SELECT archive_id FROM archives WHERE lower(category) LIKE '%armor%' AND lower(category) NOT LIKE '%helmet%');", cancellationToken).ConfigureAwait(false);
+		await ExecuteAsync(connection, transaction, "DELETE FROM game_data_unit_parts WHERE NOT EXISTS (SELECT 1 FROM archive_entries e WHERE e.archive_id=game_data_unit_parts.archive_id AND e.type_id=game_data_unit_parts.unit_type_id AND e.file_id=game_data_unit_parts.unit_file_id);", cancellationToken).ConfigureAwait(false);
+		await ExecuteAsync(connection, transaction, "DELETE FROM game_data_stream_layouts;", cancellationToken).ConfigureAwait(false);
 		await using var partsCommand = CreatePartCommand(connection, transaction);
 		foreach (var part in parts) await InsertPartAsync(partsCommand, part, cancellationToken).ConfigureAwait(false);
 		await using var layoutsCommand = CreateLayoutCommand(connection, transaction);
