@@ -33,7 +33,8 @@ public sealed class AdvancedModAnalysisService : IAdvancedModAnalysisService
 
 	public async ValueTask<AdvancedModAnalysisState> AnalyzeAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
 	{
-		var result = await _informationCenter.RequestAdvancedUnitAnalysisAsync(node, modsRootDirectory, new ModInformationRequest(ModInformationKind.AdvancedUnitAnalysis, "AdvancedModAnalysisService", RequireFresh: true), cancellationToken).ConfigureAwait(false);
+		// “模型解析”首先复用同 generation 的持久缓存；实际变更后由 generation 失配触发重建。
+		var result = await _informationCenter.RequestAdvancedUnitAnalysisAsync(node, modsRootDirectory, new ModInformationRequest(ModInformationKind.AdvancedUnitAnalysis, "AdvancedModAnalysisService"), cancellationToken).ConfigureAwait(false);
 		return new AdvancedModAnalysisState(node.Id, result.Data is not null, result.Status is ModInformationStatus.Fresh or ModInformationStatus.Cached, result.Data?.BuiltUtc, result.Issues);
 	}
 

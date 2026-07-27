@@ -1,4 +1,5 @@
 using HD2ModCore.Domain;
+using HD2ModCore.Application;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
@@ -17,5 +18,40 @@ public sealed class AdvancedModAnalysisServiceTests
 
 		Assert.True(state.IsReady);
 		Assert.True(state.IsCurrent);
+	}
+
+	[Fact]
+	public async Task AnalyzeAsync_RequestsCachedAdvancedFacts()
+	{
+		var node = new ModNode(ModNodeId.New(), "Test", new ModNodeMetadata("Test", null, DateTimeOffset.UtcNow, null), [], []);
+		var facts = new HD2ModCore.Application.AdvancedUnitAnalysisFacts(node.Id, node.RelativePath, "generation", DateTimeOffset.UtcNow, [], []);
+		var center = new RecordingInformationCenter(facts);
+		var service = new AdvancedModAnalysisService(center);
+
+		var state = await service.AnalyzeAsync(node, "mods");
+
+		Assert.True(state.IsReady);
+		Assert.False(center.LastRequest!.RequireFresh);
+	}
+
+	private sealed class RecordingInformationCenter(HD2ModCore.Application.AdvancedUnitAnalysisFacts facts) : IModInformationCenter
+	{
+		public ModInformationRequest? LastRequest { get; private set; }
+		public event EventHandler<ModInformationDiagnostic>? DiagnosticRecorded;
+		public event EventHandler<ModInformationProductionStarted>? ProductionStarted;
+		public ValueTask<ModInformationResult<PatchFileIndex>> RequestFileFactsAsync(LibrarySnapshot snapshot, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+		public ValueTask<ModInformationResult<ModContentFacts>> RequestAssetInventoryAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+		public ValueTask<ModInformationResult<ReferenceGraphFacts>> RequestReferenceGraphAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+		public ValueTask<ModInformationResult<MaintenanceAnalysisFacts>> RequestMaintenanceAnalysisAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+		public ValueTask<ModInformationResult<ModUnitVersionFacts>> RequestUnitVersionAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+		public ValueTask<ModInformationResult<AdvancedUnitAnalysisFacts>> RequestAdvancedUnitAnalysisAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default)
+		{
+			LastRequest = request;
+			return ValueTask.FromResult(new ModInformationResult<AdvancedUnitAnalysisFacts>(facts, ModInformationStatus.Cached, request.Kind, facts.Generation, facts.Issues, false, false, true));
+		}
+		public ValueTask<ModInformationResult<ModThumbnailFacts>> RequestThumbnailAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+		public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+		public ValueTask InvalidateNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+		public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 	}
 }
