@@ -35,7 +35,7 @@ public sealed class ProfileApplyService : IProfileApplyService
 		var fileFactsResult = await _informationCenter.RequestFileFactsAsync(
 			snapshot,
 			modsRootDirectory,
-			new ModInformationRequest(ModInformationKind.FileFacts, "Deployment", RequireFresh: true),
+			new ModInformationRequest(ModInformationKind.FileFacts, "Deployment"),
 			cancellationToken).ConfigureAwait(false);
 		if (fileFactsResult.Data is null)
 			return new ApplyResult(false, [], null, fileFactsResult.Issues);

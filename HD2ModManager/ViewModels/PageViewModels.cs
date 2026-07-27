@@ -170,7 +170,9 @@ namespace HD2ModManager.ViewModels
                 else task.MarkCompleted();
                 if (result.HasRepairs)
                 {
-                    await _library.RefreshDerivedDataAsync(result.Mods.Where(item => item.Status == ModRepairBatchModStatus.Repaired).Select(item => item.NodeId.Value.ToString("N")), task.CancellationToken);
+                    // 修复过程直接替换了 Mod 目录中的 Patch；必须同步并持久化新的 ContentFingerprint，
+                    // 否则下次启动会把本次已知修改误判为外部修改并删除所有信息中心缓存。
+                    await _library.SynchronizeAsync(task.CancellationToken);
                     if (_profiles.ActiveProfile is not null) _profiles.NotifyActiveModContentChanged();
                 }
                 System.Windows.MessageBox.Show($"批次完成。\n已修复：{result.RepairedModCount}\n跳过：{result.SkippedModCount}\n失败：{result.FailedModCount}\n取消：{result.CanceledModCount}\n未开始：{result.NotStartedModCount}\n\n备份与审计清单：{result.BatchDirectory}", "一键修复", System.Windows.MessageBoxButton.OK, result.FailedModCount == 0 ? System.Windows.MessageBoxImage.Information : System.Windows.MessageBoxImage.Warning);
