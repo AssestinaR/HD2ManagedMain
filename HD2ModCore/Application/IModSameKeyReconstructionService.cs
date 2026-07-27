@@ -9,12 +9,16 @@ public interface IModSameKeyReconstructionService
 		ModNode source,
 		string modsRootDirectory,
 		string gameDataDirectory,
-		CancellationToken cancellationToken = default);
+		CancellationToken cancellationToken = default,
+		IProgress<OperationProgressEvent>? progress = null,
+		Guid? operationId = null);
 
 	ValueTask<SameKeyReconstructionOperationResult> GenerateCandidateAsync(
 		ModNode source,
 		string modsRootDirectory,
 		string gameDataDirectory,
 		string outputRootDirectory,
-		CancellationToken cancellationToken = default);
+		CancellationToken cancellationToken = default,
+		IProgress<OperationProgressEvent>? progress = null,
+		Guid? operationId = null);
 }

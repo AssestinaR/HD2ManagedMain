@@ -25,6 +25,7 @@ namespace HD2ModManager.ViewModels
         private readonly ProfileService _profiles;
         private readonly DerivedStateCoordinator _derivedState;
         private readonly NotificationService? _notifications;
+        private readonly BackgroundTaskService? _backgroundTasks;
         private readonly IMaterialPackagingApplicationService _materialPackaging;
         private readonly IMaterialDeliveryFactsService _materialDeliveryFacts;
 		private readonly IModSameKeyReconstructionService _sameKeyReconstruction;
@@ -114,13 +115,14 @@ namespace HD2ModManager.ViewModels
 		public RelayCommand RunDependencyGraphTestCommand { get; }
         public RelayCommand CompareDependencyGraphCommand { get; }
 
-        public ModDetailsPageViewModel(ModLibraryService library, ProfileService profiles, DerivedStateCoordinator derivedState, string modId, NotificationService? notifications = null)
+        public ModDetailsPageViewModel(ModLibraryService library, ProfileService profiles, DerivedStateCoordinator derivedState, string modId, NotificationService? notifications = null, BackgroundTaskService? backgroundTasks = null)
         {
             Title = "Mod 详情";
             _library = library;
             _profiles = profiles;
             _derivedState = derivedState;
             _notifications = notifications;
+			_backgroundTasks = backgroundTasks;
             _paths = SettingsService.CreateStoragePaths();
 			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService();
             _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(_paths, _derivedState.InformationCenter);
@@ -989,33 +991,46 @@ namespace HD2ModManager.ViewModels
             _sameKeyReconstructionRunning = true;
             SameKeyReconstructionSummary = "正在读取 Payload 并生成 Same-key 重建结果…";
             LogService.Info($"修复 patch 开始：Mod={source.Metadata.Name}，节点={source.Id.Value:N}，输出={destination}。");
-            _notifications?.Show("修复 patch：正在读取模型、材质和 Game Data 事实并生成重建方案…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
             OnPropertyChanged(nameof(SameKeyReconstructionSummary));
             RaiseSameKeyReconstructionCommandState();
+            BackgroundTaskItem? task = null;
+            var operationId = Guid.NewGuid();
             try
             {
+                task = _backgroundTasks?.Enqueue(BackgroundTaskKind.RepairMods, "重建 Same-key Mod", "单项修复", "Mod 详情", "重建并验证当前版本 Unit。", canCancel: false);
+                await using var resourceMonitor = ResourceUsageMonitor.Start(operationId, "Same-key重建");
+                var uiContext = SynchronizationContext.Current
+                    ?? (System.Windows.Application.Current?.Dispatcher is { } dispatcher
+                        ? new System.Windows.Threading.DispatcherSynchronizationContext(dispatcher)
+                        : new SynchronizationContext());
+                var bridge = task is null ? null : new OperationProgressBridge(new BackgroundTaskOperationTarget(task), operationId, uiContext, notifications: _notifications, notificationKey: $"same-key:{operationId:N}");
                 var result = await Task.Run(() => _sameKeyReconstruction.GenerateCandidateAsync(
                     source,
                     _library.ModsRootDirectory,
                     SettingsService.GetGameDataFolder(),
-                    destination).AsTask());
+                    destination, task?.CancellationToken ?? CancellationToken.None, bridge is null ? null : new Progress<OperationProgressEvent>(bridge.Apply), operationId).AsTask());
                 if (!result.IsSuccessful)
                 {
                     SameKeyReconstructionSummary = $"重建失败：{string.Join("；", result.Issues.Select(issue => issue.Message).Take(3))}";
                     LogService.Error($"修复 patch 失败：Mod={source.Metadata.Name}，输出={destination}，问题={string.Join(" | ", result.Issues.Select(issue => $"{issue.Code}: {issue.Message}"))}");
-                    _notifications?.Show(SameKeyReconstructionSummary, NotificationLevel.Error, TimeSpan.FromSeconds(12));
+                    if (bridge is null) _notifications?.Show(SameKeyReconstructionSummary, NotificationLevel.Error, TimeSpan.FromSeconds(12));
                     return;
                 }
 
                 SameKeyReconstructionSummary = $"重建完成：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。输出：{result.OutputDirectory}";
                 LogService.Info($"修复 patch 完成：Mod={source.Metadata.Name}，Unit={result.OutputUnitCount}，替换Mesh={result.ReplacementMeshCount}，极小化Mesh={result.MinifiedMeshCount}，输出={result.OutputDirectory}。");
-                _notifications?.Show("Same-key 重建结果已写入 Output 文件夹。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                if (bridge is null) _notifications?.Show("Same-key 重建结果已写入 Output 文件夹。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException or KeyNotFoundException)
             {
                 SameKeyReconstructionSummary = $"重建失败：{exception.Message}";
                 LogService.Error($"修复 patch 异常：Mod={source.Metadata.Name}，输出={destination}，错误={exception}");
-                _notifications?.Show(SameKeyReconstructionSummary, NotificationLevel.Error, TimeSpan.FromSeconds(12));
+                if (task is null) _notifications?.Show(SameKeyReconstructionSummary, NotificationLevel.Error, TimeSpan.FromSeconds(12));
+            }
+            catch (OperationCanceledException)
+            {
+                SameKeyReconstructionSummary = "重建已取消。";
+                if (task is null) _notifications?.Show("Same-key 重建已取消。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
             }
             finally
             {
@@ -1103,7 +1118,6 @@ namespace HD2ModManager.ViewModels
                 if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenCrossArmorPlan(viewModel);
                 return;
             }
-
             await dispatcher.InvokeAsync(() =>
             {
                 if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenCrossArmorPlan(viewModel);

@@ -7,5 +7,6 @@ public interface ISameKeyReconstructionPlanningService
 {
 	ValueTask<SameKeyReconstructionPlan> CreatePlanAsync(
 		SameKeyReconstructionRequest request,
-		CancellationToken cancellationToken = default);
+		CancellationToken cancellationToken = default,
+		IProgress<SameKeyPlanningProgress>? progress = null);
 }

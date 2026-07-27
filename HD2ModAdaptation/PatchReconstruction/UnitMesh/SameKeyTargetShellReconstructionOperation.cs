@@ -1,11 +1,27 @@
+using System.Diagnostics;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle;
 
 // Purpose: Executes an approved same-key target-shell reconstruction entirely within the Patch/Unit binary adaptation layer.
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh;
 
-public sealed class SameKeyTargetShellReconstructionOperation
+public interface ISameKeyTargetShellReconstructionOperation
 {
+	ValueTask<SameKeyTargetShellReconstructionResult> ExecuteAsync(
+		SameKeyTargetShellReconstructionRequest request,
+		CancellationToken cancellationToken = default);
+}
+
+public sealed class SameKeyTargetShellReconstructionOperation : ISameKeyTargetShellReconstructionOperation
+{
+	// Purpose: Reports coarse same-key reconstruction boundaries without exposing payload-level activity.
+	public const string InspectEligibilityStageId = "InspectEligibility";
+	public const string LoadFactsStageId = "LoadFacts";
+	public const string PlanStageId = "Plan";
+	public const string BuildCandidateStageId = "BuildCandidate";
+	public const string WriteCandidateStageId = "WriteCandidate";
+	public const string ValidateCandidateStageId = "ValidateCandidate";
+	public const string FinalizeStageId = "Finalize";
 	private const ulong CompositeUnitTypeId = 0xc4f0f4be7fb0c8d6;
 	private readonly PatchTocScanner scanner;
 	private readonly PatchUnitMeshReader unitReader;
@@ -34,6 +50,7 @@ public sealed class SameKeyTargetShellReconstructionOperation
 	{
 		ArgumentNullException.ThrowIfNull(request);
 		request.Validate();
+		request.Progress?.Invoke(LoadFactsStageId, 0, request.Units.Count);
 		var sourceEntries = request.PreparedSourceEntries is { Count: > 0 }
 			? request.PreparedSourceEntries
 			: await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
@@ -41,7 +58,10 @@ public sealed class SameKeyTargetShellReconstructionOperation
 		var sourceUnits = new Dictionary<AssetKey, PatchUnitMesh>();
 		foreach (var entry in sourceEntries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
 		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var stopwatch = Stopwatch.StartNew();
 			sourceUnits.Add(entry.AssetKey, await unitReader.ReadAsync(entry, sourceEntries, cancellationToken: cancellationToken).ConfigureAwait(false));
+			request.Performance?.Invoke("LoadFacts.SourceUnit", entry.AssetKey, stopwatch.Elapsed);
 		}
 		if (sourceUnits.Count != request.Units.Count || !sourceUnits.Keys.ToHashSet().SetEquals(expectedSourceKeys))
 		{
@@ -54,11 +74,20 @@ public sealed class SameKeyTargetShellReconstructionOperation
 		foreach (var unit in request.Units)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
+			var stopwatch = Stopwatch.StartNew();
 			var target = await targetReader.ReadAsync(unit.TargetArchiveId, unit.UnitAssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
 			workItems.Add(new SdkStyleTargetShellPatchWorkItem(target, new[] { sourceUnits[unit.UnitAssetKey] }, unit.MeshMappings));
+			request.Performance?.Invoke("LoadFacts.TargetUnit", unit.UnitAssetKey, stopwatch.Elapsed);
+			request.Progress?.Invoke(LoadFactsStageId, workItems.Count, request.Units.Count);
 		}
 
-		var output = outputBuilder.Build(workItems);
+		cancellationToken.ThrowIfCancellationRequested();
+		request.Progress?.Invoke(BuildCandidateStageId, 0, workItems.Count);
+		var output = outputBuilder.Build(workItems, cancellationToken, (completed, total) =>
+		{
+			request.Progress?.Invoke(BuildCandidateStageId, completed, total);
+		}, (unitAssetKey, elapsed) => request.Performance?.Invoke("BuildCandidate.Unit", unitAssetKey, elapsed));
+		cancellationToken.ThrowIfCancellationRequested();
 		if (!output.ReplacedSourceUnitAssetKeys.ToHashSet().SetEquals(sourceUnits.Keys))
 		{
 			throw new InvalidDataException("Reconstruction must replace every old source Unit; refusing to preserve obsolete Unit data.");
@@ -75,9 +104,13 @@ public sealed class SameKeyTargetShellReconstructionOperation
 			preserveOriginalStream: true,
 			headerTemplateTocData: headerTemplate.Data,
 			cancellationToken: cancellationToken).ConfigureAwait(false);
-		var verificationErrors = await VerifyOutputAsync(write.TocFilePath, output, removals, cancellationToken).ConfigureAwait(false);
+		cancellationToken.ThrowIfCancellationRequested();
+		request.Progress?.Invoke(WriteCandidateStageId, 1, 1);
+		cancellationToken.ThrowIfCancellationRequested();
+		request.Progress?.Invoke(ValidateCandidateStageId, 0, 1);
+		var verificationErrors = await VerifyOutputAsync(write.TocFilePath, output, removals, request.Progress, request.Performance, cancellationToken).ConfigureAwait(false);
 		if (verificationErrors.Count != 0) throw new InvalidDataException(string.Join(Environment.NewLine, verificationErrors));
-
+		request.Progress?.Invoke(ValidateCandidateStageId, 1, 1);
 		return new SameKeyTargetShellReconstructionResult(
 			write,
 			output.UnitResults.Count,
@@ -103,7 +136,7 @@ public sealed class SameKeyTargetShellReconstructionOperation
 		return unitEntries.Concat(sourceEntries.Where(entry => entry.AssetKey.TypeId == CompositeUnitTypeId && compositeIds.Contains(entry.AssetKey.FileId))).ToArray();
 	}
 
-	private async ValueTask<IReadOnlyList<string>> VerifyOutputAsync(string outputTocPath, SdkStyleTargetShellPatchOutput output, IReadOnlyCollection<PatchTocEntry> removals, CancellationToken cancellationToken)
+	private async ValueTask<IReadOnlyList<string>> VerifyOutputAsync(string outputTocPath, SdkStyleTargetShellPatchOutput output, IReadOnlyCollection<PatchTocEntry> removals, Action<string, long, long>? progress, Action<string, AssetKey, TimeSpan>? performance, CancellationToken cancellationToken)
 	{
 		var errors = new List<string>();
 		var entries = await scanner.ScanEntriesAsync(outputTocPath, cancellationToken).ConfigureAwait(false);
@@ -125,8 +158,11 @@ public sealed class SameKeyTargetShellReconstructionOperation
 			if ((ulong)streamLength < entry.StreamOffset + entry.StreamSize) errors.Add($"Asset 0x{entry.AssetKey.FileId:x16} 的 stream 范围超出输出 sidecar。");
 			if ((ulong)gpuLength < entry.GpuResourceOffset + entry.GpuResourceSize) errors.Add($"Asset 0x{entry.AssetKey.FileId:x16} 的 gpu_resources 范围超出输出 sidecar。");
 		}
+		var verifiedUnits = 0;
 		foreach (var unit in output.UnitResults)
 		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var stopwatch = Stopwatch.StartNew();
 			var entry = entries.SingleOrDefault(candidate => candidate.AssetKey == unit.TargetUnitAssetKey);
 			if (entry is null) { errors.Add($"输出缺少 Unit 0x{unit.TargetUnitAssetKey.FileId:x16}。"); continue; }
 			var readback = await unitReader.ReadAsync(entry, entries, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -138,6 +174,8 @@ public sealed class SameKeyTargetShellReconstructionOperation
 				var actual = readback.Model.BoneInfos[boneIndex];
 				if (!expected.RealIndices.SequenceEqual(actual.RealIndices) || !expected.BoneMatrices.SelectMany(matrix => matrix).SequenceEqual(actual.BoneMatrices.SelectMany(matrix => matrix)) || !expected.Remaps.SelectMany(remap => remap.FakeIndices).SequenceEqual(actual.Remaps.SelectMany(remap => remap.FakeIndices))) errors.Add($"Unit 0x{unit.TargetUnitAssetKey.FileId:x16} BoneInfo {boneIndex} failed readback verification.");
 			}
+			progress?.Invoke(ValidateCandidateStageId, ++verifiedUnits, output.UnitResults.Count);
+			performance?.Invoke("ValidateCandidate.Unit", unit.TargetUnitAssetKey, stopwatch.Elapsed);
 		}
 		return errors;
 	}
@@ -150,6 +188,8 @@ public sealed record SameKeyTargetShellReconstructionRequest(
 	IReadOnlyList<SameKeyTargetShellReconstructionUnit> Units,
 	IReadOnlyList<PatchTocEntry>? PreparedSourceEntries = null)
 {
+	public Action<string, long, long>? Progress { get; init; }
+	public Action<string, AssetKey, TimeSpan>? Performance { get; init; }
 	public void Validate()
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(SourcePatchTocPath);

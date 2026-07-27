@@ -13,6 +13,7 @@ using AdaptationPatchUnitMesh = HD2ModAdaptation.PatchReconstruction.UnitMesh.Pa
 using AdaptationPatchUnitMeshReader = HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader;
 using AdaptationCrossArmorTargetShellPatchOperation = HD2ModAdaptation.PatchReconstruction.UnitMesh.CrossArmorTargetShellPatchOperation;
 using AdaptationCrossArmorTargetShellPatchOperationRequest = HD2ModAdaptation.PatchReconstruction.UnitMesh.CrossArmorTargetShellPatchOperationRequest;
+using AdaptationCrossArmorTargetShellPatchOperationResult = HD2ModAdaptation.PatchReconstruction.UnitMesh.CrossArmorTargetShellPatchOperationResult;
 using AdaptationSdkStyleTargetShellPatchWorkItem = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.SdkStyleTargetShellPatchWorkItem;
 using AdaptationTargetShellMeshMapping = HD2ModAdaptation.PatchReconstruction.UnitMesh.TargetShellMeshMapping;
 using AdaptationCrossArmorBoneDiagnosticAnalyzer = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.CrossArmorBoneDiagnosticAnalyzer;
@@ -24,7 +25,6 @@ using AdaptationTargetBakeDryRunAnalyzer = HD2ModAdaptation.PatchReconstruction.
 using AdaptationCurrentGameStreamLayoutRegistry = HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle.ICurrentGameStreamLayoutRegistry;
 
 namespace HD2ModCore.Infrastructure;
-
 // Purpose: Rebuilds current target shells from an approved cross-armor plan into an isolated test Patch.
 public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCandidateService
 {
@@ -53,12 +53,15 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 		var performancePath = Path.Combine(request.OutputDirectory, "cross-armor-performance.jsonl");
 		var totalStopwatch = Stopwatch.StartNew();
 		var wroteDiagnostics = false;
+		AdaptationCrossArmorTargetShellPatchOperationResult? execution = null;
 		var outputTransferLayoutDiagnostics = new List<object>();
+		cancellationToken.ThrowIfCancellationRequested();
 		if (!request.Plan.CanContinue) return Failure("PlanNotReady", "当前计划尚不可写出；请先选择来源、目标并排除所有错误。", issues);
 		if (!File.Exists(request.SourcePatchTocPath)) return Failure("SourcePatchMissing", "源 Patch 主文件不存在。", issues);
 		if (!Directory.Exists(request.GameDataDirectory)) return Failure("GameDataMissing", "Game Data 文件夹不存在。", issues);
 		try
 		{
+			cancellationToken.ThrowIfCancellationRequested();
 			Directory.CreateDirectory(request.OutputDirectory);
 			if (File.Exists(performancePath)) File.Delete(performancePath);
 			await ReportProgressAsync(request, performancePath, "正在读取游戏索引", 0, 1, totalStopwatch, cancellationToken).ConfigureAwait(false);
@@ -108,6 +111,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			var outputBuildDuration = TimeSpan.Zero;
 			for (var batchIndex = 0; batchIndex < batches.Length; batchIndex++)
 			{
+				cancellationToken.ThrowIfCancellationRequested();
 				var batch = batches[batchIndex];
 				stageStopwatch.Restart();
 				await ReportProgressAsync(request, performancePath, "正在重建目标 Unit", batchIndex, batches.Length, totalStopwatch, cancellationToken).ConfigureAwait(false);
@@ -118,6 +122,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 				var batchDiagnosticsDuration = TimeSpan.Zero;
 				foreach (var group in batch)
 				{
+					cancellationToken.ThrowIfCancellationRequested();
 					var targetArchiveId = FindTargetArchiveId(request.Plan, group.First().PhysicalTarget);
 					if (targetArchiveId is null) throw new InvalidDataException($"目标 Unit 0x{group.Key.FileId:x16} 未关联到所选目标 archive。");
 					var targetKey = ToAdaptationKey(group.Key);
@@ -138,6 +143,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 					operationStopwatch.Restart();
 					foreach (var mapping in effectiveUnitMappings)
 					{
+						cancellationToken.ThrowIfCancellationRequested();
 					var targetBake = targetBakeCompatibilityAnalyzer.Analyze(targetUnit.Model, mapping.TargetMeshInfoIndex, sourceUnits[mapping.SourceUnitAssetKey].Model, mapping.SourceMeshInfoIndex, avatarRig);
 						batchDiagnosticLines.Add(JsonSerializer.Serialize(new
 					{
@@ -201,7 +207,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 					wroteDiagnostics = true;
 				}
 				var outputBuildStopwatch = Stopwatch.StartNew();
-				batchOutputs.Add(patchOperation.BuildOutput(workItems, allowedMaterialIds, avatarRig.TransformInfo.NameHashes, streamLayoutRegistry));
+				batchOutputs.Add(patchOperation.BuildOutput(workItems, allowedMaterialIds, avatarRig.TransformInfo.NameHashes, streamLayoutRegistry, cancellationToken));
 				var batchOutputBuildDuration = outputBuildStopwatch.Elapsed;
 				targetReadDuration += batchTargetReadDuration;
 				modelPreparationDuration += batchModelPreparationDuration;
@@ -222,8 +228,10 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			var headerTemplate = await resolver.GetPackageTocAsync(headerArchiveId, cancellationToken).ConfigureAwait(false)
 				?? throw new FileNotFoundException("无法读取所选目标 archive 的 current TOC。", headerArchiveId);
 			var combinedOutput = CombineBatchOutputs(batchOutputs);
+			var validationGroups = replacementMappings.GroupBy(mapping => mapping.PhysicalTarget.UnitAssetKey).ToArray();
+			cancellationToken.ThrowIfCancellationRequested();
 			stageStopwatch.Restart();
-			var execution = await patchOperation.ExecuteOutputAsync(new AdaptationCrossArmorTargetShellPatchOperationRequest(
+			execution = await patchOperation.ExecuteOutputAsync(new AdaptationCrossArmorTargetShellPatchOperationRequest(
 				request.SourcePatchTocPath,
 				request.OutputDirectory,
 				headerTemplate.Data,
@@ -233,62 +241,103 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 				allowedMaterialIds,
 				sourceEntries,
 				avatarRig.TransformInfo.NameHashes,
-				streamLayoutRegistry), combinedOutput, cancellationToken).ConfigureAwait(false);
-			await WritePerformanceAsync(performancePath, "写入最终 Patch", stageStopwatch.Elapsed, cancellationToken).ConfigureAwait(false);
-			stageStopwatch.Restart();
-			var validationGroups = replacementMappings.GroupBy(mapping => mapping.PhysicalTarget.UnitAssetKey).ToArray();
-			await ReportProgressAsync(request, performancePath, "正在回读验证输出", 0, validationGroups.Length, totalStopwatch, cancellationToken).ConfigureAwait(false);
-			var outputEntries = await scanner.ScanEntriesAsync(execution.WriteResult.TocFilePath, cancellationToken).ConfigureAwait(false);
-			for (var groupIndex = 0; groupIndex < validationGroups.Length; groupIndex++)
+				streamLayoutRegistry)
 			{
-				var group = validationGroups[groupIndex];
-				var targetKey = ToAdaptationKey(group.Key);
-				var outputEntry = outputEntries.SingleOrDefault(entry => entry.AssetKey == targetKey)
-					?? throw new InvalidDataException($"输出 Patch 缺少目标 Unit 0x{targetKey.FileId:x16}。" );
-				var outputUnit = await unitReader.ReadAsync(outputEntry, outputEntries, cancellationToken: cancellationToken).ConfigureAwait(false);
-				EnsureOutputStreamAbi(outputUnit.Model, targetKey);
-				foreach (var mapping in group)
-				{
-					var sourceKey = ToAdaptationKey(mapping.Source!.UnitAssetKey);
-					var sourceUnit = sourceUnits[sourceKey];
-					var targetRawMesh = outputUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.PhysicalTarget.MeshInfoIndex);
-					var sourceFamily = ResolveSourceGeometryFamily(sourceUnit.Model, mapping.Source.MeshInfoIndex);
-					var sourceRawMesh = targetRawMesh.LodIndex is >= 0 and <= 3 && sourceFamily.Lod0 is { } sourceLod0
-						? sourceFamily.Meshes.SingleOrDefault(mesh => mesh.LodIndex == targetRawMesh.LodIndex) ?? sourceLod0
-						: sourceUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.Source.MeshInfoIndex);
-					EnsureOutputPreservesSourceVertexColor(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
-					EnsureOutputPreservesSourceGeometry(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
-					outputTransferLayoutDiagnostics.Add(CreateTransferLayoutDiagnostic(
-						targetKey,
-						mapping.PhysicalTarget.MeshInfoIndex,
-						sourceKey,
-						sourceRawMesh.MeshInfoIndex,
-						outputUnit.Model,
-						sourceUnit.Model));
-				}
-				if ((groupIndex + 1) % 16 == 0 || groupIndex + 1 == validationGroups.Length)
-					await ReportProgressAsync(request, performancePath, "正在回读验证输出", groupIndex + 1, validationGroups.Length, totalStopwatch, cancellationToken).ConfigureAwait(false);
-			}
-			await WritePerformanceAsync(performancePath, "回读验证输出", stageStopwatch.Elapsed, cancellationToken).ConfigureAwait(false);
-			var reportPath = await WriteReportAsync(request, execution.WriteResult.TocFilePath, execution.Output, Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), outputTransferLayoutDiagnostics, requestedMaterialIds, materialDependencies, cancellationToken).ConfigureAwait(false);
+				PreCommitValidation = (stagedTocPath, validationToken) => ValidateOutputAsync(
+					stagedTocPath, validationGroups, sourceUnits, outputTransferLayoutDiagnostics, request, validationToken)
+			}, combinedOutput, cancellationToken).ConfigureAwait(false);
+			await WritePerformanceAsync(performancePath, "写入最终 Patch", stageStopwatch.Elapsed, cancellationToken).ConfigureAwait(false);
+			var reportPath = await WriteReportAsync(request, execution!.WriteResult.TocFilePath, execution.Output, Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), outputTransferLayoutDiagnostics, requestedMaterialIds, materialDependencies, cancellationToken).ConfigureAwait(false);
 			await WritePerformanceAsync(performancePath, "总耗时", totalStopwatch.Elapsed, cancellationToken).ConfigureAwait(false);
 			await ReportProgressAsync(request, performancePath, "生成完成", 1, 1, totalStopwatch, cancellationToken).ConfigureAwait(false);
-			return new CrossArmorTransferCandidateResult(true, request.OutputDirectory, reportPath, execution.Output.UnitResults.Count, execution.Output.UnitResults.Sum(result => result.ReplacementCount), execution.Output.UnitResults.Sum(result => result.MinifiedCount), issues);
+			return new CrossArmorTransferCandidateResult(true, request.OutputDirectory, reportPath, execution.Output.UnitResults.Count, execution.Output.UnitResults.Sum(result => result.ReplacementCount), execution.Output.UnitResults.Sum(result => result.MinifiedCount), issues) { IsCommitted = true, HasWarnings = issues.Any(issue => issue.Severity == CoreIssueSeverity.Warning) };
 		}
-		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException or OverflowException)
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
+			if (execution is not null && execution.Ownership.IsCommitted)
+			{
+				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "CommittedAfterCancellation", "输出已提交；提交后的取消请求未改变结果，但报告可能不完整。"));
+				return new CrossArmorTransferCandidateResult(true, request.OutputDirectory, null, execution.Output.UnitResults.Count, execution.Output.UnitResults.Sum(result => result.ReplacementCount), execution.Output.UnitResults.Sum(result => result.MinifiedCount), issues) { IsCommitted = true, HasWarnings = true };
+			}
+			if (execution is not null) patchOperation.CleanupIncompleteOutput(execution);
+			await MarkCanceledOutputAsync(request.OutputDirectory).ConfigureAwait(false);
+			throw;
+		}
+		catch (Exception exception)
+		{
+			if (execution is not null && execution.Ownership.IsCommitted)
+			{
+				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "CommittedReportIncomplete", $"输出已提交，但报告或性能日志不完整：{exception.Message}"));
+				return new CrossArmorTransferCandidateResult(true, request.OutputDirectory, null, execution.Output.UnitResults.Count, execution.Output.UnitResults.Sum(result => result.ReplacementCount), execution.Output.UnitResults.Sum(result => result.MinifiedCount), issues) { IsCommitted = true, HasWarnings = true };
+			}
+			if (execution is not null) patchOperation.CleanupIncompleteOutput(execution);
 			if (wroteDiagnostics && !string.IsNullOrWhiteSpace(request.OutputDirectory))
 			{
 				Directory.CreateDirectory(request.OutputDirectory);
 				await WriteFailureDiagnosticAsync(request.OutputDirectory, exception, Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), Array.Empty<object>(), request.Plan, cancellationToken).ConfigureAwait(false);
 			}
-			return Failure("CrossArmorWriteFailed", exception.Message, issues, request.OutputDirectory);
+			var issueCode = exception is HD2ModAdaptation.PatchReconstruction.UnitMesh.CrossArmorOverwriteNotAllowedException
+				? "CrossArmorOverwriteNotAllowed"
+				: "CrossArmorWriteFailed";
+			return Failure(issueCode, exception.Message, issues, request.OutputDirectory);
+		}
+	}
+
+	private static async Task MarkCanceledOutputAsync(string outputDirectory)
+	{
+		if (string.IsNullOrWhiteSpace(outputDirectory)) return;
+		Directory.CreateDirectory(outputDirectory);
+		await File.WriteAllTextAsync(Path.Combine(outputDirectory, "cross-armor-output.canceled"), "Canceled before a complete Patch output was committed." + Environment.NewLine).ConfigureAwait(false);
+	}
+
+	private async ValueTask ValidateOutputAsync(
+		string tocPath,
+		IGrouping<AssetKey, CrossArmorTransferMapping>[] validationGroups,
+		IReadOnlyDictionary<AdaptationAssetKey, AdaptationPatchUnitMesh> sourceUnits,
+		List<object> outputTransferLayoutDiagnostics,
+		CrossArmorTransferCandidateRequest request,
+		CancellationToken cancellationToken)
+	{
+		var outputEntries = await scanner.ScanEntriesAsync(tocPath, cancellationToken).ConfigureAwait(false);
+		for (var groupIndex = 0; groupIndex < validationGroups.Length; groupIndex++)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var group = validationGroups[groupIndex];
+			var targetKey = ToAdaptationKey(group.Key);
+			var outputEntry = outputEntries.SingleOrDefault(entry => entry.AssetKey == targetKey)
+				?? throw new InvalidDataException($"输出 Patch 缺少目标 Unit 0x{targetKey.FileId:x16}。" );
+			var outputUnit = await unitReader.ReadAsync(outputEntry, outputEntries, cancellationToken: cancellationToken).ConfigureAwait(false);
+			EnsureOutputStreamAbi(outputUnit.Model, targetKey);
+			foreach (var mapping in group)
+			{
+				var sourceKey = ToAdaptationKey(mapping.Source!.UnitAssetKey);
+				var sourceUnit = sourceUnits[sourceKey];
+				var targetRawMesh = outputUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.PhysicalTarget.MeshInfoIndex);
+				var sourceFamily = ResolveSourceGeometryFamily(sourceUnit.Model, mapping.Source.MeshInfoIndex);
+				var sourceRawMesh = targetRawMesh.LodIndex is >= 0 and <= 3 && sourceFamily.Lod0 is { } sourceLod0
+					? sourceFamily.Meshes.SingleOrDefault(mesh => mesh.LodIndex == targetRawMesh.LodIndex) ?? sourceLod0
+					: sourceUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.Source.MeshInfoIndex);
+				EnsureOutputPreservesSourceVertexColor(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
+				EnsureOutputPreservesSourceGeometry(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
+				outputTransferLayoutDiagnostics.Add(CreateTransferLayoutDiagnostic(targetKey, mapping.PhysicalTarget.MeshInfoIndex, sourceKey, sourceRawMesh.MeshInfoIndex, outputUnit.Model, sourceUnit.Model));
+			}
+			request.Progress?.Report(new CrossArmorTransferProgress("ValidateOutput", "正在回读验证输出", groupIndex + 1, validationGroups.Length, TimeSpan.Zero));
 		}
 	}
 
 	private static async ValueTask ReportProgressAsync(CrossArmorTransferCandidateRequest request, string performancePath, string stage, int completed, int total, Stopwatch stopwatch, CancellationToken cancellationToken)
 	{
-		request.Progress?.Report(new CrossArmorTransferProgress(stage, completed, total, stopwatch.Elapsed));
+		var stageId = stage switch
+		{
+			"正在读取游戏索引" => "LoadGameIndex",
+			"正在准备来源与材质依赖" => "PrepareSourceAndMaterials",
+			"正在重建目标 Unit" => "RebuildTargetBatch",
+			"正在写入最终 Patch" => "WriteFinalPatch",
+			"正在回读验证输出" => "ValidateOutput",
+			"生成完成" => "Finalize",
+			_ => "WriteReport"
+		};
+		request.Progress?.Report(new CrossArmorTransferProgress(stageId, stage, completed, total, stopwatch.Elapsed));
 		await AppendPerformanceEventAsync(performancePath, stage, "Progress", stopwatch.Elapsed, completed, total, cancellationToken).ConfigureAwait(false);
 	}
 

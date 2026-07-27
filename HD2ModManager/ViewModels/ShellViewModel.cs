@@ -233,7 +233,7 @@ namespace HD2ModManager.ViewModels
             catch (Exception exception)
             {
                 LogService.Error($"启动模组库元数据加载失败：{exception}");
-                await System.Windows.Application.Current!.Dispatcher.InvokeAsync(() =>
+                _ = System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
                     _notificationService.Show("已启动，但模组库元数据加载失败；可在库页刷新后重试。", NotificationLevel.Warning, TimeSpan.FromSeconds(8)));
             }
         }
@@ -449,7 +449,7 @@ namespace HD2ModManager.ViewModels
             LeftPageType = WorkspacePageType.CrossArmorPlan;
             RightPageType = WorkspacePageType.CrossArmorPlan;
             LeftPage = plan;
-            plan.AttachCandidateOutput(new CrossArmorCandidateOutputPageViewModel(plan, _notificationService));
+            plan.AttachCandidateOutput(new CrossArmorCandidateOutputPageViewModel(plan, _notificationService, _backgroundTasks));
             RightPage = null;
             UpdateModeFromSlots();
             RaiseSlotFlags();
@@ -650,12 +650,12 @@ namespace HD2ModManager.ViewModels
                 {
                     SettingsService.SetLastAssetMetadataCheckUtc(DateTime.UtcNow);
                     task.MarkCompleted();
-                    _ = System.Windows.Application.Current.Dispatcher.InvokeAsync(() => _notificationService.Show("资产信息已自动更新", NotificationLevel.Info, TimeSpan.FromSeconds(4)));
+                    _ = System.Windows.Application.Current?.Dispatcher.InvokeAsync(() => _notificationService.Show("资产信息已自动更新", NotificationLevel.Info, TimeSpan.FromSeconds(4)));
                 }
                 else
                 {
                     task.MarkFailed(result.ErrorMessage ?? "未知错误");
-                    _ = System.Windows.Application.Current.Dispatcher.InvokeAsync(() => _notificationService.Show($"资产信息自动更新失败：{result.ErrorMessage}", NotificationLevel.Warning, TimeSpan.FromSeconds(6)));
+                    RefreshOnUiThread(() => _notificationService.Show($"资产信息自动更新失败：{result.ErrorMessage}", NotificationLevel.Warning, TimeSpan.FromSeconds(6)));
                 }
             }
             catch (OperationCanceledException)
@@ -666,7 +666,7 @@ namespace HD2ModManager.ViewModels
             catch (Exception ex)
             {
                 task.MarkFailed(ex.Message);
-                _ = System.Windows.Application.Current.Dispatcher.InvokeAsync(() => _notificationService.Show($"资产信息自动更新失败：{ex.Message}", NotificationLevel.Warning, TimeSpan.FromSeconds(6)));
+                RefreshOnUiThread(() => _notificationService.Show($"资产信息自动更新失败：{ex.Message}", NotificationLevel.Warning, TimeSpan.FromSeconds(6)));
             }
         }
 
@@ -1141,8 +1141,8 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection, _bottomBar),
                 WorkspacePageType.Library => CreateLibraryPage(),
                 WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _backgroundTasks),
-                WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),
-                WorkspacePageType.AdvancedModDetails => new AdvancedModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService),
+                WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
+                WorkspacePageType.AdvancedModDetails => new AdvancedModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
                 WorkspacePageType.GameDataBrowser => new GameDataBrowserPageViewModel(_libraryService, _profileService, _derivedState.InformationCenter),
                 WorkspacePageType.GameDataArchiveDetails => new GameDataArchiveDetailsHostPageViewModel(null),
                 WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),

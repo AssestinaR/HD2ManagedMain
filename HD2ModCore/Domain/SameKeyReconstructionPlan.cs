@@ -16,6 +16,15 @@ public sealed record SameKeyReconstructionRequest(
 	}
 }
 
+// Purpose: Reports internal planning boundaries so slow source/target Units can be identified without exposing binary parsing to the UI.
+public sealed record SameKeyPlanningProgress(
+	string StageId,
+	string StageText,
+	long Completed,
+	long Total,
+	string? UnitAssetKey = null,
+	TimeSpan? Elapsed = null);
+
 public sealed record SameKeyReconstructionPlan(
 	SameKeyReconstructionRequest Request,
 	IReadOnlyList<SameKeyUnitReconstructionPlan> Units,

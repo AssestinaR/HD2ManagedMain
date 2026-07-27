@@ -9,5 +9,7 @@ public interface IModRepairBatchService
         IReadOnlyList<ModNode> sourceNodes,
         string modsRootDirectory,
         string gameDataDirectory,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IProgress<OperationProgressEvent>? progress = null,
+        Guid? operationId = null);
 }

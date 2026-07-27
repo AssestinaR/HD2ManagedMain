@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
@@ -36,7 +37,8 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 
 	public async ValueTask<SameKeyReconstructionPlan> CreatePlanAsync(
 		SameKeyReconstructionRequest request,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		IProgress<SameKeyPlanningProgress>? progress = null)
 	{
 		ArgumentNullException.ThrowIfNull(request);
 		request.Validate();
@@ -55,8 +57,10 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 			.OrderBy(entry => entry.AssetKey.FileId)
 			.Take(request.MaxSourceUnitCount ?? int.MaxValue)
 			.ToArray();
+		progress?.Report(new SameKeyPlanningProgress("Plan.ReadSourceEntries", "计划：来源 Unit 目录已读取", 1, 1));
 		var archiveMatches = await assetIndex.FindAssetArchivesAsync(
 			sourceUnits.Select(entry => ToCoreKey(entry.AssetKey)).ToHashSet(), cancellationToken).ConfigureAwait(false);
+		progress?.Report(new SameKeyPlanningProgress("Plan.ResolveArchives", "计划：current target archive 已解析", 1, 1));
 		var archivesByKey = archiveMatches.ToDictionary(match => match.AssetKey, match => OrderArchives(match.Archives));
 		var unitPlans = new List<SameKeyUnitReconstructionPlan>(sourceUnits.Length);
 		var sourceReader = new AdaptationPatchUnitMeshReader();
@@ -65,6 +69,7 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 		foreach (var sourceEntry in sourceUnits)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
+			var unitKeyText = $"0x{sourceEntry.AssetKey.FileId:x16}";
 			var issues = new List<CoreIssue>();
 			var coreSourceKey = ToCoreKey(sourceEntry.AssetKey);
 			archivesByKey.TryGetValue(coreSourceKey, out var matchingArchives);
@@ -78,7 +83,10 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 			AdaptationPatchUnitMesh sourceUnit;
 			try
 			{
+				var sourceReadStopwatch = Stopwatch.StartNew();
+				progress?.Report(new SameKeyPlanningProgress("Plan.ReadSourceUnit", "计划：正在读取来源 Unit", 0, sourceUnits.Length, unitKeyText));
 				sourceUnit = await sourceReader.ReadAsync(sourceEntry, sourceEntries, cancellationToken: cancellationToken).ConfigureAwait(false);
+				progress?.Report(new SameKeyPlanningProgress("Plan.ReadSourceUnit", "计划：来源 Unit 已读取", 1, sourceUnits.Length, unitKeyText, sourceReadStopwatch.Elapsed));
 			}
 			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException)
 			{
@@ -94,11 +102,14 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 			{
 				try
 				{
+					var targetReadStopwatch = Stopwatch.StartNew();
+					progress?.Report(new SameKeyPlanningProgress("Plan.ReadTargetUnit", "计划：正在读取 current target Unit", 0, sourceUnits.Length, unitKeyText));
 					targetUnit = await targetReader.ReadAsync(
 						archive.ArchiveId,
 						new AdaptationAssetKey(sourceEntry.AssetKey.TypeId, sourceEntry.AssetKey.FileId),
 						allowGlobalDependencySearch: true,
 						cancellationToken: cancellationToken).ConfigureAwait(false);
+					progress?.Report(new SameKeyPlanningProgress("Plan.ReadTargetUnit", "计划：current target Unit 已读取", 1, sourceUnits.Length, unitKeyText, targetReadStopwatch.Elapsed));
 					selectedArchive = archive;
 					break;
 				}
@@ -115,8 +126,10 @@ public sealed class SameKeyReconstructionPlanningService : ISameKeyReconstructio
 				continue;
 			}
 
+			var stopwatch = Stopwatch.StartNew();
 			var targetShellPlan = planningOperation.CreatePlan(sourceUnit, targetUnit);
 			var adaptation = CreateCorePlan(sourceEntry, selectedArchive, targetShellPlan, sourceUnit, targetUnit);
+			progress?.Report(new SameKeyPlanningProgress("Plan.BuildUnitPlan", "计划：Unit 映射已生成", 1, sourceUnits.Length, unitKeyText, stopwatch.Elapsed));
 			var evidence = BuildMeshEvidence(sourceUnit, targetUnit, adaptation);
 			var targetMeshCount = targetUnit.Model.RawMeshData.Count;
 			var coveredTargetMeshCount = adaptation.Steps

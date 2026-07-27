@@ -1,4 +1,5 @@
 using HD2ModAdaptation.Analysis;
+using HD2ModCore.Application;
 
 namespace HD2ModCore.Domain;
 
@@ -98,7 +99,57 @@ public sealed record CrossArmorTransferCandidateRequest(
 	IProgress<CrossArmorTransferProgress>? Progress = null);
 
 // Purpose: Provides stage timing and bounded-work progress during cross-armor candidate generation.
-public sealed record CrossArmorTransferProgress(string Stage, int Completed, int Total, TimeSpan Elapsed);
+public sealed record CrossArmorTransferProgress
+{
+	// Purpose: Exposes a stable machine identifier separately from safe user-facing stage text.
+	public string Stage { get; }
+	public string StageId => Stage;
+	public string StageText { get; }
+	public int Completed { get; }
+	public int Total { get; }
+	public TimeSpan Elapsed { get; }
+
+	public CrossArmorTransferProgress(string stage, int completed, int total, TimeSpan elapsed)
+		: this(stage, stage, completed, total, elapsed)
+	{
+	}
+
+	public CrossArmorTransferProgress(string stageId, string stageText, int completed, int total, TimeSpan elapsed)
+	{
+		if (string.IsNullOrWhiteSpace(stageId)) throw new ArgumentException("阶段 ID 不能为空。", nameof(stageId));
+		if (completed < 0) throw new ArgumentOutOfRangeException(nameof(completed));
+		if (total < 0) throw new ArgumentOutOfRangeException(nameof(total));
+		if (total > 0 && completed > total) throw new ArgumentOutOfRangeException(nameof(completed));
+		if (elapsed < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(elapsed));
+		Stage = stageId;
+		StageText = string.IsNullOrWhiteSpace(stageText) ? stageId : stageText;
+		Completed = completed;
+		Total = total;
+		Elapsed = elapsed;
+	}
+
+	// Purpose: Adapts the legacy progress payload to the shared operation telemetry contract.
+	public OperationProgressEvent ToOperationProgressEvent(
+		Guid operationId,
+		OperationState state = OperationState.Progress,
+		long sequence = 0,
+		Guid? parentOperationId = null,
+		string? message = null)
+		=> new OperationProgressEvent(
+			operationId,
+			parentOperationId,
+			OperationKind.CrossArmorTransfer,
+			OperationStage.Processing,
+			state,
+			Completed,
+			Total,
+			message ?? StageText,
+			null,
+			DateTimeOffset.UtcNow,
+			sequence,
+			StageId,
+			StageText);
+}
 
 // Purpose: Reports the independent cross-armor candidate output without changing the source Mod or any profile.
 public sealed record CrossArmorTransferCandidateResult(
@@ -108,4 +159,8 @@ public sealed record CrossArmorTransferCandidateResult(
 	int OutputUnitCount,
 	int ReplacementMeshCount,
 	int MinifiedMeshCount,
-	IReadOnlyList<CoreIssue> Issues);
+	IReadOnlyList<CoreIssue> Issues)
+{
+	public bool IsCommitted { get; init; }
+	public bool HasWarnings { get; init; }
+}

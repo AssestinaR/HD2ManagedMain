@@ -8,7 +8,15 @@ public sealed record ModRepairBatchResult(
     int RepairedModCount,
     int SkippedModCount,
     int FailedModCount,
-    IReadOnlyList<ModRepairBatchModResult> Mods)
+    IReadOnlyList<ModRepairBatchModResult> Mods,
+    int StartedModCount = 0,
+    int CanceledModCount = 0,
+    int NotStartedModCount = 0,
+    Guid OperationId = default,
+    DateTimeOffset CreatedUtc = default,
+    DateTimeOffset CompletedUtc = default,
+    bool ManifestWriteFailed = false,
+    string? ManifestIssueCode = null)
 {
     public bool HasRepairs => RepairedModCount > 0;
 }
@@ -21,7 +29,12 @@ public sealed record ModRepairBatchModResult(
     string? Detail,
     string? CandidateDirectory,
     string? BackupDirectory,
-    string? ReportPath);
+    string? ReportPath,
+    string? StageId = null,
+    bool BackupCompleted = false,
+    bool CommitCompleted = false,
+    bool RestoreAttempted = false,
+    bool RestoreCompleted = false);
 
 public enum ModRepairBatchModStatus
 {
@@ -30,4 +43,5 @@ public enum ModRepairBatchModStatus
     CandidateFailed = 2,
     CommitFailed = 3,
     Canceled = 4,
+    NotStarted = 5,
 }

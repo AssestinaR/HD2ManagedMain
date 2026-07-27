@@ -159,18 +159,21 @@ namespace HD2ModManager.ViewModels
 
             IsRepairingOutdatedMods = true;
             var task = _backgroundTasks.Enqueue(BackgroundTaskKind.RepairMods, "批量修复过时 Mod", $"共 {nodes.Length} 个 Mod", origin: "首页维护", userVisibleReason: "重建过时 Unit，并在验证成功后安全替换原始 Patch。", suggestedAction: "完成后将重新分析并重新部署活动配置。");
+            var operationId = Guid.NewGuid();
+            var bridge = new OperationProgressBridge(new BackgroundTaskOperationTarget(task), operationId, SynchronizationContext.Current ?? new SynchronizationContext());
             try
             {
                 task.MarkRunning("正在生成并验证重构候选");
-                var result = await _repairBatch.RepairAsync(nodes, _library.ModsRootDirectory, gameData, task.CancellationToken);
-                task.UpdateStage($"已修复 {result.RepairedModCount}；跳过 {result.SkippedModCount}；失败 {result.FailedModCount}");
-                task.MarkCompleted();
+                var result = await _repairBatch.RepairAsync(nodes, _library.ModsRootDirectory, gameData, task.CancellationToken, new Progress<OperationProgressEvent>(bridge.Apply), operationId);
+                task.UpdateStage($"已修复 {result.RepairedModCount}；跳过 {result.SkippedModCount}；失败 {result.FailedModCount}；取消 {result.CanceledModCount}；未开始 {result.NotStartedModCount}");
+                if (result.CanceledModCount > 0 || result.NotStartedModCount > 0 || task.CancellationToken.IsCancellationRequested) task.MarkCanceled();
+                else task.MarkCompleted();
                 if (result.HasRepairs)
                 {
                     await _library.RefreshDerivedDataAsync(result.Mods.Where(item => item.Status == ModRepairBatchModStatus.Repaired).Select(item => item.NodeId.Value.ToString("N")), task.CancellationToken);
                     if (_profiles.ActiveProfile is not null) _profiles.NotifyActiveModContentChanged();
                 }
-                System.Windows.MessageBox.Show($"批次完成。\n已修复：{result.RepairedModCount}\n跳过：{result.SkippedModCount}\n失败：{result.FailedModCount}\n\n备份与审计清单：{result.BatchDirectory}", "一键修复", System.Windows.MessageBoxButton.OK, result.FailedModCount == 0 ? System.Windows.MessageBoxImage.Information : System.Windows.MessageBoxImage.Warning);
+                System.Windows.MessageBox.Show($"批次完成。\n已修复：{result.RepairedModCount}\n跳过：{result.SkippedModCount}\n失败：{result.FailedModCount}\n取消：{result.CanceledModCount}\n未开始：{result.NotStartedModCount}\n\n备份与审计清单：{result.BatchDirectory}", "一键修复", System.Windows.MessageBoxButton.OK, result.FailedModCount == 0 ? System.Windows.MessageBoxImage.Information : System.Windows.MessageBoxImage.Warning);
             }
             catch (OperationCanceledException)
             {

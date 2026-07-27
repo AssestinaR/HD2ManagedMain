@@ -43,6 +43,7 @@ namespace HD2ModManager.Services
         private double? _progress;
         private bool _isSelected;
         private readonly CancellationTokenSource _cancellation = new();
+        private readonly bool _canCancel;
 
         public string Id { get; } = Guid.NewGuid().ToString("N");
         public BackgroundTaskKind Kind { get; }
@@ -74,7 +75,7 @@ namespace HD2ModManager.Services
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
         public bool IsActive => Status is BackgroundTaskStatus.Queued or BackgroundTaskStatus.Running;
         public CancellationToken CancellationToken => _cancellation.Token;
-        public bool CanCancel => !IsInformationCenter && IsActive;
+        public bool CanCancel => _canCancel && !IsInformationCenter && IsActive;
         public bool CanRetry => !IsInformationCenter && Retry is not null && !IsActive;
         public bool IsInformationCenter { get; }
         public Func<Task>? Retry { get; }
@@ -109,7 +110,8 @@ namespace HD2ModManager.Services
             string? origin = null,
             string? userVisibleReason = null,
             string? suggestedAction = null,
-            Func<Task>? retry = null)
+            Func<Task>? retry = null,
+            bool canCancel = true)
         {
             Kind = kind;
             Name = name;
@@ -119,6 +121,7 @@ namespace HD2ModManager.Services
             SuggestedAction = suggestedAction;
             Retry = retry;
             IsInformationCenter = kind == BackgroundTaskKind.InformationCenter;
+            _canCancel = canCancel;
             _status = BackgroundTaskStatus.Queued;
         }
 
@@ -231,9 +234,10 @@ namespace HD2ModManager.Services
             string? origin = null,
             string? userVisibleReason = null,
             string? suggestedAction = null,
-            Func<Task>? retry = null)
+            Func<Task>? retry = null,
+            bool canCancel = true)
         {
-            var task = new BackgroundTaskItem(kind, name, detail, origin, userVisibleReason, suggestedAction, retry);
+            var task = new BackgroundTaskItem(kind, name, detail, origin, userVisibleReason, suggestedAction, retry, canCancel);
             RunOnUi(() => _tasks.Add(task));
             task.PropertyChanged += OnTaskPropertyChanged;
             return task;

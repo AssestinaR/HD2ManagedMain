@@ -30,6 +30,74 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 	}
 
 	[Fact]
+	public async Task SameKeyOperation_ExecutesRealWriterScanAndUnitReadback()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "same-key-operation-" + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var sourcePath = Path.Combine(root, "source.patch");
+			var gameData = Path.Combine(root, "game");
+			var output = Path.Combine(root, "output");
+			Directory.CreateDirectory(gameData);
+			var model = CreateRealWriterReadbackModel();
+			var written = new UnitMeshWriter().Write(model, CreateRealWriterReadbackToc(model));
+			var key = TargetKey;
+			await WriteMinimalArchiveAsync(sourcePath, key, written.TocData, written.GpuData);
+			await WriteMinimalArchiveAsync(Path.Combine(gameData, "target"), key, written.TocData, written.GpuData);
+
+			var entries = await new PatchTocScanner().ScanEntriesAsync(sourcePath);
+			var progress = new List<(string Stage, long Completed, long Total)>();
+			var request = new SameKeyTargetShellReconstructionRequest(
+				sourcePath,
+				gameData,
+				output,
+				[new SameKeyTargetShellReconstructionUnit(key, "target", [])],
+				entries)
+			{
+				Progress = (stage, completed, total) => progress.Add((stage, completed, total))
+			};
+
+			var result = await new SameKeyTargetShellReconstructionOperation().ExecuteAsync(request);
+
+			Assert.Equal(1, result.UnitCount);
+			Assert.Equal(0, result.ReplacementMeshCount);
+			Assert.Contains(progress, item => item.Stage == SameKeyTargetShellReconstructionOperation.BuildCandidateStageId && item.Completed == 1 && item.Total == 1);
+			var outputEntries = await new PatchTocScanner().ScanEntriesAsync(result.WriteResult.TocFilePath);
+			var outputEntry = Assert.Single(outputEntries, entry => entry.AssetKey == key);
+			var readback = await new PatchUnitMeshReader().ReadAsync(outputEntry, outputEntries);
+			Assert.Equal(model.RawMeshData.Count, readback.Model.RawMeshData.Count);
+			Assert.Equal(model.RawMeshData[0].Vertices.Count, readback.Model.RawMeshData[0].Vertices.Count);
+		}
+		finally
+		{
+			if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+		}
+	}
+
+	private static async Task WriteMinimalArchiveAsync(string path, AssetKey key, byte[] tocData, byte[] gpuData)
+	{
+		var typeOffset = 60;
+		var entryOffset = typeOffset + 32;
+		var payloadOffset = entryOffset + 80;
+		var archive = new byte[payloadOffset + tocData.Length];
+		WriteUInt32(archive, 0, 4026531857);
+		WriteUInt32(archive, 4, 1);
+		WriteUInt32(archive, 8, 1);
+		WriteUInt64(archive, typeOffset + 8, key.TypeId);
+		WriteUInt64(archive, typeOffset + 16, 1);
+		WriteUInt64(archive, entryOffset, key.FileId);
+		WriteUInt64(archive, entryOffset + 8, key.TypeId);
+		WriteUInt64(archive, entryOffset + 16, (ulong)payloadOffset);
+		WriteUInt32(archive, entryOffset + 56, (uint)tocData.Length);
+			WriteUInt32(archive, entryOffset + 64, (uint)gpuData.Length);
+		WriteUInt32(archive, entryOffset + 76, 1);
+		tocData.CopyTo(archive, payloadOffset);
+		await File.WriteAllBytesAsync(path, archive);
+		await File.WriteAllBytesAsync(path + ".gpu_resources", gpuData);
+	}
+
+	[Fact]
 	public void Reconstruct_WithMappings_PreservesTheTargetLodMinusOneCullingMesh()
 	{
 		var source = CreatePatchUnit(SourceKey, CreateModel(vertexSeed: 7, meshCount: 1));
@@ -721,10 +789,11 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 
 	private static UnitMeshModel CreateModel(byte vertexSeed, int meshCount)
 	{
-		var stream = new UnitStreamInfo(0, 128, 0, 1, 0, 3, 12, 0, 3, 0, 0, 0, 0, 0, new[] { new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12) });
-		var meshes = Enumerable.Range(0, meshCount).Select(index => new UnitMeshInfo(index, (uint)(500 + index * 100), (uint)(100 + index), 0, 0, 0, 1, 0, 1, (uint)(650 + index * 100), UnitMeshSemanticInfo.Empty(0, index), new uint[] { (uint)(20 + index) }, new[] { new UnitMeshSectionInfo((uint)(650 + index * 100), 0, (uint)(20 + index), 0, 3, 0, 3, 0) })).ToArray();
+		var stream = new UnitStreamInfo(0, 140, 0, 1, 0, 3, 12, 0, 3, 0, 0, 0, 0, 0, new[] { new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12) });
+		var meshRecordBase = 700;
+		var meshes = Enumerable.Range(0, meshCount).Select(index => new UnitMeshInfo(index, (uint)(meshRecordBase + index * 200), (uint)(100 + index), 0, 0, 0, 1, 0, 1, (uint)(meshRecordBase + index * 200 + 132), UnitMeshSemanticInfo.Empty(0, index), new uint[] { (uint)(20 + index) }, new[] { new UnitMeshSectionInfo((uint)(meshRecordBase + index * 200 + 132), 0, (uint)(20 + index), 0, 3, 0, 3, 0) })).ToArray();
 		var rawMeshes = Enumerable.Range(0, meshCount).Select(index => new UnitRawMeshData(index, (uint)(100 + index), 0, 0, new[] { new UnitRawMeshSectionData(0, (uint)(20 + index), new[] { new UnitTriangleIndices(0, 1, 2) }) }, new[] { new UnitTriangleIndices(0, 1, 2) }, Enumerable.Range(0, 3).Select(vertex => new UnitRawVertexRecord((uint)vertex, new[] { (byte)(vertexSeed + vertex), (byte)0, (byte)0, (byte)0, (byte)0, (byte)0, (byte)0, (byte)0, (byte)0, (byte)0, (byte)0, (byte)0 }, Array.Empty<UnitVertexComponentValue>())).ToArray())).ToArray();
-		return new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 496, 800, 900, UnitCustomizationInfo.Empty, Array.Empty<UnitBoneInfo>(), new[] { stream }, meshes, meshes.Select(mesh => new UnitMaterialBinding(mesh.MaterialSlotIds[0], 0x100)).ToArray(), Array.Empty<UnitRawMeshSummary>(), rawMeshes)
+		return new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 496, 1200, 0, UnitCustomizationInfo.Empty, Array.Empty<UnitBoneInfo>(), new[] { stream }, meshes, meshes.Select(mesh => new UnitMaterialBinding(mesh.MaterialSlotIds[0], 0x100)).ToArray(), Array.Empty<UnitRawMeshSummary>(), rawMeshes)
 		{
 			TransformInfo = new UnitTransformInfo(0, 0, 0, Array.Empty<UnitLocalTransform>(), [new UnitTransformMatrix([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])], Array.Empty<UnitTransformEntry>(), Array.Empty<uint>())
 		};
@@ -815,13 +884,68 @@ public sealed class SdkStyleTargetShellUnitReconstructorTests
 	private static float[] ReadVector3(byte[] data, int offset)
 		=> [BitConverter.ToSingle(data, offset), BitConverter.ToSingle(data, offset + 4), BitConverter.ToSingle(data, offset + 8)];
 
-	private static byte[] CreateToc(int materialBindingCount = 2)
+	private static byte[] CreateToc(int materialBindingCount = 2, int meshCount = 1)
 	{
-		var data = new byte[1200];
-		WriteUInt32(data, 0x60, 900); WriteUInt32(data, 0x70, 800); WriteUInt32(data, 496, 4); WriteUInt32(data, 604, 2); WriteUInt32(data, 620, 1);
-		for (var index = 0; index < 2; index++) { var offset = 500 + index * 100; WriteUInt32(data, offset + 104, 1); WriteUInt32(data, offset + 108, 128); WriteUInt32(data, offset + 120, 1); WriteUInt32(data, offset + 124, 150); WriteUInt32(data, 650 + index * 100, 0); WriteUInt32(data, 654 + index * 100, 0); WriteUInt32(data, 658 + index * 100, 3); WriteUInt32(data, 662 + index * 100, 0); WriteUInt32(data, 666 + index * 100, 3); }
-		WriteUInt32(data, 800, (uint)materialBindingCount); WriteUInt32(data, 804, 20); WriteUInt32(data, 808, 21); return data;
+		var data = new byte[Math.Max(1400, 496 + 4 + meshCount * 8 + meshCount * 200 + 64)];
+		// Keep the material binding payload outside the stream component block (496..~864), which the real writer rewrites.
+		WriteUInt32(data, 0x5c, 128); WriteUInt32(data, 0x60, 0); WriteUInt32(data, 0x64, 496); WriteUInt32(data, 0x70, 1200); WriteUInt32(data, 128, 1); WriteUInt32(data, 132, 12); WriteUInt32(data, 496, (uint)meshCount);
+		var meshTableEnd = 700;
+		for (var index = 0; index < meshCount; index++) { var offset = meshTableEnd + index * 200; var sectionOffset = offset + 132; WriteUInt32(data, 500 + index * 4, (uint)(offset - 496)); WriteUInt32(data, 500 + meshCount * 4 + index * 4, (uint)(100 + index)); WriteUInt32(data, offset + 104, 1); WriteUInt32(data, offset + 108, 128); WriteUInt32(data, offset + 120, 1); WriteUInt32(data, offset + 124, (uint)(sectionOffset - offset)); WriteUInt32(data, offset + 128, (uint)(20 + index)); WriteUInt32(data, sectionOffset, 0); WriteUInt32(data, sectionOffset + 4, 0); WriteUInt32(data, sectionOffset + 8, 3); WriteUInt32(data, sectionOffset + 12, 0); WriteUInt32(data, sectionOffset + 16, 3); WriteUInt32(data, sectionOffset + 20, 0); }
+		WriteUInt32(data, 1200, (uint)materialBindingCount); WriteUInt32(data, 1204, 20); if (materialBindingCount > 1) WriteUInt32(data, 1208, 21); return data;
+	}
+
+	private static byte[] CreateRealWriterReadbackToc(UnitMeshModel model)
+	{
+		var data = new byte[2000];
+		WriteUInt32(data, 0x5c, model.StreamInfoOffset);
+		WriteUInt32(data, 0x60, model.EndingOffset);
+		WriteUInt32(data, 0x64, model.MeshInfoOffset);
+		WriteUInt32(data, 0x70, model.MaterialsOffset);
+		WriteUInt32(data, checked((int)model.StreamInfoOffset), 1);
+		WriteUInt32(data, checked((int)model.StreamInfoOffset + 4), 12);
+		WriteUInt32(data, checked((int)model.MeshInfoOffset), checked((uint)model.Meshes.Count));
+		var meshTableOffset = checked((int)model.MeshInfoOffset + 4);
+		foreach (var mesh in model.Meshes)
+		{
+			var meshOffset = checked((int)mesh.Offset);
+			WriteUInt32(data, meshTableOffset + mesh.Index * 4, checked((uint)(meshOffset - (int)model.MeshInfoOffset)));
+			WriteUInt32(data, meshTableOffset + model.Meshes.Count * 4 + mesh.Index * 4, mesh.MeshId);
+			WriteUInt32(data, meshOffset + 104, checked((uint)mesh.MaterialSlotIds.Count));
+			WriteUInt32(data, meshOffset + 108, 128);
+			WriteUInt32(data, meshOffset + 120, checked((uint)mesh.Sections.Count));
+			WriteUInt32(data, meshOffset + 124, 128);
+			var materialOffset = meshOffset + 128;
+			foreach (var (slot, index) in mesh.MaterialSlotIds.Select((slot, index) => (slot, index)))
+			{
+				WriteUInt32(data, materialOffset + index * 4, slot);
+			}
+			var sectionOffset = meshOffset + 128 + mesh.MaterialSlotIds.Count;
+			foreach (var section in mesh.Sections)
+			{
+				WriteUInt32(data, sectionOffset, section.MaterialIndex);
+				WriteUInt32(data, sectionOffset + 8, section.NumVertices);
+				WriteUInt32(data, sectionOffset + 16, section.NumIndices);
+				sectionOffset += 24;
+			}
+		}
+		WriteUInt32(data, checked((int)model.MaterialsOffset), checked((uint)model.Materials.Count));
+		foreach (var (material, index) in model.Materials.Select((material, index) => (material, index))) WriteUInt32(data, checked((int)model.MaterialsOffset + 4 + index * 8), checked((uint)material.MaterialId));
+		return data;
+	}
+
+	private static UnitMeshModel CreateRealWriterReadbackModel()
+	{
+		var baseModel = CreateModel(vertexSeed: 7, meshCount: 1);
+		return baseModel with
+		{
+			StreamInfoOffset = 128,
+			MeshInfoOffset = 1000,
+			MaterialsOffset = 1400,
+			EndingOffset = 1900,
+			Meshes = baseModel.Meshes.Select(mesh => mesh with { Offset = 1100, MaterialOffset = 1228, SectionsOffset = 1232, Sections = mesh.Sections.Select(section => section with { Offset = 1232 }).ToArray() }).ToArray()
+		};
 	}
 
 	private static void WriteUInt32(byte[] data, int offset, uint value) { data[offset] = (byte)value; data[offset + 1] = (byte)(value >> 8); data[offset + 2] = (byte)(value >> 16); data[offset + 3] = (byte)(value >> 24); }
+	private static void WriteUInt64(byte[] data, int offset, ulong value) { WriteUInt32(data, offset, (uint)value); WriteUInt32(data, offset + 4, (uint)(value >> 32)); }
 }

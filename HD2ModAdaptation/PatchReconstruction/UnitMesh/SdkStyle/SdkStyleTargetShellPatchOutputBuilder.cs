@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle;
 
 // Purpose: Converts explicit current target-shell reconstruction work items into patch additions without selecting archives or making material-provider decisions.
@@ -11,6 +13,15 @@ public sealed class SdkStyleTargetShellPatchOutputBuilder
 	}
 
 	public SdkStyleTargetShellPatchOutput Build(IReadOnlyCollection<SdkStyleTargetShellPatchWorkItem> workItems)
+		=> Build(workItems, CancellationToken.None);
+
+	public SdkStyleTargetShellPatchOutput Build(IReadOnlyCollection<SdkStyleTargetShellPatchWorkItem> workItems, CancellationToken cancellationToken)
+		=> Build(workItems, cancellationToken, null);
+
+	public SdkStyleTargetShellPatchOutput Build(IReadOnlyCollection<SdkStyleTargetShellPatchWorkItem> workItems, CancellationToken cancellationToken, Action<int, int>? progress)
+		=> Build(workItems, cancellationToken, progress, null);
+
+	public SdkStyleTargetShellPatchOutput Build(IReadOnlyCollection<SdkStyleTargetShellPatchWorkItem> workItems, CancellationToken cancellationToken, Action<int, int>? progress, Action<AssetKey, TimeSpan>? performance)
 	{
 		ArgumentNullException.ThrowIfNull(workItems);
 		if (workItems.Count == 0) throw new InvalidDataException("At least one current target Unit work item is required.");
@@ -19,10 +30,18 @@ public sealed class SdkStyleTargetShellPatchOutputBuilder
 		var additions = new List<PatchArchiveAdditionalEntry>();
 		var results = new List<SdkStyleTargetShellPatchUnitResult>();
 		var replacedSourceUnits = new HashSet<AssetKey>();
-		foreach (var item in workItems.OrderBy(item => item.TargetUnit.AssetKey.FileId))
+		var orderedItems = workItems.OrderBy(item => item.TargetUnit.AssetKey.FileId).ToArray();
+		var completed = 0;
+		foreach (var item in orderedItems)
 		{
+			cancellationToken.ThrowIfCancellationRequested();
 			if (!targetKeys.Add(item.TargetUnit.AssetKey)) throw new InvalidDataException($"Target Unit 0x{item.TargetUnit.AssetKey.FileId:x16} occurs more than once.");
+			// Reconstruct is the bounded, potentially expensive unit rebuild; do not start it after cancellation.
+			cancellationToken.ThrowIfCancellationRequested();
+			var stopwatch = Stopwatch.StartNew();
 			var result = unitReconstructor.Reconstruct(item.TargetUnit, item.SourceUnits, item.MeshMappings);
+			performance?.Invoke(item.TargetUnit.AssetKey, stopwatch.Elapsed);
+			cancellationToken.ThrowIfCancellationRequested();
 			additions.Add(CreateAdditionalEntry(item.TargetUnit.Payload.Entry, result.WriteResult.TocData, Array.Empty<byte>(), result.WriteResult.GpuData));
 			if (item.DependencyPolicy == TargetShellDependencyPolicy.EmbedReferencedComposite && result.WriteResult.CompositeTocData is not null && item.TargetUnit.CompositePayload is not null)
 			{
@@ -37,6 +56,7 @@ public sealed class SdkStyleTargetShellPatchOutputBuilder
 			// that old Unit would let the game resolve legacy data alongside this shell.
 			foreach (var sourceUnit in item.SourceUnits) replacedSourceUnits.Add(sourceUnit.Entry.AssetKey);
 			results.Add(new SdkStyleTargetShellPatchUnitResult(item.TargetUnit.AssetKey, result.Replacements.Count, result.MinifiedTargetMeshInfoIndexes.Count, result.CoveredTargetMeshCount, result.RebuiltBoneInfoIndexes, result.Model.BoneInfos, result.Model.Materials, result.ReplacementMaterialIds));
+			progress?.Invoke(++completed, orderedItems.Length);
 		}
 		return new SdkStyleTargetShellPatchOutput(additions, replacedSourceUnits.OrderBy(key => key.FileId).ToArray(), results);
 	}
