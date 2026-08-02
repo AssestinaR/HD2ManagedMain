@@ -1,0 +1,85 @@
+using HD2ModAdaptation.PatchReconstruction.UnitMesh;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
+using Xunit;
+
+namespace HD2ModAdaptation.Tests;
+
+// Purpose: Verifies Canonical stream contracts are stream-wide, ABI-preserving, and fail closed.
+public sealed class CanonicalStreamContractCompilerTests
+{
+	[Fact]
+	public void Compile_PromotesIndexBufferWhenOneFinalMeshExceedsUint16()
+	{
+		var target = Target();
+		var raw = Raw(0, 65_536);
+
+		var result = new CanonicalStreamContractCompiler().TryCompile(target, [raw]);
+
+		Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(diagnostic => diagnostic.Message)));
+		Assert.Equal(1u, Assert.Single(result.Streams).IndexBufferType);
+		Assert.Equal(target.Streams[0].ComponentInfoId, result.Streams[0].ComponentInfoId);
+		Assert.Equal([0u], result.Streams[0].Components.Select(component => component.Type));
+	}
+
+	[Fact]
+	public void Compile_PreservesMultipleFinalBoneIndexGroupsUsingSdkProfile()
+	{
+		var target = Target() with
+		{
+			Streams = [Target().Streams[0] with
+			{
+				VertexStride = 12,
+				Components = [
+					new UnitStreamComponentInfo(0, "position", 0, "vec3_float", 0, 0, 4),
+					new UnitStreamComponentInfo(6, "bone_index", 0, "vec4_uint8", 0, 0, 4),
+					new UnitStreamComponentInfo(6, "bone_index", 0, "vec4_uint8", 1, 0, 4)]
+			}]
+		};
+
+		var raw = Raw(0, 3) with
+		{
+			Vertices = Raw(0, 3).Vertices.Select(vertex => vertex with
+			{
+				Components = [
+					new UnitVertexComponentValue(0, "position", 2, "vec3_float", 0, [0, 0, 0], [], []),
+					new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, [], [0, 0, 0, 0], []),
+					new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 1, [], [0, 0, 0, 0], []),
+					new UnitVertexComponentValue(7, "bone_weight", 35, "vec4_half", 0, [1, 0, 0, 0], [], [])]
+			}).ToArray()
+		};
+
+		var result = new CanonicalStreamContractCompiler().TryCompile(target, [raw]);
+
+		Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(diagnostic => diagnostic.Message)));
+		Assert.Equal(2, result.Streams[0].Components.Count(component => component.Type == 6));
+		Assert.Single(result.Streams[0].Components, component => component.Type == 7);
+	}
+
+	[Fact]
+	public void Compile_RequiresEveryTargetMeshToProvideExactlyOneFinalRawMesh()
+	{
+		var target = Target(meshCount: 2);
+
+		var result = new CanonicalStreamContractCompiler().TryCompile(target, [Raw(0, 3)]);
+
+		Assert.False(result.IsValid);
+		Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "IncompleteStreamRawMeshCoverage");
+	}
+
+	private static UnitMeshModel Target(int meshCount = 1)
+	{
+		var stream = new UnitStreamInfo(0, 128, 99, 1, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0,
+			[new UnitStreamComponentInfo(0, "position", 0, "vec3_float", 0, 0, 4)]);
+		var meshes = Enumerable.Range(0, meshCount).Select(index => new UnitMeshInfo(index, checked((uint)(256 + index * 128)), 1, 0, 0, 0, 1, 0, 1, 0,
+			UnitMeshSemanticInfo.Empty(0, index), [10], [new(0, 0, 10, 0, 3, 0, 3, 0)])).ToArray();
+		return new(1, 1, 0, 0, 0, 0, 128, 0, 0, 0, UnitCustomizationInfo.Empty, [], [stream], meshes, [], [], []);
+	}
+
+	private static UnitRawMeshData Raw(int meshInfoIndex, int vertices)
+	{
+		var data = Enumerable.Range(0, vertices).Select(index => new UnitRawVertexRecord((uint)index, [], [
+			new UnitVertexComponentValue(0, "position", 2, "vec3_float", 0, [0, 0, 0], [], [])])).ToArray();
+		var triangle = new UnitTriangleIndices(0, 1, checked((uint)(vertices - 1)));
+		return new(meshInfoIndex, 1, 0, 0, [new UnitRawMeshSectionData(0, 10, [triangle])], [triangle], data);
+	}
+}

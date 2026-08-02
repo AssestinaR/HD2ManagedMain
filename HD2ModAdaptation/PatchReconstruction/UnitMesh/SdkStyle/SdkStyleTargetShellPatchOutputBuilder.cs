@@ -42,10 +42,19 @@ public sealed class SdkStyleTargetShellPatchOutputBuilder
 			var result = unitReconstructor.Reconstruct(item.TargetUnit, item.SourceUnits, item.MeshMappings);
 			performance?.Invoke(item.TargetUnit.AssetKey, stopwatch.Elapsed);
 			cancellationToken.ThrowIfCancellationRequested();
-			additions.Add(CreateAdditionalEntry(item.TargetUnit.Payload.Entry, result.WriteResult.TocData, Array.Empty<byte>(), result.WriteResult.GpuData));
+			var isCompositeBacked = item.TargetUnit.CompositePayload is not null;
+			additions.Add(CreateAdditionalEntry(
+				item.TargetUnit.Payload.Entry,
+				result.WriteResult.TocData,
+				item.TargetUnit.Payload.StreamData,
+				isCompositeBacked ? Array.Empty<byte>() : result.WriteResult.GpuData));
 			if (item.DependencyPolicy == TargetShellDependencyPolicy.EmbedReferencedComposite && result.WriteResult.CompositeTocData is not null && item.TargetUnit.CompositePayload is not null)
 			{
-				additions.Add(CreateAdditionalEntry(item.TargetUnit.CompositePayload.Entry, result.WriteResult.CompositeTocData, Array.Empty<byte>(), result.WriteResult.CompositeGpuData ?? Array.Empty<byte>()));
+				additions.Add(CreateAdditionalEntry(
+					item.TargetUnit.CompositePayload.Entry,
+					result.WriteResult.CompositeTocData,
+					item.TargetUnit.CompositePayload.StreamData,
+					result.WriteResult.CompositeGpuData ?? Array.Empty<byte>()));
 			}
 			else if (item.DependencyPolicy == TargetShellDependencyPolicy.EmbedReferencedComposite && item.TargetUnit.CompositePayload is null)
 			{

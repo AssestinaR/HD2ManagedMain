@@ -79,7 +79,9 @@ namespace HD2ModManager.ViewModels
             long sequence = 0;
 
             IsGenerating = true;
-            State = "正在重建 current target Unit 壳并写出验证候选。";
+            State = _plan.UseCanonicalSdkStyleReplacement
+                ? "正在按 Canonical SDK BatchSave 方法链重建目标 Unit 并写出验证候选。"
+                : "正在重建 current target Unit 壳并写出验证候选。";
             LogService.Info($"替换护甲生成开始：源Patch={_plan.SourcePatchTocPath}，输出={candidateDirectory}，目标数={plan.SelectedTargets.Count}。");
             _plan.CandidateGenerationRunning = true;
             try
@@ -92,8 +94,11 @@ namespace HD2ModManager.ViewModels
 					State = $"{stageText}{count}（已用时 {update.Elapsed:mm\\:ss}）。";
 					bridge.Apply(update.ToOperationProgressEvent(operationId, sequence: sequence++));
 				});
-                var result = await Task.Run(() => CoreServices.CreateCrossArmorTransferCandidateService(_plan.Paths).GenerateCandidateAsync(
-                    new CrossArmorTransferCandidateRequest(_plan.SourcePatchTocPath, _plan.GameDataDirectory, candidateDirectory, plan, CrossArmorMaterialBindingMode.PreserveSourceReferences, _plan.PreparedSourceEntries, progress), task.CancellationToken).AsTask(), task.CancellationToken);
+                var request = new CrossArmorTransferCandidateRequest(_plan.SourcePatchTocPath, _plan.GameDataDirectory, candidateDirectory, plan, CrossArmorMaterialBindingMode.PreserveSourceReferences, _plan.PreparedSourceEntries, progress);
+                // docs/sdk流程架构.md：Canonical 分支对应 SDK BatchSave/Entry.Save 链；未勾选时保持旧生产链路不变。
+                var result = await Task.Run(() => _plan.UseCanonicalSdkStyleReplacement
+                    ? CoreServices.CreateCanonicalCrossArmorOrchestrator().ExecuteAsync(request, task.CancellationToken).AsTask()
+                    : CoreServices.CreateCrossArmorTransferCandidateService(_plan.Paths).GenerateCandidateAsync(request, task.CancellationToken).AsTask(), task.CancellationToken);
                 var presentation = CrossArmorCandidateResultPresenter.Map(result);
                 if (presentation.IsFailure)
                 {
@@ -104,9 +109,10 @@ namespace HD2ModManager.ViewModels
                 }
 
                 bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Completed, OperationState.Completed, message: presentation.StatusText, sequence: sequence++));
+                var routeName = _plan.UseCanonicalSdkStyleReplacement ? "Canonical 验证候选" : "验证候选";
                 State = result.HasWarnings
-                    ? $"候选已提交，但报告不完整/有告警：{candidateDirectory}。Unit {result.OutputUnitCount}；报告：{result.ReportPath ?? "未生成"}"
-                    : $"验证候选已生成到：{candidateDirectory}。Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。报告：{result.ReportPath}";
+                    ? $"{routeName}已提交，但报告不完整/有告警：{candidateDirectory}。Unit {result.OutputUnitCount}；报告：{result.ReportPath ?? "未生成"}"
+                    : $"{routeName}已生成到：{candidateDirectory}。Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。报告：{result.ReportPath}";
                 LogService.Info($"替换护甲生成完成：输出={candidateDirectory}，Unit={result.OutputUnitCount}，替换Mesh={result.ReplacementMeshCount}，极小化Mesh={result.MinifiedMeshCount}，报告={result.ReportPath}。");
             }
             catch (OperationCanceledException)

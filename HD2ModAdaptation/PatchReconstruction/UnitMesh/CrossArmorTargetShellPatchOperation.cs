@@ -109,11 +109,15 @@ public sealed class CrossArmorTargetShellPatchOperation
 				Array.Empty<PatchUnitMeshEditResult>(),
 				additionalEntries,
 				removals,
-				preserveOriginalStream: true,
+				preserveOriginalStream: false,
 				headerTemplateTocData: request.HeaderTemplateTocData,
 				overwriteExisting: request.OverwriteExisting,
 				cancellationToken: cancellationToken).ConfigureAwait(false);
-			await stagedVerifier.VerifyAsync(write.TocFilePath, output.UnitResults.Select(result => result.TargetUnitAssetKey).ToHashSet(), cancellationToken).ConfigureAwait(false);
+			var expectedModelEntries = output.AdditionalEntries
+				.Where(entry => entry.AssetKey.TypeId is PatchUnitMeshReader.UnitTypeId or PatchUnitMeshReader.CompositeUnitTypeId)
+				.Select(entry => entry.AssetKey)
+				.ToHashSet();
+			await stagedVerifier.VerifyAsync(write.TocFilePath, output.UnitResults.Select(result => result.TargetUnitAssetKey).ToHashSet(), expectedModelEntries, cancellationToken).ConfigureAwait(false);
 			if (request.PreCommitValidation is not null)
 				await request.PreCommitValidation(write.TocFilePath, cancellationToken).ConfigureAwait(false);
 			write = stagedCommitter.Commit(ownership, write);
@@ -150,30 +154,18 @@ public sealed class CrossArmorTargetShellPatchOperation
 		if (!File.Exists(markerPath)) await File.WriteAllTextAsync(markerPath, "Canceled before a complete Patch output was committed." + Environment.NewLine).ConfigureAwait(false);
 	}
 
-	private async ValueTask<IReadOnlyList<PatchTocEntry>> GetSourceUnitAndCompositeRemovalsAsync(IReadOnlyList<PatchTocEntry> entries, CancellationToken cancellationToken)
+	private static ValueTask<IReadOnlyList<PatchTocEntry>> GetSourceUnitAndCompositeRemovalsAsync(IReadOnlyList<PatchTocEntry> entries, CancellationToken cancellationToken)
 	{
-		var units = entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).ToArray();
-		var compositeIds = new HashSet<ulong>();
-		foreach (var unit in units)
-		{
-			var payload = await payloadReader.ReadPayloadAsync(unit, cancellationToken).ConfigureAwait(false);
-			if (payload.TocData.Length >= 24)
-			{
-				var compositeId = BitConverter.ToUInt64(payload.TocData, 16);
-				if (compositeId != 0) compositeIds.Add(compositeId);
-			}
-		}
-		return units.Concat(entries.Where(entry => entry.AssetKey.TypeId == CompositeUnitTypeId && compositeIds.Contains(entry.AssetKey.FileId))).ToArray();
-	}
-
-	private async ValueTask VerifyAsync(string tocPath, IReadOnlySet<AssetKey> expectedUnits, CancellationToken cancellationToken)
-	{
-		var entries = await scanner.ScanEntriesAsync(tocPath, cancellationToken).ConfigureAwait(false);
-		var actualUnits = entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
-		if (!actualUnits.SetEquals(expectedUnits)) throw new InvalidDataException("输出 Unit 集合与批准的物理目标集合不一致。");
-		if (entries.GroupBy(entry => entry.AssetKey).Any(group => group.Count() != 1)) throw new InvalidDataException("输出包含重复 AssetKey。");
+		cancellationToken.ThrowIfCancellationRequested();
+		// A cross-armor output replaces the source model graph, not merely the Units
+		// currently discovered through CompositeRef. Keep unrelated materials/textures,
+		// but never carry any legacy Unit or Composite entry into the new model graph.
+		return ValueTask.FromResult<IReadOnlyList<PatchTocEntry>>(entries
+			.Where(entry => entry.AssetKey.TypeId is PatchUnitMeshReader.UnitTypeId or PatchUnitMeshReader.CompositeUnitTypeId)
+			.ToArray());
 	}
 }
+
 
 // Purpose: Keeps the staged write/validation/commit boundaries injectable for file-level CrossArmor tests.
 public interface ICrossArmorStagedWriter
@@ -183,7 +175,7 @@ public interface ICrossArmorStagedWriter
 
 public interface ICrossArmorStagedVerifier
 {
-	ValueTask VerifyAsync(string tocPath, IReadOnlySet<AssetKey> expectedUnits, CancellationToken cancellationToken);
+	ValueTask VerifyAsync(string tocPath, IReadOnlySet<AssetKey> expectedUnits, IReadOnlySet<AssetKey> expectedModelEntries, CancellationToken cancellationToken);
 }
 
 public interface ICrossArmorStagedCommitter
@@ -199,11 +191,16 @@ internal sealed class DefaultCrossArmorStagedWriter(PatchArchiveWriter writer) :
 
 internal sealed class DefaultCrossArmorStagedVerifier(PatchTocScanner scanner) : ICrossArmorStagedVerifier
 {
-	public async ValueTask VerifyAsync(string tocPath, IReadOnlySet<AssetKey> expectedUnits, CancellationToken cancellationToken)
+	public async ValueTask VerifyAsync(string tocPath, IReadOnlySet<AssetKey> expectedUnits, IReadOnlySet<AssetKey> expectedModelEntries, CancellationToken cancellationToken)
 	{
 		var entries = await scanner.ScanEntriesAsync(tocPath, cancellationToken).ConfigureAwait(false);
 		var actualUnits = entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
 		if (!actualUnits.SetEquals(expectedUnits)) throw new InvalidDataException("输出 Unit 集合与批准的物理目标集合不一致。");
+		var actualModelEntries = entries
+			.Where(entry => entry.AssetKey.TypeId is PatchUnitMeshReader.UnitTypeId or PatchUnitMeshReader.CompositeUnitTypeId)
+			.Select(entry => entry.AssetKey)
+			.ToHashSet();
+		if (!actualModelEntries.SetEquals(expectedModelEntries)) throw new InvalidDataException("输出 Unit/Composite 集合与本次重建结果不一致，可能残留旧模型条目。");
 		if (entries.GroupBy(entry => entry.AssetKey).Any(group => group.Count() != 1)) throw new InvalidDataException("输出包含重复 AssetKey。");
 	}
 }

@@ -17,20 +17,21 @@ public sealed class UnitMeshWriter
 
 	public UnitMeshWriteResult Write(UnitMeshModel model, ReadOnlySpan<byte> originalTocData, ReadOnlySpan<byte> originalCompositeTocData = default)
 	{
+		var usesCompositeMetadata = model.StreamInfoOffset == UnsupportedOffset && !originalCompositeTocData.IsEmpty;
+		var metadataTocData = usesCompositeMetadata ? originalCompositeTocData : originalTocData;
 		var transformRelocation = allowTransformInfoRelocation
-			? RelocateTransformInfo(model, originalTocData)
-			: new MetadataRelocation(originalTocData.ToArray(), model);
+			? RelocateTransformInfo(model, metadataTocData)
+			: new MetadataRelocation(metadataTocData.ToArray(), model);
 		var relocation = allowBoneInfoRelocation
 			? RelocateBoneInfos(transformRelocation.Model, transformRelocation.TocData)
 			: new MetadataRelocation(transformRelocation.TocData, transformRelocation.Model);
 		var indexSafeModel = PromoteSharedStreamIndexBuffers(relocation.Model);
 		var (tocData, writableModel) = PrepareTocForExpandedMetadata(indexSafeModel, relocation.TocData);
 		var meshTocData = tocData;
-		byte[]? compositeTocData = null;
-		if (writableModel.StreamInfoOffset == UnsupportedOffset && !originalCompositeTocData.IsEmpty)
+		byte[]? compositeTocData = usesCompositeMetadata ? meshTocData : null;
+		if (usesCompositeMetadata)
 		{
-			compositeTocData = originalCompositeTocData.ToArray();
-			meshTocData = compositeTocData;
+			tocData = originalTocData.ToArray();
 		}
 
 		WriteMeshMaterialSlots(meshTocData, writableModel.Meshes);

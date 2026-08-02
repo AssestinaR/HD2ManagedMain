@@ -249,6 +249,14 @@ public sealed class SdkStyleMeshReencoder
 			}
 			rebuiltSections.Add(new UnitRawMeshSectionData(targetSection.MaterialIndex, targetSection.MaterialSlotId, triangles));
 		}
+		// Keep the current target section table stable. Sections without source geometry
+		// must be emitted as empty sections so the writer clears their old index ranges
+		// instead of leaving stale target triangles visible on readback.
+		for (var sectionIndex = rebuiltSections.Count; sectionIndex < targetRawMesh.Sections.Count; sectionIndex++)
+		{
+			var targetSection = targetRawMesh.Sections[sectionIndex];
+			rebuiltSections.Add(new UnitRawMeshSectionData(targetSection.MaterialIndex, targetSection.MaterialSlotId, Array.Empty<UnitTriangleIndices>()));
+		}
 
 		if (!sourceUsesBones)
 		{

@@ -255,7 +255,7 @@ public sealed class CrossArmorBatchOutputTests
 
 	private sealed class RecordingVerifier(List<string> order) : ICrossArmorStagedVerifier
 	{
-		public ValueTask VerifyAsync(string tocPath, IReadOnlySet<AdaptationAssetKey> expectedUnits, CancellationToken cancellationToken) { order.Add("verifier"); return ValueTask.CompletedTask; }
+		public ValueTask VerifyAsync(string tocPath, IReadOnlySet<AdaptationAssetKey> expectedUnits, IReadOnlySet<AdaptationAssetKey> expectedModelEntries, CancellationToken cancellationToken) { order.Add("verifier"); return ValueTask.CompletedTask; }
 	}
 
 	private sealed class RecordingCommitter(List<string> order) : ICrossArmorStagedCommitter

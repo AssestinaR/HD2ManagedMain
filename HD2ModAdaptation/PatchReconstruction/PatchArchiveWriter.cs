@@ -89,7 +89,12 @@ public sealed class PatchArchiveWriter
 				await toc.WriteAsync(tocData, cancellationToken).ConfigureAwait(false);
 				tocAppendPosition = toc.Position;
 				var streamOffset = entry.StreamOffset;
-				if (item.Addition is not null && streamData.Length > 0) { Pad(stream); streamOffset = (ulong)stream.Position; await stream.WriteAsync(streamData, cancellationToken).ConfigureAwait(false); }
+				if (streamData.Length > 0 && (!preserveOriginalStream || item.Addition is not null))
+				{
+					Pad(stream);
+					streamOffset = (ulong)stream.Position;
+					await stream.WriteAsync(streamData, cancellationToken).ConfigureAwait(false);
+				}
 				var gpuOffset = 0UL;
 				if (gpuData.Length > 0) { Pad(gpu); gpuOffset = (ulong)gpu.Position; await gpu.WriteAsync(gpuData, cancellationToken).ConfigureAwait(false); }
 				var updated = entry with { TocDataOffset = (ulong)(tocAppendPosition - tocData.Length), StreamOffset = streamOffset, GpuResourceOffset = gpuOffset, TocDataSize = checked((uint)tocData.Length), StreamSize = checked((uint)streamData.Length), GpuResourceSize = checked((uint)gpuData.Length), EntryIndex = checked((uint)written.Count + 1) };
@@ -127,7 +132,8 @@ public sealed class PatchArchiveWriter
 
 	private static byte[] BuildHeader(byte[] original, Layout layout, IReadOnlyList<PatchTocEntry> entries, bool useEntryTypesOnly = false)
 	{
-		var originalTypes = ReadTypes(original, layout); var template = originalTypes.FirstOrDefault().Data;
+		var originalTypes = ReadTypes(original, layout);
+		var template = originalTypes.FirstOrDefault(record => record.TypeId != 0).Data;
 		var entryTypeIds = entries.Select(entry => entry.AssetKey.TypeId).Distinct().ToHashSet();
 		var baseTypes = useEntryTypesOnly ? originalTypes.Where(record => entryTypeIds.Contains(record.TypeId)).ToArray() : originalTypes.ToArray();
 		var known = baseTypes.Select(record => record.TypeId).ToHashSet();
@@ -144,7 +150,9 @@ public sealed class PatchArchiveWriter
 	{
 		if (data.Length < 12 || Read32(data, 0) != TocMagic) throw new InvalidDataException("Invalid patch TOC.");
 		var typeCount = Read32(data, 4); var entryCount = Read32(data, 8); var legacy = LegacyTypeOffset + checked((int)typeCount * TypeSize); var slim = SlimTypeOffset + checked((int)typeCount * TypeSize);
-		return typeCount != 0 && Score(data, SlimTypeOffset, slim, typeCount, entryCount) > Score(data, LegacyTypeOffset, legacy, typeCount, entryCount) ? new Layout(SlimTypeOffset, typeCount) : new Layout(LegacyTypeOffset, typeCount);
+		var slimScore = Score(data, SlimTypeOffset, slim, typeCount, entryCount);
+		var legacyScore = Score(data, LegacyTypeOffset, legacy, typeCount, entryCount);
+		return typeCount != 0 && slimScore >= legacyScore ? new Layout(SlimTypeOffset, typeCount) : new Layout(LegacyTypeOffset, typeCount);
 	}
 
 	private static int Score(ReadOnlySpan<byte> data, int typeOffset, int entryOffset, uint typeCount, uint entryCount)

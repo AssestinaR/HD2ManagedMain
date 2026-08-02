@@ -134,7 +134,9 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 					var unitMappings = group.Where(mapping => mapping.WillReplace).Select(mapping => new AdaptationTargetShellMeshMapping(ToAdaptationKey(mapping.Source!.UnitAssetKey), mapping.Source!.MeshInfoIndex, mapping.PhysicalTarget.MeshInfoIndex)).ToArray();
 					foreach (var sourceKey in unitMappings.Select(mapping => mapping.SourceUnitAssetKey).Distinct())
 						batchDiagnosticLines.Add(JsonSerializer.Serialize(new { Kind = "LodGroupEvidence", Role = "Source", Unit = $"0x{sourceKey.FileId:x16}", Value = CreateLodGroupDiagnostic(sourceUnits[sourceKey].Model) }));
-					var effectiveUnitMappings = ExpandCompleteLodFamilyMappings(targetUnit.Model, sourceUnits, unitMappings);
+					var effectiveUnitMappings = request.ExpandLodFamilyMappings
+						? ExpandCompleteLodFamilyMappings(targetUnit.Model, sourceUnits, unitMappings)
+						: unitMappings;
 					var requiredSources = effectiveUnitMappings.Select(mapping => sourceUnits[mapping.SourceUnitAssetKey]).Distinct().ToArray();
 					var expandedTargetModel = targetUnit.Model;
 					foreach (var mapping in effectiveUnitMappings) expandedTargetModel = transformInfoExpander.Expand(expandedTargetModel, mapping.TargetMeshInfoIndex, sourceUnits[mapping.SourceUnitAssetKey].Model, mapping.SourceMeshInfoIndex, avatarRig.TransformInfo);

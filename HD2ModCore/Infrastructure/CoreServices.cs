@@ -108,6 +108,8 @@ public static class CoreServices
 		=> new EquipmentUnitCatalogService(paths);
 	public static ICrossArmorTransferCandidateService CreateCrossArmorTransferCandidateService(StoragePaths paths)
 		=> new CrossArmorTransferCandidateService(CreateAssetArchiveIndexService(paths));
+	public static CanonicalCrossArmorOrchestrator CreateCanonicalCrossArmorOrchestrator()
+		=> new();
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IAdvancedModAssetQueryService CreateAdvancedModAssetQueryService(StoragePaths paths)
 		=> CreateAdvancedModAssetQueryService(paths, CreateModInformationCenter(paths));

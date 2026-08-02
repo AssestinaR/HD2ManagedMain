@@ -35,6 +35,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private CrossArmorCandidateOutputPageViewModel? candidateOutput;
 	private bool autoSelectSharedParts = true;
 	private bool autoSelectMatchingHelmet = true;
+	private bool useCanonicalSdkStyleReplacement;
 	private bool applyingTargetSelection;
 
 	public IReadOnlyList<CrossArmorTransferEquipmentRow> SourceArmorChoices { get; }
@@ -50,6 +51,12 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	{
 		get => autoSelectMatchingHelmet;
 		set { if (autoSelectMatchingHelmet == value) return; autoSelectMatchingHelmet = value; OnPropertyChanged(); }
+	}
+	/// <summary>选择 docs/sdk流程架构.md 中对应 SDK BatchSave 方法链的 Canonical 写出流程；默认仍使用旧流程。</summary>
+	public bool UseCanonicalSdkStyleReplacement
+	{
+		get => useCanonicalSdkStyleReplacement;
+		set { if (useCanonicalSdkStyleReplacement == value) return; useCanonicalSdkStyleReplacement = value; OnPropertyChanged(); }
 	}
 	public string SourcePatchTocPath { get; }
 	public string GameDataDirectory { get; }
@@ -286,6 +293,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			exportedAtUtc = DateTimeOffset.UtcNow,
 			isReadOnlyPlan = true,
 			selectedSourceArchiveId = SelectedSource?.ArchiveId,
+			useCanonicalSdkStyleReplacement = UseCanonicalSdkStyleReplacement,
 			selectedSourceBodyVariant = SelectedSourceBodyVariant?.ToString() ?? "Any",
 			bodyVariantPreference = BodyVariantPreference.ToString(),
 			layerPreference = LayerPreference.ToString(),
