@@ -143,7 +143,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 				if (archiveName is null)
 					return Failure(issues, "CanonicalTargetArchiveMissing", $"目标 Unit 0x{targetUnit.Key.FileId:x16} 没有明确的 Game Data archive。");
 				var target = await targetReader.ReadAsync(archiveName, targetUnit.Key, allowGlobalDependencySearch: false, cancellationToken: cancellationToken).ConfigureAwait(false);
-				var canonicalMappings = request.Plan.Mappings
+				var approvedUnitMappings = request.Plan.Mappings
 					.Where(mapping => mapping.WillReplace && SameKey(mapping.PhysicalTarget.UnitAssetKey, targetUnit.Key))
 					.Select(mapping => new CanonicalReplacementMapping(
 						new(new AdaptationAssetKey(mapping.Source!.UnitAssetKey.TypeId, mapping.Source.UnitAssetKey.FileId), mapping.Source.MeshInfoIndex),
@@ -151,6 +151,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 						SkinningMode: CanonicalSkinningMode.BindStaticToTargetMeshTransform,
 						BoneAnchor: CanonicalBoneAnchor.TargetMeshTransform))
 					.ToArray();
+				var canonicalMappings = ExpandAutoLodMappings(target.Model, sourceUnits, approvedUnitMappings);
 				var transformSources = canonicalMappings.Select(mapping =>
 				{
 					var source = sourceUnits[mapping.Source.UnitKey];
@@ -318,6 +319,62 @@ public sealed class CanonicalCrossArmorOrchestrator
 	private static string? FindTargetArchive(CrossArmorTransferPlan plan, AdaptationAssetKey key)
 		=> plan.SelectedTargets.FirstOrDefault(target => target.Parts.Any(part => SameKey(part.UnitAssetKey, key)))?.ArchiveId
 			?? plan.SelectedTargets.SelectMany(target => target.Parts).FirstOrDefault(part => SameKey(part.UnitAssetKey, key))?.SharedArchiveIds.FirstOrDefault();
+
+	private static IReadOnlyList<CanonicalReplacementMapping> ExpandAutoLodMappings(
+		UnitMeshModel targetModel,
+		IReadOnlyDictionary<AdaptationAssetKey, PatchUnitMesh> sourceUnits,
+		IReadOnlyList<CanonicalReplacementMapping> approvedUnitMappings)
+	{
+		var expandedMappings = new List<CanonicalReplacementMapping>();
+		foreach (var approved in approvedUnitMappings)
+		{
+			if (!sourceUnits.TryGetValue(approved.Source.UnitKey, out var sourceUnit))
+				throw new InvalidDataException($"Canonical 计划引用的 source Unit 0x{approved.Source.UnitKey.FileId:x16} 未加载。");
+
+			var sourceRepresentative = sourceUnit.Model.RawMeshData
+				.SingleOrDefault(raw => raw.MeshInfoIndex == approved.Source.MeshInfoIndex)
+				?? throw new InvalidDataException($"Source RawMesh {approved.Source.MeshInfoIndex} 不存在，无法展开 AutoLods。");
+			var sourceLod0 = sourceUnit.Model.RawMeshData
+				.Where(raw => raw.LodIndex == 0 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
+				.Where(raw => SemanticMatches(
+					sourceUnit.Model.Meshes.FirstOrDefault(mesh => mesh.Index == raw.MeshInfoIndex)?.SemanticInfo,
+					sourceUnit.Model.Meshes.FirstOrDefault(mesh => mesh.Index == sourceRepresentative.MeshInfoIndex)?.SemanticInfo) )
+				.OrderByDescending(raw => raw.Triangles.Count)
+				.ThenByDescending(raw => raw.Vertices.Count)
+				.FirstOrDefault()
+				?? throw new InvalidDataException($"Source Unit 0x{approved.Source.UnitKey.FileId:x16} 缺少真实 LOD0。");
+
+			var targetRepresentative = targetModel.RawMeshData
+				.SingleOrDefault(raw => raw.MeshInfoIndex == approved.Target.MeshInfoIndex)
+				?? throw new InvalidDataException($"Target RawMesh {approved.Target.MeshInfoIndex} 不存在，无法展开 AutoLods。");
+			var targetLodSlots = targetModel.RawMeshData
+				.Where(raw => raw.LodIndex >= 0 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
+				.OrderBy(raw => raw.LodIndex)
+				.ThenBy(raw => raw.MeshInfoIndex);
+			foreach (var targetLodSlot in targetLodSlots)
+			{
+				expandedMappings.Add(new CanonicalReplacementMapping(
+					new(approved.Source.UnitKey, sourceLod0.MeshInfoIndex),
+					new(approved.Target.UnitKey, targetLodSlot.MeshInfoIndex),
+					approved.SourceMeshState,
+					approved.SkinningMode,
+					approved.BoneAnchor));
+			}
+		}
+
+		return expandedMappings
+			.GroupBy(mapping => (mapping.Target.UnitKey, mapping.Target.MeshInfoIndex))
+			.Select(group => group.First())
+			.ToArray();
+	}
+
+	private static bool SemanticMatches(UnitMeshSemanticInfo? candidate, UnitMeshSemanticInfo? representative)
+	{
+		if (candidate is null || representative is null) return true;
+		return string.Equals(candidate.Slot, representative.Slot, StringComparison.OrdinalIgnoreCase)
+			&& string.Equals(candidate.PieceType, representative.PieceType, StringComparison.OrdinalIgnoreCase)
+			&& string.Equals(candidate.BodyType, representative.BodyType, StringComparison.OrdinalIgnoreCase);
+	}
 
 	private static bool SameKey(CoreAssetKey coreKey, AdaptationAssetKey adaptationKey)
 		=> coreKey.TypeId == adaptationKey.TypeId && coreKey.FileId == adaptationKey.FileId;

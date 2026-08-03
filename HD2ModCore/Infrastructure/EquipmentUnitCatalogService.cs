@@ -248,7 +248,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 			.OrderByDescending(group => manualMappings.ContainsKey(group.Key))
 			.ThenByDescending(group => group.First().Part.StoredBytes)
 			.ThenBy(group => group.Key.UnitAssetKey.FileId)
-			.ThenBy(group => group.Key.MeshInfoIndex);
+			;
 
 	private static IReadOnlyList<SourceHitPool> BuildSourceHitPools(
 		IReadOnlyList<EquipmentUnitPart> sourceParts,
@@ -266,6 +266,25 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				group.OrderByDescending(part => part.StoredBytes).ThenBy(part => part.UnitAssetKey.FileId).ThenBy(part => part.MeshInfoIndex).First()))
 			.ToArray();
 	}
+
+	// A Unit is the user-facing armor part. Its internal LOD/section records must
+	// not become separate planning rows; the writer resolves the complete Unit later.
+	private static IReadOnlyList<EquipmentUnitPart> CollapseLogicalUnitParts(IEnumerable<EquipmentUnitPart> parts)
+		=> parts
+			.GroupBy(part => new
+			{
+				part.UnitAssetKey,
+				part.PartKind,
+				part.Layer,
+				part.BodyVariant,
+				SemanticFamily = SemanticFamily(part.SemanticName) ?? part.SemanticName.Trim().ToLowerInvariant()
+			})
+			.Select(group => group
+				.OrderByDescending(part => part.Confidence)
+				.ThenByDescending(part => part.StoredBytes)
+				.ThenBy(part => part.MeshInfoIndex)
+				.First())
+			.ToArray();
 
 	private static int ScoreSourceBodyVariant(UnitMeshBodyVariant source, UnitMeshBodyVariant target, UnitMeshBodyVariant? fallback)
 	{

@@ -182,12 +182,12 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 		return new SourceUnitPreparation(entry, unit.Model.CompositeRef == 0 ? null : new AssetKey(PatchUnitMeshReader.CompositeUnitTypeId, unit.Model.CompositeRef), meshes);
 	}
 
-	// Mirrors the community SDK CreateModel defaults after UnitMeshReader has
-	// attached the raw MeshInfo semantics: ImportLods=False, ImportCulling=False,
-	// ImportStatic=False. LodIndex -1 is intentionally not rejected here; SDK
-	// RawMesh.IsLod treats only values other than 0 and -1 as ordinary LODs.
+	// Mirrors the community SDK CreateModel defaults for this armor workflow after
+	// UnitMeshReader attaches raw mesh semantics. The SDK also imports some -1 meshes
+	// when they are not culling bodies, but cross-armor source selection requires a
+	// real default-imported LOD0 so a physics/placeholder proxy cannot become source.
 	private static bool IsSdkDefaultImportable(UnitMeshSemanticInfo semantic)
-		=> semantic.IsVisualMesh && !semantic.IsLod && !semantic.IsCullingBody && !semantic.IsStaticMesh;
+		=> semantic.IsVisualMesh && semantic.LodIndex == 0 && !semantic.IsLod && !semantic.IsCullingBody && !semantic.IsStaticMesh;
 
 	private async ValueTask ReadLegacyUnitMaterialReferencesAsync(PatchTocEntry entry, ICollection<PatchAssetReference> references, ICollection<PatchAnalysisIssue> issues, CancellationToken cancellationToken)
 	{

@@ -1071,41 +1071,47 @@ namespace HD2ModManager.ViewModels
                 analyses ??= await _advancedAnalysis.GetRequiredAnalysesAsync(source, _library.ModsRootDirectory).ConfigureAwait(false);
                 _cachedAdvancedAnalyses = analyses;
 				_cachedAdvancedAnalysesNodeId = source.Id;
-                var unitKeys = analyses.SelectMany(analysis => analysis.Assets)
-					.Where(asset => asset.AssetKey.TypeId == 0xe0a48d0be9a7453f)
-					.Select(asset => new AssetKey(asset.AssetKey.TypeId, asset.AssetKey.FileId))
-					.ToHashSet();
-                var sourceCatalogCandidates = await _equipmentUnitCatalog.GetEntriesAsync(unitKeys);
+                // Load the full logical equipment catalog first. Source eligibility
+                // comes from the source Patch analysis; Game Data only labels the
+                // eligible Unit and must not pre-filter by its mesh layout.
+                var sourceCatalogCandidates = await _equipmentUnitCatalog.GetEntriesAsync();
                 var sourcePatchPaths = analyses
 					.Select(analysis => analysis.Input.PatchTocFilePath)
                     .ToArray();
-                // The advanced analysis is the authoritative source-side Unit identity
-                // chain. Its classification has both the raw mesh and the indexed
-                // bone-bound semantic fact; do not reclassify the Unit in the page.
-                var preparedTransferableMeshes = analyses
+                // Source eligibility is a Unit-level fact from the source Patch. The
+                // source may have been reserialized by Blender/SDK, so its MeshInfoIndex
+                // layout is not required to match the current Game Data template.
+                var transferableSourceUnitKeys = analyses
                     .SelectMany(analysis => analysis.PreparedSourceUnits)
                     .Where(unit => unit.IsReadable)
-                    .SelectMany(unit => unit.Meshes.Where(mesh => mesh.IsTransferable)
-                        .Select(mesh => (new AssetKey(unit.Entry.AssetKey.TypeId, unit.Entry.AssetKey.FileId), mesh.MeshInfoIndex)))
+                    // A source armor Unit must have a real default-imported LOD0.
+                    // LodIndex=-1 may contain a physics/culling proxy with substantial
+                    // geometry, but it is not a visible armor model for this workflow.
+                    .Where(unit => unit.Meshes.Any(mesh => mesh.IsTransferable && mesh.LodIndex == 0))
+                    .Select(unit => new AssetKey(unit.Entry.AssetKey.TypeId, unit.Entry.AssetKey.FileId))
                     .ToHashSet();
+                // Game Data contributes the logical Armor/Helmet label and body/layer
+                // facts only. Keep all indexed parts for an eligible Unit; the
+                // Canonical executor resolves the source Unit's own LOD0 later.
                 var sourceCandidates = sourceCatalogCandidates
-                    .Select(entry => entry with { Parts = entry.Parts.Where(part => preparedTransferableMeshes.Contains((part.UnitAssetKey, part.MeshInfoIndex))).ToArray() })
+                    .Where(entry => entry.Parts.Any(part => transferableSourceUnitKeys.Contains(part.UnitAssetKey)))
+                    .Select(entry => entry with { Parts = entry.Parts.Where(part => transferableSourceUnitKeys.Contains(part.UnitAssetKey)).ToArray() })
                     .Where(entry => entry.Parts.Count != 0)
                     .ToArray();
                 var catalogPartCount = sourceCatalogCandidates.Sum(entry => entry.Parts.Count);
                 var matchedPartCount = sourceCandidates.Sum(entry => entry.Parts.Count);
-                LogService.Info($"替换护甲来源诊断：Mod={source.Metadata.Name}，高级分析={analyses.Count}，源Patch={sourcePatchPaths.Length}，可转移Mesh={preparedTransferableMeshes.Count}，GameData部件={catalogPartCount}，身份交集={matchedPartCount}，Unit目录={sourceCatalogCandidates.Count}。");
-                if (preparedTransferableMeshes.Count != 0 && matchedPartCount == 0)
+                LogService.Info($"替换护甲来源诊断：Mod={source.Metadata.Name}，高级分析={analyses.Count}，源Patch={sourcePatchPaths.Length}，可转移Unit={transferableSourceUnitKeys.Count}，GameData部件={catalogPartCount}，保留部件={matchedPartCount}，Unit目录={sourceCatalogCandidates.Count}。");
+                if (transferableSourceUnitKeys.Count != 0 && matchedPartCount == 0)
                 {
                     var catalogKeys = sourceCatalogCandidates
                         .SelectMany(entry => entry.Parts)
-                        .Select(part => (part.UnitAssetKey, part.MeshInfoIndex))
+                        .Select(part => part.UnitAssetKey)
                         .ToHashSet();
-                    var unmatched = preparedTransferableMeshes
+                    var unmatched = transferableSourceUnitKeys
                         .Where(key => !catalogKeys.Contains(key))
                         .Take(8)
-                        .Select(key => $"0x{key.Item1.FileId:x16}/mesh{key.Item2}");
-                    LogService.Info($"替换护甲来源诊断：可转移Mesh无GameData身份匹配，示例={string.Join(",", unmatched)}。");
+                        .Select(key => $"0x{key.FileId:x16}");
+                    LogService.Info($"替换护甲来源诊断：可转移Unit无GameData部件标签，示例={string.Join(",", unmatched)}。");
                 }
                 var allCandidates = await _equipmentUnitCatalog.GetEntriesAsync();
                 GameDataArchiveBrowserSnapshot? targetReplacementSnapshot = null;

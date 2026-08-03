@@ -35,7 +35,6 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private CrossArmorCandidateOutputPageViewModel? candidateOutput;
 	private bool autoSelectSharedParts = true;
 	private bool autoSelectMatchingHelmet = true;
-	private bool useCanonicalSdkStyleReplacement;
 	private bool applyingTargetSelection;
 
 	public IReadOnlyList<CrossArmorTransferEquipmentRow> SourceArmorChoices { get; }
@@ -51,12 +50,6 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	{
 		get => autoSelectMatchingHelmet;
 		set { if (autoSelectMatchingHelmet == value) return; autoSelectMatchingHelmet = value; OnPropertyChanged(); }
-	}
-	/// <summary>选择 docs/sdk流程架构.md 中对应 SDK BatchSave 方法链的 Canonical 写出流程；默认仍使用旧流程。</summary>
-	public bool UseCanonicalSdkStyleReplacement
-	{
-		get => useCanonicalSdkStyleReplacement;
-		set { if (useCanonicalSdkStyleReplacement == value) return; useCanonicalSdkStyleReplacement = value; OnPropertyChanged(); }
 	}
 	public string SourcePatchTocPath { get; }
 	public string GameDataDirectory { get; }
@@ -160,15 +153,16 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		}
 	}
 	public IReadOnlyList<EquipmentUnitPart> SourceParts => new[] { SelectedSourceArmor, SelectedSourceHelmet }.Where(source => source is not null).SelectMany(source => source!.Parts)
+		.GroupBy(part => new { part.UnitAssetKey, part.PartKind, part.Layer, part.BodyVariant })
+		.Select(group => group.OrderByDescending(part => part.StoredBytes).ThenBy(part => part.MeshInfoIndex).First())
 		.Where(part => SelectedSourceBodyVariant is null or UnitMeshBodyVariant.Unknown or UnitMeshBodyVariant.Any || part.BodyVariant == SelectedSourceBodyVariant || part.BodyVariant == UnitMeshBodyVariant.Any)
-		.OrderBy(part => part.PartKind).ThenBy(part => part.Layer).ThenBy(part => part.MeshInfoIndex).ToArray()
+		.OrderBy(part => part.PartKind).ThenBy(part => part.Layer).ThenBy(part => part.UnitAssetKey.FileId).ToArray()
 		?? Array.Empty<EquipmentUnitPart>();
 	public IReadOnlyList<CrossArmorTransferMapping> TargetMappings => plan?.Mappings
 		.OrderBy(mapping => mapping.Target.PartKind)
 		.ThenByDescending(mapping => mapping.Target.StoredBytes)
 		.ThenBy(mapping => mapping.Target.Layer)
 		.ThenBy(mapping => mapping.PhysicalTarget.UnitAssetKey.FileId)
-		.ThenBy(mapping => mapping.PhysicalTarget.MeshInfoIndex)
 		.ToArray()
 		?? Array.Empty<CrossArmorTransferMapping>();
 	public BulkObservableCollection<CrossArmorTargetArchiveFilterOption> TargetArchiveFilters { get; } = new();
@@ -189,7 +183,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	}
 	public string Summary => plan is null
 		? "请选择来源装备和至少一个目标装备。"
-		: $"来源目录候选 {SourceParts.Count}；物理目标 mesh {TargetMappings.Count}（已按 Unit + mesh 去重）；预计命中 {TargetMappings.Sum(mapping => mapping.HitCount)} 次，替换 {TargetMappings.Count(mapping => mapping.WillReplace)} 个 mesh；预计极小化 {TargetMappings.Count(mapping => !mapping.WillReplace)}；受影响装备 {Impacts.Select(impact => impact.ArchiveId).Distinct().Count()}。";
+		: $"来源逻辑部件 {SourceParts.Count}；目标 Unit {TargetMappings.Count}；预计命中 {TargetMappings.Sum(mapping => mapping.HitCount)} 次，替换 {TargetMappings.Count(mapping => mapping.WillReplace)} 个 Unit；预计极小化 {TargetMappings.Count(mapping => !mapping.WillReplace)} 个 Unit；受影响装备 {Impacts.Select(impact => impact.ArchiveId).Distinct().Count()}。";
 	public string Issues => plan is null ? string.Empty : string.Join(Environment.NewLine, plan.Issues.Select(issue => $"{issue.Severity}: {issue.Message}"));
 
 	private readonly IEquipmentUnitCatalogService catalogService;
@@ -293,11 +287,11 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			exportedAtUtc = DateTimeOffset.UtcNow,
 			isReadOnlyPlan = true,
 			selectedSourceArchiveId = SelectedSource?.ArchiveId,
-			useCanonicalSdkStyleReplacement = UseCanonicalSdkStyleReplacement,
+			replacementRoute = "Canonical",
 			selectedSourceBodyVariant = SelectedSourceBodyVariant?.ToString() ?? "Any",
 			bodyVariantPreference = BodyVariantPreference.ToString(),
 			layerPreference = LayerPreference.ToString(),
-			manualSuppressions = suppressedTargets.Select(target => new { unitAssetKey = ToAssetKeyExport(target.UnitAssetKey), target.MeshInfoIndex }).ToArray(),
+			manualSuppressions = suppressedTargets.Select(target => new { unitAssetKey = ToAssetKeyExport(target.UnitAssetKey) }).ToArray(),
 			selectedTargetArchiveIds = TargetChoices.Where(row => row.IsSelected).Select(row => row.Entry.ArchiveId).ToArray(),
 			sourceArmorChoices = SourceArmorChoices.Select(row => ToChoiceExport(row)).ToArray(),
 			sourceHelmetChoices = SourceHelmetChoices.Select(row => ToChoiceExport(row)).ToArray(),
@@ -308,7 +302,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 				selectedTargets = plan.SelectedTargets.Select(ToEquipmentExport).ToArray(),
 				mappings = plan.Mappings.Select(mapping => new
 				{
-					physicalTarget = new { unitAssetKey = ToAssetKeyExport(mapping.PhysicalTarget.UnitAssetKey), mapping.PhysicalTarget.MeshInfoIndex },
+					physicalTarget = new { unitAssetKey = ToAssetKeyExport(mapping.PhysicalTarget.UnitAssetKey) },
 					target = ToPartExport(mapping.Target),
 					source = mapping.Source is null ? null : ToPartExport(mapping.Source),
 					mapping.WillReplace,
@@ -355,7 +349,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			},
 			mappings = plan.Mappings.Select(mapping => new
 			{
-				physicalTarget = new { unitAssetKey = ToAssetKeyExport(mapping.PhysicalTarget.UnitAssetKey), mapping.PhysicalTarget.MeshInfoIndex },
+				physicalTarget = new { unitAssetKey = ToAssetKeyExport(mapping.PhysicalTarget.UnitAssetKey) },
 				target = ToPartExport(mapping.Target),
 				source = mapping.Source is null ? null : ToPartExport(mapping.Source),
 				mapping.WillReplace,
@@ -447,7 +441,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		var cancellationToken = currentCancellation.Token;
 		var generation = ++planGeneration;
 		IsPlanning = true;
-		PlanState = "正在重新规划来源与目标 mesh。";
+		PlanState = "正在重新规划来源与目标 Unit 部件。";
 		RefreshPlanCommand.RaiseCanExecuteChanged();
 		var targetIds = TargetChoices.Where(row => row.IsSelected).Select(row => row.Entry.ArchiveId).ToArray();
 		try
@@ -544,7 +538,6 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private static object ToPartExport(EquipmentUnitPart part) => new
 	{
 		unitAssetKey = ToAssetKeyExport(part.UnitAssetKey),
-		part.MeshInfoIndex,
 		meshId = $"0x{part.MeshId:x8}",
 		partKind = part.PartKind.ToString(),
 		layer = part.Layer.ToString(),
@@ -614,7 +607,7 @@ public sealed class CrossArmorSourcePartRow
 	public EquipmentUnitPart Part { get; }
 	public string PartText => $"{PartName(Part.PartKind)} / {LayerName(Part.Layer)}";
 	public string UnitText => $"0x{Part.UnitAssetKey.FileId:x16}";
-	public string Detail => $"mesh {Part.MeshInfoIndex}，{VariantName(Part.BodyVariant)}，{Part.SemanticName}";
+	public string Detail => $"Unit 0x{Part.UnitAssetKey.FileId:x16}，{VariantName(Part.BodyVariant)}，{Part.SemanticName}";
 	private static string PartName(UnitMeshPartKind kind) => kind.ToString();
 	private static string LayerName(UnitMeshPartLayer layer) => layer.ToString();
 	private static string VariantName(UnitMeshBodyVariant variant) => variant.ToString();
