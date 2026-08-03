@@ -28,6 +28,7 @@ public sealed class CanonicalUnitRebuilder
 	private const int MeshSectionSize = 24;
 	private const int StreamRecordSize = 432;
 	private const int UnitMeshInfoHeaderSize = 0x78;
+	private static void Trace(string message) => System.Diagnostics.Trace.WriteLine($"[CanonicalUnitRebuilder] {message}");
 
 	public CanonicalUnitRebuildResult TryRebuild(
 		UnitMeshModel target,
@@ -80,12 +81,14 @@ public sealed class CanonicalUnitRebuilder
 					.OrderBy(mesh => mesh.Sections.FirstOrDefault()?.IndexOffset ?? 0)
 					.ThenBy(mesh => mesh.Index)
 					.ToArray();
+				Trace($"stream={stream.Index} stride={stream.VertexStride} indexType={stream.IndexBufferType} meshes={streamMeshes.Length} gpuStart={gpuData.Count}");
 				var vertexOffsets = new Dictionary<int, uint>();
 				var vertexStart = checked((uint)gpuData.Count);
 				var vertexCount = 0u;
 				foreach (var mesh in streamMeshes)
 				{
 					var raw = rawByMesh[mesh.Index];
+					Trace($"vertices mesh={mesh.Index} vertices={raw.Vertices.Count} sections={raw.Sections.Count} slots={string.Join(',', raw.Sections.Select(section => section.MaterialSlotId))}");
 					vertexOffsets.Add(mesh.Index, vertexCount);
 					foreach (var vertex in raw.Vertices)
 					{
@@ -104,6 +107,7 @@ public sealed class CanonicalUnitRebuilder
 				foreach (var mesh in indexOrderedMeshes)
 				{
 					var raw = rawByMesh[mesh.Index];
+					Trace($"indices mesh={mesh.Index} sections={raw.Sections.Count} triangles={raw.Sections.Sum(section => section.Triangles.Count)} indexStart={indexCount}");
 					indexOffsets.Add(mesh.Index, indexCount);
 					foreach (var section in raw.Sections)
 					{
@@ -123,6 +127,7 @@ public sealed class CanonicalUnitRebuilder
 				{
 					var raw = rawByMesh[mesh.Index];
 					var rebuilt = RebuildMeshInfo(mesh, raw, vertexOffsets[mesh.Index], indexOffsets[mesh.Index]);
+					Trace($"meshInfo={mesh.Index} finalSections={rebuilt.Sections.Count} finalMaterials={rebuilt.MaterialSlotIds.Count} vertexOffset={vertexOffsets[mesh.Index]} indexOffset={indexOffsets[mesh.Index]}");
 					rebuiltMeshes.Add(rebuilt.Index, rebuilt);
 				}
 				rebuiltStreams.Add(stream with
@@ -147,6 +152,7 @@ public sealed class CanonicalUnitRebuilder
 				target,
 				orderedMeshes,
 				finalRawMeshes,
+				target.Materials,
 				out var relocatedMeshes,
 				out var materialsOffset,
 				out var endingOffset,
@@ -172,7 +178,7 @@ public sealed class CanonicalUnitRebuilder
 				EndingOffset = endingOffset,
 				Meshes = relocatedMeshes,
 				Streams = rebuiltStreams,
-				Materials = BuildUsedMaterialBindings(target, finalRawMeshes),
+				Materials = BuildUsedMaterialBindings(target.Materials, finalRawMeshes),
 				RawMeshes = rebuiltSummaries,
 				RawMeshData = finalRawMeshes
 			};
@@ -407,17 +413,18 @@ public sealed class CanonicalUnitRebuilder
 
 	private static UnitMeshInfo RebuildMeshInfo(UnitMeshInfo mesh, UnitRawMeshData raw, uint vertexOffset, uint indexOffset)
 	{
+		Trace($"rebuild-mesh-info mesh={mesh.Index} rawSections={raw.Sections.Count} rawVertices={raw.Vertices.Count} rawIndices={raw.Sections.Sum(section => section.Triangles.Count * 3)}");
 		var materialSlots = raw.Sections.Select(section => section.MaterialSlotId).Distinct().ToArray();
-		var sections = mesh.Sections.Select((section, index) => section with
-		{
-			MaterialIndex = checked((uint)Array.IndexOf(materialSlots, raw.Sections[index].MaterialSlotId)),
-			MaterialSlotId = raw.Sections[index].MaterialSlotId,
-			VertexOffset = vertexOffset,
-			NumVertices = checked((uint)raw.Vertices.Count),
-			IndexOffset = checked(indexOffset + (uint)raw.Sections.Take(index).Sum(item => item.Triangles.Count * 3)),
-			NumIndices = checked((uint)(raw.Sections[index].Triangles.Count * 3)),
-			GroupIndex = checked((uint)index)
-		}).ToArray();
+		var sections = raw.Sections.Select((rawSection, index) => new UnitMeshSectionInfo(
+			0,
+			checked((uint)Array.IndexOf(materialSlots, rawSection.MaterialSlotId)),
+			rawSection.MaterialSlotId,
+			vertexOffset,
+			checked((uint)raw.Vertices.Count),
+			checked(indexOffset + (uint)raw.Sections.Take(index).Sum(item => item.Triangles.Count * 3)),
+			checked((uint)(rawSection.Triangles.Count * 3)),
+			checked((uint)index)
+		)).ToArray();
 		return mesh with
 		{
 			NumMaterials = checked((uint)raw.Sections.Select(section => section.MaterialSlotId).Distinct().Count()),
@@ -432,6 +439,7 @@ public sealed class CanonicalUnitRebuilder
 		UnitMeshModel target,
 		IReadOnlyList<UnitMeshInfo> meshes,
 		IReadOnlyList<UnitRawMeshData> rawMeshes,
+		IReadOnlyList<UnitMaterialBinding> materialBindings,
 		out IReadOnlyList<UnitMeshInfo> relocatedMeshes,
 		out uint materialsOffset,
 		out uint endingOffset,
@@ -500,7 +508,7 @@ public sealed class CanonicalUnitRebuilder
 			});
 		}
 		materialsOffset = checked((uint)output.Count);
-		var bindings = BuildUsedMaterialBindings(target, rawMeshes);
+		var bindings = BuildUsedMaterialBindings(materialBindings, rawMeshes);
 		AppendUInt32(output, checked((uint)bindings.Count));
 		foreach (var binding in bindings) AppendUInt32(output, binding.SectionId);
 		foreach (var binding in bindings) AppendUInt64(output, binding.MaterialId);
@@ -514,14 +522,14 @@ public sealed class CanonicalUnitRebuilder
 		return final;
 	}
 
-	private static IReadOnlyList<UnitMaterialBinding> BuildUsedMaterialBindings(UnitMeshModel target, IReadOnlyList<UnitRawMeshData> rawMeshes)
+	private static IReadOnlyList<UnitMaterialBinding> BuildUsedMaterialBindings(IReadOnlyList<UnitMaterialBinding> materialBindings, IReadOnlyList<UnitRawMeshData> rawMeshes)
 	{
 		var usedSlots = rawMeshes.SelectMany(raw => raw.Sections.Select(section => section.MaterialSlotId)).Distinct().ToHashSet();
 		// SDK Serialize derives each MeshInfo material-slot table from RawMesh.Materials,
 		// but only writes a Unit material-pair when that slot has a concrete MaterialId.
 		// Keep unmatched target-local slots intact rather than substituting an unrelated
 		// material; those slots are valid shell identity but have no portable dependency.
-		return target.Materials
+		return materialBindings
 			.Where(binding => usedSlots.Contains(binding.SectionId))
 			.GroupBy(binding => binding.SectionId)
 			.Select(group => group.Select(binding => binding.MaterialId).Distinct().Count() == 1

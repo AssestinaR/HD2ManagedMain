@@ -51,8 +51,9 @@ public sealed class CanonicalLodBonePaletteCompiler
 			return new(null, [], Array.AsReadOnly(diagnostics.ToArray()));
 
 		var realIndices = palette.Select(hash => IndexOf(hashes, hash)).ToArray();
-		if (realIndices.Any(index => index < 0))
-			return new(null, [], [new("MissingTargetBone", "An active final bone is absent from target TransformInfo.")]);
+		var missingTargetHashes = palette.Where(hash => IndexOf(hashes, hash) < 0).Distinct().ToArray();
+		if (missingTargetHashes.Length != 0)
+			return new(null, [], missingTargetHashes.Select(hash => new CanonicalPlanDiagnostic("MissingTargetBone", $"Active final bone hash 0x{hash:x8} is absent from target TransformInfo.")).ToArray());
 		var layouts = inputs.Select(input => CanonicalFinalMaterialLayout.TryCreate(input.Mesh)).ToArray();
 		foreach (var layout in layouts) diagnostics.AddRange(layout.Diagnostics);
 		if (diagnostics.Count != 0)
@@ -61,6 +62,8 @@ public sealed class CanonicalLodBonePaletteCompiler
 			.Any())
 			return new(null, [], [new("InvalidProvisionalMaterialOrdinal", "A provisional skinned mesh must use its own final material-slot ordinal before shared LOD compilation.")]);
 		var sharedMaterialOrdinals = BuildSharedMaterialOrdinals(inputs);
+		if (sharedMaterialOrdinals.Count == 0)
+			return new(null, [], [new("MissingFinalMaterialSlots", "A final skinned LOD has no active material sections.")]);
 		var materialCount = checked((uint)sharedMaterialOrdinals.Count);
 		var remaps = new List<UnitBoneRemap>(checked((int)materialCount));
 		var offset = checked((uint)(4 + materialCount * 8));
@@ -88,6 +91,45 @@ public sealed class CanonicalLodBonePaletteCompiler
 		{
 			var remap = info.Remaps.SingleOrDefault(item => item.MaterialIndex == section.MaterialIndex);
 			if (remap is null) { diagnostics.Add(new("MissingProvisionalBoneRemap", "A final material ordinal has no provisional BoneInfo remap.")); continue; }
+
+			// SDK GetMeshData passes the complete vertex-group name list for every
+			// material slot to BoneInfo.SetRemap. The resulting LOD palette therefore
+			// contains declared groups even when a particular group is not referenced
+			// by the currently visible triangles. Restricting this pass to triangle
+			// vertices loses those groups and makes the later vertex rewrite fail with
+			// MissingUnifiedBone.
+			foreach (var fake in remap.FakeIndices)
+			{
+				if (fake >= info.RealIndices.Count)
+				{
+					diagnostics.Add(new("InvalidProvisionalBoneRemap", $"Final material ordinal {section.MaterialIndex} references provisional fake bone index {fake} outside RealIndices."));
+					continue;
+				}
+				var real = info.RealIndices[(int)fake];
+				if (real >= hashes.Count)
+				{
+					diagnostics.Add(new("InvalidProvisionalBonePalette", $"Final material ordinal {section.MaterialIndex} references TransformInfo index {real} outside the target hash table."));
+					continue;
+				}
+				yield return hashes[(int)real];
+			}
+
+			// The SDK imports the complete available bone vertex-group set onto the
+			// Blender object before SetRemap runs. Preserve every declared provisional
+			// LOD bone for this final material slot, not only groups encountered in
+			// visible triangles.
+			foreach (var real in info.RealIndices)
+			{
+				if (real >= hashes.Count)
+				{
+					diagnostics.Add(new("InvalidProvisionalBonePalette", $"Provisional BoneInfo real index {real} is outside the TransformInfo hash table."));
+					continue;
+				}
+				yield return hashes[(int)real];
+			}
+
+			// The vertex walk below remains intentional: it validates that every
+			// actually encoded influence can be resolved through the same remap.
 			foreach (var vertexIndex in section.Triangles.SelectMany(triangle => new[] { triangle.A, triangle.B, triangle.C }).Distinct())
 			{
 				if (vertexIndex >= mesh.Vertices.Count) { diagnostics.Add(new("IndexOutOfRange", "A final section references a vertex outside its mesh.")); continue; }
@@ -169,9 +211,24 @@ public sealed class CanonicalLodBonePaletteCompiler
 		if (oldPalette >= oldInfo.RealIndices.Count || oldInfo.RealIndices[(int)oldPalette] >= hashes.Count) { diagnostics.Add(new("InvalidFinalBonePalette", "A final fake index resolves outside TransformInfo.")); return 0; }
 		var hash = hashes[(int)oldInfo.RealIndices[(int)oldPalette]];
 		var targetTransform = IndexOf(hashes, hash);
+		if (targetTransform < 0)
+		{
+			// SDK SetRemap resolves names against TransformInfo before consulting the
+			// current LOD RealIndices. A missing TransformInfo bone is not a valid
+			// palette index and must never be converted from -1 to uint.
+			diagnostics.Add(new("MissingTargetBone", $"Active bone hash 0x{hash:x8} is absent from the target TransformInfo."));
+			return 0;
+		}
 		var unifiedPalette = IndexOf(unified.RealIndices, checked((uint)targetTransform));
+		if (unifiedPalette < 0)
+		{
+			// The shared LOD compiler dynamically expands RealIndices from the
+			// final active vertex groups, matching BoneInfo.SetRemap semantics.
+			diagnostics.Add(new("MissingUnifiedBone", $"Active target bone hash 0x{hash:x8} was not retained in the unified LOD palette."));
+			return 0;
+		}
 		var newFake = IndexOf(newRemap.FakeIndices, checked((uint)unifiedPalette));
-		if (targetTransform < 0 || unifiedPalette < 0 || newFake < 0) { diagnostics.Add(new("MissingUnifiedBone", "An active bone is absent from the unified palette.")); return 0; }
+		if (newFake < 0) { diagnostics.Add(new("MissingUnifiedBoneRemap", $"Active target bone hash 0x{hash:x8} is absent from the unified material remap.")); return 0; }
 		return checked((uint)newFake);
 	}
 

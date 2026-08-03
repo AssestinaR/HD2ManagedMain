@@ -17,6 +17,8 @@ public sealed record CanonicalBoneRebuildResult(
 
 public sealed class CanonicalBoneRebuilder
 {
+	private static void Trace(string message) => System.Diagnostics.Trace.WriteLine($"[CanonicalBoneRebuilder] {message}");
+
 	public CanonicalBoneRebuildResult TryRebuild(
 		UnitMeshModel source,
 		UnitRawMeshData sourceMesh,
@@ -45,7 +47,12 @@ public sealed class CanonicalBoneRebuilder
 		diagnostics.AddRange(sectionLayout.Diagnostics);
 		if (!sectionLayout.IsValid)
 			return new(null, null, Array.AsReadOnly(diagnostics.ToArray()));
-		var materialLayout = CanonicalFinalMaterialLayout.TryCreate(targetMesh);
+		var finalTargetMesh = targetMesh with
+		{
+			Sections = sectionLayout.OutputSections,
+			Triangles = sectionLayout.OutputSections.SelectMany(section => section.Triangles).ToArray()
+		};
+		var materialLayout = CanonicalFinalMaterialLayout.TryCreate(finalTargetMesh);
 		diagnostics.AddRange(materialLayout.Diagnostics);
 		if (!materialLayout.IsValid)
 			return new(null, null, Array.AsReadOnly(diagnostics.ToArray()));
@@ -59,6 +66,7 @@ public sealed class CanonicalBoneRebuilder
 		}
 		if (diagnostics.Count != 0)
 			return new(null, null, Array.AsReadOnly(diagnostics.ToArray()));
+		Trace($"sourceMesh={sourceMesh.MeshInfoIndex} targetMesh={targetMesh.MeshInfoIndex} sourceSections={sourceMesh.Sections.Count} finalSections={finalTargetMesh.Sections.Count} sourceBones={sourceInfo.RealIndices.Count} targetBones={targetBoneInfo.RealIndices.Count} activeHashes={activeByMaterial.Values.SelectMany(value => value).Distinct().Count()}");
 
 		var targetHashes = target.TransformNameHashes;
 		var activeHashes = activeByMaterial.Values.SelectMany(hashes => hashes).Distinct().ToArray();
@@ -73,6 +81,7 @@ public sealed class CanonicalBoneRebuilder
 			}
 			realIndices.Add(checked((uint)targetIndex));
 		}
+		Trace($"targetMesh={targetMesh.MeshInfoIndex} palette={realIndices.Count} targetHashCount={targetHashes.Count}");
 		if (diagnostics.Count != 0)
 			return new(null, null, Array.AsReadOnly(diagnostics.ToArray()));
 
@@ -87,6 +96,7 @@ public sealed class CanonicalBoneRebuilder
 			remaps.Add(new UnitBoneRemap(checked((int)materialIndex), remapOffset, fakeIndices));
 			remapOffset = checked(remapOffset + checked((uint)(fakeIndices.Length * sizeof(uint))));
 		}
+		Trace($"targetMesh={targetMesh.MeshInfoIndex} remaps={remaps.Count} remapBytes={remapOffset}");
 
 		var matrices = BuildInverseJointMatrices(target, targetInfo[0], realIndices, diagnostics);
 		if (diagnostics.Count != 0)
@@ -98,7 +108,7 @@ public sealed class CanonicalBoneRebuilder
 			Remaps = remaps,
 			BoneMatrices = matrices
 		};
-		var rewritten = RewriteVertices(sourceMesh, targetMesh, sourceInfo, sourceHashes, targetHashes, realIndices, remaps, diagnostics);
+		var rewritten = RewriteVertices(sourceMesh, finalTargetMesh, sourceInfo, sourceHashes, targetHashes, realIndices, remaps, diagnostics);
 		if (diagnostics.Count != 0)
 			return new(null, null, Array.AsReadOnly(diagnostics.ToArray()));
 		return new(rebuiltInfo, rewritten, Array.Empty<CanonicalPlanDiagnostic>());
@@ -214,7 +224,13 @@ public sealed class CanonicalBoneRebuilder
 		var sourceRemap = sourceInfo.Remaps.FirstOrDefault(remap => remap.MaterialIndex == material) ?? sourceInfo.Remaps.FirstOrDefault();
 		if (sourceRemap is null || fake >= sourceRemap.FakeIndices.Count || sourceRemap.FakeIndices[(int)fake] >= sourceInfo.RealIndices.Count) { diagnostics.Add(new("InvalidSourceBoneRemap", "A source Type=6 index cannot be remapped.")); return 0; }
 		var hash = sourceHashes[(int)sourceRemap.FakeIndices[(int)fake]];
-		var targetIndex = IndexOf(targetHashes, hash); var realPosition = IndexOf(realIndices, checked((uint)targetIndex));
+		var targetIndex = IndexOf(targetHashes, hash);
+		if (targetIndex < 0)
+		{
+			diagnostics.Add(new("MissingTargetBone", $"Source bone hash 0x{hash:x8} is absent from target TransformInfo."));
+			return 0;
+		}
+		var realPosition = IndexOf(realIndices, checked((uint)targetIndex));
 		if (targetIndex < 0 || realPosition < 0) { diagnostics.Add(new("MissingTargetBone", "An active source bone is absent from the target palette.")); return 0; }
 		var fakePosition = IndexOf(targetRemap.FakeIndices, checked((uint)realPosition));
 		if (fakePosition < 0) { diagnostics.Add(new("MissingTargetBoneRemap", "An active target bone is absent from the target material remap.")); return 0; }

@@ -99,9 +99,9 @@ public sealed class CanonicalMeshSemanticMerger
 			.Select(vertex => TransformVertex(vertex, sourceToTargetLocal, normalTransform, isIdentity))
 			.Select((vertex, index) => vertex with { Index = checked((uint)index) })
 			.ToArray();
-		// Blender object.join assigns the final polygon material slots before SDK GetMeshData
-		// lowers the polygon set into target Unit sections. The current policy is explicit:
-		// visible source sections map once, in order, to existing target material sections.
+		// Blender object.join assigns final polygon material slots before SDK GetMeshData.
+		// The target's original Section count is shell metadata; joined source material
+		// groups become the final sections and are rebuilt by Entry.Save.
 		var sections = sectionLayout.OutputSections;
 
 		var merged = target with

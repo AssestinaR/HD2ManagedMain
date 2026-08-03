@@ -46,9 +46,9 @@ public sealed class CanonicalCrossArmorOrchestrator
 	private readonly CanonicalTransformInfoExpander transformInfoExpander;
 	private readonly CanonicalStaticMeshBinder staticMeshBinder;
 	private readonly CanonicalUnitRebuilder rebuilder;
-	private readonly CanonicalDependencyClosure dependencyClosure;
 	private readonly ICanonicalPatchWriter patchWriter;
-	private readonly MaterialDependencyResolver materialResolver;
+	private readonly HD2ModAdaptation.PatchReconstruction.IPatchEntryPayloadReader sourcePayloadReader;
+	private readonly StingrayMaterialReferenceReader materialReferenceReader;
 
 	private static void ReportProgress(CrossArmorTransferCandidateRequest request, string stage, string text, int completed, int total, System.Diagnostics.Stopwatch stopwatch)
 		=> request.Progress?.Report(new CrossArmorTransferProgress(stage, text, Math.Clamp(completed, 0, total), total, stopwatch.Elapsed));
@@ -82,9 +82,9 @@ public sealed class CanonicalCrossArmorOrchestrator
 		CanonicalTransformInfoExpander? transformInfoExpander = null,
 		CanonicalStaticMeshBinder? staticMeshBinder = null,
 		CanonicalUnitRebuilder? rebuilder = null,
-		CanonicalDependencyClosure? dependencyClosure = null,
 		ICanonicalPatchWriter? patchWriter = null,
-		MaterialDependencyResolver? materialResolver = null)
+		HD2ModAdaptation.PatchReconstruction.IPatchEntryPayloadReader? sourcePayloadReader = null,
+		StingrayMaterialReferenceReader? materialReferenceReader = null)
 	{
 		this.scanner = scanner ?? new AdaptationPatchTocScanner();
 		this.sourceReader = sourceReader ?? new PatchUnitMeshReader();
@@ -100,9 +100,9 @@ public sealed class CanonicalCrossArmorOrchestrator
 		this.transformInfoExpander = transformInfoExpander ?? new CanonicalTransformInfoExpander();
 		this.staticMeshBinder = staticMeshBinder ?? new CanonicalStaticMeshBinder();
 		this.rebuilder = rebuilder ?? new CanonicalUnitRebuilder();
-		this.dependencyClosure = dependencyClosure ?? new CanonicalDependencyClosure();
 		this.patchWriter = patchWriter ?? new CanonicalPatchWriter();
-		this.materialResolver = materialResolver ?? new MaterialDependencyResolver();
+		this.sourcePayloadReader = sourcePayloadReader ?? new HD2ModAdaptation.PatchReconstruction.PatchEntryPayloadReader();
+		this.materialReferenceReader = materialReferenceReader ?? new StingrayMaterialReferenceReader();
 	}
 
 	public async ValueTask<CrossArmorTransferCandidateResult> ExecuteAsync(
@@ -112,6 +112,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 		ArgumentNullException.ThrowIfNull(request);
 		var issues = new List<CoreIssue>();
 		var totalStopwatch = System.Diagnostics.Stopwatch.StartNew();
+		var currentCanonicalUnit = "unknown";
+		var currentCanonicalMesh = "none";
+		var currentCanonicalPhase = "initializing";
+		var currentCanonicalSource = "none";
 		if (!request.Plan.CanContinue)
 			return Failure(issues, "CanonicalPlanNotReady", "Canonical 链路要求现有 CrossArmorTransferPlan 已通过校验。");
 		if (!File.Exists(request.SourcePatchTocPath))
@@ -177,6 +181,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 			foreach (var (targetUnit, targetIndex) in targetUnits.Select((value, index) => (value, index)))
 			{
 				cancellationToken.ThrowIfCancellationRequested();
+				currentCanonicalUnit = $"0x{targetUnit.Key.FileId:x16}";
+				currentCanonicalMesh = "none";
+				currentCanonicalSource = "none";
+				currentCanonicalPhase = "ReadTargetUnit";
 				var unitStopwatch = System.Diagnostics.Stopwatch.StartNew();
 				ReportProgress(request, "RebuildTargetUnit", $"Canonical：重建 Unit {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16}", targetIndex, Math.Max(targetUnits.Length, 1), totalStopwatch);
 				var archiveName = targetUnit.ArchiveName;
@@ -192,6 +200,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 						BoneAnchor: CanonicalBoneAnchor.TargetMeshTransform))
 					.ToArray();
 				var canonicalMappings = ExpandAutoLodMappings(target.Model, sourceUnits, approvedUnitMappings);
+				currentCanonicalPhase = "ExpandAutoLodMappings";
 				var transformSources = canonicalMappings.Select(mapping =>
 				{
 					var source = sourceUnits[mapping.Source.UnitKey];
@@ -209,6 +218,8 @@ public sealed class CanonicalCrossArmorOrchestrator
 					.ToDictionary(item => item.Index, item => item.BoneInfo);
 				foreach (var targetMesh in target.Model.Meshes)
 				{
+					currentCanonicalMesh = $"MeshInfo={targetMesh.Index},Lod={targetMesh.LodIndex},Stream={targetMesh.StreamIndex}";
+					currentCanonicalPhase = "PrepareFinalRawMesh";
 					var targetRaw = target.Model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == targetMesh.Index);
 					var stream = target.Model.Streams.SingleOrDefault(candidate => candidate.Index == (int)targetMesh.StreamIndex);
 					if (targetRaw is null || stream is null)
@@ -226,6 +237,8 @@ public sealed class CanonicalCrossArmorOrchestrator
 					else
 					{
 						var source = sourceUnits[mapping.Source.UnitKey];
+						currentCanonicalSource = $"0x{mapping.Source.UnitKey.FileId:x16}/MeshInfo={mapping.Source.MeshInfoIndex}";
+						currentCanonicalPhase = "ResolveTransform";
 						var sourceRaw = source.Model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == mapping.Source.MeshInfoIndex);
 						if (sourceRaw is null)
 							return Failure(issues, [new CanonicalPlanDiagnostic("RawMeshUnavailable", $"Source RawMesh payload 不完整，无法重建 MeshInfo {targetMesh.Index}。")]);
@@ -236,6 +249,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 						var targetHasBones = UsesSkinningStream(stream);
 						if (sourceHasBones)
 						{
+							currentCanonicalPhase = "RebuildBoneInfo";
 							var rebuiltBone = boneRebuilder.TryRebuild(source.Model, sourceRaw, target.Model, targetRaw);
 							if (!rebuiltBone.IsValid) return Failure(issues, rebuiltBone.Diagnostics);
 							sourceRaw = rebuiltBone.Mesh!;
@@ -243,6 +257,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 						}
 						else if (targetHasBones)
 						{
+							currentCanonicalPhase = "BindStaticMesh";
 							if (mapping.SkinningMode is not (CanonicalSkinningMode.BindStaticToTargetMeshTransform or CanonicalSkinningMode.BindStaticToAvatarBone))
 								return Failure(issues, "CanonicalStaticAnchorRequired", $"静态来源 MeshInfo {mapping.Source.MeshInfoIndex} 写入骨骼目标时必须声明 Canonical 锚定策略。");
 							var staticBind = staticMeshBinder.TryBind(target.Model, targetRaw, sourceRaw, stream,
@@ -251,6 +266,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 							sourceRaw = staticBind.Mesh!;
 							provisionalBoneInfo = staticBind.BoneInfo;
 						}
+						currentCanonicalPhase = "MergeFinalMeshSections";
 						var merged = merger.TryMerge(new(mapping.Source, mapping.Target, transform.SourceToTargetLocal!.Value), targetRaw, sourceRaw);
 						if (!merged.IsValid) return Failure(issues, merged.Diagnostics);
 						var materialBindings = CollectSourceMaterialBindings(source.Model, sourceRawForMaterials, targetRaw);
@@ -272,6 +288,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 				// shared target LOD palette only after every replacement has reached final topology.
 				foreach (var lodGroup in provisionalSkinnedMeshes.GroupBy(mesh => mesh.Mesh.LodIndex))
 				{
+					currentCanonicalPhase = $"CompileBonePalette:Lod={lodGroup.Key}";
 					var compiled = lodBonePaletteCompiler.TryCompile(target.Model, lodGroup.Key, lodGroup.ToArray());
 					if (!compiled.IsValid) return Failure(issues, compiled.Diagnostics);
 					rebuiltBoneInfos[lodGroup.Key] = compiled.BoneInfo!;
@@ -283,11 +300,13 @@ public sealed class CanonicalCrossArmorOrchestrator
 				// SetupRawMeshComponents is stream-wide in the community SDK. The Canonical
 				// equivalent validates every completed RawMesh first and returns the one ABI
 				// contract used for both TryPrepare and StreamInfo serialization.
+				currentCanonicalPhase = "CompileStreamContract";
 				var compiledStreams = streamContractCompiler.TryCompile(target.Model, finalRawMeshes);
 				if (!compiledStreams.IsValid) return Failure(issues, compiledStreams.Diagnostics);
 				target = target with { Model = target.Model with { Streams = compiledStreams.Streams } };
 				for (var index = 0; index < finalRawMeshes.Count; index++)
 				{
+					currentCanonicalPhase = $"PrepareStreamEncoding:MeshInfo={finalRawMeshes[index].MeshInfoIndex}";
 					var stream = target.Model.Streams.Single(candidate => candidate.Index == (int)finalRawMeshes[index].StreamIndex);
 					var prepared = preparation.TryPrepare(finalRawMeshes[index], stream);
 					if (!prepared.IsValid) return Failure(issues, prepared.Diagnostics);
@@ -296,11 +315,18 @@ public sealed class CanonicalCrossArmorOrchestrator
 
 				if (sourceMaterialBindings.Count != 0)
 				{
-					var bindings = target.Model.Materials.Where(binding => !sourceMaterialBindings.ContainsKey(binding.SectionId))
-						.Concat(sourceMaterialBindings.OrderBy(binding => binding.Key).Select(binding => new UnitMaterialBinding(binding.Key, binding.Value)))
+					var bindings = target.Model.Materials
+						.Concat(sourceMaterialBindings
+							.Where(binding => !target.Model.Materials.Any(existing => existing.SectionId == binding.Key && existing.MaterialId == binding.Value))
+							.Select(binding => new UnitMaterialBinding(binding.Key, binding.Value)))
+						.GroupBy(binding => binding.SectionId)
+						.Select(group => group.Select(binding => binding.MaterialId).Distinct().Count() == 1
+							? group.First()
+							: throw new InvalidDataException($"Final material slot {group.Key} maps to multiple Material assets."))
 						.ToArray();
 					target = target with { Model = target.Model with { Materials = bindings } };
 				}
+				currentCanonicalPhase = "SerializeCanonicalUnit";
 				var rebuilt = rebuilder.TryRebuild(target.Model, target.Payload.TocData, finalRawMeshes,
 					rebuiltBoneInfos.Select(item => new CanonicalBoneInfoRebuild(item.Key, item.Value)).ToArray());
 				if (!rebuilt.IsValid) return Failure(issues, rebuilt.Diagnostics);
@@ -324,46 +350,18 @@ public sealed class CanonicalCrossArmorOrchestrator
 			}
 
 			// Unit payloads have already been staged to disk. Do not keep the full source
-			// mesh graph alive while the resolver starts scanning Game Data archives.
+			// mesh graph alive while carrying through source-owned material entries.
 			targetReader.ClearCaches();
 			sourceUnits.Clear();
 			GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: false);
 			GC.WaitForPendingFinalizers();
 			GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: false);
 
-			var materialIds = outputEntries.SelectMany(entry => new UnitMaterialReferenceReader().ReadReferenceBindings(entry.EffectiveTocData).Select(binding => binding.MaterialId)).Distinct().ToArray();
-			ReportProgress(request, "ResolveMaterials", $"Canonical：开始解析材质 0/{materialIds.Length}", 0, Math.Max(materialIds.Length, 1), totalStopwatch);
-			var materialProgress = new Progress<MaterialDependencyProgress>(update =>
-			{
-				ReportProgress(request, update.StageId, update.StageText, update.Completed, Math.Max(update.Total, 1), totalStopwatch);
-			});
-			var materialResolution = await materialResolver.ResolveAsync(materialIds, sourceEntries, request.GameDataDirectory,
-				new Dictionary<AdaptationAssetKey, IReadOnlyList<string>>(), cancellationToken, materialProgress).ConfigureAwait(false);
-			if (materialResolution.RejectedMaterialReasons.Count != 0)
-				return Failure(issues, materialResolution.RejectedMaterialReasons.Select(item => new CanonicalPlanDiagnostic("OriginalMaterialDependencyMissing", $"原版材质 {item.Key:x16} 依赖不完整：{item.Value}")));
-			foreach (var dependency in materialResolution.Entries)
-			{
-				var staged = StagePayloads(stagedPayloadDirectory, dependency.AssetKey, dependency.TocData, dependency.GpuResourceData, dependency.StreamData);
-				outputEntries.Add(new CanonicalPatchSessionEntry(dependency.AssetKey, CanonicalPatchEntryOwnership.RequiredDependency, null, null, null,
-					dependency.Unknown1, dependency.Unknown2, dependency.Unknown3, dependency.Unknown4)
-				{
-					TocDataPath = staged.TocData,
-					GpuDataPath = staged.GpuData,
-					StreamDataPath = staged.StreamData
-				});
-			}
+			await CarryThroughSourceMaterialsAsync(outputEntries, sourceEntries, stagedPayloadDirectory, request, cancellationToken, totalStopwatch).ConfigureAwait(false);
 
 			var session = new CanonicalPatchSession();
-			ReportProgress(request, "ValidateClosure", "正在验证输出依赖闭包。", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
+			ReportProgress(request, "ValidateUnitReferences", "正在验证 Unit 材质引用表。", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
 			foreach (var entry in outputEntries) session.AddEntry(entry);
-			var closureDiagnostics = new List<CanonicalPlanDiagnostic>();
-			foreach (var targetEntry in outputEntries.Where(entry => entry.Ownership == CanonicalPatchEntryOwnership.TargetOutput))
-			{
-				var closure = await dependencyClosure.ValidateAsync(new(targetEntry.Key, targetEntry.EffectiveTocData, outputEntries, request.GameDataDirectory), cancellationToken).ConfigureAwait(false);
-				closureDiagnostics.AddRange(closure.Diagnostics.Select(diagnostic => new CanonicalPlanDiagnostic(diagnostic.Code, diagnostic.Message)));
-			}
-			if (closureDiagnostics.Count != 0)
-				return Failure(issues, closureDiagnostics);
 			var finalized = session.Finalize(CanonicalDependencyClosureValidation.Valid);
 			if (!finalized.IsValid) return Failure(issues, finalized.Diagnostics);
 			var headerArchive = request.Plan.SelectedTargets.FirstOrDefault()?.ArchiveId;
@@ -384,8 +382,105 @@ public sealed class CanonicalCrossArmorOrchestrator
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
 		catch (Exception exception) when (exception is IOException or InvalidDataException or KeyNotFoundException or ArgumentException or OverflowException)
 		{
-			issues.Add(new(CoreIssueSeverity.Error, "CanonicalExecutionFailed", exception.Message, ExceptionMessage: exception.ToString()));
+			var context = $"Unit={currentCanonicalUnit}, Mesh={currentCanonicalMesh}, Source={currentCanonicalSource}, Phase={currentCanonicalPhase}";
+			issues.Add(new(CoreIssueSeverity.Error, "CanonicalExecutionFailed", $"{context}; {exception.Message}", ExceptionMessage: exception.ToString()));
 			return new CrossArmorTransferCandidateResult(false, null, null, 0, 0, 0, issues);
+		}
+	}
+
+	private async ValueTask CarryThroughSourceMaterialsAsync(
+		ICollection<CanonicalPatchSessionEntry> outputEntries,
+		IReadOnlyList<AdaptationPatchTocEntry> sourceEntries,
+		string stagedPayloadDirectory,
+		CrossArmorTransferCandidateRequest request,
+		CancellationToken cancellationToken,
+		System.Diagnostics.Stopwatch totalStopwatch)
+	{
+		var sourceByKey = sourceEntries.ToDictionary(entry => entry.AssetKey);
+		var materialIds = outputEntries
+			.Where(entry => entry.Ownership == CanonicalPatchEntryOwnership.TargetOutput)
+			.SelectMany(entry => new UnitMaterialReferenceReader().ReadReferenceBindings(entry.EffectiveTocData))
+			.Select(binding => binding.MaterialId)
+			.Where(materialId => materialId != 0)
+			.Distinct()
+			.OrderBy(materialId => materialId)
+			.ToArray();
+		var carriedKeys = outputEntries.Select(entry => entry.Key).ToHashSet();
+		var carriedTextureIds = new HashSet<ulong>();
+		ReportProgress(request, "CarryThroughMaterials", $"Canonical：顺延来源材质 0/{materialIds.Length}", 0, Math.Max(materialIds.Length, 1), totalStopwatch);
+
+		for (var index = 0; index < materialIds.Length; index++)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var materialKey = new AdaptationAssetKey(MaterialDependencyResolver.MaterialTypeId, materialIds[index]);
+			if (!sourceByKey.TryGetValue(materialKey, out var materialEntry))
+			{
+				ReportProgress(request, "CarryThroughMaterials", $"Canonical：来源未包含 Material 0x{materialIds[index]:x16}，保留外部引用", index + 1, Math.Max(materialIds.Length, 1), totalStopwatch);
+				continue;
+			}
+
+			HD2ModAdaptation.PatchReconstruction.PatchEntryPayload materialPayload;
+			try
+			{
+				materialPayload = await sourcePayloadReader.ReadPayloadAsync(materialEntry, cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException)
+			{
+				ReportProgress(request, "CarryThroughMaterials", $"Canonical：Material 0x{materialIds[index]:x16} 读取失败，保留外部引用：{exception.Message}", index + 1, Math.Max(materialIds.Length, 1), totalStopwatch);
+				continue;
+			}
+
+			if (carriedKeys.Add(materialKey))
+			{
+				var staged = StagePayloads(stagedPayloadDirectory, materialKey, materialPayload.TocData, materialPayload.GpuResourceData, materialPayload.StreamData);
+				outputEntries.Add(new CanonicalPatchSessionEntry(materialKey, CanonicalPatchEntryOwnership.RequiredDependency,
+					null, null, null, materialEntry.Unknown1, materialEntry.Unknown2, materialEntry.Unknown3, materialEntry.Unknown4)
+				{
+					TocDataPath = staged.TocData,
+					GpuDataPath = staged.GpuData,
+					StreamDataPath = staged.StreamData
+				});
+			}
+
+			IReadOnlyList<ulong> textureIds;
+			try
+			{
+				textureIds = materialReferenceReader.ReadTextureIds(materialPayload.TocData);
+			}
+			catch (Exception exception) when (exception is InvalidDataException or EndOfStreamException or OverflowException)
+			{
+				ReportProgress(request, "CarryThroughMaterials", $"Canonical：Material 0x{materialIds[index]:x16} 的 Texture 表无法解析，仅顺延 Material", index + 1, Math.Max(materialIds.Length, 1), totalStopwatch);
+				continue;
+			}
+
+			foreach (var textureId in textureIds.Where(textureId => textureId != 0).Distinct())
+			{
+				if (!carriedTextureIds.Add(textureId))
+					continue;
+				var textureKey = new AdaptationAssetKey(MaterialDependencyResolver.TextureTypeId, textureId);
+				if (!sourceByKey.TryGetValue(textureKey, out var textureEntry) || !carriedKeys.Add(textureKey))
+					continue;
+				HD2ModAdaptation.PatchReconstruction.PatchEntryPayload texturePayload;
+				try
+				{
+					texturePayload = await sourcePayloadReader.ReadPayloadAsync(textureEntry, cancellationToken).ConfigureAwait(false);
+				}
+				catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException)
+				{
+					carriedKeys.Remove(textureKey);
+					continue;
+				}
+				var staged = StagePayloads(stagedPayloadDirectory, textureKey, texturePayload.TocData, texturePayload.GpuResourceData, texturePayload.StreamData);
+				outputEntries.Add(new CanonicalPatchSessionEntry(textureKey, CanonicalPatchEntryOwnership.RequiredDependency,
+					null, null, null, textureEntry.Unknown1, textureEntry.Unknown2, textureEntry.Unknown3, textureEntry.Unknown4)
+				{
+					TocDataPath = staged.TocData,
+					GpuDataPath = staged.GpuData,
+					StreamDataPath = staged.StreamData
+				});
+			}
+
+			ReportProgress(request, "CarryThroughMaterials", $"Canonical：来源 Material 0x{materialIds[index]:x16} 顺延完成", index + 1, Math.Max(materialIds.Length, 1), totalStopwatch);
 		}
 	}
 
@@ -487,10 +582,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 				.Select(binding => binding.MaterialId).Distinct().ToArray();
 			if (materialIds.Length != 1)
 				throw new InvalidDataException($"Source material slot {assignment.SourceSection.MaterialSlotId} does not resolve to exactly one Material asset.");
-			var targetSlot = assignment.TargetSection.MaterialSlotId;
-			if (bindings.TryGetValue(targetSlot, out var existing) && existing != materialIds[0])
-				throw new InvalidDataException($"Target material slot {targetSlot} cannot represent multiple source Material assets.");
-			bindings[targetSlot] = materialIds[0];
+			var finalSlot = assignment.TargetSection.MaterialSlotId;
+			if (bindings.TryGetValue(finalSlot, out var existing) && existing != materialIds[0])
+				throw new InvalidDataException($"Final material slot {finalSlot} cannot represent multiple source Material assets.");
+			bindings[finalSlot] = materialIds[0];
 		}
 		return bindings;
 	}

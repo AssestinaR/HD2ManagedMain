@@ -1,7 +1,8 @@
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 
-// Purpose: Lowers visible source polygons into the fixed target material-section contract before Canonical bone and GPU rebuilding.
-// Blender/SDK reference: object.join assigns polygon material slots first; GetMeshData then emits sections from that final polygon set.
+// Purpose: Builds the final material-section layout after the source mesh has been joined into the target shell.
+// Blender/SDK reference: object.join preserves final material-slot/polygon groups; GetMeshData and Entry.Save
+// emit one final section for each resulting material group. The original target section count is not a final cap.
 public sealed record CanonicalSectionAssignment(
 	int SourceSectionIndex,
 	UnitRawMeshSectionData SourceSection,
@@ -18,38 +19,31 @@ public sealed record CanonicalSectionLayoutResult(
 
 public static class CanonicalSectionLayout
 {
+	private static void Trace(string message) => System.Diagnostics.Trace.WriteLine($"[CanonicalSectionLayout] {message}");
+
 	public static CanonicalSectionLayoutResult TryCreate(UnitRawMeshData source, UnitRawMeshData target)
 	{
 		ArgumentNullException.ThrowIfNull(source);
 		ArgumentNullException.ThrowIfNull(target);
 		var diagnostics = new List<CanonicalPlanDiagnostic>();
 		if (target.Sections.Count == 0)
-			return new([], [], [new("TargetSectionsMissing", "Canonical section lowering requires at least one target material section.")]);
-		var materialLayout = CanonicalFinalMaterialLayout.TryCreate(target);
-		if (!materialLayout.IsValid)
-			return new([], [], materialLayout.Diagnostics);
+			return new([], [], [new("TargetSectionsMissing", "Canonical section rebuilding requires at least one target material section.")]);
 
 		var visible = source.Sections
 			.Select((section, index) => new { Index = index, Section = section })
 			.Where(item => item.Section.Triangles.Count != 0)
 			.ToArray();
+		Trace($"sourceMesh={source.MeshInfoIndex} sourceSections={source.Sections.Count} visible={visible.Length} targetSections={target.Sections.Count} targetSlots={string.Join(',', target.Sections.Select(section => section.MaterialSlotId))}");
 		if (visible.Length == 0)
 			diagnostics.Add(new("EmptySourceMesh", "Canonical replacement requires at least one source section with triangles."));
-		if (visible.Length > target.Sections.Count)
-		{
-			diagnostics.Add(new("VisibleSectionCountMismatch",
-				$"Canonical target-material fallback can lower {visible.Length} visible source sections into only {target.Sections.Count} target sections. " +
-				"This requires an explicit material/section merge plan; no ordinal, modulo, or automatic material guess was used."));
-		}
 		if (diagnostics.Count != 0)
 			return new([], [], Array.AsReadOnly(diagnostics.ToArray()));
 
+		var output = visible.Select((item, targetIndex) => new UnitRawMeshSectionData(
+			checked((uint)targetIndex), item.Section.MaterialSlotId, item.Section.Triangles.ToArray())).ToArray();
+		Trace($"finalSections={output.Length} finalSlots={string.Join(',', output.Select(section => section.MaterialSlotId))} triangles={output.Sum(section => section.Triangles.Count)}");
 		var assignments = visible.Select((item, targetIndex) => new CanonicalSectionAssignment(
-			item.Index, item.Section, targetIndex, target.Sections[targetIndex])).ToArray();
-		var byTarget = assignments.ToDictionary(item => item.TargetSectionIndex);
-		var output = target.Sections.Select((targetSection, targetIndex) => byTarget.TryGetValue(targetIndex, out var assignment)
-			? new UnitRawMeshSectionData(materialLayout.GetMaterialOrdinal(targetIndex), targetSection.MaterialSlotId, assignment.SourceSection.Triangles.ToArray())
-			: new UnitRawMeshSectionData(materialLayout.GetMaterialOrdinal(targetIndex), targetSection.MaterialSlotId, Array.Empty<UnitTriangleIndices>())).ToArray();
+			item.Index, item.Section, targetIndex, output[targetIndex])).ToArray();
 		return new(assignments, output, Array.Empty<CanonicalPlanDiagnostic>());
 	}
 }
