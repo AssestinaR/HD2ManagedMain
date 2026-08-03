@@ -42,7 +42,7 @@ public sealed class CanonicalCrossArmorOrchestratorTests
 				[],
 				new EquipmentUnitCatalogEntry("target.archive", "Armor", "target", [target]),
 				[new EquipmentUnitCatalogEntry("target.archive", "Armor", "target", [target])],
-				[new CrossArmorTransferMapping(new(target.UnitAssetKey, target.MeshInfoIndex), target, source, true, "test", [], [], false, false)],
+				[new CrossArmorTransferMapping(new(target.UnitAssetKey), target, source, true, "test", [], [], false, false)],
 				[], []);
 
 			var result = await new CanonicalCrossArmorOrchestrator().ExecuteAsync(new(sourcePath, gameData, Path.Combine(gameData, "out"), plan));

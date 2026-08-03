@@ -70,7 +70,8 @@ public sealed class CanonicalDependencyClosure
 				continue;
 			}
 
-			foreach (var textureId in textureIds.Distinct().Order())
+			// SDK-compatible semantics: zero denotes an intentionally empty texture slot.
+			foreach (var textureId in textureIds.Where(id => id != 0).Distinct().Order())
 			{
 				var textureKey = new AssetKey(MaterialDependencyResolver.TextureTypeId, textureId);
 				var texture = await ResolveAsync(textureKey, session, game, cancellationToken).ConfigureAwait(false);

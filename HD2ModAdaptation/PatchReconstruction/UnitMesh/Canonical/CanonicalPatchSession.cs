@@ -27,9 +27,17 @@ public sealed record CanonicalPatchSessionEntry(
 	uint Unknown3 = 16,
 	uint Unknown4 = 64)
 {
-	public byte[] EffectiveTocData => TocData ?? throw new InvalidOperationException($"Canonical entry {Key} has no TocData payload.");
-	public byte[] EffectiveGpuData => GpuData ?? throw new InvalidOperationException($"Canonical entry {Key} has no GpuData payload.");
-	public byte[] EffectiveStreamData => StreamData ?? throw new InvalidOperationException($"Canonical entry {Key} has no StreamData payload.");
+	public string? TocDataPath { get; init; }
+	public string? GpuDataPath { get; init; }
+	public string? StreamDataPath { get; init; }
+	public byte[] EffectiveTocData => TocData ?? ReadPayload(TocDataPath, "TocData");
+	public byte[] EffectiveGpuData => GpuData ?? ReadPayload(GpuDataPath, "GpuData");
+	public byte[] EffectiveStreamData => StreamData ?? ReadPayload(StreamDataPath, "StreamData");
+
+	private byte[] ReadPayload(string? path, string name)
+		=> path is null
+			? throw new InvalidOperationException($"Canonical entry {Key} has no {name} payload.")
+			: File.ReadAllBytes(path);
 }
 
 public sealed record CanonicalPatchSessionValidation(
@@ -83,7 +91,9 @@ public sealed class CanonicalPatchSession
 			diagnostics.Add(new("MissingTargetOutput", "Canonical patch session finalization requires at least one TargetOutput entry."));
 		foreach (var entry in entries)
 		{
-			if (entry.TocData is null || entry.GpuData is null || entry.StreamData is null)
+			if ((entry.TocData is null && entry.TocDataPath is null)
+				|| (entry.GpuData is null && entry.GpuDataPath is null)
+				|| (entry.StreamData is null && entry.StreamDataPath is null))
 				diagnostics.Add(new("MissingEntryPayload", $"Canonical entry {entry.Key} must own TocData, GpuData, and StreamData."));
 		}
 		return new(diagnostics.Count == 0, diagnostics, dependencyClosureValidation);

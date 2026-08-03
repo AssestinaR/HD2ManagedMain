@@ -131,7 +131,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 					batchTargetReadDuration += operationStopwatch.Elapsed;
 					batchDiagnosticLines.Add(JsonSerializer.Serialize(new { Kind = "LodGroupEvidence", Role = "Target", Unit = $"0x{targetKey.FileId:x16}", Value = CreateLodGroupDiagnostic(targetUnit.Model) }));
 					operationStopwatch.Restart();
-					var unitMappings = group.Where(mapping => mapping.WillReplace).Select(mapping => new AdaptationTargetShellMeshMapping(ToAdaptationKey(mapping.Source!.UnitAssetKey), mapping.Source!.MeshInfoIndex, mapping.PhysicalTarget.MeshInfoIndex)).ToArray();
+					var unitMappings = group.Where(mapping => mapping.WillReplace).Select(mapping => new AdaptationTargetShellMeshMapping(ToAdaptationKey(mapping.Source!.UnitAssetKey), mapping.Source!.MeshInfoIndex, mapping.Target.MeshInfoIndex)).ToArray();
 					foreach (var sourceKey in unitMappings.Select(mapping => mapping.SourceUnitAssetKey).Distinct())
 						batchDiagnosticLines.Add(JsonSerializer.Serialize(new { Kind = "LodGroupEvidence", Role = "Source", Unit = $"0x{sourceKey.FileId:x16}", Value = CreateLodGroupDiagnostic(sourceUnits[sourceKey].Model) }));
 					var effectiveUnitMappings = request.ExpandLodFamilyMappings
@@ -314,14 +314,14 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			{
 				var sourceKey = ToAdaptationKey(mapping.Source!.UnitAssetKey);
 				var sourceUnit = sourceUnits[sourceKey];
-				var targetRawMesh = outputUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.PhysicalTarget.MeshInfoIndex);
+				var targetRawMesh = outputUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.Target.MeshInfoIndex);
 				var sourceFamily = ResolveSourceGeometryFamily(sourceUnit.Model, mapping.Source.MeshInfoIndex);
 				var sourceRawMesh = targetRawMesh.LodIndex is >= 0 and <= 3 && sourceFamily.Lod0 is { } sourceLod0
 					? sourceFamily.Meshes.SingleOrDefault(mesh => mesh.LodIndex == targetRawMesh.LodIndex) ?? sourceLod0
 					: sourceUnit.Model.RawMeshData.Single(mesh => mesh.MeshInfoIndex == mapping.Source.MeshInfoIndex);
-				EnsureOutputPreservesSourceVertexColor(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
-				EnsureOutputPreservesSourceGeometry(outputUnit.Model, mapping.PhysicalTarget.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
-				outputTransferLayoutDiagnostics.Add(CreateTransferLayoutDiagnostic(targetKey, mapping.PhysicalTarget.MeshInfoIndex, sourceKey, sourceRawMesh.MeshInfoIndex, outputUnit.Model, sourceUnit.Model));
+				EnsureOutputPreservesSourceVertexColor(outputUnit.Model, mapping.Target.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
+				EnsureOutputPreservesSourceGeometry(outputUnit.Model, mapping.Target.MeshInfoIndex, sourceUnit.Model, sourceRawMesh.MeshInfoIndex);
+				outputTransferLayoutDiagnostics.Add(CreateTransferLayoutDiagnostic(targetKey, mapping.Target.MeshInfoIndex, sourceKey, sourceRawMesh.MeshInfoIndex, outputUnit.Model, sourceUnit.Model));
 			}
 			request.Progress?.Report(new CrossArmorTransferProgress("ValidateOutput", "正在回读验证输出", groupIndex + 1, validationGroups.Length, TimeSpan.Zero));
 		}
@@ -407,7 +407,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 	}
 
 	private static string? FindTargetArchiveId(CrossArmorTransferPlan plan, CrossArmorPhysicalTargetKey target)
-		=> plan.SelectedTargets.FirstOrDefault(entry => entry.Parts.Any(part => part.UnitAssetKey == target.UnitAssetKey && part.MeshInfoIndex == target.MeshInfoIndex))?.ArchiveId;
+		=> plan.SelectedTargets.FirstOrDefault(entry => entry.Parts.Any(part => part.UnitAssetKey == target.UnitAssetKey))?.ArchiveId;
 
 	private static IReadOnlyList<AdaptationTargetShellMeshMapping> ExpandCompleteLodFamilyMappings(
 		HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshModel targetModel,
@@ -556,7 +556,6 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			Mappings = request.Plan.Mappings.Select(mapping => new
 			{
 				TargetUnit = $"0x{mapping.PhysicalTarget.UnitAssetKey.FileId:x16}",
-				mapping.PhysicalTarget.MeshInfoIndex,
 				Target = new { mapping.Target.PartKind, mapping.Target.Layer, mapping.Target.BodyVariant, mapping.Target.SemanticName },
 				SourceUnit = mapping.Source is null ? null : $"0x{mapping.Source.UnitAssetKey.FileId:x16}",
 				SourceMeshInfoIndex = mapping.Source?.MeshInfoIndex,
@@ -731,7 +730,7 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			},
 			Mappings = plan.Mappings.Select(mapping => new
 			{
-				PhysicalTarget = new { Unit = $"0x{mapping.PhysicalTarget.UnitAssetKey.FileId:x16}", mapping.PhysicalTarget.MeshInfoIndex },
+				PhysicalTarget = new { Unit = $"0x{mapping.PhysicalTarget.UnitAssetKey.FileId:x16}" },
 				Target = DescribePart(mapping.Target),
 				Source = mapping.Source is null ? null : DescribePart(mapping.Source),
 				mapping.WillReplace,
@@ -785,7 +784,6 @@ public sealed class CrossArmorTransferCandidateService : ICrossArmorTransferCand
 			Mappings = plan.Mappings.Select(mapping => new
 			{
 				TargetUnit = $"0x{mapping.PhysicalTarget.UnitAssetKey.FileId:x16}",
-				mapping.PhysicalTarget.MeshInfoIndex,
 				SourceUnit = mapping.Source is null ? null : $"0x{mapping.Source.UnitAssetKey.FileId:x16}",
 				SourceMeshInfoIndex = mapping.Source?.MeshInfoIndex,
 				mapping.WillReplace,

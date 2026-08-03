@@ -87,9 +87,8 @@ namespace HD2ModManager.ViewModels
 				bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Preparing, OperationState.Started, sequence: sequence++));
 				var progress = new Progress<CrossArmorTransferProgress>(update =>
 				{
-					var count = update.Total > 1 ? $" {update.Completed}/{update.Total}" : string.Empty;
 					var stageText = update.StageText;
-					State = $"{stageText}{count}（已用时 {update.Elapsed:mm\\:ss}）。";
+                    State = $"{stageText}（已用时 {update.Elapsed:mm\\:ss}）。";
 					bridge.Apply(update.ToOperationProgressEvent(operationId, sequence: sequence++));
 				});
                 var request = new CrossArmorTransferCandidateRequest(_plan.SourcePatchTocPath, _plan.GameDataDirectory, candidateDirectory, plan, CrossArmorMaterialBindingMode.PreserveSourceReferences, _plan.PreparedSourceEntries, progress);
@@ -100,7 +99,11 @@ namespace HD2ModManager.ViewModels
                 var presentation = CrossArmorCandidateResultPresenter.Map(result);
                 if (presentation.IsFailure)
                 {
-                    bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Failed, OperationState.Failed, message: "候选生成失败", sequence: sequence++));
+                    var firstIssue = result.Issues.FirstOrDefault();
+                    bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Failed, OperationState.Failed,
+                        message: firstIssue?.Message ?? "候选生成失败",
+                        issueCode: firstIssue?.Code,
+                        sequence: sequence++));
                     State = $"生成失败：{string.Join("；", result.Issues.Select(issue => issue.Message).Take(3))}";
                     LogService.Error($"替换护甲生成失败：输出={candidateDirectory}，问题={string.Join(" | ", result.Issues.Select(issue => $"{issue.Code}: {issue.Message}"))}");
                     return;

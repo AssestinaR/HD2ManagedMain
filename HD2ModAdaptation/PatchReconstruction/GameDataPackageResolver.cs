@@ -23,6 +23,15 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 		this.gameDataDirectory = Path.GetFullPath(gameDataDirectory);
 	}
 
+	// Purpose: Releases reconstructed archive byte arrays before a later dependency phase.
+	public void ClearCaches()
+	{
+		reconstructedPackages.Clear();
+		chunkOffsets.Clear();
+		packages.Clear();
+		initialized = false;
+	}
+
 	public async ValueTask<GameDataPackageToc?> GetPackageTocAsync(string packageName, CancellationToken cancellationToken = default)
 	{
 		var path = Path.Combine(gameDataDirectory, Path.GetFileName(packageName));

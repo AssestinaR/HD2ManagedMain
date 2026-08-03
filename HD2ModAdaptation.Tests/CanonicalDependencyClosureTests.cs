@@ -55,6 +55,16 @@ public sealed class CanonicalDependencyClosureTests
 		return await new CanonicalDependencyClosure().ValidateAsync(new(Unit, CreateUnitPayload(Material.FileId), entries));
 	}
 
+	[Fact]
+	public async Task ValidateAsync_TreatsZeroTextureIdAsEmptySlot()
+	{
+		var result = await ValidateAsync(CreateMaterialPayload(0, 3), true,
+			new CanonicalPatchSessionEntry(Texture, CanonicalPatchEntryOwnership.RequiredDependency, [1, 2, 3], [], []));
+
+		Assert.True(result.IsValid);
+		Assert.DoesNotContain(result.Missing, dependency => dependency.AssetKey.FileId == 0);
+	}
+
 	private static CanonicalPatchSessionEntry CreateTextureEntry()
 		=> new(Texture, CanonicalPatchEntryOwnership.RequiredDependency, [4, 5], [], []);
 
@@ -68,11 +78,11 @@ public sealed class CanonicalDependencyClosureTests
 		return data;
 	}
 
-	private static byte[] CreateMaterialPayload(ulong textureId)
+	private static byte[] CreateMaterialPayload(params ulong[] textureIds)
 	{
-		var data = new byte[148];
-		Write32(data, 64, 1);
-		Write64(data, 140, textureId);
+		var data = new byte[136 + textureIds.Length * 4 + textureIds.Length * 8];
+		Write32(data, 64, (uint)textureIds.Length);
+		for (var index = 0; index < textureIds.Length; index++) Write64(data, 136 + textureIds.Length * 4 + index * 8, textureIds[index]);
 		return data;
 	}
 

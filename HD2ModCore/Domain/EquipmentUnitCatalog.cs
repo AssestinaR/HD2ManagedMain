@@ -38,11 +38,11 @@ public enum CrossArmorBodyVariantPreference { Slim, Stocky }
 // Purpose: Selects the preferred layer only when a same-layer candidate is unavailable.
 public enum CrossArmorLayerPreference { Armor, Undergarment, Accessory }
 
-// Purpose: Identifies one physical target mesh. Multiple selected archives can reference this one output object.
-public sealed record CrossArmorPhysicalTargetKey(AssetKey UnitAssetKey, int MeshInfoIndex);
+// Purpose: Identifies one physical target Unit. Multiple selected archives can reference this one output object.
+public sealed record CrossArmorPhysicalTargetKey(AssetKey UnitAssetKey);
 
-// Purpose: Preserves a user-selected source assignment for one physical target across automatic plan refreshes.
-public sealed record CrossArmorManualMapping(CrossArmorPhysicalTargetKey Target, AssetKey SourceUnitAssetKey, int SourceMeshInfoIndex);
+// Purpose: Preserves a user-selected source Unit assignment across automatic plan refreshes.
+public sealed record CrossArmorManualMapping(CrossArmorPhysicalTargetKey Target, AssetKey SourceUnitAssetKey);
 
 // Purpose: Preserves a user decision to minify one physical target instead of accepting an automatic assignment.
 public sealed record CrossArmorManualSuppression(CrossArmorPhysicalTargetKey Target);
@@ -59,7 +59,7 @@ public sealed record CrossArmorTransferPlan(
 	public bool CanContinue => SelectedSource is not null && SelectedTargets.Count != 0 && Mappings.Count != 0 && Issues.All(issue => issue.Severity != CoreIssueSeverity.Error);
 }
 
-// Purpose: Predicts a same-part source mesh assignment or target mesh minification without writing an archive.
+// Purpose: Predicts a source Unit assignment or target Unit minification without writing an archive.
 public sealed record CrossArmorTransferMapping(
 	CrossArmorPhysicalTargetKey PhysicalTarget,
 	EquipmentUnitPart Target,

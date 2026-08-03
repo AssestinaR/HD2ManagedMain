@@ -90,14 +90,14 @@ public sealed class EquipmentUnitCatalogServiceTests
 		var slimChest = Part(SourceUnit, 2, "slim-chest") with { PartKind = UnitMeshPartKind.Torso, BodyVariant = UnitMeshBodyVariant.Slim };
 		var stockyChest = Part(SourceUnit, 3, "stocky-chest") with { PartKind = UnitMeshPartKind.Torso, BodyVariant = UnitMeshBodyVariant.Stocky };
 		var anyArm = Part(TargetUnit, 4, "any-arm") with { PartKind = UnitMeshPartKind.LeftArm, BodyVariant = UnitMeshBodyVariant.Any };
-		var targetStockyChest = Part(TargetUnit, 5, "stocky-chest") with { PartKind = UnitMeshPartKind.Torso, BodyVariant = UnitMeshBodyVariant.Stocky };
+		var targetStockyChest = Part(new AssetKey(TargetUnit.TypeId, 0x201), 5, "stocky-chest") with { PartKind = UnitMeshPartKind.Torso, BodyVariant = UnitMeshBodyVariant.Stocky };
 
 		var plan = await CreateService().CreatePlanAsync(
 			[Entry("source", universalArm, slimChest, stockyChest)], [Entry("target", anyArm, targetStockyChest)], "source", UnitMeshBodyVariant.Any,
 			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, ["target"]);
 
-		Assert.Equal(universalArm, plan.Mappings.Single(mapping => mapping.Target.MeshInfoIndex == 4).Source);
-		Assert.Equal(stockyChest, plan.Mappings.Single(mapping => mapping.Target.MeshInfoIndex == 5).Source);
+		Assert.Equal(universalArm, plan.Mappings.Single(mapping => mapping.Target.UnitAssetKey == TargetUnit).Source);
+		Assert.Equal(stockyChest, plan.Mappings.Single(mapping => mapping.Target.UnitAssetKey == targetStockyChest.UnitAssetKey).Source);
 	}
 
 	[Fact]
@@ -105,14 +105,14 @@ public sealed class EquipmentUnitCatalogServiceTests
 	{
 		var slim = Part(SourceUnit, 1, "slim") with { PartKind = UnitMeshPartKind.LeftArm, BodyVariant = UnitMeshBodyVariant.Slim };
 		var matchingTarget = Part(TargetUnit, 2, "slim-target") with { PartKind = UnitMeshPartKind.LeftArm, BodyVariant = UnitMeshBodyVariant.Slim };
-		var unmatchedAny = Part(TargetUnit, 3, "any-target") with { PartKind = UnitMeshPartKind.RightLeg, BodyVariant = UnitMeshBodyVariant.Any };
+		var unmatchedAny = Part(new AssetKey(TargetUnit.TypeId, 0x201), 3, "any-target") with { PartKind = UnitMeshPartKind.RightLeg, BodyVariant = UnitMeshBodyVariant.Any };
 
 		var plan = await CreateService().CreatePlanAsync(
 			[Entry("source", slim)], [Entry("target", matchingTarget, unmatchedAny)], "source", UnitMeshBodyVariant.Any,
 			CrossArmorBodyVariantPreference.Stocky, CrossArmorLayerPreference.Armor, ["target"]);
 
-		Assert.Equal(slim, plan.Mappings.Single(mapping => mapping.Target.MeshInfoIndex == 2).Source);
-		Assert.Null(plan.Mappings.Single(mapping => mapping.Target.MeshInfoIndex == 3).Source);
+		Assert.Equal(slim, plan.Mappings.Single(mapping => mapping.Target.UnitAssetKey == TargetUnit).Source);
+		Assert.Null(plan.Mappings.Single(mapping => mapping.Target.UnitAssetKey == unmatchedAny.UnitAssetKey).Source);
 	}
 
 	[Fact]
@@ -120,13 +120,43 @@ public sealed class EquipmentUnitCatalogServiceTests
 	{
 		var source = Part(SourceUnit, 1, "any") with { PartKind = UnitMeshPartKind.LeftArm, BodyVariant = UnitMeshBodyVariant.Any };
 		var slim = Part(TargetUnit, 2, "slim-target") with { PartKind = UnitMeshPartKind.LeftArm, BodyVariant = UnitMeshBodyVariant.Slim };
-		var stocky = Part(TargetUnit, 3, "stocky-target") with { PartKind = UnitMeshPartKind.LeftArm, BodyVariant = UnitMeshBodyVariant.Stocky };
+		var stocky = Part(new AssetKey(TargetUnit.TypeId, 0x201), 3, "stocky-target") with { PartKind = UnitMeshPartKind.LeftArm, BodyVariant = UnitMeshBodyVariant.Stocky };
 
 		var plan = await CreateService().CreatePlanAsync(
 			[Entry("source", source)], [Entry("target", slim, stocky)], "source", UnitMeshBodyVariant.Any,
 			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, ["target"]);
 
 		Assert.Equal(2, plan.Mappings.Count(mapping => mapping.Source == source));
+	}
+
+	[Fact]
+	public async Task CreatePlanAsync_TorsoSourceUnitsAreNotExpandedIntoExtraTorsoHits()
+	{
+		var slimSource = Part(SourceUnit, 1, "slim-torso") with
+		{
+			PartKind = UnitMeshPartKind.Torso,
+			Layer = UnitMeshPartLayer.Undergarment,
+			BodyVariant = UnitMeshBodyVariant.Slim
+		};
+		var stockySource = Part(AdditionalSourceUnit, 2, "stocky-torso") with
+		{
+			PartKind = UnitMeshPartKind.Torso,
+			Layer = UnitMeshPartLayer.Undergarment,
+			BodyVariant = UnitMeshBodyVariant.Stocky
+		};
+		var targetParts = new[]
+		{
+			Part(new AssetKey(TargetUnit.TypeId, 0x200), 3, "slim-torso") with { PartKind = UnitMeshPartKind.Torso, Layer = UnitMeshPartLayer.Undergarment, BodyVariant = UnitMeshBodyVariant.Slim },
+			Part(new AssetKey(TargetUnit.TypeId, 0x201), 4, "stocky-torso") with { PartKind = UnitMeshPartKind.Torso, Layer = UnitMeshPartLayer.Undergarment, BodyVariant = UnitMeshBodyVariant.Stocky },
+			Part(new AssetKey(TargetUnit.TypeId, 0x202), 5, "slim-accessory") with { PartKind = UnitMeshPartKind.Torso, Layer = UnitMeshPartLayer.Accessory, BodyVariant = UnitMeshBodyVariant.Slim },
+			Part(new AssetKey(TargetUnit.TypeId, 0x203), 6, "stocky-accessory") with { PartKind = UnitMeshPartKind.Torso, Layer = UnitMeshPartLayer.Accessory, BodyVariant = UnitMeshBodyVariant.Stocky }
+		};
+
+		var plan = await CreateService().CreatePlanAsync(
+			[Entry("source", slimSource, stockySource)], [Entry("target", targetParts)], "source", UnitMeshBodyVariant.Any,
+			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, ["target"]);
+
+		Assert.Equal(2, plan.Mappings.Count(mapping => mapping.WillReplace && mapping.Target.PartKind == UnitMeshPartKind.Torso));
 	}
 
 	[Fact]
@@ -141,8 +171,8 @@ public sealed class EquipmentUnitCatalogServiceTests
 			[Entry("source", smaller, larger)], [Entry("target", largeTarget, smallTarget)], "source", UnitMeshBodyVariant.Any,
 			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, ["target"]);
 
-		Assert.Equal(larger, plan.Mappings.Single(mapping => mapping.Target.MeshInfoIndex == 3).Source);
-		Assert.Equal(larger, plan.Mappings.Single(mapping => mapping.Target.MeshInfoIndex == 4).Source);
+		Assert.Single(plan.Mappings);
+		Assert.Equal(larger, plan.Mappings.Single().Source);
 	}
 
 	[Fact]
@@ -246,7 +276,7 @@ public sealed class EquipmentUnitCatalogServiceTests
 		var plan = await CreateService().CreatePlanAsync(
 			[Entry("source", source)], [Entry("target", target)], "source", UnitMeshBodyVariant.Any,
 			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, ["target"],
-			manualMappings: [new CrossArmorManualMapping(new CrossArmorPhysicalTargetKey(TargetUnit, 2), SourceUnit, 1)], manualMode: true);
+			manualMappings: [new CrossArmorManualMapping(new CrossArmorPhysicalTargetKey(TargetUnit), SourceUnit)], manualMode: true);
 
 		var mapping = Assert.Single(plan.Mappings);
 		Assert.Equal(source, mapping.Source);
@@ -277,7 +307,7 @@ public sealed class EquipmentUnitCatalogServiceTests
 		var plan = await CreateService().CreatePlanAsync(
 			[Entry("source", source)], [Entry("target", target)], "source", UnitMeshBodyVariant.Any,
 			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, ["target"],
-			manualSuppressions: [new CrossArmorManualSuppression(new CrossArmorPhysicalTargetKey(TargetUnit, 2))]);
+			manualSuppressions: [new CrossArmorManualSuppression(new CrossArmorPhysicalTargetKey(TargetUnit))]);
 
 		var mapping = Assert.Single(plan.Mappings);
 		Assert.True(mapping.IsSuppressed);

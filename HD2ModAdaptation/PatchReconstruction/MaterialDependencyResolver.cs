@@ -27,7 +27,8 @@ public sealed class MaterialDependencyResolver
 		IReadOnlyList<PatchTocEntry> sourcePatchEntries,
 		string gameDataDirectory,
 		IReadOnlyDictionary<AssetKey, IReadOnlyList<string>> preferredArchivesByAsset,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		IProgress<MaterialDependencyProgress>? progress = null)
 	{
 		ArgumentNullException.ThrowIfNull(materialIds);
 		ArgumentNullException.ThrowIfNull(sourcePatchEntries);
@@ -39,25 +40,84 @@ public sealed class MaterialDependencyResolver
 		var texturesByMaterial = new Dictionary<ulong, IReadOnlyList<ulong>>();
 		var failures = new Dictionary<ulong, string>();
 		var origins = new Dictionary<AssetKey, MaterialDependencyOrigin>();
-		foreach (var materialId in materialIds.Distinct().OrderBy(id => id))
+		var orderedMaterialIds = materialIds.Distinct().OrderBy(id => id).ToArray();
+		for (var materialIndex = 0; materialIndex < orderedMaterialIds.Length; materialIndex++)
 		{
+			var materialId = orderedMaterialIds[materialIndex];
 			var materialKey = new AssetKey(MaterialTypeId, materialId);
+			progress?.Report(new MaterialDependencyProgress(
+				"ResolveMaterials",
+				$"Canonical：解析材质 {materialIndex + 1}/{orderedMaterialIds.Length} 当前Material=0x{materialId:x16}",
+				materialIndex,
+				orderedMaterialIds.Length,
+				materialId,
+				null));
 			var material = await ResolvePayloadAsync(materialKey, sourceEntries, resolver, preferredArchivesByAsset, cancellationToken).ConfigureAwait(false);
-			if (material is null) { failures[materialId] = "Material entry was not found in source patch or game archives."; continue; }
+			if (material is null)
+			{
+				failures[materialId] = "Material entry was not found in source patch or game archives.";
+				progress?.Report(new MaterialDependencyProgress(
+					"ResolveMaterials",
+					$"Canonical：解析材质 {materialIndex + 1}/{orderedMaterialIds.Length} 当前Material=0x{materialId:x16} 未找到",
+					materialIndex + 1,
+					orderedMaterialIds.Length,
+					materialId,
+					null));
+				continue;
+			}
 			IReadOnlyList<ulong> textureIds;
 			try { textureIds = materialReader.ReadTextureIds(material.TocData); }
-			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException) { failures[materialId] = $"Material texture references could not be read: {exception.Message}"; continue; }
-			var missing = new List<ulong>();
-			foreach (var textureId in textureIds.Distinct().OrderBy(id => id))
+			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException)
 			{
+				failures[materialId] = $"Material texture references could not be read: {exception.Message}";
+				progress?.Report(new MaterialDependencyProgress(
+					"ResolveMaterials",
+					$"Canonical：解析材质 {materialIndex + 1}/{orderedMaterialIds.Length} 当前Material=0x{materialId:x16} 读取失败",
+					materialIndex + 1,
+					orderedMaterialIds.Length,
+					materialId,
+					null));
+				continue;
+			}
+			var missing = new List<ulong>();
+			// SDK-compatible semantics: zero denotes an intentionally empty texture slot.
+			var orderedTextureIds = textureIds.Where(id => id != 0).Distinct().OrderBy(id => id).ToArray();
+			for (var textureIndex = 0; textureIndex < orderedTextureIds.Length; textureIndex++)
+			{
+				var textureId = orderedTextureIds[textureIndex];
+				progress?.Report(new MaterialDependencyProgress(
+					"ResolveMaterialTextures",
+					$"Canonical：解析材质 {materialIndex + 1}/{orderedMaterialIds.Length} Texture {textureIndex + 1}/{orderedTextureIds.Length} 当前Texture=0x{textureId:x16}",
+					textureIndex,
+					orderedTextureIds.Length,
+					materialId,
+					textureId));
 				var textureKey = new AssetKey(TextureTypeId, textureId);
 				var texture = await ResolvePayloadAsync(textureKey, sourceEntries, resolver, preferredArchivesByAsset, cancellationToken).ConfigureAwait(false);
 				if (texture is null) { missing.Add(textureId); continue; }
 				if (entries.TryAdd(textureKey, ToAdditionalEntry(texture))) origins[textureKey] = texture.Origin;
 			}
-			if (missing.Count > 0) { failures[materialId] = $"Missing texture entries: {string.Join(", ", missing.Select(id => $"0x{id:x16}"))}."; continue; }
+			if (missing.Count > 0)
+			{
+				failures[materialId] = $"Missing texture entries: {string.Join(", ", missing.Select(id => $"0x{id:x16}"))}.";
+				progress?.Report(new MaterialDependencyProgress(
+					"ResolveMaterials",
+					$"Canonical：解析材质 {materialIndex + 1}/{orderedMaterialIds.Length} 当前Material=0x{materialId:x16} 依赖不完整",
+					materialIndex + 1,
+					orderedMaterialIds.Length,
+					materialId,
+					null));
+				continue;
+			}
 			texturesByMaterial[materialId] = textureIds;
 			if (entries.TryAdd(materialKey, ToAdditionalEntry(material))) origins[materialKey] = material.Origin;
+			progress?.Report(new MaterialDependencyProgress(
+				"ResolveMaterials",
+				$"Canonical：解析材质 {materialIndex + 1}/{orderedMaterialIds.Length} 当前Material=0x{materialId:x16} 完成",
+				materialIndex + 1,
+				orderedMaterialIds.Length,
+				materialId,
+				null));
 		}
 		return new MaterialDependencyResolutionResult(entries.Values.ToArray(), texturesByMaterial, failures, origins);
 	}
@@ -116,3 +176,12 @@ public sealed record MaterialDependencyResolutionResult(
 	IReadOnlyDictionary<ulong, IReadOnlyList<ulong>> TextureIdsByMaterial,
 	IReadOnlyDictionary<ulong, string> RejectedMaterialReasons,
 	IReadOnlyDictionary<AssetKey, MaterialDependencyOrigin> Origins);
+
+// Purpose: Reports bounded material/texture dependency resolution progress without exposing Manager or WPF types.
+public sealed record MaterialDependencyProgress(
+	string StageId,
+	string StageText,
+	int Completed,
+	int Total,
+	ulong MaterialId,
+	ulong? TextureId);

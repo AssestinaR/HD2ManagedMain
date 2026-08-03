@@ -374,7 +374,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		ArgumentNullException.ThrowIfNull(target);
 		ArgumentNullException.ThrowIfNull(source);
 		suppressedTargets.Remove(target.PhysicalTarget);
-		manualMappings[target.PhysicalTarget] = new CrossArmorManualMapping(target.PhysicalTarget, source.UnitAssetKey, source.MeshInfoIndex);
+		manualMappings[target.PhysicalTarget] = new CrossArmorManualMapping(target.PhysicalTarget, source.UnitAssetKey);
 		QueueRefreshPlan();
 	}
 

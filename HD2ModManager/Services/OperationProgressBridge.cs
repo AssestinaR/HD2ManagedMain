@@ -126,8 +126,7 @@ public sealed class OperationProgressBridge
 		}
 		if (_notifications is not null && !string.IsNullOrWhiteSpace(_notificationKey))
 		{
-			var count = progress.Total > 0 ? $" {progress.Completed}/{progress.Total}" : string.Empty;
-			_notifications.ShowOrUpdate(_notificationKey, $"{stageText}{count}", progress.State == OperationState.Failed ? NotificationLevel.Error : NotificationLevel.Info, null);
+			_notifications.ShowOrUpdate(_notificationKey, stageText, progress.State == OperationState.Failed ? NotificationLevel.Error : NotificationLevel.Info, null);
 		}
 		if (progress.IsTerminal && _stageStartedAt != default)
 		{
@@ -142,7 +141,7 @@ public sealed class OperationProgressBridge
 				break;
 			case OperationState.Progress:
 				_target.Update(stageText, progress.Progress);
-				LogService.Info($"操作进度：阶段={stageText}，进度={progress.Completed}/{(progress.Total > 0 ? progress.Total : 0)}，操作={progress.OperationId:N}。");
+				LogService.Info($"{stageText}，操作={progress.OperationId:N}。");
 				break;
 			case OperationState.Completed:
 				_target.MarkCompleted();
@@ -150,7 +149,7 @@ public sealed class OperationProgressBridge
 				break;
 			case OperationState.Failed:
 				_target.MarkFailed("操作失败" + (string.IsNullOrWhiteSpace(progress.IssueCode) ? string.Empty : $"（{progress.IssueCode}）"));
-				LogService.Error($"操作失败：类型={progress.Kind}，操作={progress.OperationId:N}，问题={progress.IssueCode ?? "未分类"}，消息={progress.Message ?? "无"}。");
+				LogService.Error($"操作失败：类型={progress.Kind}，阶段={progress.StageId ?? progress.Stage.ToString()}，操作={progress.OperationId:N}，问题={progress.IssueCode ?? "未分类"}，消息={progress.Message ?? "无"}。");
 				break;
 			case OperationState.Canceled:
 				_target.MarkCanceled();

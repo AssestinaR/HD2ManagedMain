@@ -68,15 +68,18 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 			foreach (var (entry, index) in entries.Select((entry, index) => (entry, index)))
 			{
 				cancellationToken.ThrowIfCancellationRequested();
-				var tocData = entry.EffectiveTocData;
-				var streamData = entry.EffectiveStreamData;
-				var gpuData = entry.EffectiveGpuData;
+				var tocData = entry.TocData;
+				var streamData = entry.StreamData;
+				var gpuData = entry.GpuData;
 				var tocDataOffset = checked((ulong)toc.Position);
-				await toc.WriteAsync(tocData, cancellationToken).ConfigureAwait(false);
-				var streamOffset = await WriteAlignedAsync(stream, streamData, cancellationToken).ConfigureAwait(false);
-				var gpuOffset = await WriteAlignedAsync(gpu, gpuData, cancellationToken).ConfigureAwait(false);
+				var tocLengthForEntry = tocData?.Length ?? checked((int)new FileInfo(entry.TocDataPath!).Length);
+				await WritePayloadAsync(toc, tocData, entry.TocDataPath, cancellationToken).ConfigureAwait(false);
+				var streamLengthForEntry = streamData?.Length ?? checked((int)new FileInfo(entry.StreamDataPath!).Length);
+				var streamOffset = await WriteAlignedAsync(stream, streamData, entry.StreamDataPath, cancellationToken).ConfigureAwait(false);
+				var gpuLengthForEntry = gpuData?.Length ?? checked((int)new FileInfo(entry.GpuDataPath!).Length);
+				var gpuOffset = await WriteAlignedAsync(gpu, gpuData, entry.GpuDataPath, cancellationToken).ConfigureAwait(false);
 				var serialized = new PatchTocEntry(entry.Key, tocPath, patchFileName, tocDataOffset, streamOffset, gpuOffset, entry.Unknown1, entry.Unknown2,
-					checked((uint)tocData.Length), checked((uint)streamData.Length), checked((uint)gpuData.Length), entry.Unknown3, entry.Unknown4, checked((uint)index + 1));
+					checked((uint)tocLengthForEntry), checked((uint)streamLengthForEntry), checked((uint)gpuLengthForEntry), entry.Unknown3, entry.Unknown4, checked((uint)index + 1));
 				written.Add(serialized);
 			}
 			toc.Position = entryTableOffset;
@@ -155,14 +158,27 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 		throw new InvalidDataException("Canonical header template is shorter than the supported TOC header layouts.");
 	}
 
-	private static async ValueTask<ulong> WriteAlignedAsync(FileStream file, byte[] data, CancellationToken cancellationToken)
+	private static async ValueTask<ulong> WriteAlignedAsync(FileStream file, byte[]? data, string? path, CancellationToken cancellationToken)
 	{
-		if (data.Length == 0) return 0;
+		var length = data?.Length ?? (path is null ? 0 : checked((int)new FileInfo(path).Length));
+		if (length == 0) return 0;
 		var padding = (Alignment - (int)(file.Position % Alignment)) % Alignment;
 		if (padding != 0) await file.WriteAsync(new byte[padding], cancellationToken).ConfigureAwait(false);
 		var offset = checked((ulong)file.Position);
-		await file.WriteAsync(data, cancellationToken).ConfigureAwait(false);
+		await WritePayloadAsync(file, data, path, cancellationToken).ConfigureAwait(false);
 		return offset;
+	}
+
+	private static async ValueTask WritePayloadAsync(FileStream destination, byte[]? data, string? path, CancellationToken cancellationToken)
+	{
+		if (data is not null)
+		{
+			await destination.WriteAsync(data, cancellationToken).ConfigureAwait(false);
+			return;
+		}
+		if (path is null) throw new InvalidDataException("Canonical payload has neither memory data nor staged file.");
+		await using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.SequentialScan | FileOptions.Asynchronous);
+		await source.CopyToAsync(destination, 65536, cancellationToken).ConfigureAwait(false);
 	}
 
 	private static void WriteEntry(byte[] data, PatchTocEntry entry)

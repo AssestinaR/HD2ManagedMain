@@ -27,6 +27,14 @@ public sealed class GameDataUnitMeshReader
 		}
 	}
 
+	// Purpose: Releases archive reconstruction caches at an explicit phase boundary.
+	public void ClearCaches()
+	{
+		entriesByArchive.Clear();
+		if (resolver is GameDataPackageResolver packageResolver)
+			packageResolver.ClearCaches();
+	}
+
 	public async ValueTask<GameDataUnitMesh> ReadAsync(
 		string archiveName,
 		AssetKey unitAssetKey,

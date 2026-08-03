@@ -283,7 +283,7 @@ public sealed class CrossArmorBatchOutputTests
 		var mappings = new[]
 		{
 			new CrossArmorTransferMapping(
-				new CrossArmorPhysicalTargetKey(new HD2ModCore.Domain.AssetKey(hiddenTarget.TypeId, hiddenTarget.FileId), 4),
+				new CrossArmorPhysicalTargetKey(new HD2ModCore.Domain.AssetKey(hiddenTarget.TypeId, hiddenTarget.FileId)),
 				null!,
 				null,
 				false,

@@ -22,6 +22,24 @@ public sealed class MaterialDependencyResolverTests : IDisposable
 	}
 
 	[Fact]
+	public async Task ResolveAsync_TreatsZeroTextureIdAsEmptySlot()
+	{
+		var source = CreatePatchEntries(new Dictionary<AssetKey, byte[]>
+		{
+			[MaterialKey] = CreateMaterialPayload(0, TextureId),
+			[TextureKey] = new byte[] { 1, 2, 3 },
+		});
+
+		var result = await CreateResolver(new FakePackageResolver()).ResolveAsync(
+			new[] { MaterialId }, source, "unused", new Dictionary<AssetKey, IReadOnlyList<string>>());
+
+		Assert.Empty(result.RejectedMaterialReasons);
+		Assert.Equal(new[] { 0ul, TextureId }, result.TextureIdsByMaterial[MaterialId]);
+		Assert.DoesNotContain(result.Entries, entry => entry.AssetKey == new AssetKey(MaterialDependencyResolver.TextureTypeId, 0));
+		Assert.Equal(2, result.Entries.Count);
+	}
+
+	[Fact]
 	public async Task ResolveAsync_PrefersSourcePatchPayloads()
 	{
 		var source = CreatePatchEntries(new Dictionary<AssetKey, byte[]>

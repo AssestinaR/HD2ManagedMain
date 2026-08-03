@@ -129,7 +129,6 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(sourceCandidates);
-		ArgumentNullException.ThrowIfNull(targetCandidates);
 		ArgumentNullException.ThrowIfNull(selectedTargetArchiveIds);
 		var issues = new List<CoreIssue>();
 		var source = sourceCandidates.SingleOrDefault(candidate => string.Equals(candidate.ArchiveId, selectedSourceArchiveId, StringComparison.OrdinalIgnoreCase));
@@ -149,84 +148,150 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		var sourceParts = sourceCandidates.Where(candidate => sourceArchiveIds.Contains(candidate.ArchiveId)).SelectMany(candidate => candidate.Parts)
 			.Where(part => part.PartKind != UnitMeshPartKind.Unknown && part.Confidence == 100)
 			.Where(part => selectedSourceBodyVariant is null or UnitMeshBodyVariant.Unknown or UnitMeshBodyVariant.Any || part.BodyVariant == selectedSourceBodyVariant || part.BodyVariant == UnitMeshBodyVariant.Any)
-			.OrderBy(part => part.PartKind).ThenBy(part => part.Layer).ThenBy(part => part.MeshInfoIndex)
+			.OrderBy(part => part.PartKind).ThenBy(part => part.Layer).ThenBy(part => part.UnitAssetKey.FileId)
 			.ToArray();
-		var sourceCategoryByMesh = sourceCandidates.Where(candidate => sourceArchiveIds.Contains(candidate.ArchiveId))
-			.SelectMany(candidate => candidate.Parts.Select(part => new { Key = new SourceMeshKey(part.UnitAssetKey, part.MeshInfoIndex), candidate.Category }))
-			.GroupBy(item => item.Key)
+		var sourceCategoryByUnit = sourceCandidates.Where(candidate => sourceArchiveIds.Contains(candidate.ArchiveId))
+			.SelectMany(candidate => candidate.Parts.Select(part => new { part.UnitAssetKey, candidate.Category }))
+			.GroupBy(item => item.UnitAssetKey)
 			.ToDictionary(group => group.Key, group => group.First().Category);
 		if (sourceParts.Length == 0)
 		{
 			issues.Add(new CoreIssue(CoreIssueSeverity.Error, "SelectedSourceHasNoTransferParts", "所选来源没有可识别的可见非 LOD 部件。"));
 		}
 
-		var targetsByPhysicalMesh = targets
+		var targetsByUnit = targets
 			.SelectMany(target => target.Parts.Select(part => new TargetUse(target, part)))
 			.Where(item => item.Part.PartKind != UnitMeshPartKind.Unknown && item.Part.Confidence == 100)
-			.GroupBy(item => new CrossArmorPhysicalTargetKey(item.Part.UnitAssetKey, item.Part.MeshInfoIndex))
-			.OrderBy(group => group.Key.UnitAssetKey.FileId).ThenBy(group => group.Key.MeshInfoIndex)
+			.GroupBy(item => item.Part.UnitAssetKey)
+			.Select(group =>
+			{
+				var representative = group.OrderByDescending(item => item.Part.StoredBytes).ThenBy(item => item.Part.MeshInfoIndex).First();
+				return new TargetUnitGroup(
+					group.Key,
+					representative,
+					group.ToArray());
+			})
+			.OrderBy(group => group.UnitAssetKey.FileId)
 			.ToArray();
-		var targetFallbackVariants = targets.ToDictionary(
-			entry => entry.ArchiveId,
-			entry => DetermineTargetFallbackVariant(entry, sourceParts, selectedSourceBodyVariant, bodyVariantPreference),
-			StringComparer.OrdinalIgnoreCase);
-		ReconcileSharedTargetFallbackVariants(targetsByPhysicalMesh, targetFallbackVariants, bodyVariantPreference);
-		var manualByTarget = (manualMappings ?? Array.Empty<CrossArmorManualMapping>()).ToDictionary(mapping => mapping.Target);
-		var suppressedTargets = (manualSuppressions ?? Array.Empty<CrossArmorManualSuppression>()).Select(suppression => suppression.Target).ToHashSet();
-		var assignments = new Dictionary<CrossArmorPhysicalTargetKey, (EquipmentUnitPart? Source, bool IsManual, bool IsSuppressed, int HitCount)>();
-		var sourcePools = BuildSourceHitPools(sourceParts, sourceCategoryByMesh);
-		foreach (var physicalTarget in OrderTargetsForAssignment(targetsByPhysicalMesh, manualByTarget))
+		var manualByTarget = (manualMappings ?? Array.Empty<CrossArmorManualMapping>()).ToDictionary(mapping => mapping.Target.UnitAssetKey);
+		var suppressedTargets = (manualSuppressions ?? Array.Empty<CrossArmorManualSuppression>()).Select(suppression => suppression.Target.UnitAssetKey).ToHashSet();
+		var assignments = new Dictionary<AssetKey, (EquipmentUnitPart? Source, bool IsManual, bool IsSuppressed, int HitCount)>();
+		foreach (var target in targetsByUnit)
 		{
-			var targetPart = physicalTarget.First().Part;
-			EquipmentUnitPart? sourcePart = null;
-			var isManual = false;
-			var hitCount = 0;
-			var isSuppressed = suppressedTargets.Contains(physicalTarget.Key);
-			if (!isSuppressed && manualByTarget.TryGetValue(physicalTarget.Key, out var manual))
+			if (manualByTarget.TryGetValue(target.UnitAssetKey, out var manual))
 			{
-				sourcePart = sourceParts.FirstOrDefault(part => part.UnitAssetKey == manual.SourceUnitAssetKey && part.MeshInfoIndex == manual.SourceMeshInfoIndex);
-				isManual = sourcePart is not null;
-				if (sourcePart is null) issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "ManualSourceUnavailable", $"手动来源已不在当前筛选范围：目标 Unit 0x{targetPart.UnitAssetKey.FileId:x16} mesh {targetPart.MeshInfoIndex}。"));
-				else hitCount = physicalTarget.Select(item => item.Entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+				var sourcePart = sourceParts.FirstOrDefault(part => part.UnitAssetKey == manual.SourceUnitAssetKey);
+				if (sourcePart is null)
+					issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "ManualSourceUnavailable", $"手动来源已不在当前筛选范围：目标 Unit 0x{target.UnitAssetKey.FileId:x16}。"));
+				assignments[target.UnitAssetKey] = (sourcePart, sourcePart is not null, false, target.Uses.Select(use => use.Entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).Count());
 			}
-			else if (!isSuppressed && !manualMode)
+			else if (suppressedTargets.Contains(target.UnitAssetKey))
 			{
-				var targetFallback = ResolveSharedTargetFallbackVariant(physicalTarget, targetFallbackVariants, bodyVariantPreference);
-				var compatiblePools = sourcePools
-					.Where(pool => pool.Key.PartKind == targetPart.PartKind
-						&& string.Equals(pool.Key.Category, physicalTarget.First().Entry.Category, StringComparison.OrdinalIgnoreCase)
-						&& IsSemanticFamilyCompatible(pool.Representative, targetPart)
-						&& IsSourceVariantCompatible(pool.Key.BodyVariant, targetPart.BodyVariant, targetFallback))
+				assignments[target.UnitAssetKey] = (null, false, true, 0);
+			}
+		}
+		if (!manualMode)
+		{
+			var sourceProfiles = BuildSourceBodyProfiles(sourceParts, sourceCategoryByUnit);
+			foreach (var archive in targets.Select(target => target.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase))
+			{
+				var usedSourceUnits = new HashSet<AssetKey>();
+				var allArchiveTargets = targetsByUnit
+					.Where(target => target.Uses.Any(use => string.Equals(use.Entry.ArchiveId, archive, StringComparison.OrdinalIgnoreCase)))
 					.ToArray();
-				var layerPools = compatiblePools.Any(pool => pool.Representative.Layer == targetPart.Layer)
-					? compatiblePools.Where(pool => pool.Representative.Layer == targetPart.Layer)
-					: compatiblePools.AsEnumerable();
-				var sourcePool = layerPools
-					.OrderBy(pool => ScoreSourceBodyVariant(pool.Key.BodyVariant, targetPart.BodyVariant, targetFallback))
-					.ThenByDescending(pool => pool.Representative.StoredBytes)
-					.ThenBy(pool => pool.Representative.UnitAssetKey.FileId).ThenBy(pool => pool.Representative.MeshInfoIndex)
-					.FirstOrDefault();
-				if (sourcePool is not null)
+				var archiveTargets = allArchiveTargets
+					.Where(target => !assignments.ContainsKey(target.UnitAssetKey))
+					.ToArray();
+
+				// Head is deliberately independent from the body state machine: one archive
+				// receives its largest visible Head Unit, and nothing else competes with it.
+				var headProfile = sourceProfiles.FirstOrDefault(profile => profile.PartKind == UnitMeshPartKind.Head);
+				if (headProfile is not null)
 				{
-					sourcePart = sourcePool.Representative;
-					hitCount = physicalTarget.Select(item => item.Entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+					var target = archiveTargets.Where(target => target.Representative.Part.PartKind == UnitMeshPartKind.Head)
+						.OrderByDescending(target => target.Representative.Part.StoredBytes)
+						.FirstOrDefault();
+					var headSource = SelectSourceForTarget(headProfile, target, usedSourceUnits, bodyVariantPreference, selectedSourceBodyVariant);
+					if (target is not null && headSource is not null)
+					{
+						assignments[target.UnitAssetKey] = (headSource.Part, false, false,
+							target.Uses.Select(use => use.Entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+						usedSourceUnits.Add(headSource.UnitAssetKey);
+					}
+				}
+
+				var provisionalBodyTargets = sourceProfiles
+					.Where(profile => profile.PartKind != UnitMeshPartKind.Head)
+					.SelectMany(profile => SelectBodyTargets(
+						profile,
+						archiveTargets.Where(target => target.Representative.Part.PartKind == profile.PartKind).ToArray(),
+						layerPreference).Select(target => (Profile: profile, Target: target)))
+					.ToArray();
+				var archiveBodyVariant = ResolveArchiveBodyVariant(provisionalBodyTargets, bodyVariantPreference);
+				foreach (var provisional in provisionalBodyTargets)
+				{
+					var bodySource = SelectSourceForTarget(provisional.Profile, provisional.Target, usedSourceUnits,
+						bodyVariantPreference, selectedSourceBodyVariant, archiveBodyVariant);
+					if (bodySource is null) continue;
+					assignments[provisional.Target.UnitAssetKey] = (bodySource.Part, false, false,
+						provisional.Target.Uses.Select(use => use.Entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+						usedSourceUnits.Add(bodySource.UnitAssetKey);
+				}
+
+				// Deferred regions use the largest two distinct target body variants as the
+				// final coverage fallback. This is intentionally after normal selection so
+				// fallback never steals a better same-layer or Any target.
+				foreach (var profile in sourceProfiles.Where(profile => profile.PartKind != UnitMeshPartKind.Head))
+				{
+					// A body region that already received a provisional hit is complete.
+					// Do not reinterpret every remaining target variant in that region as
+					// another fallback hit; otherwise two source torso Units expand into
+					// four target torso replacements (armor + undergarment).
+					if (provisionalBodyTargets.Any(item => item.Profile.PartKind == profile.PartKind
+						&& assignments.ContainsKey(item.Target.UnitAssetKey))) continue;
+
+					var unresolved = archiveTargets
+						.Where(target => !assignments.ContainsKey(target.UnitAssetKey))
+						.Where(target => target.Representative.Part.PartKind == profile.PartKind)
+						.OrderByDescending(target => target.Representative.Part.StoredBytes)
+						.ThenBy(target => target.UnitAssetKey.FileId)
+						.ToArray();
+					var fallbackTargets = unresolved
+						.GroupBy(target => target.Representative.Part.BodyVariant)
+						.Select(group => group.First())
+						.Take(2)
+						.ToArray();
+					foreach (var target in fallbackTargets)
+					{
+						// Final fallback may only use a source Unit that is still unused in
+						// this archive. Resetting the set here would turn the fallback into
+						// unlimited source reuse and inflate every part's hit count.
+						var fallbackSource = SelectSourceForTarget(profile, target, usedSourceUnits, bodyVariantPreference, selectedSourceBodyVariant);
+						if (fallbackSource is null) continue;
+						assignments[target.UnitAssetKey] = (fallbackSource.Part, false, false,
+							target.Uses.Select(use => use.Entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+						usedSourceUnits.Add(fallbackSource.UnitAssetKey);
+					}
 				}
 			}
-			assignments.Add(physicalTarget.Key, (sourcePart, isManual, isSuppressed, hitCount));
+
+			// A target Unit shared by several selected archives is one physical output.
+			// The first archive that selected it owns the source assignment; later rounds
+			// see it as already assigned and therefore cannot create a second mapping.
 		}
 
 		var mappings = new List<CrossArmorTransferMapping>();
 		var impacts = new List<CrossArmorTransferImpact>();
-		foreach (var physicalTarget in targetsByPhysicalMesh)
+		foreach (var physicalTarget in targetsByUnit)
 		{
-			var targetUse = physicalTarget.First();
+			var targetUse = physicalTarget.Representative;
 			var targetPart = targetUse.Part;
-			var (sourcePart, isManual, isSuppressed, hitCount) = assignments[physicalTarget.Key];
+			var (sourcePart, isManual, isSuppressed, hitCount) = assignments.GetValueOrDefault(physicalTarget.UnitAssetKey);
 			var willReplace = sourcePart is not null;
-			var usedByIds = physicalTarget.Select(item => item.Entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-			var usedByNames = physicalTarget.Select(item => item.Entry.DisplayName).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+			var usedByIds = physicalTarget.Uses.Select(item => item.Entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+			var usedByNames = physicalTarget.Uses.Select(item => item.Entry.DisplayName).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 			mappings.Add(new CrossArmorTransferMapping(
-				physicalTarget.Key, targetPart, sourcePart, willReplace,
+				new CrossArmorPhysicalTargetKey(physicalTarget.UnitAssetKey), targetPart, sourcePart, willReplace,
 				willReplace
 					? (isManual ? "强制命中" : "命中")
 					: (isSuppressed ? "强制隐藏" : "隐藏"),
@@ -242,26 +307,168 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		return ValueTask.FromResult(new CrossArmorTransferPlan(sourceCandidates, source, targets, mappings, impacts.Distinct().ToArray(), issues));
 	}
 
-	private static IEnumerable<IGrouping<CrossArmorPhysicalTargetKey, TargetUse>> OrderTargetsForAssignment(
-		IReadOnlyList<IGrouping<CrossArmorPhysicalTargetKey, TargetUse>> targets,
-		IReadOnlyDictionary<CrossArmorPhysicalTargetKey, CrossArmorManualMapping> manualMappings)
+	private static void MarkSourceUnitUsed(TargetUnitGroup target, AssetKey sourceUnitKey, IDictionary<string, HashSet<AssetKey>> usedByArchive)
+	{
+		foreach (var archiveId in target.Uses.Select(use => use.Entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase))
+		{
+			if (!usedByArchive.TryGetValue(archiveId, out var used)) usedByArchive[archiveId] = used = new HashSet<AssetKey>();
+			used.Add(sourceUnitKey);
+		}
+	}
+
+	private static IReadOnlyList<SourceBodyProfile> BuildSourceBodyProfiles(
+		IReadOnlyList<EquipmentUnitPart> sourceParts,
+		IReadOnlyDictionary<AssetKey, string> sourceCategoryByUnit)
+	{
+		return sourceParts
+			.GroupBy(part => part.PartKind)
+		.Select(group => new SourceBodyProfile(
+			group.Key,
+			group.Select(part => sourceCategoryByUnit.GetValueOrDefault(part.UnitAssetKey) ?? string.Empty)
+				.Where(category => category.Length != 0)
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToArray(),
+			group.OrderByDescending(part => part.StoredBytes).ThenBy(part => part.UnitAssetKey.FileId).ToArray()))
+		.ToArray();
+	}
+
+	private static IReadOnlyList<TargetUnitGroup> SelectBodyTargets(
+		SourceBodyProfile profile,
+		IReadOnlyList<TargetUnitGroup> candidates,
+		CrossArmorLayerPreference layerPreference)
+	{
+		var categoryCandidates = candidates.ToArray();
+		if (categoryCandidates.Length == 0) return Array.Empty<TargetUnitGroup>();
+
+		var sourceLayers = profile.Parts.Select(part => part.Layer).Where(layer => layer != UnitMeshPartLayer.Unknown).ToHashSet();
+		var sameLayer = categoryCandidates.Where(target => sourceLayers.Contains(target.Representative.Part.Layer)).ToArray();
+		var ranked = sameLayer.Length != 0 ? sameLayer : categoryCandidates;
+		var largest = ranked
+			.OrderByDescending(target => target.Representative.Part.StoredBytes)
+			.ThenBy(target => target.UnitAssetKey.FileId)
+			.First();
+		if (largest.Representative.Part.BodyVariant == UnitMeshBodyVariant.Any)
+			return [largest];
+
+		var slim = ranked.Where(target => target.Representative.Part.BodyVariant == UnitMeshBodyVariant.Slim)
+			.OrderByDescending(target => target.Representative.Part.StoredBytes).ThenBy(target => target.UnitAssetKey.FileId).FirstOrDefault();
+		var stocky = ranked.Where(target => target.Representative.Part.BodyVariant == UnitMeshBodyVariant.Stocky)
+			.OrderByDescending(target => target.Representative.Part.StoredBytes).ThenBy(target => target.UnitAssetKey.FileId).FirstOrDefault();
+		if (slim is not null && stocky is not null) return [slim, stocky];
+
+		var only = slim ?? stocky;
+		var secondaryAny = ranked
+			.Where(target => target.Representative.Part.BodyVariant == UnitMeshBodyVariant.Any)
+			.OrderByDescending(target => target.Representative.Part.StoredBytes)
+			.ThenBy(target => target.UnitAssetKey.FileId)
+			.FirstOrDefault();
+		if (only is not null && secondaryAny is not null && only.UnitAssetKey != secondaryAny.UnitAssetKey)
+			return [secondaryAny];
+
+		// Layer preference is only a deterministic last ordering tie-breaker here. The
+		// source layer remains authoritative whenever a same-layer target exists.
+		return ranked
+			.OrderByDescending(target => target.Representative.Part.Layer == ToPartLayer(layerPreference))
+			.ThenByDescending(target => target.Representative.Part.StoredBytes)
+			.Take(1)
+			.ToArray();
+	}
+
+	private static SourceSelection? SelectSourceForTarget(
+		SourceBodyProfile profile,
+		TargetUnitGroup? target,
+		IReadOnlySet<AssetKey> usedSourceUnits,
+		CrossArmorBodyVariantPreference preference,
+		UnitMeshBodyVariant? selectedSourceBodyVariant,
+		UnitMeshBodyVariant? archiveBodyVariant = null)
+	{
+		if (target is null) return null;
+		var targetVariant = target.Representative.Part.BodyVariant;
+		var available = profile.Parts
+			.Where(part => !usedSourceUnits.Contains(part.UnitAssetKey))
+			.Where(part => selectedSourceBodyVariant is null or UnitMeshBodyVariant.Unknown or UnitMeshBodyVariant.Any
+				|| part.BodyVariant == selectedSourceBodyVariant || part.BodyVariant == UnitMeshBodyVariant.Any)
+			.Where(part => !archiveBodyVariant.HasValue || part.BodyVariant == archiveBodyVariant.Value || part.BodyVariant == UnitMeshBodyVariant.Any)
+			.Where(part => targetVariant is UnitMeshBodyVariant.Any or UnitMeshBodyVariant.Unknown
+				|| archiveBodyVariant.HasValue || IsEffectiveAny(profile) || part.BodyVariant == targetVariant || part.BodyVariant == UnitMeshBodyVariant.Any)
+			.ToArray();
+		if (available.Length == 0) return null;
+		var preferred = PreferredBodyVariant(preference);
+		var targetLayer = target.Representative.Part.Layer;
+		var exactLayer = available.Where(part => part.Layer == targetLayer).ToArray();
+		if (exactLayer.Length != 0) available = exactLayer;
+		var selected = available
+			.OrderBy(part => IsEffectiveAny(profile) ? 0 : part.BodyVariant == targetVariant ? 0 : part.BodyVariant == UnitMeshBodyVariant.Any ? 1 : part.BodyVariant == preferred ? 2 : 3)
+			.ThenByDescending(part => part.StoredBytes)
+			.ThenBy(part => part.UnitAssetKey.FileId)
+			.First();
+		return new SourceSelection(selected.UnitAssetKey, selected);
+	}
+
+	private static UnitMeshBodyVariant? ResolveArchiveBodyVariant(
+		IReadOnlyList<(SourceBodyProfile Profile, TargetUnitGroup Target)> provisionalTargets,
+		CrossArmorBodyVariantPreference preference)
+	{
+		var requiresConcreteVariant = provisionalTargets.Any(item =>
+			item.Target.Representative.Part.BodyVariant == UnitMeshBodyVariant.Any && !item.Profile.Parts.Any(part => part.BodyVariant == UnitMeshBodyVariant.Any));
+		return requiresConcreteVariant ? PreferredBodyVariant(preference) : null;
+	}
+
+	private static UnitMeshBodyVariant? ResolveAssignedArchiveBodyVariant(
+		IReadOnlyList<TargetUnitGroup> archiveTargets,
+		IReadOnlyDictionary<AssetKey, (EquipmentUnitPart? Source, bool IsManual, bool IsSuppressed, int HitCount)> assignments,
+		CrossArmorBodyVariantPreference preference)
+	{
+		var variants = archiveTargets
+			.Where(target => assignments.TryGetValue(target.UnitAssetKey, out var assignment) && assignment.Source is not null)
+			.Select(target => assignments[target.UnitAssetKey].Source!.BodyVariant)
+			.Where(variant => variant is UnitMeshBodyVariant.Slim or UnitMeshBodyVariant.Stocky)
+			.GroupBy(variant => variant)
+			.OrderByDescending(group => group.Count())
+			.ThenBy(group => group.Key == PreferredBodyVariant(preference) ? 0 : 1)
+			.Select(group => (UnitMeshBodyVariant?)group.Key)
+			.FirstOrDefault();
+		return variants;
+	}
+
+	private static bool IsEffectiveAny(SourceBodyProfile profile)
+	{
+		var concreteVariants = profile.Parts
+			.Select(part => part.BodyVariant)
+			.Where(variant => variant is UnitMeshBodyVariant.Slim or UnitMeshBodyVariant.Stocky)
+			.Distinct()
+			.ToArray();
+		return !profile.Parts.Any(part => part.BodyVariant == UnitMeshBodyVariant.Any) && concreteVariants.Length == 1;
+	}
+
+	private static UnitMeshPartLayer ToPartLayer(CrossArmorLayerPreference preference)
+		=> preference switch
+		{
+			CrossArmorLayerPreference.Undergarment => UnitMeshPartLayer.Undergarment,
+			CrossArmorLayerPreference.Accessory => UnitMeshPartLayer.Accessory,
+			_ => UnitMeshPartLayer.Armor
+		};
+
+	private static IEnumerable<TargetUnitGroup> OrderTargetsForAssignment(
+		IReadOnlyList<TargetUnitGroup> targets,
+		IReadOnlyDictionary<AssetKey, CrossArmorManualMapping> manualMappings)
 		=> targets
-			.OrderByDescending(group => manualMappings.ContainsKey(group.Key))
-			.ThenByDescending(group => group.First().Part.StoredBytes)
-			.ThenBy(group => group.Key.UnitAssetKey.FileId)
+			.OrderByDescending(group => manualMappings.ContainsKey(group.UnitAssetKey))
+			.ThenByDescending(group => group.Representative.Part.StoredBytes)
+			.ThenBy(group => group.UnitAssetKey.FileId)
 			;
 
 	private static IReadOnlyList<SourceHitPool> BuildSourceHitPools(
 		IReadOnlyList<EquipmentUnitPart> sourceParts,
-		IReadOnlyDictionary<SourceMeshKey, string> sourceCategoryByMesh)
+		IReadOnlyDictionary<AssetKey, string> sourceCategoryByUnit)
 	{
 		return sourceParts
 			.GroupBy(part => new SourcePoolKey(
-				sourceCategoryByMesh.GetValueOrDefault(new SourceMeshKey(part.UnitAssetKey, part.MeshInfoIndex)) ?? string.Empty,
+				part.UnitAssetKey,
+				sourceCategoryByUnit.GetValueOrDefault(part.UnitAssetKey) ?? string.Empty,
 				part.PartKind,
 				part.BodyVariant,
-				part.Layer,
-				SemanticFamily(part.SemanticName) ?? string.Empty))
+				part.Layer))
 			.Select(group => new SourceHitPool(
 				group.Key,
 				group.OrderByDescending(part => part.StoredBytes).ThenBy(part => part.UnitAssetKey.FileId).ThenBy(part => part.MeshInfoIndex).First()))
@@ -270,23 +477,6 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 
 	// A Unit is the user-facing armor part. Its internal LOD/section records must
 	// not become separate planning rows; the writer resolves the complete Unit later.
-	private static IReadOnlyList<EquipmentUnitPart> CollapseLogicalUnitParts(IEnumerable<EquipmentUnitPart> parts)
-		=> parts
-			.GroupBy(part => new
-			{
-				part.UnitAssetKey,
-				part.PartKind,
-				part.Layer,
-				part.BodyVariant,
-				SemanticFamily = SemanticFamily(part.SemanticName) ?? part.SemanticName.Trim().ToLowerInvariant()
-			})
-			.Select(group => group
-				.OrderByDescending(part => part.Confidence)
-				.ThenByDescending(part => part.StoredBytes)
-				.ThenBy(part => part.MeshInfoIndex)
-				.First())
-			.ToArray();
-
 	private static int ScoreSourceBodyVariant(UnitMeshBodyVariant source, UnitMeshBodyVariant target, UnitMeshBodyVariant? fallback)
 	{
 		if (fallback is UnitMeshBodyVariant.Slim or UnitMeshBodyVariant.Stocky)
@@ -314,7 +504,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 			.Select(part => new
 			{
 				Part = part,
-				Sources = sources.Where(source => source.PartKind == part.PartKind && IsSemanticFamilyCompatible(source, part)).ToArray()
+				Sources = sources.Where(source => source.PartKind == part.PartKind).ToArray()
 			})
 			.Where(item => item.Sources.Length != 0)
 			.ToArray();
@@ -337,11 +527,11 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 	}
 
 	private static UnitMeshBodyVariant? ResolveSharedTargetFallbackVariant(
-		IGrouping<CrossArmorPhysicalTargetKey, TargetUse> physicalTarget,
+		TargetUnitGroup physicalTarget,
 		IReadOnlyDictionary<string, UnitMeshBodyVariant?> fallbackVariants,
 		CrossArmorBodyVariantPreference preference)
 	{
-		var requested = physicalTarget.Select(use => fallbackVariants.GetValueOrDefault(use.Entry.ArchiveId))
+		var requested = physicalTarget.Uses.Select(use => fallbackVariants.GetValueOrDefault(use.Entry.ArchiveId))
 			.Where(variant => variant is UnitMeshBodyVariant.Slim or UnitMeshBodyVariant.Stocky)
 			.Cast<UnitMeshBodyVariant>()
 			.GroupBy(variant => variant)
@@ -353,13 +543,13 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 	}
 
 	private static void ReconcileSharedTargetFallbackVariants(
-		IReadOnlyList<IGrouping<CrossArmorPhysicalTargetKey, TargetUse>> physicalTargets,
+		IReadOnlyList<TargetUnitGroup> physicalTargets,
 		IDictionary<string, UnitMeshBodyVariant?> fallbackVariants,
 		CrossArmorBodyVariantPreference preference)
 	{
-		foreach (var physicalTarget in physicalTargets.Where(group => group.Select(use => use.Entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1))
+		foreach (var physicalTarget in physicalTargets.Where(group => group.Uses.Select(use => use.Entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1))
 		{
-			var requirements = physicalTarget
+			var requirements = physicalTarget.Uses
 				.Select(use => new
 				{
 					use.Entry.ArchiveId,
@@ -389,16 +579,6 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		return required is null || source == required;
 	}
 
-	private static bool IsSemanticFamilyCompatible(EquipmentUnitPart source, EquipmentUnitPart target)
-	{
-		if (!string.IsNullOrWhiteSpace(source.PieceType) && !string.IsNullOrWhiteSpace(target.PieceType)
-			&& !string.Equals(source.PieceType, target.PieceType, StringComparison.OrdinalIgnoreCase)) return false;
-		if (source.Layer == UnitMeshPartLayer.Unknown || target.Layer == UnitMeshPartLayer.Unknown) return true;
-		var sourceFamily = SemanticFamily(source.SemanticName);
-		var targetFamily = SemanticFamily(target.SemanticName);
-		return sourceFamily is null || targetFamily is null || string.Equals(sourceFamily, targetFamily, StringComparison.Ordinal);
-	}
-
 	private static string? SemanticFamily(string semanticName)
 	{
 		var name = semanticName.Trim().ToLowerInvariant();
@@ -426,8 +606,11 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 	private static AssetKey ToCoreKey(AdaptationAssetKey assetKey) => new(assetKey.TypeId, assetKey.FileId);
 
 	private sealed record TargetUse(EquipmentUnitCatalogEntry Entry, EquipmentUnitPart Part);
-	private sealed record SourceMeshKey(AssetKey UnitAssetKey, int MeshInfoIndex);
-	private sealed record SourcePoolKey(string Category, UnitMeshPartKind PartKind, UnitMeshBodyVariant BodyVariant, UnitMeshPartLayer Layer, string SemanticFamily);
+	private sealed record TargetUnitGroup(AssetKey UnitAssetKey, TargetUse Representative, IReadOnlyList<TargetUse> Uses);
+	private sealed record SourceTargetCandidate(TargetUnitGroup Target, EquipmentUnitPart Source);
+	private sealed record SourceBodyProfile(UnitMeshPartKind PartKind, IReadOnlyList<string> Categories, IReadOnlyList<EquipmentUnitPart> Parts);
+	private sealed record SourceSelection(AssetKey UnitAssetKey, EquipmentUnitPart Part);
+	private sealed record SourcePoolKey(AssetKey UnitAssetKey, string Category, UnitMeshPartKind PartKind, UnitMeshBodyVariant BodyVariant, UnitMeshPartLayer Layer);
 	private sealed class SourceHitPool(SourcePoolKey key, EquipmentUnitPart representative)
 	{
 		public SourcePoolKey Key { get; } = key;
