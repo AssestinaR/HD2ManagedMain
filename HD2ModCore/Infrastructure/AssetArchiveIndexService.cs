@@ -216,7 +216,7 @@ ORDER BY type_id, file_id;";
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		await using var command = connection.CreateCommand();
 		command.CommandText = @"
-SELECT archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,confidence,is_visual,is_lod,reason
+SELECT archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,reason
 FROM game_data_unit_parts
 
 WHERE unit_type_id=$unitType AND unit_file_id IN (SELECT value FROM json_each($fileIds))
@@ -236,10 +236,13 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 				(UnitMeshPartLayer)reader.GetInt32(6),
 				(UnitMeshBodyVariant)reader.GetInt32(7),
 				reader.GetString(8),
-				reader.GetInt32(9),
-				reader.GetInt32(10) != 0,
+				reader.GetInt32(10),
 				reader.GetInt32(11) != 0,
-				reader.GetString(12));
+				reader.GetInt32(12) != 0,
+				reader.GetString(13))
+			{
+				PieceType = reader.GetString(9)
+			};
 			if (!result.TryGetValue(fact.UnitAssetKey, out var parts))
 			{
 				parts = new List<GameDataUnitPartFact>();
@@ -784,9 +787,9 @@ VALUES($a,$i,$t,$f,1,$td,$so,$go,$ts,$ss,$gs,$u1,$u2,$u3,$u4)";
 	{
 		var command = connection.CreateCommand();
 		command.CommandText = @"INSERT INTO game_data_unit_parts
-(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,confidence,is_visual,is_lod,reason)
-VALUES($archive,$type,$file,$mesh,$meshId,$kind,$layer,$variant,$name,$confidence,$visual,$lod,$reason)";
-		foreach (var name in new[] { "$archive", "$name", "$reason" }) command.Parameters.Add(name, SqliteType.Text);
+(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,reason)
+VALUES($archive,$type,$file,$mesh,$meshId,$kind,$layer,$variant,$name,$piece,$confidence,$visual,$lod,$reason)";
+		foreach (var name in new[] { "$archive", "$name", "$piece", "$reason" }) command.Parameters.Add(name, SqliteType.Text);
 		foreach (var name in new[] { "$type", "$file", "$mesh", "$meshId", "$kind", "$layer", "$variant", "$confidence", "$visual", "$lod" }) command.Parameters.Add(name, SqliteType.Integer);
 		command.Prepare();
 		return command;
@@ -803,6 +806,7 @@ VALUES($archive,$type,$file,$mesh,$meshId,$kind,$layer,$variant,$name,$confidenc
 		command.Parameters["$layer"].Value = (int)part.Layer;
 		command.Parameters["$variant"].Value = (int)part.BodyVariant;
 		command.Parameters["$name"].Value = part.SemanticName;
+		command.Parameters["$piece"].Value = part.PieceType;
 		command.Parameters["$confidence"].Value = part.Confidence;
 		command.Parameters["$visual"].Value = part.IsVisualMesh ? 1 : 0;
 		command.Parameters["$lod"].Value = part.IsLod ? 1 : 0;

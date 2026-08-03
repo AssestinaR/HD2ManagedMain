@@ -14,7 +14,7 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Builds optional incremental Armor Unit mesh facts for cross-armor transfer.
 public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexService
 {
-	private const string Version = "equipment-v3-armor-and-helmet-incremental-parts-and-stream-layouts";
+	private const string Version = "equipment-v4-sdk-piece-type-and-slot-parts";
 	private readonly StoragePaths paths;
 	private readonly IGameDataArchiveIndexer archiveIndexer;
 	private readonly UnitMeshPartClassifier classifier = new();
@@ -69,7 +69,7 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 			try
 			{
 				var unit = await reader.ReadAsync(archiveId, entry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
-				parts.AddRange(classifier.Classify(entry.AssetKey, unit.Model, boneNames).Select(part => new GameDataUnitPartFact(archiveId, new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), part.MeshInfoIndex, part.MeshId, part.PartKind, part.Layer, part.BodyVariant, part.SemanticName, part.Confidence, part.IsVisualMesh, part.IsLod, part.Reason)));
+				parts.AddRange(classifier.Classify(entry.AssetKey, unit.Model, boneNames).Select(part => new GameDataUnitPartFact(archiveId, new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), part.MeshInfoIndex, part.MeshId, part.PartKind, part.Layer, part.BodyVariant, part.SemanticName, part.Confidence, part.IsVisualMesh, part.IsLod, part.Reason) { PieceType = part.PieceType }));
 			}
 			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException) { }
 		}
@@ -88,6 +88,7 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		if (string.IsNullOrWhiteSpace(gameDataDirectory)) throw new ArgumentException("Value cannot be null or whitespace.", nameof(gameDataDirectory));
 		if (!Directory.Exists(gameDataDirectory)) throw new DirectoryNotFoundException($"GameData directory does not exist: {gameDataDirectory}");
 		if (!File.Exists(paths.DbPath)) throw new InvalidOperationException("请先建立基础 Game Data 资产索引。");
+		await EnsureSchemaAsync(cancellationToken).ConfigureAwait(false);
 
 		var archives = await ReadArchivesAsync(cancellationToken).ConfigureAwait(false);
 		var equipmentArchiveIds = archives.Where(item => IsEquipmentCategory(item.Category)).Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -110,7 +111,7 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 				var adaptationKey = new HD2ModAdaptation.PatchReconstruction.AssetKey(unit.AssetKey.TypeId, unit.AssetKey.FileId);
 				var parsed = await reader.ReadAsync(unit.ArchiveId, adaptationKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
 				parts.AddRange(classifier.Classify(adaptationKey, parsed.Model, boneNames)
-					.Select(part => new GameDataUnitPartFact(unit.ArchiveId, new CoreAssetKey(unit.AssetKey.TypeId, unit.AssetKey.FileId), part.MeshInfoIndex, part.MeshId, part.PartKind, part.Layer, part.BodyVariant, part.SemanticName, part.Confidence, part.IsVisualMesh, part.IsLod, part.Reason)));
+					.Select(part => new GameDataUnitPartFact(unit.ArchiveId, new CoreAssetKey(unit.AssetKey.TypeId, unit.AssetKey.FileId), part.MeshInfoIndex, part.MeshId, part.PartKind, part.Layer, part.BodyVariant, part.SemanticName, part.Confidence, part.IsVisualMesh, part.IsLod, part.Reason) { PieceType = part.PieceType }));
 			}
 			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException)
 			{
@@ -119,6 +120,13 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		}
 		await SaveUnitPartFactsAsync(parts, units.Select(unit => (unit.ArchiveId, unit.AssetKey)).ToArray(), rebuildAll, cancellationToken).ConfigureAwait(false);
 		progress?.Report(new IndexBuildProgress(total, total, rebuildAll ? "全部 Armor / Helmet Unit 部位事实已完成。" : "缺失 Armor / Helmet Unit 部位事实已完成。"));
+	}
+
+	private async ValueTask EnsureSchemaAsync(CancellationToken cancellationToken)
+	{
+		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.EnsureCreatedAsync(connection, cancellationToken).ConfigureAwait(false);
 	}
 
 	private async ValueTask<IReadOnlyList<(string Id, string Category, string Name, string? Hex)>> ReadArchivesAsync(CancellationToken cancellationToken)
@@ -259,8 +267,8 @@ ORDER BY a.archive_id,e.file_id;";
 	private static SqliteCommand CreatePartCommand(SqliteConnection connection, SqliteTransaction transaction)
 	{
 		var command = connection.CreateCommand(); command.Transaction = transaction;
-		command.CommandText = "INSERT INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,confidence,is_visual,is_lod,reason) VALUES($a,$t,$f,$m,$id,$k,$l,$v,$n,$c,$visual,$lod,$r)";
-		foreach (var name in new[] { "$a", "$n", "$r" }) command.Parameters.Add(name, SqliteType.Text);
+		command.CommandText = "INSERT INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,reason) VALUES($a,$t,$f,$m,$id,$k,$l,$v,$n,$piece,$c,$visual,$lod,$r)";
+		foreach (var name in new[] { "$a", "$n", "$piece", "$r" }) command.Parameters.Add(name, SqliteType.Text);
 		foreach (var name in new[] { "$t", "$f", "$m", "$id", "$k", "$l", "$v", "$c", "$visual", "$lod" }) command.Parameters.Add(name, SqliteType.Integer); command.Prepare(); return command;
 	}
 
@@ -268,7 +276,7 @@ ORDER BY a.archive_id,e.file_id;";
 
 	private static async ValueTask InsertPartAsync(SqliteCommand command, GameDataUnitPartFact part, CancellationToken cancellationToken)
 	{
-		command.Parameters["$a"].Value = part.ArchiveId; command.Parameters["$t"].Value = unchecked((long)part.UnitAssetKey.TypeId); command.Parameters["$f"].Value = unchecked((long)part.UnitAssetKey.FileId); command.Parameters["$m"].Value = part.MeshInfoIndex; command.Parameters["$id"].Value = part.MeshId; command.Parameters["$k"].Value = (int)part.PartKind; command.Parameters["$l"].Value = (int)part.Layer; command.Parameters["$v"].Value = (int)part.BodyVariant; command.Parameters["$n"].Value = part.SemanticName; command.Parameters["$c"].Value = part.Confidence; command.Parameters["$visual"].Value = part.IsVisualMesh ? 1 : 0; command.Parameters["$lod"].Value = part.IsLod ? 1 : 0; command.Parameters["$r"].Value = part.Reason; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+		command.Parameters["$a"].Value = part.ArchiveId; command.Parameters["$t"].Value = unchecked((long)part.UnitAssetKey.TypeId); command.Parameters["$f"].Value = unchecked((long)part.UnitAssetKey.FileId); command.Parameters["$m"].Value = part.MeshInfoIndex; command.Parameters["$id"].Value = part.MeshId; command.Parameters["$k"].Value = (int)part.PartKind; command.Parameters["$l"].Value = (int)part.Layer; command.Parameters["$v"].Value = (int)part.BodyVariant; command.Parameters["$n"].Value = part.SemanticName; command.Parameters["$piece"].Value = part.PieceType; command.Parameters["$c"].Value = part.Confidence; command.Parameters["$visual"].Value = part.IsVisualMesh ? 1 : 0; command.Parameters["$lod"].Value = part.IsLod ? 1 : 0; command.Parameters["$r"].Value = part.Reason; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
 
 	private static SqliteCommand CreateLayoutCommand(SqliteConnection connection, SqliteTransaction transaction)

@@ -66,7 +66,10 @@ public sealed class UnitMeshPartClassifier
 			: semantic.IsStaticMesh ? "SDK static mesh."
 			: kind == UnitMeshPartKind.Unknown ? "No recognized armor-part token in SDK semantic name."
 			: $"{evidence} classified '{semantic.Name}'.";
-		return new UnitMeshPartFact(unitAssetKey, semantic.MeshInfoIndex, meshId, kind, layer, bodyVariant, semantic.Name, evidence, confidence, semantic.IsVisualMesh, semantic.IsLod, reason);
+		return new UnitMeshPartFact(unitAssetKey, semantic.MeshInfoIndex, meshId, kind, layer, bodyVariant, semantic.Name, evidence, confidence, semantic.IsVisualMesh, semantic.IsLod, reason)
+		{
+			PieceType = semantic.PieceType
+		};
 	}
 
 	private static UnitMeshBodyVariant ResolveBodyVariant(string bodyType, string semanticText)
@@ -90,7 +93,7 @@ public sealed class UnitMeshPartClassifier
 		if (Contains(text, "rightarm", "r_arm", "arm_r", "torso_arm_r", "arm_right", "rgt_arm")) return UnitMeshPartKind.RightArm;
 		if (Contains(text, "leftleg", "l_leg", "leg_l", "leg_left", "lft_leg", "g_leg_l_", "g_leg_undergarment_l")) return UnitMeshPartKind.LeftLeg;
 		if (Contains(text, "rightleg", "r_leg", "leg_r", "leg_right", "rgt_leg", "g_leg_r_", "g_leg_undergarment_r")) return UnitMeshPartKind.RightLeg;
-		if (Contains(text, "pelvis", "hips", "legs_hips")) return UnitMeshPartKind.Pelvis;
+		if (Contains(text, "pelvis", "hip", "hips", "legs_hips")) return UnitMeshPartKind.Pelvis;
 		if (Contains(text, "torso", "chest")) return UnitMeshPartKind.Torso;
 		if (Contains(text, "head", "helmet")) return UnitMeshPartKind.Head;
 		return Contains(text, "plate", "pad", "pouch", "accessory", "cape") ? UnitMeshPartKind.Accessory : UnitMeshPartKind.Unknown;

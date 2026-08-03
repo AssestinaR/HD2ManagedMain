@@ -22,6 +22,7 @@ public sealed record EquipmentUnitPart(
 	int Confidence,
 	IReadOnlyList<string> SharedArchiveIds)
 {
+	public string PieceType { get; init; } = string.Empty;
 	public long StoredBytes { get; init; }
 	public string StoredSizeText => StoredBytes <= 0 ? "大小未知" : StoredBytes switch
 	{

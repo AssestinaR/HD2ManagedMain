@@ -33,7 +33,7 @@ public sealed class EquipmentUnitCatalogService : IEquipmentUnitCatalogService
 		await using var command = connection.CreateCommand();
 		command.CommandText = @"
 SELECT a.archive_id,a.category,a.display_name,
-			 p.unit_type_id,p.unit_file_id,p.mesh_info_index,p.mesh_id,p.part_kind,p.part_layer,p.body_variant,p.semantic_name,p.confidence,
+			 p.unit_type_id,p.unit_file_id,p.mesh_info_index,p.mesh_id,p.part_kind,p.part_layer,p.body_variant,p.semantic_name,p.piece_type,p.confidence,
 			 COALESCE((SELECT MAX(e.toc_data_size + e.stream_size + e.gpu_resource_size)
 								 FROM archive_entries e
 								 WHERE e.archive_id=a.archive_id
@@ -61,8 +61,9 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 					(UnitMeshPartKind)reader.GetInt32(7),
 					(UnitMeshPartLayer)reader.GetInt32(8),
 					(UnitMeshBodyVariant)reader.GetInt32(9),
-					reader.GetString(10), reader.GetInt32(11), Array.Empty<string>())
-					with { StoredBytes = reader.GetInt64(12) }));
+					reader.GetString(10), reader.GetInt32(12), Array.Empty<string>())
+					{ PieceType = reader.GetString(11) }
+					with { StoredBytes = reader.GetInt64(13) }));
 		}
 
 		var unitKeys = rawParts.Select(item => item.part.UnitAssetKey).Distinct().ToArray();
@@ -390,6 +391,8 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 
 	private static bool IsSemanticFamilyCompatible(EquipmentUnitPart source, EquipmentUnitPart target)
 	{
+		if (!string.IsNullOrWhiteSpace(source.PieceType) && !string.IsNullOrWhiteSpace(target.PieceType)
+			&& !string.Equals(source.PieceType, target.PieceType, StringComparison.OrdinalIgnoreCase)) return false;
 		if (source.Layer == UnitMeshPartLayer.Unknown || target.Layer == UnitMeshPartLayer.Unknown) return true;
 		var sourceFamily = SemanticFamily(source.SemanticName);
 		var targetFamily = SemanticFamily(target.SemanticName);

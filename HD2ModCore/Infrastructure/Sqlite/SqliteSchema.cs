@@ -126,6 +126,7 @@ DROP TABLE IF EXISTS game_data_unit_part_scans;
 		await AddColumnIfMissingAsync(connection, "archives", "uses_slim_entry_offset", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "archives", "status", "TEXT NOT NULL DEFAULT 'Indexed'", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "body_variant", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
+		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "piece_type", "TEXT NOT NULL DEFAULT ''", cancellationToken).ConfigureAwait(false);
 
 		await SetMetaAsync(connection, "schema_version", SchemaVersion.ToString(), cancellationToken).ConfigureAwait(false);
 	}

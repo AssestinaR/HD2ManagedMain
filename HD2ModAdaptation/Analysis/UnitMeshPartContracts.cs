@@ -57,4 +57,7 @@ public sealed record UnitMeshPartFact(
 	int Confidence,
 	bool IsVisualMesh,
 	bool IsLod,
-	string Reason);
+	string Reason)
+{
+	public string PieceType { get; init; } = string.Empty;
+}
