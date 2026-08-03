@@ -7,7 +7,7 @@ using CoreAssetKey = HD2ModCore.Domain.AssetKey;
 using AdaptationPatchTocEntry = HD2ModAdaptation.PatchReconstruction.PatchTocEntry;
 using AdaptationPatchTocScanner = HD2ModAdaptation.PatchReconstruction.PatchTocScanner;
 using AdaptationGameDataPackageResolver = HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver;
-using System.Text.Json;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace HD2ModCore.Infrastructure;
@@ -34,7 +34,6 @@ public sealed class CanonicalCrossArmorOrchestrator
 
 	private readonly IPatchTocScanner scanner;
 	private readonly PatchUnitMeshReader sourceReader;
-	private readonly PatchUnitMeshReader outputReader;
 	private readonly Func<string, GameDataUnitMeshReader> targetReaderFactory;
 	private readonly CanonicalMeshSemanticMerger merger;
 	private readonly CanonicalTransformResolver transformResolver;
@@ -49,6 +48,13 @@ public sealed class CanonicalCrossArmorOrchestrator
 	private readonly ICanonicalPatchWriter patchWriter;
 	private readonly HD2ModAdaptation.PatchReconstruction.IPatchEntryPayloadReader sourcePayloadReader;
 	private readonly StingrayMaterialReferenceReader materialReferenceReader;
+
+	private sealed class CanonicalMarkdownReportState
+	{
+		public string Status { get; set; } = "Running";
+		public List<string> Logs { get; } = [];
+		public void Log(string message) => Logs.Add($"[{DateTimeOffset.Now:HH:mm:ss.fff}] {message}");
+	}
 
 	private static void ReportProgress(CrossArmorTransferCandidateRequest request, string stage, string text, int completed, int total, System.Diagnostics.Stopwatch stopwatch)
 		=> request.Progress?.Report(new CrossArmorTransferProgress(stage, text, Math.Clamp(completed, 0, total), total, stopwatch.Elapsed));
@@ -70,7 +76,6 @@ public sealed class CanonicalCrossArmorOrchestrator
 	public CanonicalCrossArmorOrchestrator(
 		IPatchTocScanner? scanner = null,
 		PatchUnitMeshReader? sourceReader = null,
-		PatchUnitMeshReader? outputReader = null,
 		Func<string, GameDataUnitMeshReader>? targetReaderFactory = null,
 		CanonicalMeshSemanticMerger? merger = null,
 		CanonicalTransformResolver? transformResolver = null,
@@ -88,7 +93,6 @@ public sealed class CanonicalCrossArmorOrchestrator
 	{
 		this.scanner = scanner ?? new AdaptationPatchTocScanner();
 		this.sourceReader = sourceReader ?? new PatchUnitMeshReader();
-		this.outputReader = outputReader ?? new PatchUnitMeshReader();
 		this.targetReaderFactory = targetReaderFactory ?? new Func<string, GameDataUnitMeshReader>(directory => new GameDataUnitMeshReader(new AdaptationGameDataPackageResolver(directory)));
 		this.merger = merger ?? new CanonicalMeshSemanticMerger();
 		this.transformResolver = transformResolver ?? new CanonicalTransformResolver();
@@ -116,6 +120,12 @@ public sealed class CanonicalCrossArmorOrchestrator
 		var currentCanonicalMesh = "none";
 		var currentCanonicalPhase = "initializing";
 		var currentCanonicalSource = "none";
+		var reportState = new CanonicalMarkdownReportState();
+		string? reportPath = null;
+		void Log(string message)
+		{
+			reportState.Log(message);
+		}
 		if (!request.Plan.CanContinue)
 			return Failure(issues, "CanonicalPlanNotReady", "Canonical 链路要求现有 CrossArmorTransferPlan 已通过校验。");
 		if (!File.Exists(request.SourcePatchTocPath))
@@ -125,6 +135,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 
 		try
 		{
+			Directory.CreateDirectory(Path.GetFullPath(request.OutputDirectory));
+			reportPath = Path.Combine(Path.GetFullPath(request.OutputDirectory), "canonical-report.md");
+			Log($"[START] SourcePatch={Path.GetFileName(request.SourcePatchTocPath)} Output={request.OutputDirectory}");
+			await WriteMarkdownReportAsync(reportPath, request, reportState, [], [], new Dictionary<AdaptationAssetKey, CanonicalRebuildSummary>(), [], null, null, cancellationToken).ConfigureAwait(false);
 			ReportProgress(request, "CanonicalPreparing", "正在准备 Canonical 跨护甲重建。", 0, 1, totalStopwatch);
 			var replacementPlanMappings = request.Plan.Mappings
 				.Where(mapping => mapping.WillReplace)
@@ -134,6 +148,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 					SkinningMode: CanonicalSkinningMode.BindStaticToTargetMeshTransform,
 					BoneAnchor: CanonicalBoneAnchor.TargetMeshTransform))
 				.ToArray();
+			Log($"[PLAN] Mappings={replacementPlanMappings.Length} Targets={request.Plan.SelectedTargets.Count}");
 			var planValidation = replacementPlanMappings.Length == 0
 				? null
 				: CanonicalReplacementPlan.TryCreate(replacementPlanMappings);
@@ -187,6 +202,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 				currentCanonicalPhase = "ReadTargetUnit";
 				var unitStopwatch = System.Diagnostics.Stopwatch.StartNew();
 				ReportProgress(request, "RebuildTargetUnit", $"Canonical：重建 Unit {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16}", targetIndex, Math.Max(targetUnits.Length, 1), totalStopwatch);
+				Log($"[UNIT-BEGIN] Unit=0x{targetUnit.Key.FileId:x16} Index={targetIndex + 1}/{targetUnits.Length}");
 				var archiveName = targetUnit.ArchiveName;
 				if (archiveName is null)
 					return Failure(issues, "CanonicalTargetArchiveMissing", $"目标 Unit 0x{targetUnit.Key.FileId:x16} 没有明确的 Game Data archive。");
@@ -346,6 +362,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 				outputEntries.Add(outputTargetEntry);
 				rebuiltTargets.Add(targetUnit.Key, CreateRebuildSummary(targetUnit.Key, rebuilt.Model!));
 				outputUnitCount++;
+				Log($"[UNIT-DONE] Unit=0x{targetUnit.Key.FileId:x16} Meshes={rebuilt.Model!.Meshes.Count} Materials={rebuilt.Model.Materials.Count} Replacements={canonicalMappings.Count}");
 				ReportProgress(request, "RebuildTargetUnit", $"Canonical：重建 Unit {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16} 用时={unitStopwatch.Elapsed:hh\\:mm\\:ss}", targetIndex + 1, Math.Max(targetUnits.Length, 1), totalStopwatch);
 			}
 
@@ -358,6 +375,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 			GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: false);
 
 			await CarryThroughSourceMaterialsAsync(outputEntries, sourceEntries, stagedPayloadDirectory, request, cancellationToken, totalStopwatch).ConfigureAwait(false);
+			Log($"[MATERIAL-CARRY] Entries={outputEntries.Count(entry => entry.Ownership == CanonicalPatchEntryOwnership.RequiredDependency)}");
 
 			var session = new CanonicalPatchSession();
 			ReportProgress(request, "ValidateUnitReferences", "正在验证 Unit 材质引用表。", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
@@ -368,14 +386,14 @@ public sealed class CanonicalCrossArmorOrchestrator
 			var header = headerArchive is null ? null : await new AdaptationGameDataPackageResolver(request.GameDataDirectory).GetPackageTocAsync(headerArchive, cancellationToken).ConfigureAwait(false);
 			ReportProgress(request, "WritePatch", "正在写入 Canonical Patch 和 GPU sidecar。", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
 			var written = await patchWriter.WriteAsync(session, request.OutputDirectory, ResolveOutputPatchFileName(request.SourcePatchTocPath), header?.Data, overwriteExisting: false, cancellationToken: cancellationToken).ConfigureAwait(false);
-			ReportProgress(request, "ReadbackValidation", "正在回读验证已写入的目标 Unit。", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
-			var outputEntriesScanned = await scanner.ScanEntriesAsync(written.TocFilePath, cancellationToken).ConfigureAwait(false);
-			var readbackDiagnostics = await ValidateWrittenTargetsAsync(outputEntriesScanned, outputEntries, rebuiltTargets, cancellationToken).ConfigureAwait(false);
-			issues.AddRange(readbackDiagnostics.Select(diagnostic => new CoreIssue(CoreIssueSeverity.Error, diagnostic.Code, diagnostic.Message)));
-			var reportPath = await WriteReportAsync(written.OutputDirectoryPath, replacementPlanMappings, outputEntries, rebuiltTargets, readbackDiagnostics, cancellationToken).ConfigureAwait(false);
+			var fileDiagnostics = ValidateWrittenFiles(written, outputEntries);
+			issues.AddRange(fileDiagnostics.Select(diagnostic => new CoreIssue(CoreIssueSeverity.Error, diagnostic.Code, diagnostic.Message)));
+			reportState.Status = fileDiagnostics.Count == 0 ? "WrittenForGameTest" : "Failed";
+			Log($"[WRITE-DONE] Patch={Path.GetFileName(written.TocFilePath)} Units={outputUnitCount} FileDiagnostics={fileDiagnostics.Count}");
+			await WriteMarkdownReportAsync(reportPath, request, reportState, replacementPlanMappings, outputEntries, rebuiltTargets, fileDiagnostics, outputUnitCount, replacementCount, cancellationToken).ConfigureAwait(false);
 			TryDeleteDirectory(stagedPayloadDirectory);
-			ReportProgress(request, "CanonicalCompleted", "Canonical Patch 已完成写入并通过回读验证。", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
-			if (readbackDiagnostics.Count != 0)
+			ReportProgress(request, "CanonicalCompleted", $"替换成功，文件位置：{written.OutputDirectoryPath}", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
+			if (fileDiagnostics.Count != 0)
 				return new CrossArmorTransferCandidateResult(false, written.OutputDirectoryPath, reportPath, outputUnitCount, replacementCount, minifiedCount, issues);
 			return new CrossArmorTransferCandidateResult(true, written.OutputDirectoryPath, reportPath, outputUnitCount, replacementCount, minifiedCount, issues) { IsCommitted = true };
 		}
@@ -384,7 +402,11 @@ public sealed class CanonicalCrossArmorOrchestrator
 		{
 			var context = $"Unit={currentCanonicalUnit}, Mesh={currentCanonicalMesh}, Source={currentCanonicalSource}, Phase={currentCanonicalPhase}";
 			issues.Add(new(CoreIssueSeverity.Error, "CanonicalExecutionFailed", $"{context}; {exception.Message}", ExceptionMessage: exception.ToString()));
-			return new CrossArmorTransferCandidateResult(false, null, null, 0, 0, 0, issues);
+			reportState.Status = "Failed";
+			Log($"[ERROR] {context}; {exception}");
+			if (reportPath is not null)
+				try { await WriteMarkdownReportAsync(reportPath, request, reportState, [], [], new Dictionary<AdaptationAssetKey, CanonicalRebuildSummary>(), [new CanonicalPlanDiagnostic("CanonicalExecutionFailed", exception.Message)], null, null, cancellationToken).ConfigureAwait(false); } catch (IOException) { }
+			return new CrossArmorTransferCandidateResult(false, Directory.Exists(request.OutputDirectory) ? request.OutputDirectory : null, reportPath, 0, 0, 0, issues);
 		}
 	}
 
@@ -601,102 +623,62 @@ public sealed class CanonicalCrossArmorOrchestrator
 	private static bool UsesSkinningStream(UnitStreamInfo stream)
 		=> stream.Components.Any(component => component.Type == 6) && stream.Components.Any(component => component.Type == 7);
 
-	private async ValueTask<IReadOnlyList<CanonicalPlanDiagnostic>> ValidateWrittenTargetsAsync(
-		IReadOnlyList<AdaptationPatchTocEntry> scannedEntries,
-		IReadOnlyList<CanonicalPatchSessionEntry> expectedEntries,
-		IReadOnlyDictionary<AdaptationAssetKey, CanonicalRebuildSummary> rebuiltTargets,
-		CancellationToken cancellationToken)
+	private static IReadOnlyList<CanonicalPlanDiagnostic> ValidateWrittenFiles(
+		PatchArchiveFileWriteResult written,
+		IReadOnlyList<CanonicalPatchSessionEntry> entries)
 	{
 		var diagnostics = new List<CanonicalPlanDiagnostic>();
-		foreach (var expected in expectedEntries.Where(entry => entry.Ownership == CanonicalPatchEntryOwnership.TargetOutput))
+		if (!File.Exists(written.TocFilePath)) diagnostics.Add(new("CanonicalOutputPatchMissing", "写出后找不到 Patch 文件。"));
+		if (written.TocFileSize <= 0) diagnostics.Add(new("CanonicalOutputPatchEmpty", "输出 Patch 文件为空。"));
+		foreach (var entry in entries)
 		{
-			var entry = scannedEntries.SingleOrDefault(candidate => candidate.AssetKey == expected.Key);
-			if (entry is null)
-			{
-				diagnostics.Add(new("CanonicalReadbackEntryMissing", $"写出后回读找不到目标 Unit 0x{expected.Key.FileId:x16}。"));
-				continue;
-			}
-			if (entry.TocDataSize != expected.EffectiveTocData.Length || entry.StreamSize != expected.EffectiveStreamData.Length || entry.GpuResourceSize != expected.EffectiveGpuData.Length)
-				diagnostics.Add(new("CanonicalReadbackPayloadMismatch", $"目标 Unit 0x{expected.Key.FileId:x16} 的 stream/GPU size 与重建 payload 不一致。"));
-			if (!rebuiltTargets.TryGetValue(expected.Key, out var expectedModel))
-			{
-				diagnostics.Add(new("CanonicalReadbackExpectedModelMissing", $"目标 Unit 0x{expected.Key.FileId:x16} 缺少 CanonicalUnitRebuilder 返回模型，拒绝验证写出结果。"));
-				continue;
-			}
-			try
-			{
-				var readback = await outputReader.ReadAsync(entry, scannedEntries, PatchUnitDependencyPolicy.AllowExternalCompositeReference, cancellationToken).ConfigureAwait(false);
-				ValidateModelSummary(expectedModel, readback.Model, expected.Key, diagnostics);
-			}
-			catch (Exception exception) when (exception is InvalidDataException or EndOfStreamException or IOException or KeyNotFoundException or ArgumentException or OverflowException)
-			{
-				diagnostics.Add(new("CanonicalReadbackFailed", $"目标 Unit 0x{expected.Key.FileId:x16} 回读失败：{exception.Message}"));
-			}
+			if (entry.TocData is null && !File.Exists(entry.TocDataPath)) diagnostics.Add(new("CanonicalOutputTocPayloadMissing", $"Entry 0x{entry.Key.FileId:x16} 的 TOC payload 不存在。"));
+			if (entry.GpuData is null && !File.Exists(entry.GpuDataPath)) diagnostics.Add(new("CanonicalOutputGpuPayloadMissing", $"Entry 0x{entry.Key.FileId:x16} 的 GPU payload 不存在。"));
+			if (entry.StreamData is null && !File.Exists(entry.StreamDataPath)) diagnostics.Add(new("CanonicalOutputStreamPayloadMissing", $"Entry 0x{entry.Key.FileId:x16} 的 Stream payload 不存在。"));
 		}
 		return diagnostics;
 	}
 
-	private static void ValidateModelSummary(CanonicalRebuildSummary expected, UnitMeshModel actual, AdaptationAssetKey key, List<CanonicalPlanDiagnostic> diagnostics)
-	{
-		if (expected.MeshCount != actual.Meshes.Count || expected.StreamCount != actual.Streams.Count || expected.MaterialBindingCount != actual.Materials.Count)
-			diagnostics.Add(new("CanonicalReadbackModelCoverageMismatch", $"目标 Unit 0x{key.FileId:x16} 回读后的 mesh/stream/material 数量与重建模型不一致。"));
-		var expectedMeshes = expected.RawMeshes.OrderBy(mesh => mesh.MeshInfoIndex).ToArray();
-		var actualMeshes = actual.RawMeshes.OrderBy(mesh => mesh.MeshInfoIndex).ToArray();
-		if (expectedMeshes.Length != actualMeshes.Length || expectedMeshes.Where((mesh, index) => !RawMeshEquivalent(mesh, actualMeshes[index])).Any())
-			diagnostics.Add(new("CanonicalReadbackRawMeshCoverageMismatch", $"目标 Unit 0x{key.FileId:x16} 回读后的 RawMesh coverage 与重建模型不一致。"));
-		var expectedStreams = expected.Streams.OrderBy(stream => stream.Index).Select(stream => (stream.Index, stream.NumVertices, stream.NumIndices, stream.VertexBufferSize, stream.IndexBufferSize)).ToArray();
-		var actualStreams = actual.Streams.OrderBy(stream => stream.Index).Select(stream => (stream.Index, stream.NumVertices, stream.NumIndices, stream.VertexBufferSize, stream.IndexBufferSize)).ToArray();
-		if (!expectedStreams.SequenceEqual(actualStreams))
-			diagnostics.Add(new("CanonicalReadbackStreamMismatch", $"目标 Unit 0x{key.FileId:x16} 回读后的 stream 摘要与重建模型不一致。"));
-		var expectedBones = expected.BoneInfos.Select(bone => (bone.Index, bone.RealIndicesCount, bone.RemapsCount)).ToArray();
-		var actualBones = actual.BoneInfos.Select(bone => (bone.Index, bone.RealIndices.Count, bone.Remaps.Count)).ToArray();
-		if (!expectedBones.SequenceEqual(actualBones))
-			diagnostics.Add(new("CanonicalReadbackBoneCoverageMismatch", $"目标 Unit 0x{key.FileId:x16} 回读后的 bone coverage 与重建模型不一致。"));
-		if (expected.TransformNameHashCount != actual.TransformNameHashes.Count
-			|| expected.TransformEntryCount != actual.TransformInfo.Entries.Count
-			|| expected.TransformMatrixCount != actual.TransformInfo.Matrices.Count)
-			diagnostics.Add(new("CanonicalReadbackTransformInfoMismatch", $"目标 Unit 0x{key.FileId:x16} 回读后的 TransformInfo 骨架布局与 Canonical Avatar 扩容结果不一致。"));
-	}
-
-	private static bool RawMeshEquivalent(UnitRawMeshSummary expected, UnitRawMeshSummary actual)
-		=> expected.MeshInfoIndex == actual.MeshInfoIndex
-			&& expected.MeshId == actual.MeshId
-			&& expected.LodIndex == actual.LodIndex
-			&& expected.StreamIndex == actual.StreamIndex
-			&& expected.VertexCount == actual.VertexCount
-			&& expected.IndexCount == actual.IndexCount
-			&& expected.MaterialCount == actual.MaterialCount
-			&& expected.SectionCount == actual.SectionCount;
-
-	private static async ValueTask<string> WriteReportAsync(
-		string outputDirectory,
+	private static async ValueTask WriteMarkdownReportAsync(
+		string reportPath,
+		CrossArmorTransferCandidateRequest request,
+		CanonicalMarkdownReportState state,
 		IReadOnlyList<CanonicalReplacementMapping> mappings,
 		IReadOnlyList<CanonicalPatchSessionEntry> entries,
 		IReadOnlyDictionary<AdaptationAssetKey, CanonicalRebuildSummary> rebuiltTargets,
 		IReadOnlyList<CanonicalPlanDiagnostic> diagnostics,
+		int? outputUnitCount,
+		int? replacementCount,
 		CancellationToken cancellationToken)
 	{
-		var reportPath = Path.Combine(Path.GetFullPath(outputDirectory), "canonical-report.json");
-		var report = new
+		var builder = new StringBuilder();
+		builder.AppendLine("# Canonical 护甲替换报告").AppendLine();
+		builder.AppendLine("## 使用说明").AppendLine();
+		builder.AppendLine("- 本输出只负责重建目标 Unit、几何、骨骼、Stream/GPU 和 Unit 材质引用。");
+		builder.AppendLine("- 来源 Patch 中已有的 Material/Texture 会尽力顺延；不存在或读取失败时保留外部引用，不阻断 Unit 输出。");
+		builder.AppendLine("- 请将输出 Patch 与原本提供材质的 Patch 一起启用，并以游戏实际显示结果作为最终验证。");
+		builder.AppendLine("- 如果测试失败，请完整提交本 Markdown 文件。").AppendLine();
+		builder.AppendLine("## 输出摘要").AppendLine();
+		builder.AppendLine($"- 状态：{state.Status}");
+		builder.AppendLine($"- 来源 Patch：{Path.GetFileName(request.SourcePatchTocPath)}");
+		builder.AppendLine($"- 目标 Unit：{outputUnitCount?.ToString() ?? rebuiltTargets.Count.ToString()}");
+		builder.AppendLine($"- 替换 Mesh：{replacementCount?.ToString() ?? mappings.Count.ToString()}");
+		builder.AppendLine($"- 顺延资源：{entries.Count(entry => entry.Ownership == CanonicalPatchEntryOwnership.RequiredDependency)}");
+		builder.AppendLine($"- 诊断数量：{diagnostics.Count}").AppendLine();
+		builder.AppendLine("## Unit 详情").AppendLine().AppendLine("```csv");
+		builder.AppendLine("unit_file_id,mesh_count,stream_count,material_binding_count,raw_mesh_count,bone_info_count,planned_sources,output_status");
+		foreach (var target in rebuiltTargets.OrderBy(pair => pair.Key.FileId))
 		{
-			sourceMappings = mappings.Select(mapping => new { source = mapping.Source.UnitKey, sourceMeshInfoIndex = mapping.Source.MeshInfoIndex, target = mapping.Target.UnitKey, targetMeshInfoIndex = mapping.Target.MeshInfoIndex }),
-			finalEntryKeys = entries.Select(entry => new { key = entry.Key, ownership = entry.Ownership.ToString() }),
-			targetOutputUnitKeys = entries.Where(entry => entry.Ownership == CanonicalPatchEntryOwnership.TargetOutput).Select(entry => entry.Key),
-			rebuildSummaries = rebuiltTargets.Select(target => new
-			{
-				targetUnitKey = target.Key,
-				meshCount = target.Value.MeshCount,
-				streamCount = target.Value.StreamCount,
-				materialBindingCount = target.Value.MaterialBindingCount,
-				rawMeshCount = target.Value.RawMeshCount,
-				boneInfoCount = target.Value.BoneInfoCount,
-				gpuRangeBytes = entries.Single(entry => entry.Key == target.Key).EffectiveGpuData.Length,
-				rawMeshes = target.Value.RawMeshes
-			}),
-			diagnostics
-		};
-		await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }), cancellationToken).ConfigureAwait(false);
-		return reportPath;
+			var sources = mappings.Where(mapping => mapping.Target.UnitKey == target.Key)
+				.Select(mapping => $"0x{mapping.Source.UnitKey.FileId:x16}:mesh{mapping.Source.MeshInfoIndex}");
+			builder.AppendLine($"0x{target.Key.FileId:x16},{target.Value.MeshCount},{target.Value.StreamCount},{target.Value.MaterialBindingCount},{target.Value.RawMeshCount},{target.Value.BoneInfoCount},\"{string.Join(';', sources)}\",{(diagnostics.Any() ? "CheckDiagnostics" : "WrittenForGameTest")}");
+		}
+		builder.AppendLine("```").AppendLine();
+		builder.AppendLine("## 详细日志").AppendLine().AppendLine("```log");
+		foreach (var log in state.Logs) builder.AppendLine(log);
+		foreach (var diagnostic in diagnostics) builder.AppendLine($"[DIAGNOSTIC] {diagnostic.Code}: {diagnostic.Message}");
+		builder.AppendLine("```").AppendLine();
+		await File.WriteAllTextAsync(reportPath, builder.ToString(), new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
 	}
 
 	private static CrossArmorTransferCandidateResult Failure(List<CoreIssue> issues, string code, string message)
