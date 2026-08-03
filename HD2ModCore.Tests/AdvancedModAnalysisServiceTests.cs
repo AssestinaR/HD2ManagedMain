@@ -21,7 +21,7 @@ public sealed class AdvancedModAnalysisServiceTests
 	}
 
 	[Fact]
-	public async Task AnalyzeAsync_RequestsCachedAdvancedFacts()
+	public async Task AnalyzeAsync_RequestsFreshAdvancedFacts()
 	{
 		var node = new ModNode(ModNodeId.New(), "Test", new ModNodeMetadata("Test", null, DateTimeOffset.UtcNow, null), [], []);
 		var facts = new HD2ModCore.Application.AdvancedUnitAnalysisFacts(node.Id, node.RelativePath, "generation", DateTimeOffset.UtcNow, [], []);
@@ -31,7 +31,7 @@ public sealed class AdvancedModAnalysisServiceTests
 		var state = await service.AnalyzeAsync(node, "mods");
 
 		Assert.True(state.IsReady);
-		Assert.False(center.LastRequest!.RequireFresh);
+		Assert.True(center.LastRequest!.RequireFresh);
 	}
 
 	private sealed class RecordingInformationCenter(HD2ModCore.Application.AdvancedUnitAnalysisFacts facts) : IModInformationCenter

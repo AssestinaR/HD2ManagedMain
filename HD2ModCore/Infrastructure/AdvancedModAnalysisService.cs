@@ -28,13 +28,14 @@ public sealed class AdvancedModAnalysisService : IAdvancedModAnalysisService
 	{
 		var result = await _informationCenter.RequestAdvancedUnitAnalysisAsync(node, modsRootDirectory,
 			new ModInformationRequest(ModInformationKind.AdvancedUnitAnalysis, "AdvancedModAnalysisService", RequireFresh: false), cancellationToken).ConfigureAwait(false);
-		return new AdvancedModAnalysisState(node.Id, result.Data is not null, result.Status is ModInformationStatus.Cached, result.Data?.BuiltUtc, result.Issues);
+		return new AdvancedModAnalysisState(node.Id, result.Data is not null, result.Data is not null, result.Data?.BuiltUtc, result.Issues);
 	}
 
 	public async ValueTask<AdvancedModAnalysisState> AnalyzeAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
 	{
-		// “模型解析”首先复用同 generation 的持久缓存；实际变更后由 generation 失配触发重建。
-		var result = await _informationCenter.RequestAdvancedUnitAnalysisAsync(node, modsRootDirectory, new ModInformationRequest(ModInformationKind.AdvancedUnitAnalysis, "AdvancedModAnalysisService"), cancellationToken).ConfigureAwait(false);
+		// “模型解析”是显式用户刷新：始终绕过持久缓存重建高级 Unit 分析。
+		var result = await _informationCenter.RequestAdvancedUnitAnalysisAsync(node, modsRootDirectory,
+			new ModInformationRequest(ModInformationKind.AdvancedUnitAnalysis, "AdvancedModAnalysisService", RequireFresh: true), cancellationToken).ConfigureAwait(false);
 		return new AdvancedModAnalysisState(node.Id, result.Data is not null, result.Status is ModInformationStatus.Fresh or ModInformationStatus.Cached, result.Data?.BuiltUtc, result.Issues);
 	}
 

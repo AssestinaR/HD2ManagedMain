@@ -11,4 +11,14 @@ public interface IAdvancedEquipmentIndexService
 		string gameDataDirectory,
 		IProgress<IndexBuildProgress>? progress = null,
 		CancellationToken cancellationToken = default);
+
+	ValueTask RebuildAllUnitPartFactsAsync(
+		string gameDataDirectory,
+		IProgress<IndexBuildProgress>? progress = null,
+		CancellationToken cancellationToken = default);
+
+	ValueTask BuildMissingUnitPartFactsAsync(
+		string gameDataDirectory,
+		IProgress<IndexBuildProgress>? progress = null,
+		CancellationToken cancellationToken = default);
 }

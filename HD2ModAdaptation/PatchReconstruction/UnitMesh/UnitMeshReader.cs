@@ -805,6 +805,11 @@ public sealed class UnitMeshReader
 			.SelectMany(vertex => vertex.Components)
 			.Where(component => component.Type == 7)
 			.ToArray();
+		// The SDK checks decoded VertexWeights. At this layer, an absent Type=7
+		// component can also mean that a version-specific stream format was not
+		// decoded, so classify that case conservatively as unknown rather than
+		// discarding otherwise valid geometry. Only explicit all-zero weights are
+		// treated as static meshes.
 		return weightComponents.Length > 0
 			&& weightComponents.All(component => component.FloatValues.All(value => Math.Abs(value) <= 0.00001f)
 				&& component.UIntValues.All(value => value == 0));

@@ -7,7 +7,7 @@ namespace HD2ModAdaptation.Analysis;
 // Purpose: Performs the first low-cost patch-group analysis using the canonical TOC scanner.
 public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependencyGraphPatchGroupAnalyzer
 {
-	private const string FullAnalyzerVersion = "patch-group-v4-section-materials";
+	private const string FullAnalyzerVersion = "patch-group-v5-sdk-source-eligibility";
 	private const string InventoryAnalyzerVersion = "patch-group-v5-inventory";
 	private const string DependencyGraphAnalyzerVersion = "patch-group-v6-dependency-graph";
 	private readonly IPatchTocScanner tocScanner;
@@ -174,13 +174,20 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 			var slots = mesh.MaterialSlotIds.Distinct().ToArray();
 			var materialIds = slots.Where(materialIdsBySlot.ContainsKey).SelectMany(slot => materialIdsBySlot[slot]).Distinct().OrderBy(id => id).ToArray();
 			return new SourceMeshPreparation(mesh.Index, mesh.MeshId, mesh.LodIndex, semantic.IsVisualMesh,
-				raw is not null && semantic.IsVisualMesh && !semantic.IsLod && !isPlaceholder && raw.Vertices.Count > 3 && raw.Triangles.Count > 1,
+				raw is not null && IsSdkDefaultImportable(semantic) && !isPlaceholder && raw.Vertices.Count > 3 && raw.Triangles.Count > 1,
 				semantic.Name, semantic.BodyType, semantic.Slot, semantic.PieceType,
 				raw is null ? 0U : checked((uint)raw.Vertices.Count), raw is null ? 0U : checked((uint)raw.Triangles.Count),
 				checked((uint)mesh.Sections.Count), stream?.VertexStride ?? 0, slots, materialIds);
 		}).ToArray();
 		return new SourceUnitPreparation(entry, unit.Model.CompositeRef == 0 ? null : new AssetKey(PatchUnitMeshReader.CompositeUnitTypeId, unit.Model.CompositeRef), meshes);
 	}
+
+	// Mirrors the community SDK CreateModel defaults after UnitMeshReader has
+	// attached the raw MeshInfo semantics: ImportLods=False, ImportCulling=False,
+	// ImportStatic=False. LodIndex -1 is intentionally not rejected here; SDK
+	// RawMesh.IsLod treats only values other than 0 and -1 as ordinary LODs.
+	private static bool IsSdkDefaultImportable(UnitMeshSemanticInfo semantic)
+		=> semantic.IsVisualMesh && !semantic.IsLod && !semantic.IsCullingBody && !semantic.IsStaticMesh;
 
 	private async ValueTask ReadLegacyUnitMaterialReferencesAsync(PatchTocEntry entry, ICollection<PatchAssetReference> references, ICollection<PatchAnalysisIssue> issues, CancellationToken cancellationToken)
 	{

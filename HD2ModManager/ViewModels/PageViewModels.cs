@@ -845,6 +845,8 @@ namespace HD2ModManager.ViewModels
         public RelayCommand OpenGameDataFolderCommand { get; }
         public RelayCommand DetectGameDataFolderCommand { get; }
         public RelayCommand ViewGameDataIndexCommand { get; }
+        public RelayCommand RebuildAllUnitPartFactsCommand { get; }
+        public RelayCommand BuildMissingUnitPartFactsCommand { get; }
         public RelayCommand UpdateAssetMetadataCommand { get; }
         public RelayCommand RefreshAssetIndexStatusCommand { get; }
         public RelayCommand BuildAssetIndexCommand { get; }
@@ -862,6 +864,8 @@ namespace HD2ModManager.ViewModels
             OpenGameDataFolderCommand = new RelayCommand(OpenGameDataFolder);
             DetectGameDataFolderCommand = new RelayCommand(DetectGameDataFolder);
             ViewGameDataIndexCommand = new RelayCommand(_ => ViewGameDataIndex(), _ => !IsLoadingGameDataIndex);
+            RebuildAllUnitPartFactsCommand = new RelayCommand(_ => _ = BuildUnitPartFactsAsync(rebuildAll: true), _ => !IsBuildingAssetIndex);
+            BuildMissingUnitPartFactsCommand = new RelayCommand(_ => _ = BuildUnitPartFactsAsync(rebuildAll: false), _ => !IsBuildingAssetIndex);
             UpdateAssetMetadataCommand = new RelayCommand(UpdateAssetMetadata);
             RefreshAssetIndexStatusCommand = new RelayCommand(_ => _ = RefreshAssetIndexStatusAsync(), _ => !IsRefreshingAssetIndexStatus && !IsBuildingAssetIndex);
             BuildAssetIndexCommand = new RelayCommand(_ => _ = BuildAssetIndexAsync(), _ => !IsBuildingAssetIndex);
@@ -991,7 +995,7 @@ namespace HD2ModManager.ViewModels
             {
                 task?.MarkRunning("正在准备资产索引");
                 AssetIndexState = "建立中";
-                AssetIndexSummary = "正在扫描 Archive TOC、资源映射，并增量分析新的 Armor Unit 部件。";
+                AssetIndexSummary = "正在扫描 Archive TOC、资源映射，并重建 Armor / Helmet Unit 部件事实。";
                 var archiveHashes = await File.ReadAllTextAsync(_paths.ArchiveHashesPath);
                 var index = CoreServices.CreateAssetArchiveIndexService(_paths);
 				var lastProgressUpdate = 0L;
@@ -1005,16 +1009,8 @@ namespace HD2ModManager.ViewModels
                     AssetIndexCounts = $"Archive {item.Current}/{item.Total}";
                 });
                 await Task.Run(() => index.BuildOrRebuildAsync(gameData, archiveHashes, progress, task?.CancellationToken ?? CancellationToken.None).AsTask());
-                task?.UpdateStage("正在增量分析 Armor Unit 部件");
-                var equipmentIndex = CoreServices.CreateAdvancedEquipmentIndexService(_paths);
-                var equipmentProgress = new Progress<IndexBuildProgress>(item =>
-                {
-                    task?.UpdateStage(item.Current <= 0 ? item.CurrentArchiveId ?? "正在分析 Armor Unit" : $"正在分析 Armor Unit {item.Current}/{item.Total}");
-                    task?.UpdateProgress(item.Total <= 0 ? null : (double)item.Current / item.Total);
-                });
-                await Task.Run(() => equipmentIndex.BuildOrRefreshAsync(gameData, equipmentProgress, task?.CancellationToken ?? CancellationToken.None).AsTask());
                 task?.MarkCompleted();
-                AssetIndexHint = "基础资产索引已重建；新的 Armor Unit 部件已增量分析，已有部件事实已复用。";
+                AssetIndexHint = "基础资产索引已重建；Unit 部件部位事实需通过右侧专用按钮单独计算。";
                 await RefreshAssetIndexStatusAsync();
             }
             catch (OperationCanceledException)
@@ -1034,6 +1030,70 @@ namespace HD2ModManager.ViewModels
                 IsBuildingAssetIndex = false;
                 BuildAssetIndexCommand.RaiseCanExecuteChanged();
                 RefreshAssetIndexStatusCommand.RaiseCanExecuteChanged();
+            }
+        }
+
+        private async Task BuildUnitPartFactsAsync(bool rebuildAll)
+        {
+            if (IsBuildingAssetIndex) return;
+            var gameData = SettingsService.GetGameDataFolder();
+            if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
+            {
+                AssetIndexState = "无法建立";
+                AssetIndexSummary = "Game Data 目录未设置或不存在。";
+                return;
+            }
+
+            IsBuildingAssetIndex = true;
+            BuildAssetIndexCommand.RaiseCanExecuteChanged();
+            RebuildAllUnitPartFactsCommand.RaiseCanExecuteChanged();
+            BuildMissingUnitPartFactsCommand.RaiseCanExecuteChanged();
+            var task = _backgroundTasks?.Enqueue(
+                BackgroundTaskKind.BuildAssetIndex,
+                rebuildAll ? "完全重算护甲类 Unit 部位" : "重算新增的护甲类 Unit 部位",
+                gameData,
+                origin: "设置与资产",
+                userVisibleReason: rebuildAll ? "强制重建所有 Armor / Helmet Unit 部位事实。" : "仅补齐数据库中尚无部位事实的 Armor / Helmet Unit。",
+                suggestedAction: "完成后可重新打开替换护甲规划器。",
+                retry: () => BuildUnitPartFactsAsync(rebuildAll));
+            try
+            {
+                task?.MarkRunning(rebuildAll ? "正在完全重算 Armor / Helmet Unit 部位" : "正在补齐缺失的 Armor / Helmet Unit 部位");
+                AssetIndexState = "部位计算中";
+                AssetIndexSummary = rebuildAll ? "正在强制重算所有 Armor / Helmet Unit 部件部位。" : "正在查找并计算缺少部位事实的 Armor / Helmet Unit。";
+                var index = CoreServices.CreateAdvancedEquipmentIndexService(_paths);
+                var progress = new Progress<IndexBuildProgress>(item =>
+                {
+                    task?.UpdateStage(item.Current <= 0 ? item.CurrentArchiveId ?? "正在分析 Unit 部位" : $"正在分析 Unit 部位 {item.Current}/{item.Total}");
+                    task?.UpdateProgress(item.Total <= 0 ? null : (double)item.Current / item.Total);
+                    AssetIndexCounts = $"Unit 部位 {item.Current}/{item.Total}";
+                });
+                if (rebuildAll)
+                    await Task.Run(() => index.RebuildAllUnitPartFactsAsync(gameData, progress, task?.CancellationToken ?? CancellationToken.None).AsTask());
+                else
+                    await Task.Run(() => index.BuildMissingUnitPartFactsAsync(gameData, progress, task?.CancellationToken ?? CancellationToken.None).AsTask());
+                task?.MarkCompleted();
+                AssetIndexState = "部位事实已完成";
+                AssetIndexSummary = rebuildAll ? "所有 Armor / Helmet Unit 部位事实已重算。" : "缺少部位事实的 Armor / Helmet Unit 已补齐。";
+                await RefreshAssetIndexStatusAsync();
+            }
+            catch (OperationCanceledException)
+            {
+                task?.MarkCanceled();
+                AssetIndexState = "已取消";
+            }
+            catch (Exception exception)
+            {
+                task?.MarkFailed(exception.Message);
+                AssetIndexState = "部位计算失败";
+                AssetIndexSummary = exception.Message;
+            }
+            finally
+            {
+                IsBuildingAssetIndex = false;
+                BuildAssetIndexCommand.RaiseCanExecuteChanged();
+                RebuildAllUnitPartFactsCommand.RaiseCanExecuteChanged();
+                BuildMissingUnitPartFactsCommand.RaiseCanExecuteChanged();
             }
         }
 

@@ -31,7 +31,10 @@ public sealed class UnitMeshPartClassifier
 			{
 				Name = name,
 				IsCullingBody = isCulling || mesh.SemanticInfo.IsCullingBody,
-				IsLod = mesh.SemanticInfo.IsLod || name.Contains("_lod", StringComparison.OrdinalIgnoreCase) || name.Contains("_shadow", StringComparison.OrdinalIgnoreCase)
+				// SDK import uses MeshInfo.LodIndex. A name such as `*_lod0` is a
+				// normal default-imported object; only explicit shadow naming remains
+				// a conservative non-transfer classification when metadata is absent.
+				IsLod = mesh.SemanticInfo.IsLod || name.Contains("_shadow", StringComparison.OrdinalIgnoreCase)
 			}, mesh.MeshId);
 		}).ToArray();
 	}

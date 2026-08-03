@@ -30,6 +30,19 @@ public sealed class UnitMeshPartClassifierTests
 	}
 
 	[Fact]
+	public void Classify_GlobalSdkLod0Name_RemainsDefaultImported()
+	{
+		var semantic = UnitMeshSemanticInfo.Empty(0, 3) with { Name = "anonymous_lod0" };
+		var mesh = new UnitMeshInfo(3, 0, 42, 0, 0, 0, 0, 0, 0, 0, semantic, [], []);
+		var model = new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UnitCustomizationInfo.Empty, [], [], [mesh], [], [], []);
+
+		var part = Assert.Single(new UnitMeshPartClassifier().Classify(
+			new AssetKey(0xe0a48d0be9a7453f, 1), model, new Dictionary<uint, string> { [42] = "g_torso_undergarment_slim_lod0" }));
+
+		Assert.False(part.IsLod);
+	}
+
+	[Fact]
 	public void Classify_CullingMesh_IsNotVisualTransferSource()
 	{
 		var semantic = new UnitMeshSemanticInfo("hips_culling", string.Empty, string.Empty, string.Empty, string.Empty, 0, 0, true, false, false);

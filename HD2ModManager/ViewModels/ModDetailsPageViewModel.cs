@@ -89,8 +89,8 @@ namespace HD2ModManager.ViewModels
             && TryGetCurrentNode(out _);
         public bool CanReplaceEmbeddedMaterials => !_disposed && TryGetCurrentNode(out _);
         public bool CanEmbedExternalMaterials => !_disposed && TryGetCurrentNode(out _);
-        public bool CanRebuildSameKey => !_disposed && !_sameKeyReconstructionRunning && _advancedAnalysisReady && _advancedAnalysisHasEquipment && TryGetCurrentNode(out _);
-        public bool CanPlanCrossArmorTransfer => !_disposed && _advancedAnalysisReady && _advancedAnalysisHasEquipment && TryGetCurrentNode(out _);
+        public bool CanRebuildSameKey => !_disposed && !_sameKeyReconstructionRunning && TryGetCurrentNode(out _);
+        public bool CanPlanCrossArmorTransfer => !_disposed && TryGetCurrentNode(out _);
         private bool HasPatchGroups => Mod?.FileGroups?.Count > 0;
         public BulkObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
@@ -142,7 +142,7 @@ namespace HD2ModManager.ViewModels
             ReplaceEmbeddedMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: false, requireAllExternalMaterials: false), _ => CanReplaceEmbeddedMaterials);
             EmbedExternalMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: false, requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
             RebuildSameKeyCommand = new RelayCommand(async _ => await RebuildSameKeyAsync(), _ => CanRebuildSameKey);
-			PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
+            PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
             RunAdvancedAnalysisCommand = new RelayCommand(async _ => await RunAdvancedAnalysisAsync(), _ => CanRunAdvancedAnalysis);
 			RunDependencyGraphTestCommand = new RelayCommand(async _ => await RunDependencyGraphTestAsync(), _ => CanRunDependencyGraphTest);
 			CompareDependencyGraphCommand = new RelayCommand(async _ => await CompareDependencyGraphAsync(), _ => CanCompareDependencyGraph);
@@ -986,6 +986,15 @@ namespace HD2ModManager.ViewModels
         private async Task RebuildSameKeyAsync()
         {
             if (!TryGetCurrentNode(out var source)) return;
+            var cachedState = await _advancedAnalysis.GetCachedStateAsync(source, _library.ModsRootDirectory).ConfigureAwait(false);
+            if (!cachedState.IsReady)
+            {
+                var message = "尚未进行当前 Mod 的高级分析，请先点击“模型解析”建立高级 Unit 分析缓存。";
+                _notifications?.Show(message, NotificationLevel.Info, TimeSpan.FromSeconds(10));
+                SameKeyReconstructionSummary = message;
+                OnPropertyChanged(nameof(SameKeyReconstructionSummary));
+                return;
+            }
             var outputRoot = Path.Combine(AppContext.BaseDirectory, "Output");
             var destination = Path.Combine(outputRoot, $"{SanitizeFileName(source.Metadata.Name)}+{DateTime.Now:yyyyMMdd-HHmmssfff}+SameKey重建");
             _sameKeyReconstructionRunning = true;
@@ -1047,6 +1056,15 @@ namespace HD2ModManager.ViewModels
             {
                 LogService.Info($"替换护甲计划开始：Mod={source.Metadata.Name}，节点={source.Id.Value:N}。");
                 _notifications?.Show("替换护甲：正在使用高级缓存中的 Unit 事实生成装备目录…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
+                var cachedState = await _advancedAnalysis.GetCachedStateAsync(source, _library.ModsRootDirectory).ConfigureAwait(false);
+                if (!cachedState.IsReady || !cachedState.IsCurrent)
+                {
+                    var message = "尚未进行当前 Mod 的高级分析，请先点击“模型解析”建立高级 Unit 分析缓存。";
+                    _notifications?.Show(message, NotificationLevel.Info, TimeSpan.FromSeconds(10));
+                    AdvancedAnalysisSummary = message;
+                    OnPropertyChanged(nameof(AdvancedAnalysisSummary));
+                    return;
+                }
                 var analyses = _cachedAdvancedAnalysesNodeId == source.Id
                     ? _cachedAdvancedAnalyses
                     : null;
@@ -1061,6 +1079,9 @@ namespace HD2ModManager.ViewModels
                 var sourcePatchPaths = analyses
 					.Select(analysis => analysis.Input.PatchTocFilePath)
                     .ToArray();
+                // The advanced analysis is the authoritative source-side Unit identity
+                // chain. Its classification has both the raw mesh and the indexed
+                // bone-bound semantic fact; do not reclassify the Unit in the page.
                 var preparedTransferableMeshes = analyses
                     .SelectMany(analysis => analysis.PreparedSourceUnits)
                     .Where(unit => unit.IsReadable)
@@ -1071,6 +1092,21 @@ namespace HD2ModManager.ViewModels
                     .Select(entry => entry with { Parts = entry.Parts.Where(part => preparedTransferableMeshes.Contains((part.UnitAssetKey, part.MeshInfoIndex))).ToArray() })
                     .Where(entry => entry.Parts.Count != 0)
                     .ToArray();
+                var catalogPartCount = sourceCatalogCandidates.Sum(entry => entry.Parts.Count);
+                var matchedPartCount = sourceCandidates.Sum(entry => entry.Parts.Count);
+                LogService.Info($"替换护甲来源诊断：Mod={source.Metadata.Name}，高级分析={analyses.Count}，源Patch={sourcePatchPaths.Length}，可转移Mesh={preparedTransferableMeshes.Count}，GameData部件={catalogPartCount}，身份交集={matchedPartCount}，Unit目录={sourceCatalogCandidates.Count}。");
+                if (preparedTransferableMeshes.Count != 0 && matchedPartCount == 0)
+                {
+                    var catalogKeys = sourceCatalogCandidates
+                        .SelectMany(entry => entry.Parts)
+                        .Select(part => (part.UnitAssetKey, part.MeshInfoIndex))
+                        .ToHashSet();
+                    var unmatched = preparedTransferableMeshes
+                        .Where(key => !catalogKeys.Contains(key))
+                        .Take(8)
+                        .Select(key => $"0x{key.Item1.FileId:x16}/mesh{key.Item2}");
+                    LogService.Info($"替换护甲来源诊断：可转移Mesh无GameData身份匹配，示例={string.Join(",", unmatched)}。");
+                }
                 var allCandidates = await _equipmentUnitCatalog.GetEntriesAsync();
                 GameDataArchiveBrowserSnapshot? targetReplacementSnapshot = null;
                 try
