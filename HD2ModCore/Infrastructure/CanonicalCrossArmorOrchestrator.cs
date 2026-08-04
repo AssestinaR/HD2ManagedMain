@@ -1,11 +1,11 @@
 using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
+using HD2ModAdaptation.PatchReconstruction.PatchWorkspace;
 using HD2ModCore.Domain;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using CoreAssetKey = HD2ModCore.Domain.AssetKey;
 using AdaptationPatchTocEntry = HD2ModAdaptation.PatchReconstruction.PatchTocEntry;
-using AdaptationPatchTocScanner = HD2ModAdaptation.PatchReconstruction.PatchTocScanner;
 using AdaptationGameDataPackageResolver = HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -32,7 +32,6 @@ public sealed class CanonicalCrossArmorOrchestrator
 		IReadOnlyList<(int Index, uint NumVertices, uint NumIndices, uint VertexBufferSize, uint IndexBufferSize)> Streams,
 		IReadOnlyList<(int Index, int RealIndicesCount, int RemapsCount)> BoneInfos);
 
-	private readonly IPatchTocScanner scanner;
 	private readonly PatchUnitMeshReader sourceReader;
 	private readonly Func<string, GameDataUnitMeshReader> targetReaderFactory;
 	private readonly CanonicalMeshSemanticMerger merger;
@@ -41,11 +40,13 @@ public sealed class CanonicalCrossArmorOrchestrator
 	private readonly CanonicalLodBonePaletteCompiler lodBonePaletteCompiler;
 	private readonly CanonicalStreamContractCompiler streamContractCompiler;
 	private readonly CanonicalMeshPreparation preparation;
-	private readonly CanonicalPlaceholderMinifier placeholderMinifier;
+	private readonly IHiddenUnitGenerator hiddenUnitGenerator;
 	private readonly CanonicalTransformInfoExpander transformInfoExpander;
 	private readonly CanonicalStaticMeshBinder staticMeshBinder;
 	private readonly CanonicalUnitRebuilder rebuilder;
-	private readonly ICanonicalPatchWriter patchWriter;
+	private readonly IPatchWorkspaceWriter patchWorkspaceWriter;
+	private readonly IPatchWorkspaceSessionComposer patchWorkspaceSessionComposer;
+	private readonly IPatchWorkspaceReader patchWorkspaceReader;
 	private readonly HD2ModAdaptation.PatchReconstruction.IPatchEntryPayloadReader sourcePayloadReader;
 	private readonly StingrayMaterialReferenceReader materialReferenceReader;
 
@@ -74,7 +75,6 @@ public sealed class CanonicalCrossArmorOrchestrator
 			model.BoneInfos.Select(bone => (Index: bone.Index, RealIndicesCount: bone.RealIndices.Count, RemapsCount: bone.Remaps.Count)).ToArray());
 
 	public CanonicalCrossArmorOrchestrator(
-		IPatchTocScanner? scanner = null,
 		PatchUnitMeshReader? sourceReader = null,
 		Func<string, GameDataUnitMeshReader>? targetReaderFactory = null,
 		CanonicalMeshSemanticMerger? merger = null,
@@ -87,11 +87,13 @@ public sealed class CanonicalCrossArmorOrchestrator
 		CanonicalTransformInfoExpander? transformInfoExpander = null,
 		CanonicalStaticMeshBinder? staticMeshBinder = null,
 		CanonicalUnitRebuilder? rebuilder = null,
-		ICanonicalPatchWriter? patchWriter = null,
 		HD2ModAdaptation.PatchReconstruction.IPatchEntryPayloadReader? sourcePayloadReader = null,
-		StingrayMaterialReferenceReader? materialReferenceReader = null)
+		StingrayMaterialReferenceReader? materialReferenceReader = null,
+		IHiddenUnitGenerator? hiddenUnitGenerator = null,
+		IPatchWorkspaceWriter? patchWorkspaceWriter = null,
+		IPatchWorkspaceSessionComposer? patchWorkspaceSessionComposer = null,
+		IPatchWorkspaceReader? patchWorkspaceReader = null)
 	{
-		this.scanner = scanner ?? new AdaptationPatchTocScanner();
 		this.sourceReader = sourceReader ?? new PatchUnitMeshReader();
 		this.targetReaderFactory = targetReaderFactory ?? new Func<string, GameDataUnitMeshReader>(directory => new GameDataUnitMeshReader(new AdaptationGameDataPackageResolver(directory)));
 		this.merger = merger ?? new CanonicalMeshSemanticMerger();
@@ -100,11 +102,13 @@ public sealed class CanonicalCrossArmorOrchestrator
 		this.lodBonePaletteCompiler = lodBonePaletteCompiler ?? new CanonicalLodBonePaletteCompiler();
 		this.streamContractCompiler = streamContractCompiler ?? new CanonicalStreamContractCompiler();
 		this.preparation = preparation ?? new CanonicalMeshPreparation();
-		this.placeholderMinifier = placeholderMinifier ?? new CanonicalPlaceholderMinifier();
+		this.hiddenUnitGenerator = hiddenUnitGenerator ?? new HiddenUnitGenerator(placeholderMinifier ?? new CanonicalPlaceholderMinifier());
 		this.transformInfoExpander = transformInfoExpander ?? new CanonicalTransformInfoExpander();
 		this.staticMeshBinder = staticMeshBinder ?? new CanonicalStaticMeshBinder();
 		this.rebuilder = rebuilder ?? new CanonicalUnitRebuilder();
-		this.patchWriter = patchWriter ?? new CanonicalPatchWriter();
+		this.patchWorkspaceWriter = patchWorkspaceWriter ?? new PatchWorkspaceWriter();
+		this.patchWorkspaceSessionComposer = patchWorkspaceSessionComposer ?? new PatchWorkspaceSessionComposer();
+		this.patchWorkspaceReader = patchWorkspaceReader ?? new PatchWorkspaceReader();
 		this.sourcePayloadReader = sourcePayloadReader ?? new HD2ModAdaptation.PatchReconstruction.PatchEntryPayloadReader();
 		this.materialReferenceReader = materialReferenceReader ?? new StingrayMaterialReferenceReader();
 	}
@@ -157,7 +161,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 
 			var sourceEntries = request.PreparedSourceEntries is { Count: > 0 }
 				? request.PreparedSourceEntries
-				: await scanner.ScanEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
+				: await patchWorkspaceReader.ReadEntriesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
+			var sourceWorkspaceIndex = request.PreparedSourceEntries is { Count: > 0 }
+				? new PatchWorkspaceIndex(request.SourcePatchTocPath, sourceEntries, await File.ReadAllBytesAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false))
+				: await patchWorkspaceReader.ReadIndexAsync(request.SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
 			var sourceByKey = sourceEntries.ToDictionary(entry => entry.AssetKey);
 			var sourceKeys = replacementPlanMappings.Select(mapping => mapping.Source.UnitKey).Distinct().ToArray();
 			if (sourceKeys.Any(key => !sourceByKey.ContainsKey(key)))
@@ -173,6 +180,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 			var targetReader = targetReaderFactory(request.GameDataDirectory);
 			var canonicalAvatarTransforms = await new CanonicalAvatarRigReader(new AdaptationGameDataPackageResolver(request.GameDataDirectory)).ReadTransformInfoAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 			var outputEntries = new List<CanonicalPatchSessionEntry>();
+			var workspaceJobs = new List<PatchWorkspaceJobResult>();
 			var stagedPayloadDirectory = Path.Combine(request.OutputDirectory, ".canonical-staged-payloads");
 			Directory.CreateDirectory(stagedPayloadDirectory);
 			var rebuiltTargets = new Dictionary<AdaptationAssetKey, CanonicalRebuildSummary>();
@@ -245,7 +253,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 					UnitBoneInfo? provisionalBoneInfo = null;
 					if (!mappingsByIndex.TryGetValue(targetMesh.Index, out var mapping))
 					{
-						var tiny = placeholderMinifier.TryMinify(targetRaw, stream);
+						var tiny = hiddenUnitGenerator.Generate(targetRaw, stream);
 						if (!tiny.IsValid) return Failure(issues, tiny.Diagnostics);
 						finalRaw = tiny.Mesh!;
 						minifiedCount++;
@@ -369,6 +377,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 					StreamDataPath = staged.StreamData
 				};
 				outputEntries.Add(outputTargetEntry);
+				workspaceJobs.Add(PatchWorkspaceJobResult.Unit(outputTargetEntry, $"0x{targetUnit.Key.FileId:x16}"));
 				rebuiltTargets.Add(targetUnit.Key, CreateRebuildSummary(targetUnit.Key, rebuilt.Model!));
 				outputUnitCount++;
 				Log($"[UNIT-DONE] Unit=0x{targetUnit.Key.FileId:x16} Meshes={rebuilt.Model!.Meshes.Count} Materials={rebuilt.Model.Materials.Count} Replacements={canonicalMappings.Count}");
@@ -383,18 +392,26 @@ public sealed class CanonicalCrossArmorOrchestrator
 			GC.WaitForPendingFinalizers();
 			GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: false);
 
-			await CarryThroughSourceMaterialsAsync(outputEntries, sourceEntries, stagedPayloadDirectory, request, cancellationToken, totalStopwatch).ConfigureAwait(false);
+			await CarryThroughSourceMaterialsAsync(outputEntries, workspaceJobs, sourceEntries, stagedPayloadDirectory, request, cancellationToken, totalStopwatch).ConfigureAwait(false);
 			Log($"[MATERIAL-CARRY] Entries={outputEntries.Count(entry => entry.Ownership == CanonicalPatchEntryOwnership.RequiredDependency)}");
 
 			var session = new CanonicalPatchSession();
 			ReportProgress(request, "ValidateUnitReferences", "正在验证 Unit 材质引用表。", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
-			foreach (var entry in outputEntries) session.AddEntry(entry);
-			var finalized = session.Finalize(CanonicalDependencyClosureValidation.Valid);
+			var finalized = patchWorkspaceSessionComposer.ComposeJobs(session, workspaceJobs, Array.Empty<CanonicalPatchSessionEntry>(), CanonicalDependencyClosureValidation.Valid);
 			if (!finalized.IsValid) return Failure(issues, finalized.Diagnostics);
 			var headerArchive = request.Plan.SelectedTargets.FirstOrDefault()?.ArchiveId;
 			var header = headerArchive is null ? null : await new AdaptationGameDataPackageResolver(request.GameDataDirectory).GetPackageTocAsync(headerArchive, cancellationToken).ConfigureAwait(false);
 			ReportProgress(request, "WritePatch", "正在写入 Canonical Patch 和 GPU sidecar。", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
-			var written = await patchWriter.WriteAsync(session, request.OutputDirectory, ResolveOutputPatchFileName(request.SourcePatchTocPath), header?.Data, overwriteExisting: false, cancellationToken: cancellationToken).ConfigureAwait(false);
+			var removedSourceKeys = sourceWorkspaceIndex.Entries.Select(entry => entry.AssetKey).ToHashSet();
+			var written = await patchWorkspaceWriter.WriteAsync(
+				sourceWorkspaceIndex,
+				workspaceJobs,
+				removedSourceKeys,
+				request.OutputDirectory,
+				ResolveOutputPatchFileName(request.SourcePatchTocPath),
+				header?.Data,
+				overwriteExisting: false,
+				cancellationToken: cancellationToken).ConfigureAwait(false);
 			var fileDiagnostics = ValidateWrittenFiles(written, outputEntries);
 			issues.AddRange(fileDiagnostics.Select(diagnostic => new CoreIssue(CoreIssueSeverity.Error, diagnostic.Code, diagnostic.Message)));
 			reportState.Status = fileDiagnostics.Count == 0 ? "WrittenForGameTest" : "Failed";
@@ -421,6 +438,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 
 	private async ValueTask CarryThroughSourceMaterialsAsync(
 		ICollection<CanonicalPatchSessionEntry> outputEntries,
+		ICollection<PatchWorkspaceJobResult> workspaceJobs,
 		IReadOnlyList<AdaptationPatchTocEntry> sourceEntries,
 		string stagedPayloadDirectory,
 		CrossArmorTransferCandidateRequest request,
@@ -464,13 +482,15 @@ public sealed class CanonicalCrossArmorOrchestrator
 			if (carriedKeys.Add(materialKey))
 			{
 				var staged = StagePayloads(stagedPayloadDirectory, materialKey, materialPayload.TocData, materialPayload.GpuResourceData, materialPayload.StreamData);
-				outputEntries.Add(new CanonicalPatchSessionEntry(materialKey, CanonicalPatchEntryOwnership.RequiredDependency,
+				var materialOutput = new CanonicalPatchSessionEntry(materialKey, CanonicalPatchEntryOwnership.RequiredDependency,
 					null, null, null, materialEntry.Unknown1, materialEntry.Unknown2, materialEntry.Unknown3, materialEntry.Unknown4)
 				{
 					TocDataPath = staged.TocData,
 					GpuDataPath = staged.GpuData,
 					StreamDataPath = staged.StreamData
-				});
+				};
+				outputEntries.Add(materialOutput);
+				workspaceJobs.Add(new PatchWorkspaceJobResult([materialOutput], Array.Empty<CanonicalPlanDiagnostic>(), "Material", $"0x{materialKey.FileId:x16}"));
 			}
 
 			IReadOnlyList<ulong> textureIds;
@@ -502,18 +522,21 @@ public sealed class CanonicalCrossArmorOrchestrator
 					continue;
 				}
 				var staged = StagePayloads(stagedPayloadDirectory, textureKey, texturePayload.TocData, texturePayload.GpuResourceData, texturePayload.StreamData);
-				outputEntries.Add(new CanonicalPatchSessionEntry(textureKey, CanonicalPatchEntryOwnership.RequiredDependency,
+				var textureOutput = new CanonicalPatchSessionEntry(textureKey, CanonicalPatchEntryOwnership.RequiredDependency,
 					null, null, null, textureEntry.Unknown1, textureEntry.Unknown2, textureEntry.Unknown3, textureEntry.Unknown4)
 				{
 					TocDataPath = staged.TocData,
 					GpuDataPath = staged.GpuData,
 					StreamDataPath = staged.StreamData
-				});
+				};
+				outputEntries.Add(textureOutput);
+				workspaceJobs.Add(new PatchWorkspaceJobResult([textureOutput], Array.Empty<CanonicalPlanDiagnostic>(), "Texture", $"0x{textureKey.FileId:x16}"));
 			}
 
 			ReportProgress(request, "CarryThroughMaterials", $"Canonical：来源 Material 0x{materialIds[index]:x16} 顺延完成", index + 1, Math.Max(materialIds.Length, 1), totalStopwatch);
 		}
 	}
+
 
 	private static (string TocData, string GpuData, string StreamData) StagePayloads(string directory, AdaptationAssetKey key, byte[] tocData, byte[] gpuData, byte[] streamData)
 	{
