@@ -285,14 +285,23 @@ public sealed class CanonicalCrossArmorOrchestrator
 						currentCanonicalPhase = "MergeFinalMeshSections";
 						var merged = merger.TryMerge(new(mapping.Source, mapping.Target, transform.SourceToTargetLocal!.Value), targetRaw, sourceRaw);
 						if (!merged.IsValid) return Failure(issues, merged.Diagnostics);
-						var materialBindings = CollectSourceMaterialBindings(source.Model, sourceRawForMaterials, targetRaw);
+						var finalMergedMesh = merged.Mesh!;
+						// LOD -1/culling meshes can use proxy-only section slots that are not
+						// present in the Unit root Material table. They still need the standard
+						// geometry/bone/stream rebuild, but their material identity must remain
+						// target-owned rather than blocking the replacement.
+						IEnumerable<KeyValuePair<uint, ulong>> materialBindings = targetRaw.LodIndex == -1
+							? Array.Empty<KeyValuePair<uint, ulong>>()
+							: CollectSourceMaterialBindings(source.Model, sourceRawForMaterials, targetRaw);
+						if (targetRaw.LodIndex == -1)
+							finalMergedMesh = ApplyTargetCullingMaterialSlots(finalMergedMesh, targetRaw);
 						foreach (var binding in materialBindings)
 						{
 							if (sourceMaterialBindings.TryGetValue(binding.Key, out var existing) && existing != binding.Value)
 								return Failure(issues, "CanonicalMaterialSlotConflict", $"目标材质槽 {binding.Key} 被映射到多个来源 Material 资源。");
 							sourceMaterialBindings[binding.Key] = binding.Value;
 						}
-						finalRaw = merged.Mesh!;
+						finalRaw = finalMergedMesh;
 						replacementCount++;
 					}
 					finalRawMeshes.Add(finalRaw);
@@ -552,18 +561,30 @@ public sealed class CanonicalCrossArmorOrchestrator
 				.ThenByDescending(raw => raw.Vertices.Count)
 				.FirstOrDefault()
 				?? throw new InvalidDataException($"Source Unit 0x{approved.Source.UnitKey.FileId:x16} 缺少真实 LOD0。");
+			var sourceCulling = sourceUnit.Model.RawMeshData
+				.Where(raw => raw.LodIndex == -1 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
+				.Where(raw => SemanticMatches(
+					sourceUnit.Model.Meshes.FirstOrDefault(mesh => mesh.Index == raw.MeshInfoIndex)?.SemanticInfo,
+					sourceUnit.Model.Meshes.FirstOrDefault(mesh => mesh.Index == sourceRepresentative.MeshInfoIndex)?.SemanticInfo))
+				.OrderByDescending(raw => raw.Triangles.Count)
+				.ThenByDescending(raw => raw.Vertices.Count)
+				.FirstOrDefault();
 
 			var targetRepresentative = targetModel.RawMeshData
 				.SingleOrDefault(raw => raw.MeshInfoIndex == approved.Target.MeshInfoIndex)
 				?? throw new InvalidDataException($"Target RawMesh {approved.Target.MeshInfoIndex} 不存在，无法展开 AutoLods。");
 			var targetLodSlots = targetModel.RawMeshData
-				.Where(raw => raw.LodIndex >= 0 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
-				.OrderBy(raw => raw.LodIndex)
+				.Where(raw => raw.LodIndex >= -1 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
+				.OrderBy(raw => raw.LodIndex == -1 ? 0 : 1)
+				.ThenBy(raw => raw.LodIndex)
 				.ThenBy(raw => raw.MeshInfoIndex);
 			foreach (var targetLodSlot in targetLodSlots)
 			{
+				var sourceMesh = targetLodSlot.LodIndex == -1 && sourceCulling is not null
+					? sourceCulling
+					: sourceLod0;
 				expandedMappings.Add(new CanonicalReplacementMapping(
-					new(approved.Source.UnitKey, sourceLod0.MeshInfoIndex),
+					new(approved.Source.UnitKey, sourceMesh.MeshInfoIndex),
 					new(approved.Target.UnitKey, targetLodSlot.MeshInfoIndex),
 					approved.SourceMeshState,
 					approved.SkinningMode,
@@ -610,6 +631,27 @@ public sealed class CanonicalCrossArmorOrchestrator
 			bindings[finalSlot] = materialIds[0];
 		}
 		return bindings;
+	}
+
+	private static UnitRawMeshData ApplyTargetCullingMaterialSlots(UnitRawMeshData merged, UnitRawMeshData target)
+	{
+		if (target.Sections.Count == 0 || merged.Sections.Count == 0)
+			return merged;
+
+		var sections = merged.Sections.Select((section, index) =>
+		{
+			var targetSection = target.Sections[Math.Min(index, target.Sections.Count - 1)];
+			return section with
+			{
+				MaterialIndex = targetSection.MaterialIndex,
+				MaterialSlotId = targetSection.MaterialSlotId
+			};
+		}).ToArray();
+		return merged with
+		{
+			Sections = sections,
+			Triangles = sections.SelectMany(section => section.Triangles).ToArray()
+		};
 	}
 
 	private static string ResolveOutputPatchFileName(string sourcePatchTocPath)

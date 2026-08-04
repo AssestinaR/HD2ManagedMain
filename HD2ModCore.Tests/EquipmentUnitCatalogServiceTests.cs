@@ -160,6 +160,57 @@ public sealed class EquipmentUnitCatalogServiceTests
 	}
 
 	[Fact]
+	public async Task CreatePlanAsync_SameLayerPartialShapeIsCompletedFromAnotherLayer()
+	{
+		var slimSource = Part(SourceUnit, 1, "slim") with
+		{
+			PartKind = UnitMeshPartKind.LeftArm,
+			Layer = UnitMeshPartLayer.Undergarment,
+			BodyVariant = UnitMeshBodyVariant.Slim,
+			StoredBytes = 1024
+		};
+		var stockySource = Part(AdditionalSourceUnit, 2, "stocky") with
+		{
+			PartKind = UnitMeshPartKind.LeftArm,
+			Layer = UnitMeshPartLayer.Undergarment,
+			BodyVariant = UnitMeshBodyVariant.Stocky,
+			StoredBytes = 1024
+		};
+		var stockyTarget = Part(TargetUnit, 3, "stocky-target") with
+		{
+			PartKind = UnitMeshPartKind.LeftArm,
+			Layer = UnitMeshPartLayer.Undergarment,
+			BodyVariant = UnitMeshBodyVariant.Stocky,
+			StoredBytes = 2048
+		};
+		var slimTarget = Part(new AssetKey(TargetUnit.TypeId, 0x201), 4, "slim-target") with
+		{
+			PartKind = UnitMeshPartKind.LeftArm,
+			Layer = UnitMeshPartLayer.Armor,
+			BodyVariant = UnitMeshBodyVariant.Slim,
+			StoredBytes = 2000
+		};
+		var anyTarget = Part(new AssetKey(TargetUnit.TypeId, 0x202), 5, "any-target") with
+		{
+			PartKind = UnitMeshPartKind.LeftArm,
+			Layer = UnitMeshPartLayer.Armor,
+			BodyVariant = UnitMeshBodyVariant.Any,
+			StoredBytes = 500
+		};
+
+		var plan = await CreateService().CreatePlanAsync(
+			[Entry("source", slimSource, stockySource)],
+			[Entry("target", stockyTarget, slimTarget, anyTarget)],
+			"source", UnitMeshBodyVariant.Any, CrossArmorBodyVariantPreference.Slim,
+			CrossArmorLayerPreference.Armor, ["target"]);
+
+		Assert.Equal(2, plan.Mappings.Count(mapping => mapping.WillReplace));
+		Assert.Equal(stockySource, plan.Mappings.Single(mapping => mapping.Target.UnitAssetKey == stockyTarget.UnitAssetKey).Source);
+		Assert.Equal(slimSource, plan.Mappings.Single(mapping => mapping.Target.UnitAssetKey == slimTarget.UnitAssetKey).Source);
+		Assert.Null(plan.Mappings.Single(mapping => mapping.Target.UnitAssetKey == anyTarget.UnitAssetKey).Source);
+	}
+
+	[Fact]
 	public async Task CreatePlanAsync_SourceMeshCanBeReusedForEveryCompatibleTarget()
 	{
 		var smaller = Part(SourceUnit, 1, "small") with { StoredBytes = 64 };
