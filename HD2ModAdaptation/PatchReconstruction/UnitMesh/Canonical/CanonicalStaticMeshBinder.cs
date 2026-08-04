@@ -78,12 +78,14 @@ public sealed class CanonicalStaticMeshBinder
 			diagnostics.Add(new("InvalidTransformInfoMatrix", "A static Canonical anchor requires finite 4x4 TransformInfo matrices."));
 			return null;
 		}
-		var a = ToMatrix(anchor); var m = ToMatrix(mesh);
-		if (!Matrix4x4.Invert(m, out var inverseMesh) || !Matrix4x4.Invert(a * inverseMesh, out var inverseJoint))
+		var a = Matrix4x4.Transpose(ToMatrix(anchor));
+		var m = Matrix4x4.Transpose(ToMatrix(mesh));
+		if (!Matrix4x4.Invert(m, out var originTransform) || !Matrix4x4.Invert(originTransform * a, out var blenderInverseJoint))
 		{
 			diagnostics.Add(new("NonInvertibleStaticAnchor", "The static Canonical anchor cannot form an inverse-joint matrix."));
 			return null;
 		}
+		var inverseJoint = Matrix4x4.Transpose(blenderInverseJoint);
 		return [.. new[] { inverseJoint.M11, inverseJoint.M12, inverseJoint.M13, inverseJoint.M14, inverseJoint.M21, inverseJoint.M22, inverseJoint.M23, inverseJoint.M24, inverseJoint.M31, inverseJoint.M32, inverseJoint.M33, inverseJoint.M34, inverseJoint.M41, inverseJoint.M42, inverseJoint.M43, inverseJoint.M44 }.SelectMany(BitConverter.GetBytes)];
 	}
 

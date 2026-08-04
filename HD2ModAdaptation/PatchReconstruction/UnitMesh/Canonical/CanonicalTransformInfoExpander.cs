@@ -37,17 +37,29 @@ public sealed class CanonicalTransformInfoExpander
 
 		int EnsureHash(uint hash, HashSet<uint> visiting)
 		{
-			if (targetByHash.TryGetValue(hash, out var existing)) return existing;
 			if (!avatarByHash.TryGetValue(hash, out var avatarIndex)) throw new InvalidDataException($"Canonical Avatar TransformInfo does not contain required bone hash 0x{hash:x8}.");
 			if (!visiting.Add(hash)) throw new InvalidDataException($"Canonical Avatar TransformInfo contains a parent cycle at bone hash 0x{hash:x8}.");
 			var avatarEntry = avatar.Entries[avatarIndex];
-			var parentIndex = 0;
+			var parentIndex = avatarIndex;
 			if (avatarEntry.ParentIndex != avatarIndex)
 			{
 				if (avatarEntry.ParentIndex >= avatar.NameHashes.Count) throw new InvalidDataException($"Canonical Avatar bone hash 0x{hash:x8} has invalid parent index {avatarEntry.ParentIndex}.");
 				parentIndex = EnsureHash(avatar.NameHashes[avatarEntry.ParentIndex], visiting);
 			}
 			visiting.Remove(hash);
+			if (parentIndex > ushort.MaxValue) throw new InvalidDataException("Expanded Canonical TransformInfo exceeds the uint16 parent-index limit.");
+
+			if (targetByHash.TryGetValue(hash, out var existing))
+			{
+				// The community SDK exports every selected object against the active
+				// Avatar armature. A same-named target bone is therefore not authoritative:
+				// replace its transforms and parent link with the Avatar definition too.
+				locals[existing] = avatar.LocalTransforms[avatarIndex];
+				matrices[existing] = avatar.Matrices[avatarIndex];
+				entries[existing] = new UnitTransformEntry(avatarEntry.Increment, checked((ushort)parentIndex));
+				return existing;
+			}
+
 			if (hashes.Count > ushort.MaxValue) throw new InvalidDataException("Expanded Canonical TransformInfo exceeds the uint16 parent-index limit.");
 			var next = hashes.Count;
 			hashes.Add(hash);

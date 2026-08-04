@@ -167,7 +167,7 @@ public sealed class CanonicalBoneRebuilder
 			return Array.Empty<byte[]>();
 		}
 		var meshMatrix = ToMatrix(target.TransformInfo.Matrices[(int)mesh.TransformIndex], diagnostics);
-		if (meshMatrix is null || !Matrix4x4.Invert(meshMatrix.Value, out var inverseMesh))
+		if (meshMatrix is null || !TryCreateSdkInverseJointContext(meshMatrix.Value, out var originTransform))
 		{
 			diagnostics.Add(new("NonInvertibleMeshTransform", "The target mesh TransformInfo matrix is not invertible."));
 			return Array.Empty<byte[]>();
@@ -177,7 +177,7 @@ public sealed class CanonicalBoneRebuilder
 		{
 			if (index >= target.TransformInfo.Matrices.Count) { diagnostics.Add(new("MissingBoneTransform", "A target bone TransformInfo matrix is absent.")); continue; }
 			var bone = ToMatrix(target.TransformInfo.Matrices[(int)index], diagnostics);
-			if (bone is null || !Matrix4x4.Invert(bone.Value * inverseMesh, out var inverseJoint))
+			if (bone is null || !TryCreateSdkInverseJoint(bone.Value, originTransform, out var inverseJoint))
 			{
 				diagnostics.Add(new("NonInvertibleBoneTransform", "A target inverse-joint matrix cannot be generated safely."));
 				continue;
@@ -185,6 +185,29 @@ public sealed class CanonicalBoneRebuilder
 			output.Add(Serialize(inverseJoint));
 		}
 		return output;
+	}
+
+	// SDK GetMeshData uses Blender matrices, not the raw Stingray matrix layout:
+	// origin = inverse(mesh.ToBlenderMatrix()), then
+	// output = inverse(origin * bone.ToBlenderMatrix()).transposed().
+	// Keep the conversions explicit here so this path cannot silently diverge from
+	// the community exporter when matrix conventions are changed elsewhere.
+	private static bool TryCreateSdkInverseJointContext(Matrix4x4 rawMesh, out Matrix4x4 originTransform)
+	{
+		var blenderMesh = Matrix4x4.Transpose(rawMesh);
+		return Matrix4x4.Invert(blenderMesh, out originTransform);
+	}
+
+	private static bool TryCreateSdkInverseJoint(Matrix4x4 rawBone, Matrix4x4 originTransform, out Matrix4x4 rawInverseJoint)
+	{
+		var blenderBone = Matrix4x4.Transpose(rawBone);
+		if (!Matrix4x4.Invert(originTransform * blenderBone, out var blenderInverseJoint))
+		{
+			rawInverseJoint = default;
+			return false;
+		}
+		rawInverseJoint = Matrix4x4.Transpose(blenderInverseJoint);
+		return true;
 	}
 
 	private static UnitRawMeshData RewriteVertices(UnitRawMeshData sourceMesh, UnitRawMeshData targetMesh, UnitBoneInfo sourceInfo, IReadOnlyList<uint> sourceHashes, IReadOnlyList<uint> targetHashes, IReadOnlyList<uint> realIndices, IReadOnlyList<UnitBoneRemap> remaps, List<CanonicalPlanDiagnostic> diagnostics)

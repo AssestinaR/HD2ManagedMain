@@ -236,16 +236,36 @@ public sealed class CanonicalLodBonePaletteCompiler
 	{
 		if (meshTransformIndex >= target.TransformInfo.Matrices.Count) { diagnostics.Add(new("MissingMeshTransform", "The target LOD has no mesh TransformInfo matrix.")); return []; }
 		var mesh = ToMatrix(target.TransformInfo.Matrices[(int)meshTransformIndex], diagnostics);
-		if (mesh is null || !Matrix4x4.Invert(mesh.Value, out var inverseMesh)) { diagnostics.Add(new("NonInvertibleMeshTransform", "The target mesh transform is not invertible.")); return []; }
+		if (mesh is null || !TryCreateSdkInverseJointContext(mesh.Value, out var originTransform)) { diagnostics.Add(new("NonInvertibleMeshTransform", "The target mesh transform is not invertible.")); return []; }
 		var matrices = new List<byte[]>(realIndices.Count);
 		foreach (var index in realIndices)
 		{
 			if (index < 0 || index >= target.TransformInfo.Matrices.Count) { diagnostics.Add(new("MissingBoneTransform", "A target bone TransformInfo matrix is absent.")); continue; }
 			var bone = ToMatrix(target.TransformInfo.Matrices[index], diagnostics);
-			if (bone is null || !Matrix4x4.Invert(bone.Value * inverseMesh, out var inverseJoint)) { diagnostics.Add(new("NonInvertibleBoneTransform", "A target inverse-joint matrix cannot be generated safely.")); continue; }
+			if (bone is null || !TryCreateSdkInverseJoint(bone.Value, originTransform, out var inverseJoint)) { diagnostics.Add(new("NonInvertibleBoneTransform", "A target inverse-joint matrix cannot be generated safely.")); continue; }
 			matrices.Add([.. new[] { inverseJoint.M11, inverseJoint.M12, inverseJoint.M13, inverseJoint.M14, inverseJoint.M21, inverseJoint.M22, inverseJoint.M23, inverseJoint.M24, inverseJoint.M31, inverseJoint.M32, inverseJoint.M33, inverseJoint.M34, inverseJoint.M41, inverseJoint.M42, inverseJoint.M43, inverseJoint.M44 }.SelectMany(BitConverter.GetBytes)]);
 		}
 		return matrices;
+	}
+
+	// Match SDK GetMeshData exactly: convert raw Stingray matrices to Blender
+	// convention, calculate the mesh-relative inverse joint, then transpose back.
+	private static bool TryCreateSdkInverseJointContext(Matrix4x4 rawMesh, out Matrix4x4 originTransform)
+	{
+		var blenderMesh = Matrix4x4.Transpose(rawMesh);
+		return Matrix4x4.Invert(blenderMesh, out originTransform);
+	}
+
+	private static bool TryCreateSdkInverseJoint(Matrix4x4 rawBone, Matrix4x4 originTransform, out Matrix4x4 rawInverseJoint)
+	{
+		var blenderBone = Matrix4x4.Transpose(rawBone);
+		if (!Matrix4x4.Invert(originTransform * blenderBone, out var blenderInverseJoint))
+		{
+			rawInverseJoint = default;
+			return false;
+		}
+		rawInverseJoint = Matrix4x4.Transpose(blenderInverseJoint);
+		return true;
 	}
 
 	private static Matrix4x4? ToMatrix(UnitTransformMatrix matrix, List<CanonicalPlanDiagnostic> diagnostics)
