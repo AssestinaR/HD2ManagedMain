@@ -236,7 +236,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 				var mappingsByIndex = canonicalMappings.ToDictionary(mapping => mapping.Target.MeshInfoIndex);
 				var finalRawMeshes = new List<UnitRawMeshData>(target.Model.Meshes.Count);
 				var provisionalSkinnedMeshes = new List<CanonicalLodBoneInput>();
-				var sourceMaterialBindings = new Dictionary<uint, ulong>();
+				var sourceMaterialBindings = new List<UnitMaterialBinding>();
 				var rebuiltBoneInfos = target.Model.BoneInfos
 					.Select((boneInfo, index) => new { Index = index, BoneInfo = boneInfo })
 					.ToDictionary(item => item.Index, item => item.BoneInfo);
@@ -298,17 +298,15 @@ public sealed class CanonicalCrossArmorOrchestrator
 						// present in the Unit root Material table. They still need the standard
 						// geometry/bone/stream rebuild, but their material identity must remain
 						// target-owned rather than blocking the replacement.
-						IEnumerable<KeyValuePair<uint, ulong>> materialBindings = targetRaw.LodIndex == -1
-							? Array.Empty<KeyValuePair<uint, ulong>>()
-							: CollectSourceMaterialBindings(source.Model, sourceRawForMaterials, targetRaw);
+						var materialResolution = targetRaw.LodIndex == -1
+							? new CanonicalMaterialBindingResolution([], [])
+							: CanonicalMaterialBindingResolver.Resolve(source.Model, sourceRawForMaterials, targetRaw);
+						if (!materialResolution.IsValid)
+							return Failure(issues, materialResolution.Diagnostics);
+						IEnumerable<UnitMaterialBinding> materialBindings = materialResolution.Bindings;
 						if (targetRaw.LodIndex == -1)
 							finalMergedMesh = ApplyTargetCullingMaterialSlots(finalMergedMesh, targetRaw);
-						foreach (var binding in materialBindings)
-						{
-							if (sourceMaterialBindings.TryGetValue(binding.Key, out var existing) && existing != binding.Value)
-								return Failure(issues, "CanonicalMaterialSlotConflict", $"目标材质槽 {binding.Key} 被映射到多个来源 Material 资源。");
-							sourceMaterialBindings[binding.Key] = binding.Value;
-						}
+						sourceMaterialBindings.AddRange(materialBindings);
 						finalRaw = finalMergedMesh;
 						replacementCount++;
 					}
@@ -348,14 +346,12 @@ public sealed class CanonicalCrossArmorOrchestrator
 
 				if (sourceMaterialBindings.Count != 0)
 				{
+					var replacedSlots = sourceMaterialBindings.Select(binding => binding.SectionId).ToHashSet();
 					var bindings = target.Model.Materials
+						.Where(binding => !replacedSlots.Contains(binding.SectionId))
 						.Concat(sourceMaterialBindings
-							.Where(binding => !target.Model.Materials.Any(existing => existing.SectionId == binding.Key && existing.MaterialId == binding.Value))
-							.Select(binding => new UnitMaterialBinding(binding.Key, binding.Value)))
-						.GroupBy(binding => binding.SectionId)
-						.Select(group => group.Select(binding => binding.MaterialId).Distinct().Count() == 1
-							? group.First()
-							: throw new InvalidDataException($"Final material slot {group.Key} maps to multiple Material assets."))
+						.Where(binding => !target.Model.Materials.Contains(binding)))
+						.Distinct()
 						.ToArray();
 					target = target with { Model = target.Model with { Materials = bindings } };
 				}
@@ -636,25 +632,6 @@ public sealed class CanonicalCrossArmorOrchestrator
 
 	private static bool HasBoneData(UnitMeshModel model, UnitRawMeshData raw)
 		=> raw.LodIndex >= 0 && raw.LodIndex < model.BoneInfos.Count && model.BoneInfos[raw.LodIndex].RealIndices.Count > 0;
-
-	private static IReadOnlyDictionary<uint, ulong> CollectSourceMaterialBindings(UnitMeshModel source, UnitRawMeshData sourceRaw, UnitRawMeshData targetRaw)
-	{
-		var layout = CanonicalSectionLayout.TryCreate(sourceRaw, targetRaw);
-		if (!layout.IsValid) throw new InvalidDataException(string.Join("; ", layout.Diagnostics.Select(diagnostic => diagnostic.Message)));
-		var bindings = new Dictionary<uint, ulong>();
-		foreach (var assignment in layout.Assignments)
-		{
-			var materialIds = source.Materials.Where(binding => binding.SectionId == assignment.SourceSection.MaterialSlotId)
-				.Select(binding => binding.MaterialId).Distinct().ToArray();
-			if (materialIds.Length != 1)
-				throw new InvalidDataException($"Source material slot {assignment.SourceSection.MaterialSlotId} does not resolve to exactly one Material asset.");
-			var finalSlot = assignment.TargetSection.MaterialSlotId;
-			if (bindings.TryGetValue(finalSlot, out var existing) && existing != materialIds[0])
-				throw new InvalidDataException($"Final material slot {finalSlot} cannot represent multiple source Material assets.");
-			bindings[finalSlot] = materialIds[0];
-		}
-		return bindings;
-	}
 
 	private static UnitRawMeshData ApplyTargetCullingMaterialSlots(UnitRawMeshData merged, UnitRawMeshData target)
 	{

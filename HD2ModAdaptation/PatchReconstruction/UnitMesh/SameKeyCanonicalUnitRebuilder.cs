@@ -52,7 +52,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
         var mappings = request.MeshMappings.ToDictionary(mapping => mapping.TargetMeshInfoIndex);
         var finalMeshes = new List<UnitRawMeshData>(request.Target.Model.Meshes.Count);
         var provisionalByMesh = new Dictionary<int, UnitBoneInfo>();
-        var sourceMaterialByTargetSlot = new Dictionary<uint, ulong>();
+        var sourceMaterialBindings = new List<UnitMaterialBinding>();
         var hiddenCount = 0;
         var replacedCount = 0;
 
@@ -101,12 +101,11 @@ public sealed class SameKeyCanonicalUnitRebuilder
             diagnostics.AddRange(merged.Diagnostics);
             if (!merged.IsValid || merged.Mesh is null) continue;
 
-            foreach (var binding in CollectMappedMaterialBindings(request.Source.Model, sourceRaw, targetRaw))
+            var materialResolution = CanonicalMaterialBindingResolver.Resolve(request.Source.Model, sourceRaw, targetRaw);
+            diagnostics.AddRange(materialResolution.Diagnostics);
+            foreach (var binding in materialResolution.Bindings)
             {
-                if (sourceMaterialByTargetSlot.TryGetValue(binding.SectionId, out var existing) && existing != binding.MaterialId)
-                    diagnostics.Add(new("SameKeyMaterialSlotConflict", $"Target material slot {binding.SectionId} maps to source materials 0x{existing:x16} and 0x{binding.MaterialId:x16}."));
-                else
-                    sourceMaterialByTargetSlot[binding.SectionId] = binding.MaterialId;
+                sourceMaterialBindings.Add(binding);
             }
 
             CanonicalPositionDiagnostics.RecordMesh("merged", merged.Mesh, targetStream);
@@ -170,8 +169,9 @@ public sealed class SameKeyCanonicalUnitRebuilder
         finalMeshes = reencodedMeshes;
 
         var finalMaterialBindings = targetModel.Materials
-            .Where(binding => !sourceMaterialByTargetSlot.ContainsKey(binding.SectionId))
-            .Concat(sourceMaterialByTargetSlot.Select(binding => new UnitMaterialBinding(binding.Key, binding.Value)))
+            .Where(binding => !sourceMaterialBindings.Any(source => source.SectionId == binding.SectionId))
+            .Concat(sourceMaterialBindings)
+            .Distinct()
             .ToArray();
         if (diagnostics.Count != 0)
             return new(null, replacedCount, hiddenCount, diagnostics);
@@ -205,26 +205,6 @@ public sealed class SameKeyCanonicalUnitRebuilder
 
     private static bool HasBoneData(UnitMeshModel model, UnitRawMeshData mesh)
         => mesh.LodIndex >= 0 && mesh.LodIndex < model.BoneInfos.Count && model.BoneInfos[mesh.LodIndex].RealIndices.Count > 0;
-
-    private static IReadOnlyList<UnitMaterialBinding> CollectMappedMaterialBindings(UnitMeshModel source, UnitRawMeshData sourceRaw, UnitRawMeshData targetRaw)
-    {
-        var sourceMesh = source.Meshes.Single(mesh => mesh.Index == sourceRaw.MeshInfoIndex);
-        var visibleSections = sourceRaw.Sections.Where(section => section.Triangles.Count != 0).ToArray();
-        var result = new List<UnitMaterialBinding>();
-        for (var index = 0; index < visibleSections.Length && index < targetRaw.Sections.Count; index++)
-        {
-            var sourceSection = visibleSections[index];
-            if (sourceSection.MaterialIndex >= sourceMesh.MaterialSlotIds.Count) continue;
-            var sourceSlot = sourceMesh.MaterialSlotIds[(int)sourceSection.MaterialIndex];
-            var sourceMaterial = source.Materials
-                .Where(binding => binding.SectionId == sourceSlot)
-                .Select(binding => (ulong?)binding.MaterialId)
-                .FirstOrDefault();
-            if (sourceMaterial is { } material)
-                result.Add(new UnitMaterialBinding(targetRaw.Sections[index].MaterialSlotId, material));
-        }
-        return result;
-    }
 
     private static SameKeyCanonicalUnitRebuildResult Failure(string code, string message, int replaced, int hidden)
         => new(null, replaced, hidden, [new(code, message)]);

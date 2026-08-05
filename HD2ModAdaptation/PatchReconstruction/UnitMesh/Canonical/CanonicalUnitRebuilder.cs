@@ -40,7 +40,8 @@ public sealed class CanonicalUnitRebuilder
 		ArgumentNullException.ThrowIfNull(target);
 		ArgumentNullException.ThrowIfNull(finalRawMeshes);
 		var diagnostics = new List<CanonicalPlanDiagnostic>();
-		ValidateLayout(target, targetOriginalTocData, finalRawMeshes, diagnostics);
+		var effectiveMaterialBindings = finalMaterialBindings ?? target.Materials;
+		ValidateLayout(target, targetOriginalTocData, finalRawMeshes, effectiveMaterialBindings, diagnostics);
 		ValidateBoneInfoRebuilds(target, targetOriginalTocData, rebuiltBoneInfos, diagnostics);
 		if (diagnostics.Count != 0)
 			return new(null, null, Array.AsReadOnly(diagnostics.ToArray()));
@@ -159,7 +160,7 @@ public sealed class CanonicalUnitRebuilder
 				target,
 				orderedMeshes,
 				finalRawMeshes,
-				finalMaterialBindings ?? target.Materials,
+				effectiveMaterialBindings,
 				out var relocatedMeshes,
 				out var materialsOffset,
 				out var endingOffset,
@@ -185,7 +186,7 @@ public sealed class CanonicalUnitRebuilder
 				EndingOffset = endingOffset,
 				Meshes = relocatedMeshes,
 				Streams = rebuiltStreams,
-				Materials = BuildUsedMaterialBindings(target.Materials, finalRawMeshes),
+				Materials = BuildUsedMaterialBindings(effectiveMaterialBindings, finalRawMeshes),
 				RawMeshes = rebuiltSummaries,
 				RawMeshData = finalRawMeshes
 			};
@@ -303,7 +304,7 @@ public sealed class CanonicalUnitRebuilder
 			WriteUInt32(data, offset, checked((uint)((int)value + delta)));
 	}
 
-	private static void ValidateLayout(UnitMeshModel target, ReadOnlySpan<byte> tocData, IReadOnlyList<UnitRawMeshData> rawMeshes, List<CanonicalPlanDiagnostic> diagnostics)
+	private static void ValidateLayout(UnitMeshModel target, ReadOnlySpan<byte> tocData, IReadOnlyList<UnitRawMeshData> rawMeshes, IReadOnlyList<UnitMaterialBinding> materialBindings, List<CanonicalPlanDiagnostic> diagnostics)
 	{
 		if (tocData.IsEmpty) diagnostics.Add(new("MissingTargetTocData", "Canonical rebuilding requires the target original TocData as the explicit unknown-region preservation baseline."));
 		if (target.CompositeRef != 0 || target.StreamInfoOffset == 0)
@@ -333,12 +334,6 @@ public sealed class CanonicalUnitRebuilder
 			var raw = rawMeshes.FirstOrDefault(candidate => candidate.MeshInfoIndex == mesh.Index);
 			if (raw is null) continue;
 			if (raw.Sections.Count == 0) diagnostics.Add(new("MissingRawMeshSections", $"MeshInfo {mesh.Index} has no final material sections."));
-			foreach (var slot in raw.Sections.Select(section => section.MaterialSlotId).Distinct())
-			{
-				var materialIds = target.Materials.Where(binding => binding.SectionId == slot).Select(binding => binding.MaterialId).Distinct().ToArray();
-				if (materialIds.Length > 1)
-					diagnostics.Add(new("MaterialBindingAmbiguous", $"Final MaterialSlotId {slot} maps to multiple target Material assets."));
-			}
 			if (target.Streams.Count(stream => stream.Index == (int)mesh.StreamIndex) != 1)
 				diagnostics.Add(new("MeshStreamCardinality", $"Target MeshInfo {mesh.Index} StreamIndex {mesh.StreamIndex} must match exactly one target Stream."));
 			if (raw.StreamIndex != mesh.StreamIndex)
@@ -538,10 +533,7 @@ public sealed class CanonicalUnitRebuilder
 		// material; those slots are valid shell identity but have no portable dependency.
 		return materialBindings
 			.Where(binding => usedSlots.Contains(binding.SectionId))
-			.GroupBy(binding => binding.SectionId)
-			.Select(group => group.Select(binding => binding.MaterialId).Distinct().Count() == 1
-				? group.First()
-				: throw new InvalidDataException($"Target material slot {group.Key} maps to multiple Material assets."))
+			.Distinct()
 			.ToArray();
 	}
 
