@@ -36,12 +36,10 @@ public static class CoreServices
 	public static IModSameKeyReconstructionService CreateModSameKeyReconstructionService(StoragePaths paths)
 		=> CreateModSameKeyReconstructionService(paths, CreateModInformationCenter(paths));
 	public static IModSameKeyReconstructionService CreateModSameKeyReconstructionService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new ModSameKeyReconstructionService(
+		=> new CanonicalSameKeyReconstructionService(
 			CreatePatchFileNameParser(),
-			CreateSameKeyReconstructionPlanningService(paths),
 			CreateAssetArchiveIndexService(paths),
-			CreateFileSystemArchiveHashesProvider(paths),
-			CreateAdvancedModAnalysisService(paths, informationCenter));
+			CreateFileSystemArchiveHashesProvider(paths));
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IModRepairBatchService CreateModRepairBatchService(StoragePaths paths)
 		=> new ModRepairBatchService(paths, CreateModSameKeyReconstructionService(paths), CreateAdvancedModAnalysisService(paths), CreatePatchFileNameParser());

@@ -34,7 +34,8 @@ public sealed class CanonicalUnitRebuilder
 		UnitMeshModel target,
 		ReadOnlySpan<byte> targetOriginalTocData,
 		IReadOnlyList<UnitRawMeshData> finalRawMeshes,
-		IReadOnlyList<CanonicalBoneInfoRebuild>? rebuiltBoneInfos = null)
+		IReadOnlyList<CanonicalBoneInfoRebuild>? rebuiltBoneInfos = null,
+		IReadOnlyList<UnitMaterialBinding>? finalMaterialBindings = null)
 	{
 		ArgumentNullException.ThrowIfNull(target);
 		ArgumentNullException.ThrowIfNull(finalRawMeshes);
@@ -90,17 +91,23 @@ public sealed class CanonicalUnitRebuilder
 					var raw = rawByMesh[mesh.Index];
 					Trace($"vertices mesh={mesh.Index} vertices={raw.Vertices.Count} sections={raw.Sections.Count} slots={string.Join(',', raw.Sections.Select(section => section.MaterialSlotId))}");
 					vertexOffsets.Add(mesh.Index, vertexCount);
+					CanonicalPositionDiagnostics.RecordMesh("before-gpu-write", raw, stream);
 					foreach (var vertex in raw.Vertices)
 					{
 						if (vertex.Data.Length > stream.VertexStride)
 							throw new InvalidDataException($"RawMesh {mesh.Index} vertex data exceeds target stream stride.");
+						var gpuCountBefore = gpuData.Count;
 						gpuData.AddRange(vertex.Data);
 						for (var padding = vertex.Data.Length; padding < stream.VertexStride; padding++) gpuData.Add(0);
+						if (vertex.Index == 0)
+							CanonicalPositionDiagnostics.RecordGpuAppend("gpu-append", stream.Index, mesh.Index, checked((int)vertex.Index), gpuCountBefore, vertexStart, vertexOffsets[mesh.Index], stream.VertexStride, vertex.Data, gpuData);
 						vertexCount++;
 					}
 				}
 				PadToAlignment(gpuData, 16);
 				var vertexSize = checked((uint)gpuData.Count - vertexStart);
+				foreach (var mesh in streamMeshes)
+					CanonicalPositionDiagnostics.RecordGpuVertex("gpu-written", stream.Index, mesh.Index, vertexOffsets[mesh.Index], vertexStart, stream.VertexStride, gpuData);
 				var indexStart = checked((uint)gpuData.Count);
 				var indexCount = 0u;
 				var indexOffsets = new Dictionary<int, uint>();
@@ -152,7 +159,7 @@ public sealed class CanonicalUnitRebuilder
 				target,
 				orderedMeshes,
 				finalRawMeshes,
-				target.Materials,
+				finalMaterialBindings ?? target.Materials,
 				out var relocatedMeshes,
 				out var materialsOffset,
 				out var endingOffset,

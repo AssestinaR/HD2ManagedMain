@@ -144,6 +144,7 @@ public sealed class CanonicalReplacementPlanTests
 
 		Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(item => item.Message)));
 		Assert.Equal(new uint[] { 0, 1 }, result.Mesh!.Sections.Select(section => section.MaterialIndex));
+		Assert.Equal(new uint[] { 20, 21 }, result.Mesh.Sections.Select(section => section.MaterialSlotId));
 		Assert.Single(result.Mesh.Sections[0].Triangles);
 		Assert.Empty(result.Mesh.Sections[1].Triangles);
 	}

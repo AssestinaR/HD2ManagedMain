@@ -1007,6 +1007,7 @@ namespace HD2ModManager.ViewModels
             try
             {
                 task = _backgroundTasks?.Enqueue(BackgroundTaskKind.RepairMods, "重建 Same-key Mod", "单项修复", "Mod 详情", "重建并验证当前版本 Unit。", canCancel: false);
+                task?.MarkRunning("正在生成同 ID Canonical 重建计划");
                 await using var resourceMonitor = ResourceUsageMonitor.Start(operationId, "Same-key重建");
                 var uiContext = SynchronizationContext.Current
                     ?? (System.Windows.Application.Current?.Dispatcher is { } dispatcher
@@ -1020,6 +1021,7 @@ namespace HD2ModManager.ViewModels
                     destination, task?.CancellationToken ?? CancellationToken.None, bridge is null ? null : new Progress<OperationProgressEvent>(bridge.Apply), operationId).AsTask());
                 if (!result.IsSuccessful)
                 {
+                    task?.MarkFailed(string.Join("；", result.Issues.Select(issue => issue.Message).Take(3)));
                     SameKeyReconstructionSummary = $"重建失败：{string.Join("；", result.Issues.Select(issue => issue.Message).Take(3))}";
                     LogService.Error($"修复 patch 失败：Mod={source.Metadata.Name}，输出={destination}，问题={string.Join(" | ", result.Issues.Select(issue => $"{issue.Code}: {issue.Message}"))}");
                     if (bridge is null) _notifications?.Show(SameKeyReconstructionSummary, NotificationLevel.Error, TimeSpan.FromSeconds(12));
@@ -1027,17 +1029,20 @@ namespace HD2ModManager.ViewModels
                 }
 
                 SameKeyReconstructionSummary = $"重建完成：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。输出：{result.OutputDirectory}";
+                task?.MarkCompleted();
                 LogService.Info($"修复 patch 完成：Mod={source.Metadata.Name}，Unit={result.OutputUnitCount}，替换Mesh={result.ReplacementMeshCount}，极小化Mesh={result.MinifiedMeshCount}，输出={result.OutputDirectory}。");
                 if (bridge is null) _notifications?.Show("Same-key 重建结果已写入 Output 文件夹。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException or KeyNotFoundException)
             {
+                task?.MarkFailed(exception.Message);
                 SameKeyReconstructionSummary = $"重建失败：{exception.Message}";
                 LogService.Error($"修复 patch 异常：Mod={source.Metadata.Name}，输出={destination}，错误={exception}");
                 if (task is null) _notifications?.Show(SameKeyReconstructionSummary, NotificationLevel.Error, TimeSpan.FromSeconds(12));
             }
             catch (OperationCanceledException)
             {
+                task?.MarkCanceled();
                 SameKeyReconstructionSummary = "重建已取消。";
                 if (task is null) _notifications?.Show("Same-key 重建已取消。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
             }

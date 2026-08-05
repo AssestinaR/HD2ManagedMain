@@ -34,6 +34,8 @@ public sealed class CanonicalFinalMaterialLayoutTests
 		Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(diagnostic => diagnostic.Message)));
 		Assert.Equal([0u, 1u], result.OutputSections.Select(section => section.MaterialIndex));
 		Assert.Equal([500u, 700u], result.OutputSections.Select(section => section.MaterialSlotId));
+		Assert.Single(result.OutputSections[0].Triangles);
+		Assert.Empty(result.OutputSections[1].Triangles);
 	}
 
 	private static UnitRawMeshData Mesh(IReadOnlyList<UnitRawMeshSectionData> sections)

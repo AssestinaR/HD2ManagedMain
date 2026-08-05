@@ -39,8 +39,20 @@ public static class CanonicalSectionLayout
 		if (diagnostics.Count != 0)
 			return new([], [], Array.AsReadOnly(diagnostics.ToArray()));
 
-		var output = visible.Select((item, targetIndex) => new UnitRawMeshSectionData(
-			checked((uint)targetIndex), item.Section.MaterialSlotId, item.Section.Triangles.ToArray())).ToArray();
+		if (visible.Length > target.Sections.Count)
+		{
+			diagnostics.Add(new("VisibleSectionCountMismatch", $"Source has {visible.Length} visible material sections, but target shell has only {target.Sections.Count}."));
+			return new([], [], Array.AsReadOnly(diagnostics.ToArray()));
+		}
+
+		// The target shell owns the serialized material-slot identity. Blender's join puts
+		// visible source polygons into the corresponding target material slots, while
+		// unfilled target sections remain empty. Carrying source slot IDs here produces
+		// a readable mesh with no Unit material binding and makes it fully transparent.
+		var output = target.Sections.Select((targetSection, targetIndex) => new UnitRawMeshSectionData(
+			checked((uint)targetIndex),
+			targetSection.MaterialSlotId,
+			targetIndex < visible.Length ? visible[targetIndex].Section.Triangles.ToArray() : Array.Empty<UnitTriangleIndices>())).ToArray();
 		Trace($"finalSections={output.Length} finalSlots={string.Join(',', output.Select(section => section.MaterialSlotId))} triangles={output.Sum(section => section.Triangles.Count)}");
 		var assignments = visible.Select((item, targetIndex) => new CanonicalSectionAssignment(
 			item.Index, item.Section, targetIndex, output[targetIndex])).ToArray();

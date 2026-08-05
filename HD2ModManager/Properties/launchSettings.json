@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "HD2ModManager": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "HD2_CANONICAL_POSITION_DIAGNOSTICS": "1"
+      }
+    }
+  }
+}
