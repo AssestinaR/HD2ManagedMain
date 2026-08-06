@@ -84,6 +84,9 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
         var resolver = new AdaptationGameDataPackageResolver(gameDataDirectory);
         var targetReader = new GameDataUnitMeshReader(resolver);
+        var avatarTransforms = await new CanonicalAvatarRigReader(resolver)
+            .ReadTransformInfoAsync(cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
         var jobs = new List<PatchWorkspaceJobResult>();
         var removed = index.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId || entry.AssetKey.TypeId == PatchUnitMeshReader.CompositeUnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
         var sourceEntries = index.Entries;
@@ -98,7 +101,10 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             var targetUnit = await targetReader.ReadAsync(targetArchive, sourceEntry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
             var mappings = unitPlan.Adaptation!.Steps.Where(step => step.Kind == UnitMeshAdaptationStepKind.ReplaceWithSource && step.SourceMeshInfoIndex is not null)
                 .Select(step => new TargetShellMeshMapping(sourceEntry.AssetKey, step.SourceMeshInfoIndex!.Value, step.TargetMeshInfoIndex)).ToArray();
-            var rebuilt = unitRebuilder.Rebuild(new SameKeyCanonicalUnitRebuildRequest(sourceUnit, targetUnit, mappings));
+            var rebuilt = unitRebuilder.Rebuild(new SameKeyCanonicalUnitRebuildRequest(sourceUnit, targetUnit, mappings)
+            {
+                AvatarTransformInfo = avatarTransforms
+            });
             if (!rebuilt.IsValid || rebuilt.Job is null)
                 issues.AddRange(rebuilt.Diagnostics.Select(diagnostic => Error(diagnostic.Code, diagnostic.Message, source.Id)));
             else jobs.Add(rebuilt.Job);

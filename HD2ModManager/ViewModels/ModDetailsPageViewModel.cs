@@ -1098,11 +1098,18 @@ namespace HD2ModManager.ViewModels
                 // Game Data contributes the logical Armor/Helmet label and body/layer
                 // facts only. Keep all indexed parts for an eligible Unit; the
                 // Canonical executor resolves the source Unit's own LOD0 later.
-                var sourceCandidates = sourceCatalogCandidates
-                    .Where(entry => entry.Parts.Any(part => transferableSourceUnitKeys.Contains(part.UnitAssetKey)))
-                    .Select(entry => entry with { Parts = entry.Parts.Where(part => transferableSourceUnitKeys.Contains(part.UnitAssetKey)).ToArray() })
-                    .Where(entry => entry.Parts.Count != 0)
-                    .ToArray();
+                    // Source eligibility is determined from the current source Patch, while
+                    // part labels come from Game Data. Re-read every candidate Unit through
+                    // the SDK-compatible Patch reader so MeshInfoIndex and MeshId come from
+                    // the same current Unit payload before the plan is shown or persisted.
+                    var sourceCandidates = await _equipmentUnitCatalog
+                        .FilterTransferableSourcePartsAsync(sourceCatalogCandidates, sourcePatchPaths, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    sourceCandidates = sourceCandidates
+                        .Where(entry => entry.Parts.Any(part => transferableSourceUnitKeys.Contains(part.UnitAssetKey)))
+                        .Select(entry => entry with { Parts = entry.Parts.Where(part => transferableSourceUnitKeys.Contains(part.UnitAssetKey)).ToArray() })
+                        .Where(entry => entry.Parts.Count != 0)
+                        .ToArray();
                 var catalogPartCount = sourceCatalogCandidates.Sum(entry => entry.Parts.Count);
                 var matchedPartCount = sourceCandidates.Sum(entry => entry.Parts.Count);
                 LogService.Info($"替换护甲来源诊断：Mod={source.Metadata.Name}，高级分析={analyses.Count}，源Patch={sourcePatchPaths.Length}，可转移Unit={transferableSourceUnitKeys.Count}，GameData部件={catalogPartCount}，保留部件={matchedPartCount}，Unit目录={sourceCatalogCandidates.Count}。");
@@ -1129,7 +1136,7 @@ namespace HD2ModManager.ViewModels
                 {
                     _notifications?.Show($"未能读取装备替换状态，“全选未替换”按钮将不可用：{exception.Message}", NotificationLevel.Info, TimeSpan.FromSeconds(8));
                 }
-                if (sourceCandidates.Length == 0)
+                if (sourceCandidates.Count == 0)
                 {
                     LogService.Info($"替换护甲计划结束：Mod={source.Metadata.Name}，没有可转移的真实 Unit 几何。");
                     _notifications?.Show("当前 Mod 没有可转移的真实 Unit 几何：索引未匹配、Unit 无法读取或所有匹配 mesh 均已极小化。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
@@ -1147,7 +1154,7 @@ namespace HD2ModManager.ViewModels
                     .ToArray();
                 var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(_equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(), preparedSourceEntries, _paths, targetReplacementSnapshot);
                 await OpenCrossArmorPlanOnUiThreadAsync(viewModel).ConfigureAwait(false);
-                LogService.Info($"替换护甲计划完成：Mod={source.Metadata.Name}，源候选={sourceCandidates.Length}，目标候选={allCandidates.Count}，源Patch={sourcePatchPaths[0]}。");
+                LogService.Info($"替换护甲计划完成：Mod={source.Metadata.Name}，源候选={sourceCandidates.Count}，目标候选={allCandidates.Count}，源Patch={sourcePatchPaths[0]}。");
                 _notifications?.Show("替换护甲：映射计划已准备完成，请确认目标部件后生成候选。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)

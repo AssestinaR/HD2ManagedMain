@@ -9,6 +9,8 @@ public sealed record SameKeyCanonicalUnitRebuildRequest(
     GameDataUnitMesh Target,
     IReadOnlyList<TargetShellMeshMapping> MeshMappings)
 {
+    public UnitTransformInfo? AvatarTransformInfo { get; init; }
+
     public void Validate()
     {
         ArgumentNullException.ThrowIfNull(Source);
@@ -42,6 +44,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
     private readonly CanonicalLodBonePaletteCompiler paletteCompiler = new();
     private readonly CanonicalStreamContractCompiler streamCompiler = new();
     private readonly CanonicalUnitRebuilder unitRebuilder = new();
+    private readonly CanonicalTransformInfoExpander transformInfoExpander = new();
 
     public SameKeyCanonicalUnitRebuildResult Rebuild(SameKeyCanonicalUnitRebuildRequest request)
     {
@@ -50,6 +53,28 @@ public sealed class SameKeyCanonicalUnitRebuilder
         using var positionDiagnostics = CanonicalPositionDiagnostics.BeginUnit(request.Target.AssetKey.FileId);
         var diagnostics = new List<CanonicalPlanDiagnostic>();
         var mappings = request.MeshMappings.ToDictionary(mapping => mapping.TargetMeshInfoIndex);
+        var targetModel = request.Target.Model;
+        if (request.AvatarTransformInfo is not null)
+        {
+            var transformSources = request.MeshMappings
+                .Select(mapping =>
+                {
+                    var sourceRaw = FindRaw(request.Source.Model, mapping.SourceMeshInfoIndex, diagnostics, "source");
+                    return sourceRaw is null
+                        ? ((UnitMeshModel Source, UnitRawMeshData SourceMesh)?)null
+                        : (request.Source.Model, sourceRaw);
+                })
+                .Where(item => item is not null)
+                .Select(item => item!.Value);
+            if (diagnostics.Count == 0)
+            {
+                targetModel = transformInfoExpander.Expand(
+                    targetModel,
+                    transformSources,
+                    request.AvatarTransformInfo,
+                    includeAvatarSkeleton: true);
+            }
+        }
         var finalMeshes = new List<UnitRawMeshData>(request.Target.Model.Meshes.Count);
         var provisionalByMesh = new Dictionary<int, UnitBoneInfo>();
         var sourceMaterialBindings = new List<UnitMaterialBinding>();
@@ -58,9 +83,9 @@ public sealed class SameKeyCanonicalUnitRebuilder
 
         foreach (var targetMesh in request.Target.Model.Meshes)
         {
-            var targetRaw = FindRaw(request.Target.Model, targetMesh.Index, diagnostics, "target");
+            var targetRaw = FindRaw(targetModel, targetMesh.Index, diagnostics, "target");
             if (targetRaw is null) continue;
-            var targetStream = request.Target.Model.Streams.SingleOrDefault(stream => stream.Index == (int)targetRaw.StreamIndex);
+            var targetStream = targetModel.Streams.SingleOrDefault(stream => stream.Index == (int)targetRaw.StreamIndex);
             if (targetStream is null) continue;
 
             if (!mappings.TryGetValue(targetMesh.Index, out var mapping))
@@ -75,7 +100,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
             var sourceRaw = FindRaw(request.Source.Model, mapping.SourceMeshInfoIndex, diagnostics, "source");
             if (sourceRaw is null) continue;
             CanonicalPositionDiagnostics.RecordMesh("source", sourceRaw, targetStream);
-            var transform = transformResolver.TryResolve(request.Source.Model, sourceRaw.MeshInfoIndex, request.Target.Model, targetRaw.MeshInfoIndex);
+            var transform = transformResolver.TryResolve(request.Source.Model, sourceRaw.MeshInfoIndex, targetModel, targetRaw.MeshInfoIndex);
             diagnostics.AddRange(transform.Diagnostics);
             if (!transform.IsValid) continue;
 
@@ -83,7 +108,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
             UnitBoneInfo? provisionalBone = null;
             if (HasBoneData(request.Source.Model, sourceRaw))
             {
-                var rebuiltBone = boneRebuilder.TryRebuild(request.Source.Model, sourceRaw, request.Target.Model, targetRaw);
+                var rebuiltBone = boneRebuilder.TryRebuild(request.Source.Model, sourceRaw, targetModel, targetRaw);
                 diagnostics.AddRange(rebuiltBone.Diagnostics);
                 if (!rebuiltBone.IsValid || rebuiltBone.Mesh is null || rebuiltBone.BoneInfo is null) continue;
                 preparedSource = rebuiltBone.Mesh;
@@ -118,10 +143,9 @@ public sealed class SameKeyCanonicalUnitRebuilder
 
         if (diagnostics.Count != 0)
             return new(null, replacedCount, hiddenCount, diagnostics);
-        if (finalMeshes.Count != request.Target.Model.Meshes.Count)
+        if (finalMeshes.Count != targetModel.Meshes.Count)
             return Failure("SameKeyCanonicalMeshCoverage", "Canonical same-key rebuilding did not produce one final RawMesh for every target MeshInfo.", replacedCount, hiddenCount);
 
-        var targetModel = request.Target.Model;
         var streams = streamCompiler.TryCompile(targetModel, finalMeshes);
         if (!streams.IsValid) return Failure(streams.Diagnostics, replacedCount, hiddenCount);
         targetModel = targetModel with { Streams = streams.Streams };

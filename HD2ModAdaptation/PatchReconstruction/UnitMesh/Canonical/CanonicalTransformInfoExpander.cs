@@ -8,7 +8,8 @@ public sealed class CanonicalTransformInfoExpander
 	public UnitMeshModel Expand(
 		UnitMeshModel target,
 		IEnumerable<(UnitMeshModel Source, UnitRawMeshData SourceMesh)> sources,
-		UnitTransformInfo avatar)
+		UnitTransformInfo avatar,
+		bool includeAvatarSkeleton = false)
 	{
 		ArgumentNullException.ThrowIfNull(target);
 		ArgumentNullException.ThrowIfNull(sources);
@@ -16,8 +17,9 @@ public sealed class CanonicalTransformInfoExpander
 		ValidateTransformInfo(target.TransformInfo, "target");
 		ValidateTransformInfo(avatar, "Avatar");
 
-		var requiredHashes = sources
-			.SelectMany(source => CollectSourcePaletteBoneHashes(source.Source, source.SourceMesh))
+		var requiredHashes = (includeAvatarSkeleton
+			? avatar.NameHashes
+			: sources.SelectMany(source => CollectSourcePaletteBoneHashes(source.Source, source.SourceMesh)))
 			.Distinct()
 			.OrderBy(hash => hash)
 			.ToArray();

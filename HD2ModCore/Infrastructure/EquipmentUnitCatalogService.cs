@@ -87,6 +87,8 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		ArgumentNullException.ThrowIfNull(patchTocPaths);
 		var candidateKeys = candidates.SelectMany(entry => entry.Parts).Select(part => part.UnitAssetKey).ToHashSet();
 		var transferableMeshes = new HashSet<(AssetKey unit, int mesh)>();
+		var currentMeshIds = new Dictionary<(AssetKey unit, int mesh), uint>();
+		var ambiguousMeshIds = new HashSet<(AssetKey unit, int mesh)>();
 		var tocScanner = new AdaptationPatchTocScanner();
 		var unitReader = new AdaptationPatchUnitMeshReader();
 		foreach (var patchPath in patchTocPaths.Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase))
@@ -99,7 +101,24 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 					var unit = await unitReader.ReadAsync(entry, entries, cancellationToken: cancellationToken).ConfigureAwait(false);
 					foreach (var mesh in unit.Model.RawMeshData.Where(HasTransferableGeometry))
 					{
-						transferableMeshes.Add((ToCoreKey(entry.AssetKey), mesh.MeshInfoIndex));
+						var unitKey = ToCoreKey(entry.AssetKey);
+						var meshInfo = unit.Model.Meshes.SingleOrDefault(candidate => candidate.Index == mesh.MeshInfoIndex);
+						if (meshInfo is null || meshInfo.MeshId == 0)
+							continue;
+
+						var key = (unitKey, mesh.MeshInfoIndex);
+						if (currentMeshIds.TryGetValue(key, out var existingMeshId) && existingMeshId != meshInfo.MeshId)
+						{
+							ambiguousMeshIds.Add(key);
+							transferableMeshes.Remove(key);
+							continue;
+						}
+
+						if (!ambiguousMeshIds.Contains(key))
+						{
+							currentMeshIds[key] = meshInfo.MeshId;
+							transferableMeshes.Add(key);
+						}
 					}
 				}
 				catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException)
@@ -109,7 +128,13 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 			}
 		}
 		return candidates
-			.Select(entry => entry with { Parts = entry.Parts.Where(part => transferableMeshes.Contains((part.UnitAssetKey, part.MeshInfoIndex))).ToArray() })
+			.Select(entry => entry with
+			{
+				Parts = entry.Parts
+					.Where(part => transferableMeshes.Contains((part.UnitAssetKey, part.MeshInfoIndex)))
+					.Select(part => part with { MeshId = currentMeshIds[(part.UnitAssetKey, part.MeshInfoIndex)] })
+					.ToArray()
+			})
 			.Where(entry => entry.Parts.Count != 0)
 			.ToArray();
 	}
