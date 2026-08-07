@@ -101,6 +101,26 @@ public sealed class CanonicalLodBonePaletteCompilerTests
 		Assert.Equal([1u, 0u, 0u, 0u], groups[1].UIntValues);
 	}
 
+	[Fact]
+	public void Compile_ReportsMeshSectionAndVertexWhenFinalSkinningComponentsAreMissing()
+	{
+		var target = Target([10], 0, 0);
+		var mesh = Mesh(0, 0, 0) with
+		{
+			Sections = [new UnitRawMeshSectionData(0, 42, [new(0, 0, 0)])],
+			Triangles = [new(0, 0, 0)],
+			Vertices = [new UnitRawVertexRecord(0, [], [])]
+		};
+
+		var result = new CanonicalLodBonePaletteCompiler().TryCompile(target, 0, [new(mesh, BoneInfo(0))]);
+
+		var diagnostic = Assert.Single(result.Diagnostics, item => item.Code == "FinalSkinningLayoutMissing");
+		Assert.Contains("MeshInfo=0", diagnostic.Message);
+		Assert.Contains("Lod=0", diagnostic.Message);
+		Assert.Contains("SectionMaterial=0", diagnostic.Message);
+		Assert.Contains("Vertex=0", diagnostic.Message);
+	}
+
 	private static UnitMeshModel Target(IReadOnlyList<uint> hashes, uint firstTransform, uint secondTransform)
 	{
 		var matrix = Matrix4x4.Identity;

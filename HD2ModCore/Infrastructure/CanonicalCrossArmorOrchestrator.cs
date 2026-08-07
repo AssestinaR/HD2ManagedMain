@@ -37,6 +37,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 	private readonly CanonicalMeshSemanticMerger merger;
 	private readonly CanonicalTransformResolver transformResolver;
 	private readonly CanonicalBoneRebuilder boneRebuilder;
+	private readonly CanonicalMeshSkinningRouter skinningRouter;
 	private readonly CanonicalLodBonePaletteCompiler lodBonePaletteCompiler;
 	private readonly CanonicalStreamContractCompiler streamContractCompiler;
 	private readonly CanonicalMeshPreparation preparation;
@@ -80,6 +81,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 		CanonicalMeshSemanticMerger? merger = null,
 		CanonicalTransformResolver? transformResolver = null,
 		CanonicalBoneRebuilder? boneRebuilder = null,
+		CanonicalMeshSkinningRouter? skinningRouter = null,
 		CanonicalLodBonePaletteCompiler? lodBonePaletteCompiler = null,
 		CanonicalStreamContractCompiler? streamContractCompiler = null,
 		CanonicalMeshPreparation? preparation = null,
@@ -99,6 +101,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 		this.merger = merger ?? new CanonicalMeshSemanticMerger();
 		this.transformResolver = transformResolver ?? new CanonicalTransformResolver();
 		this.boneRebuilder = boneRebuilder ?? new CanonicalBoneRebuilder();
+		this.skinningRouter = skinningRouter ?? new CanonicalMeshSkinningRouter(this.boneRebuilder, staticMeshBinder);
 		this.lodBonePaletteCompiler = lodBonePaletteCompiler ?? new CanonicalLodBonePaletteCompiler();
 		this.streamContractCompiler = streamContractCompiler ?? new CanonicalStreamContractCompiler();
 		this.preparation = preparation ?? new CanonicalMeshPreparation();
@@ -238,7 +241,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 							BoneAnchor: CanonicalBoneAnchor.TargetMeshTransform);
 					})
 					.ToArray();
-				var canonicalMappings = ExpandAutoLodMappings(target.Model, sourceUnits, approvedUnitMappings);
+				var canonicalMappings = CanonicalAutoLodMappingExpander.Expand(
+					target.Model,
+					sourceUnits.ToDictionary(pair => pair.Key, pair => pair.Value.Model),
+					approvedUnitMappings);
 				currentCanonicalPhase = "ExpandAutoLodMappings";
 				var transformSources = canonicalMappings.Select(mapping =>
 				{
@@ -266,6 +272,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 
 					UnitRawMeshData finalRaw;
 					UnitBoneInfo? provisionalBoneInfo = null;
+					var participatesInLodPalette = false;
 					if (!mappingsByIndex.TryGetValue(targetMesh.Index, out var mapping))
 					{
 						var tiny = hiddenUnitGenerator.Generate(targetRaw, stream);
@@ -284,35 +291,19 @@ public sealed class CanonicalCrossArmorOrchestrator
 						var sourceRawForMaterials = sourceRaw;
 						var transform = transformResolver.TryResolve(source.Model, sourceRaw.MeshInfoIndex, target.Model, targetRaw.MeshInfoIndex);
 						if (!transform.IsValid) return Failure(issues, transform.Diagnostics);
-						var sourceHasBones = HasBoneData(source.Model, sourceRaw);
-						var targetHasBones = UsesSkinningStream(stream);
-						if (targetRaw.LodIndex < 0)
-						{
-							// SDK does not associate LodIndex=-1 proxy/culling meshes with a
-							// BoneInfo record. Keep those meshes proxy-only: use the target
-							// stream contract and remove source skinning semantics when the
-							// target stream is static. Ordinary LODs retain source weights.
-							sourceRaw = RemoveSkinningComponents(sourceRaw);
-						}
-						else if (sourceHasBones)
-						{
-							currentCanonicalPhase = "RebuildBoneInfo";
-							var rebuiltBone = boneRebuilder.TryRebuild(source.Model, sourceRaw, target.Model, targetRaw);
-							if (!rebuiltBone.IsValid) return Failure(issues, rebuiltBone.Diagnostics);
-							sourceRaw = rebuiltBone.Mesh!;
-							provisionalBoneInfo = rebuiltBone.BoneInfo;
-						}
-						else if (targetHasBones)
-						{
-							currentCanonicalPhase = "BindStaticMesh";
-							if (mapping.SkinningMode is not (CanonicalSkinningMode.BindStaticToTargetMeshTransform or CanonicalSkinningMode.BindStaticToAvatarBone))
-								return Failure(issues, "CanonicalStaticAnchorRequired", $"静态来源 MeshInfo {mapping.Source.MeshInfoIndex} 写入骨骼目标时必须声明 Canonical 锚定策略。");
-							var staticBind = staticMeshBinder.TryBind(target.Model, targetRaw, sourceRaw, stream,
-								mapping.SkinningMode == CanonicalSkinningMode.BindStaticToAvatarBone ? mapping.BoneAnchor : CanonicalBoneAnchor.TargetMeshTransform);
-							if (!staticBind.IsValid) return Failure(issues, staticBind.Diagnostics);
-							sourceRaw = staticBind.Mesh!;
-							provisionalBoneInfo = staticBind.BoneInfo;
-						}
+						currentCanonicalPhase = "RouteMeshSkinning";
+						var skinningRoute = skinningRouter.TryPrepare(
+							source.Model,
+							sourceRaw,
+							target.Model,
+							targetRaw,
+							stream,
+							mapping.SkinningMode,
+							mapping.BoneAnchor);
+						if (!skinningRoute.IsValid) return Failure(issues, skinningRoute.Diagnostics);
+						sourceRaw = skinningRoute.Mesh!;
+						provisionalBoneInfo = skinningRoute.ProvisionalBoneInfo;
+						participatesInLodPalette = skinningRoute.ParticipatesInLodPalette;
 						currentCanonicalPhase = "MergeFinalMeshSections";
 						var merged = merger.TryMerge(new(mapping.Source, mapping.Target, transform.SourceToTargetLocal!.Value), targetRaw, sourceRaw);
 						if (!merged.IsValid) return Failure(issues, merged.Diagnostics);
@@ -334,7 +325,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 						replacementCount++;
 					}
 					finalRawMeshes.Add(finalRaw);
-					if (provisionalBoneInfo is not null)
+					if (provisionalBoneInfo is not null && participatesInLodPalette)
 						provisionalSkinnedMeshes.Add(new CanonicalLodBoneInput(finalRaw, provisionalBoneInfo));
 				}
 
@@ -367,17 +358,11 @@ public sealed class CanonicalCrossArmorOrchestrator
 					finalRawMeshes[index] = prepared.Mesh!;
 				}
 
-				if (sourceMaterialBindings.Count != 0)
-				{
-					var replacedSlots = sourceMaterialBindings.Select(binding => binding.SectionId).ToHashSet();
-					var bindings = target.Model.Materials
-						.Where(binding => !replacedSlots.Contains(binding.SectionId))
-						.Concat(sourceMaterialBindings
-						.Where(binding => !target.Model.Materials.Contains(binding)))
-						.Distinct()
-						.ToArray();
-					target = target with { Model = target.Model with { Materials = bindings } };
-				}
+				var bindings = CanonicalMaterialBindingLayout.Build(
+					target.Model.Materials,
+					sourceMaterialBindings,
+					finalRawMeshes);
+				target = target with { Model = target.Model with { Materials = bindings } };
 				currentCanonicalPhase = "SerializeCanonicalUnit";
 				var rebuilt = rebuilder.TryRebuild(target.Model, target.Payload.TocData, finalRawMeshes,
 					rebuiltBoneInfos.Select(item => new CanonicalBoneInfoRebuild(item.Key, item.Value)).ToArray());
@@ -580,66 +565,6 @@ public sealed class CanonicalCrossArmorOrchestrator
 		=> plan.SelectedTargets.FirstOrDefault(target => target.Parts.Any(part => SameKey(part.UnitAssetKey, key)))?.ArchiveId
 			?? plan.SelectedTargets.SelectMany(target => target.Parts).FirstOrDefault(part => SameKey(part.UnitAssetKey, key))?.SharedArchiveIds.FirstOrDefault();
 
-	private static IReadOnlyList<CanonicalReplacementMapping> ExpandAutoLodMappings(
-		UnitMeshModel targetModel,
-		IReadOnlyDictionary<AdaptationAssetKey, PatchUnitMesh> sourceUnits,
-		IReadOnlyList<CanonicalReplacementMapping> approvedUnitMappings)
-	{
-		var expandedMappings = new List<CanonicalReplacementMapping>();
-		foreach (var approved in approvedUnitMappings)
-		{
-			if (!sourceUnits.TryGetValue(approved.Source.UnitKey, out var sourceUnit))
-				throw new InvalidDataException($"Canonical 计划引用的 source Unit 0x{approved.Source.UnitKey.FileId:x16} 未加载。");
-
-			var sourceRepresentative = sourceUnit.Model.RawMeshData
-				.SingleOrDefault(raw => raw.MeshInfoIndex == approved.Source.MeshInfoIndex)
-				?? throw new InvalidDataException($"Source RawMesh {approved.Source.MeshInfoIndex} 不存在，无法展开 AutoLods。");
-			var sourceLod0 = sourceUnit.Model.RawMeshData
-				.Where(raw => raw.LodIndex == 0 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
-				.Where(raw => SemanticMatches(
-					sourceUnit.Model.Meshes.FirstOrDefault(mesh => mesh.Index == raw.MeshInfoIndex)?.SemanticInfo,
-					sourceUnit.Model.Meshes.FirstOrDefault(mesh => mesh.Index == sourceRepresentative.MeshInfoIndex)?.SemanticInfo) )
-				.OrderByDescending(raw => raw.Triangles.Count)
-				.ThenByDescending(raw => raw.Vertices.Count)
-				.FirstOrDefault()
-				?? throw new InvalidDataException($"Source Unit 0x{approved.Source.UnitKey.FileId:x16} 缺少真实 LOD0。");
-			var sourceCulling = sourceUnit.Model.RawMeshData
-				.Where(raw => raw.LodIndex == -1 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
-				.Where(raw => SemanticMatches(
-					sourceUnit.Model.Meshes.FirstOrDefault(mesh => mesh.Index == raw.MeshInfoIndex)?.SemanticInfo,
-					sourceUnit.Model.Meshes.FirstOrDefault(mesh => mesh.Index == sourceRepresentative.MeshInfoIndex)?.SemanticInfo))
-				.OrderByDescending(raw => raw.Triangles.Count)
-				.ThenByDescending(raw => raw.Vertices.Count)
-				.FirstOrDefault();
-
-			var targetRepresentative = targetModel.RawMeshData
-				.SingleOrDefault(raw => raw.MeshInfoIndex == approved.Target.MeshInfoIndex)
-				?? throw new InvalidDataException($"Target RawMesh {approved.Target.MeshInfoIndex} 不存在，无法展开 AutoLods。");
-			var targetLodSlots = targetModel.RawMeshData
-				.Where(raw => raw.LodIndex >= -1 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
-				.OrderBy(raw => raw.LodIndex == -1 ? 0 : 1)
-				.ThenBy(raw => raw.LodIndex)
-				.ThenBy(raw => raw.MeshInfoIndex);
-			foreach (var targetLodSlot in targetLodSlots)
-			{
-				var sourceMesh = targetLodSlot.LodIndex == -1 && sourceCulling is not null
-					? sourceCulling
-					: sourceLod0;
-				expandedMappings.Add(new CanonicalReplacementMapping(
-					new(approved.Source.UnitKey, sourceMesh.MeshInfoIndex),
-					new(approved.Target.UnitKey, targetLodSlot.MeshInfoIndex),
-					approved.SourceMeshState,
-					approved.SkinningMode,
-					approved.BoneAnchor));
-			}
-		}
-
-		return expandedMappings
-			.GroupBy(mapping => (mapping.Target.UnitKey, mapping.Target.MeshInfoIndex))
-			.Select(group => group.First())
-			.ToArray();
-	}
-
 	private static int ResolvePlannedMeshInfoIndex(
 		UnitMeshModel model,
 		int plannedIndex,
@@ -674,21 +599,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 			$"{role} 的计划 MeshInfoIndex={plannedIndex} 无效，MeshId=0x{plannedMeshId:x8} 在当前 Unit 中对应多个 MeshInfo，拒绝猜测。");
 	}
 
-	private static bool SemanticMatches(UnitMeshSemanticInfo? candidate, UnitMeshSemanticInfo? representative)
-	{
-		if (candidate is null || representative is null) return true;
-		return string.Equals(candidate.Slot, representative.Slot, StringComparison.OrdinalIgnoreCase)
-			&& string.Equals(candidate.PieceType, representative.PieceType, StringComparison.OrdinalIgnoreCase)
-			&& string.Equals(candidate.BodyType, representative.BodyType, StringComparison.OrdinalIgnoreCase);
-	}
-
 	private static bool SameKey(CoreAssetKey coreKey, AdaptationAssetKey adaptationKey)
 		=> coreKey.TypeId == adaptationKey.TypeId && coreKey.FileId == adaptationKey.FileId;
 
 	private sealed record TargetUnitSource(AdaptationAssetKey Key, string? ArchiveName);
-
-	private static bool HasBoneData(UnitMeshModel model, UnitRawMeshData raw)
-		=> raw.LodIndex >= 0 && raw.LodIndex < model.BoneInfos.Count && model.BoneInfos[raw.LodIndex].RealIndices.Count > 0;
 
 	private static UnitRawMeshData ApplyTargetCullingMaterialSlots(UnitRawMeshData merged, UnitRawMeshData target)
 	{
@@ -718,21 +632,6 @@ public sealed class CanonicalCrossArmorOrchestrator
 			throw new InvalidDataException("Canonical 输出要求来源 Patch 文件名为 16 位十六进制 ID 加 .patch_0。");
 		return fileName.ToLowerInvariant();
 	}
-
-	private static bool UsesSkinningStream(UnitStreamInfo stream)
-		=> stream.Components.Any(component => component.Type == 6) && stream.Components.Any(component => component.Type == 7);
-
-	private static UnitRawMeshData RemoveSkinningComponents(UnitRawMeshData mesh)
-		=> mesh with
-		{
-			Vertices = mesh.Vertices
-				.Select(vertex => vertex with
-				{
-					Components = vertex.Components.Where(component => component.Type is not (6 or 7)).ToArray(),
-					Data = Array.Empty<byte>()
-				})
-				.ToArray()
-		};
 
 	private static IReadOnlyList<CanonicalPlanDiagnostic> ValidateWrittenFiles(
 		PatchArchiveFileWriteResult written,

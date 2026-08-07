@@ -136,7 +136,13 @@ public sealed class CanonicalLodBonePaletteCompiler
 				var vertex = mesh.Vertices[(int)vertexIndex];
 				var indices = vertex.Components.Where(component => component.Type == 6).ToArray();
 				var weights = vertex.Components.SingleOrDefault(component => component.Type == 7 && component.Index == 0);
-				if (indices.Length == 0 || weights is null) { diagnostics.Add(new("FinalSkinningLayoutMissing", "A final skinned vertex must contain one or more Type=6 components and Type=7 at index 0.")); continue; }
+				if (indices.Length == 0 || weights is null)
+				{
+					diagnostics.Add(new(
+						"FinalSkinningLayoutMissing",
+						$"Final skinned vertex is missing required components: MeshInfo={mesh.MeshInfoIndex}, Lod={mesh.LodIndex}, SectionMaterial={section.MaterialIndex}, Vertex={vertexIndex}; requires one or more Type=6 components and Type=7 at index 0."));
+					continue;
+				}
 				var values = weights.FloatValues.Length > 0 ? weights.FloatValues : weights.UIntValues.Select(value => value / 255f).ToArray();
 				foreach (var indexGroup in indices)
 				{

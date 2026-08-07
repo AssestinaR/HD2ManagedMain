@@ -31,6 +31,7 @@ namespace HD2ModManager.ViewModels
 		private readonly IModSameKeyReconstructionService _sameKeyReconstruction;
         private readonly IEquipmentUnitCatalogService _equipmentUnitCatalog;
         private readonly IAdvancedModAnalysisService _advancedAnalysis;
+        private readonly ISourceUnitEligibilityService _sourceUnitEligibility;
         private readonly IPatchGraphDiagnosticsService _patchGraphDiagnostics;
         private ModMaterialPackagingState? _materialState;
 		private bool _sameKeyReconstructionRunning;
@@ -129,6 +130,7 @@ namespace HD2ModManager.ViewModels
             _sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(_paths, _derivedState.InformationCenter);
             _equipmentUnitCatalog = CoreServices.CreateEquipmentUnitCatalogService(_paths);
             _advancedAnalysis = CoreServices.CreateAdvancedModAnalysisService(_paths, _derivedState.InformationCenter);
+            _sourceUnitEligibility = CoreServices.CreateSourceUnitEligibilityService();
             _patchGraphDiagnostics = CoreServices.CreatePatchGraphDiagnosticsService();
             _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(_paths, _derivedState.InformationCenter);
             ModId = modId;
@@ -1086,15 +1088,7 @@ namespace HD2ModManager.ViewModels
                 // Source eligibility is a Unit-level fact from the source Patch. The
                 // source may have been reserialized by Blender/SDK, so its MeshInfoIndex
                 // layout is not required to match the current Game Data template.
-                var transferableSourceUnitKeys = analyses
-                    .SelectMany(analysis => analysis.PreparedSourceUnits)
-                    .Where(unit => unit.IsReadable)
-                    // A source armor Unit must have a real default-imported LOD0.
-                    // LodIndex=-1 may contain a physics/culling proxy with substantial
-                    // geometry, but it is not a visible armor model for this workflow.
-                    .Where(unit => unit.Meshes.Any(mesh => mesh.IsTransferable && mesh.LodIndex == 0))
-                    .Select(unit => new AssetKey(unit.Entry.AssetKey.TypeId, unit.Entry.AssetKey.FileId))
-                    .ToHashSet();
+                var transferableSourceUnitKeys = _sourceUnitEligibility.Select(analyses).EligibleUnitAssetKeys;
                 // Game Data contributes the logical Armor/Helmet label and body/layer
                 // facts only. Keep all indexed parts for an eligible Unit; the
                 // Canonical executor resolves the source Unit's own LOD0 later.

@@ -152,7 +152,9 @@ public sealed class PatchValidator : IPatchValidator
 			return;
 		}
 
-		foreach (var sourceEntry in sourceEntries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
+		foreach (var sourceEntry in sourceEntries.Where(entry =>
+			entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId &&
+			(options.SourceGeometryPreservationUnitKeys is null || options.SourceGeometryPreservationUnitKeys.Contains(entry.AssetKey))))
 		{
 			var outputEntry = outputEntries.SingleOrDefault(entry => entry.AssetKey == sourceEntry.AssetKey);
 			if (outputEntry is null)
@@ -164,23 +166,41 @@ public sealed class PatchValidator : IPatchValidator
 			{
 				var source = await unitReader.ReadAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.AllowExternalCompositeReference, cancellationToken).ConfigureAwait(false);
 				var output = await unitReader.ReadAsync(outputEntry, outputEntries, PatchUnitDependencyPolicy.AllowExternalCompositeReference, cancellationToken).ConfigureAwait(false);
+				var meshInfoMappings = options.SourceGeometryMeshInfoMappings is not null
+					&& options.SourceGeometryMeshInfoMappings.TryGetValue(sourceEntry.AssetKey, out var mappedMeshInfoIndices)
+					? mappedMeshInfoIndices
+					: null;
 				foreach (var sourceMesh in source.Model.RawMeshData.Where(IsVisibleGeometry))
 				{
-					var outputMesh = output.Model.RawMeshData.SingleOrDefault(mesh => mesh.MeshInfoIndex == sourceMesh.MeshInfoIndex);
+					IReadOnlyCollection<int>? outputMeshInfoIndices = meshInfoMappings is null
+						? [sourceMesh.MeshInfoIndex]
+						: meshInfoMappings.TryGetValue(sourceMesh.MeshInfoIndex, out var mappedOutputMeshInfoIndices)
+							? mappedOutputMeshInfoIndices
+							: null;
+					if (outputMeshInfoIndices is null)
+						continue;
+					foreach (var outputMeshInfoIndex in outputMeshInfoIndices)
+					{
+						var outputMesh = output.Model.RawMeshData.SingleOrDefault(mesh => mesh.MeshInfoIndex == outputMeshInfoIndex);
 					if (outputMesh is null)
 					{
 						issues.Add(GeometryIssue(options, "SourceMeshMissing", $"Output Unit is missing source MeshInfo {sourceMesh.MeshInfoIndex}.", sourceEntry.AssetKey, outputPath));
 						continue;
 					}
-					if (HasConcreteMaterialBinding(source.Model, sourceMesh) && !HasConcreteMaterialBinding(output.Model, outputMesh))
+					var outputMeshInfo = output.Model.Meshes.SingleOrDefault(mesh => mesh.Index == outputMesh.MeshInfoIndex);
+					var outputIsCullingBody = outputMeshInfo?.SemanticInfo.IsCullingBody == true;
+					if (!outputIsCullingBody && HasConcreteMaterialBinding(source.Model, sourceMesh) && !HasConcreteMaterialBinding(output.Model, outputMesh))
 						issues.Add(GeometryIssue(options, "SourceVisibleMaterialBindingMissing", $"Output MeshInfo {outputMesh.MeshInfoIndex} has visible source geometry but no concrete Unit material binding.", sourceEntry.AssetKey, outputPath));
 					if (!IsVisibleGeometry(outputMesh))
 					{
 						issues.Add(GeometryIssue(options, "SourceGeometryMinified", $"Output MeshInfo {sourceMesh.MeshInfoIndex} is minified or has no visible triangles; source has {sourceMesh.Vertices.Count} vertices and {sourceMesh.Triangles.Count} triangles.", sourceEntry.AssetKey, outputPath));
 						continue;
 					}
-					if (sourceMesh.Vertices.Count != outputMesh.Vertices.Count || sourceMesh.Triangles.Count != outputMesh.Triangles.Count)
-						issues.Add(GeometryIssue(options, "SourceGeometryCountMismatch", $"Output MeshInfo {sourceMesh.MeshInfoIndex} has {outputMesh.Vertices.Count} vertices/{outputMesh.Triangles.Count} triangles; source has {sourceMesh.Vertices.Count}/{sourceMesh.Triangles.Count}.", sourceEntry.AssetKey, outputPath));
+					var sourceReferencedVertexCount = CountReferencedVertices(sourceMesh);
+					var outputReferencedVertexCount = CountReferencedVertices(outputMesh);
+					if (sourceReferencedVertexCount != outputReferencedVertexCount || sourceMesh.Triangles.Count != outputMesh.Triangles.Count)
+						issues.Add(GeometryIssue(options, "SourceGeometryCountMismatch", $"Output MeshInfo {outputMesh.MeshInfoIndex} has {outputReferencedVertexCount} referenced vertices/{outputMesh.Triangles.Count} triangles ({outputMesh.Vertices.Count} stored vertices); source has {sourceReferencedVertexCount}/{sourceMesh.Triangles.Count} ({sourceMesh.Vertices.Count} stored vertices).", sourceEntry.AssetKey, outputPath));
+					}
 				}
 			}
 			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException)
@@ -192,10 +212,17 @@ public sealed class PatchValidator : IPatchValidator
 
 	private static bool IsVisibleGeometry(UnitRawMeshData mesh) => mesh.Vertices.Count > 3 && mesh.Triangles.Count > 1;
 
+	private static int CountReferencedVertices(UnitRawMeshData mesh)
+		=> mesh.Sections
+			.SelectMany(section => section.Triangles)
+			.SelectMany(triangle => new[] { triangle.A, triangle.B, triangle.C })
+			.Distinct()
+			.Count();
+
 	private static bool HasConcreteMaterialBinding(UnitMeshModel model, UnitRawMeshData raw)
 	{
 		var slots = raw.Sections.Where(section => section.Triangles.Count != 0).Select(section => section.MaterialSlotId).Distinct();
-		return slots.All(slot => model.Materials.Count(binding => binding.SectionId == slot && binding.MaterialId != 0) == 1);
+		return slots.All(slot => model.Materials.Any(binding => binding.SectionId == slot && binding.MaterialId != 0));
 	}
 
 	private static void ValidateFinitePositions(PatchTocEntry entry, UnitMeshModel model, ICollection<PatchValidationIssue> issues)
@@ -226,7 +253,7 @@ public sealed class PatchValidator : IPatchValidator
 			foreach (var slot in raw.Sections.Where(section => section.Triangles.Count != 0).Select(section => section.MaterialSlotId).Distinct())
 			{
 				var bindings = model.Materials.Where(binding => binding.SectionId == slot && binding.MaterialId != 0).Select(binding => binding.MaterialId).Distinct().ToArray();
-				if (bindings.Length != 1)
+				if (bindings.Length == 0)
 					issues.Add(Error("VisibleMaterialBindingMissing", $"Visible MeshInfo {raw.MeshInfoIndex} uses material slot {slot}, but the Unit has {bindings.Length} concrete material bindings for it.", entry.AssetKey, entry.SourceFilePath));
 			}
 		}

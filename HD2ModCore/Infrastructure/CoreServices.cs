@@ -21,6 +21,8 @@ public static class CoreServices
 	}
 	public static IAdvancedUnitAnalysisProducer CreateAdvancedUnitAnalysisProducer(StoragePaths paths)
 		=> new AdvancedUnitAnalysisProducer(new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), HD2ModAdaptation.Analysis.PatchAnalysisDepth.Full));
+	public static ISourceUnitEligibilityService CreateSourceUnitEligibilityService()
+		=> new SourceUnitEligibilityService();
 	public static IModThumbnailProducer CreateModThumbnailProducer() => new ModThumbnailProducer();
 	public static IModDataIndex CreateModDataIndex(StoragePaths paths) => new ModDataIndex(paths);
 	public static IModDataIndex CreateModDataIndex() => new ModDataIndex();
@@ -39,7 +41,9 @@ public static class CoreServices
 		=> new CanonicalSameKeyReconstructionService(
 			CreatePatchFileNameParser(),
 			CreateAssetArchiveIndexService(paths),
-			CreateFileSystemArchiveHashesProvider(paths));
+			CreateFileSystemArchiveHashesProvider(paths),
+			CreateAdvancedModAnalysisService(paths, informationCenter),
+			CreateSourceUnitEligibilityService());
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IModRepairBatchService CreateModRepairBatchService(StoragePaths paths)
 		=> new ModRepairBatchService(paths, CreateModSameKeyReconstructionService(paths), CreateAdvancedModAnalysisService(paths), CreatePatchFileNameParser());

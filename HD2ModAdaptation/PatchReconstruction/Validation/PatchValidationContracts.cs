@@ -28,7 +28,9 @@ public sealed record PatchValidationOptions(
 	string? SourcePatchTocFilePath = null,
 	bool RequireSourceGeometryPreservation = false,
 	bool RequireFiniteVisiblePositions = false,
-	bool RequireBoundVisibleMaterialSlots = false);
+	bool RequireBoundVisibleMaterialSlots = false,
+	IReadOnlySet<AssetKey>? SourceGeometryPreservationUnitKeys = null,
+	IReadOnlyDictionary<AssetKey, IReadOnlyDictionary<int, IReadOnlySet<int>>>? SourceGeometryMeshInfoMappings = null);
 
 public sealed record PatchValidationResult(
 	string PatchTocFilePath,

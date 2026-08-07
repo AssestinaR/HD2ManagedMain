@@ -29,7 +29,8 @@ public sealed record SameKeyCanonicalUnitRebuildResult(
     PatchWorkspaceJobResult? Job,
     int ReplacedMeshCount,
     int HiddenMeshCount,
-    IReadOnlyList<CanonicalPlanDiagnostic> Diagnostics)
+    IReadOnlyList<CanonicalPlanDiagnostic> Diagnostics,
+    IReadOnlyList<CanonicalPlanDiagnostic>? MaterialObservations = null)
 {
     public bool IsValid => Job is { IsValid: true } && Diagnostics.Count == 0;
 }
@@ -38,6 +39,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
 {
     private readonly CanonicalTransformResolver transformResolver = new();
     private readonly CanonicalBoneRebuilder boneRebuilder = new();
+    private readonly CanonicalMeshSkinningRouter skinningRouter = new();
     private readonly CanonicalMeshSemanticMerger merger = new();
     private readonly CanonicalMeshPreparation preparation = new();
     private readonly CanonicalPlaceholderMinifier minifier = new();
@@ -78,6 +80,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
         var finalMeshes = new List<UnitRawMeshData>(request.Target.Model.Meshes.Count);
         var provisionalByMesh = new Dictionary<int, UnitBoneInfo>();
         var sourceMaterialBindings = new List<UnitMaterialBinding>();
+        var materialObservations = new List<CanonicalPlanDiagnostic>();
         var hiddenCount = 0;
         var replacedCount = 0;
 
@@ -104,17 +107,19 @@ public sealed class SameKeyCanonicalUnitRebuilder
             diagnostics.AddRange(transform.Diagnostics);
             if (!transform.IsValid) continue;
 
-            UnitRawMeshData preparedSource = sourceRaw;
-            UnitBoneInfo? provisionalBone = null;
-            if (HasBoneData(request.Source.Model, sourceRaw))
-            {
-                var rebuiltBone = boneRebuilder.TryRebuild(request.Source.Model, sourceRaw, targetModel, targetRaw);
-                diagnostics.AddRange(rebuiltBone.Diagnostics);
-                if (!rebuiltBone.IsValid || rebuiltBone.Mesh is null || rebuiltBone.BoneInfo is null) continue;
-                preparedSource = rebuiltBone.Mesh;
-                CanonicalPositionDiagnostics.RecordMesh("after-bone-rebuild", preparedSource, targetStream);
-                provisionalBone = rebuiltBone.BoneInfo;
-            }
+            var route = skinningRouter.TryPrepare(
+                request.Source.Model,
+                sourceRaw,
+                targetModel,
+                targetRaw,
+                targetStream,
+                CanonicalSkinningMode.BindStaticToTargetMeshTransform,
+                CanonicalBoneAnchor.TargetMeshTransform);
+            diagnostics.AddRange(route.Diagnostics);
+            if (!route.IsValid || route.Mesh is null) continue;
+            var preparedSource = route.Mesh;
+            var provisionalBone = route.ProvisionalBoneInfo;
+            CanonicalPositionDiagnostics.RecordMesh("after-skinning-route", preparedSource, targetStream);
 
             var merged = merger.TryMerge(
                 new CanonicalMeshSemanticMergeRequest(
@@ -126,17 +131,34 @@ public sealed class SameKeyCanonicalUnitRebuilder
             diagnostics.AddRange(merged.Diagnostics);
             if (!merged.IsValid || merged.Mesh is null) continue;
 
-            var materialResolution = CanonicalMaterialBindingResolver.Resolve(request.Source.Model, sourceRaw, targetRaw);
+            var materialResolution = route.IsProxy
+                ? new CanonicalMaterialBindingResolution([], [])
+                : CanonicalMaterialBindingResolver.Resolve(request.Source.Model, sourceRaw, targetRaw);
             diagnostics.AddRange(materialResolution.Diagnostics);
+            if (route.IsProxy || materialResolution.Bindings.Count == 0)
+            {
+                var sourceSlots = sourceRaw.Sections.Where(section => section.Triangles.Count != 0)
+                    .Select(section => section.MaterialSlotId);
+                var targetSlots = targetRaw.Sections.Where(section => section.Triangles.Count != 0)
+                    .Select(section => section.MaterialSlotId);
+                var resolvedBindings = string.Join(',', materialResolution.Bindings
+                    .Select(binding => $"{binding.SectionId}:0x{binding.MaterialId:x16}"));
+                materialObservations.Add(new(
+                    "SameKeyMaterialRoute",
+                    $"Unit=0x{request.Target.AssetKey.FileId:x16}; SourceMeshInfo={sourceRaw.MeshInfoIndex}/Lod={sourceRaw.LodIndex}; TargetMeshInfo={targetRaw.MeshInfoIndex}/Lod={targetRaw.LodIndex}; IsProxy={route.IsProxy}; SourceVisibleSlots=[{string.Join(',', sourceSlots)}]; TargetVisibleSlots=[{string.Join(',', targetSlots)}]; ResolvedBindings=[{resolvedBindings}]."));
+            }
             foreach (var binding in materialResolution.Bindings)
             {
                 sourceMaterialBindings.Add(binding);
             }
 
-            CanonicalPositionDiagnostics.RecordMesh("merged", merged.Mesh, targetStream);
+            var finalMergedMesh = route.IsProxy
+                ? ApplyTargetCullingMaterialSlots(merged.Mesh, targetRaw)
+                : merged.Mesh;
+            CanonicalPositionDiagnostics.RecordMesh("merged", finalMergedMesh, targetStream);
 
-            finalMeshes.Add(merged.Mesh);
-            if (provisionalBone is not null)
+            finalMeshes.Add(finalMergedMesh);
+            if (route.ParticipatesInLodPalette && provisionalBone is not null)
                 provisionalByMesh[targetRaw.MeshInfoIndex] = provisionalBone;
             replacedCount++;
         }
@@ -192,11 +214,31 @@ public sealed class SameKeyCanonicalUnitRebuilder
         }
         finalMeshes = reencodedMeshes;
 
-        var finalMaterialBindings = targetModel.Materials
-            .Where(binding => !sourceMaterialBindings.Any(source => source.SectionId == binding.SectionId))
-            .Concat(sourceMaterialBindings)
-            .Distinct()
-            .ToArray();
+        var finalMaterialBindings = CanonicalMaterialBindingLayout.Build(
+            targetModel.Materials,
+            sourceMaterialBindings,
+            finalMeshes);
+        foreach (var mesh in finalMeshes.Where(mesh => mesh.Sections.Any(section => section.Triangles.Count != 0)))
+        {
+            var unboundSlots = mesh.Sections
+                .Where(section => section.Triangles.Count != 0)
+                .Select(section => section.MaterialSlotId)
+                .Distinct()
+                .Where(slot => !finalMaterialBindings.Any(binding => binding.SectionId == slot && binding.MaterialId != 0))
+                .ToArray();
+            if (unboundSlots.Length != 0)
+            {
+                var mappingDescription = mappings.TryGetValue(mesh.MeshInfoIndex, out var mapping)
+                    ? $"SourceMeshInfo={mapping.SourceMeshInfoIndex}"
+                    : "SourceMeshInfo=<minified-target>";
+                var finalBindings = string.Join(',', finalMaterialBindings
+                    .Where(binding => mesh.Sections.Any(section => section.MaterialSlotId == binding.SectionId))
+                    .Select(binding => $"{binding.SectionId}:0x{binding.MaterialId:x16}"));
+                materialObservations.Add(new(
+                    "SameKeyVisibleMaterialBindingMissing",
+                    $"Unit=0x{request.Target.AssetKey.FileId:x16}; TargetMeshInfo={mesh.MeshInfoIndex}/Lod={mesh.LodIndex}; {mappingDescription}; UnboundVisibleSlots=[{string.Join(',', unboundSlots)}]; FinalBindings=[{finalBindings}]."));
+            }
+        }
         if (diagnostics.Count != 0)
             return new(null, replacedCount, hiddenCount, diagnostics);
 
@@ -213,7 +255,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
             request.Target.Payload.Entry.Unknown2,
             request.Target.Payload.Entry.Unknown3,
             request.Target.Payload.Entry.Unknown4);
-        return new(PatchWorkspaceJobResult.Unit(entry, $"0x{request.Target.AssetKey.FileId:x16}"), replacedCount, hiddenCount, Array.Empty<CanonicalPlanDiagnostic>());
+        return new(PatchWorkspaceJobResult.Unit(entry, $"0x{request.Target.AssetKey.FileId:x16}"), replacedCount, hiddenCount, Array.Empty<CanonicalPlanDiagnostic>(), materialObservations);
     }
 
     private static UnitRawMeshData? FindRaw(UnitMeshModel model, int index, List<CanonicalPlanDiagnostic> diagnostics, string role)
@@ -227,8 +269,18 @@ public sealed class SameKeyCanonicalUnitRebuilder
         return matches[0];
     }
 
-    private static bool HasBoneData(UnitMeshModel model, UnitRawMeshData mesh)
-        => mesh.LodIndex >= 0 && mesh.LodIndex < model.BoneInfos.Count && model.BoneInfos[mesh.LodIndex].RealIndices.Count > 0;
+    private static UnitRawMeshData ApplyTargetCullingMaterialSlots(UnitRawMeshData merged, UnitRawMeshData target)
+    {
+        if (target.Sections.Count == 0 || merged.Sections.Count == 0)
+            return merged;
+
+        var sections = merged.Sections.Select((section, index) =>
+        {
+            var targetSection = target.Sections[Math.Min(index, target.Sections.Count - 1)];
+            return section with { MaterialIndex = targetSection.MaterialIndex, MaterialSlotId = targetSection.MaterialSlotId };
+        }).ToArray();
+        return merged with { Sections = sections, Triangles = sections.SelectMany(section => section.Triangles).ToArray() };
+    }
 
     private static SameKeyCanonicalUnitRebuildResult Failure(string code, string message, int replaced, int hidden)
         => new(null, replaced, hidden, [new(code, message)]);

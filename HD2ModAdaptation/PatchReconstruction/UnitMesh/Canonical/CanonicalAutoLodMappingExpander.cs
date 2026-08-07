@@ -1,0 +1,73 @@
+namespace HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
+
+// Purpose: Expands one approved representative mapping into the target Unit's compatible LOD shells.
+public static class CanonicalAutoLodMappingExpander
+{
+	public static IReadOnlyList<CanonicalReplacementMapping> Expand(
+		UnitMeshModel targetModel,
+		IReadOnlyDictionary<AssetKey, UnitMeshModel> sourceModels,
+		IReadOnlyList<CanonicalReplacementMapping> approvedMappings)
+	{
+		ArgumentNullException.ThrowIfNull(targetModel);
+		ArgumentNullException.ThrowIfNull(sourceModels);
+		ArgumentNullException.ThrowIfNull(approvedMappings);
+
+		var expandedMappings = new List<CanonicalReplacementMapping>();
+		foreach (var approved in approvedMappings)
+		{
+			if (!sourceModels.TryGetValue(approved.Source.UnitKey, out var sourceModel))
+				throw new InvalidDataException($"Canonical plan source Unit 0x{approved.Source.UnitKey.FileId:x16} is not loaded.");
+			var sourceRepresentative = FindRaw(sourceModel, approved.Source.MeshInfoIndex, "Source");
+			_ = FindRaw(targetModel, approved.Target.MeshInfoIndex, "Target");
+			var sourceRepresentativeSemantic = FindSemantic(sourceModel, sourceRepresentative);
+			var sourceLod0 = sourceModel.RawMeshData
+				.Where(IsVisibleLod0)
+				.Where(raw => SemanticMatches(FindSemantic(sourceModel, raw), sourceRepresentativeSemantic))
+				.OrderByDescending(raw => raw.Triangles.Count)
+				.ThenByDescending(raw => raw.Vertices.Count)
+				.FirstOrDefault()
+				?? throw new InvalidDataException($"Source Unit 0x{approved.Source.UnitKey.FileId:x16} has no real LOD0 mesh.");
+			var sourceCulling = sourceModel.RawMeshData
+				.Where(raw => raw.LodIndex == -1 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
+				.Where(raw => SemanticMatches(FindSemantic(sourceModel, raw), sourceRepresentativeSemantic))
+				.OrderByDescending(raw => raw.Triangles.Count)
+				.ThenByDescending(raw => raw.Vertices.Count)
+				.FirstOrDefault();
+
+			foreach (var targetLodSlot in targetModel.RawMeshData.Where(IsTargetLodSlot).OrderBy(raw => raw.LodIndex == -1 ? 0 : 1).ThenBy(raw => raw.LodIndex).ThenBy(raw => raw.MeshInfoIndex))
+			{
+				var sourceMesh = targetLodSlot.LodIndex == -1 && sourceCulling is not null ? sourceCulling : sourceLod0;
+				expandedMappings.Add(new CanonicalReplacementMapping(
+					new(approved.Source.UnitKey, sourceMesh.MeshInfoIndex),
+					new(approved.Target.UnitKey, targetLodSlot.MeshInfoIndex),
+					approved.SourceMeshState,
+					approved.SkinningMode,
+					approved.BoneAnchor));
+			}
+		}
+
+		return expandedMappings
+			.GroupBy(mapping => (mapping.Target.UnitKey, mapping.Target.MeshInfoIndex))
+			.Select(group => group.First())
+			.ToArray();
+	}
+
+	private static UnitRawMeshData FindRaw(UnitMeshModel model, int meshInfoIndex, string role)
+		=> model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == meshInfoIndex)
+			?? throw new InvalidDataException($"{role} RawMesh {meshInfoIndex} is unavailable for Auto-LOD expansion.");
+
+	private static UnitMeshSemanticInfo? FindSemantic(UnitMeshModel model, UnitRawMeshData raw)
+		=> model.Meshes.FirstOrDefault(mesh => mesh.Index == raw.MeshInfoIndex)?.SemanticInfo;
+
+	private static bool IsVisibleLod0(UnitRawMeshData raw)
+		=> raw.LodIndex == 0 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3;
+
+	private static bool IsTargetLodSlot(UnitRawMeshData raw)
+		=> raw.LodIndex >= -1 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3;
+
+	private static bool SemanticMatches(UnitMeshSemanticInfo? candidate, UnitMeshSemanticInfo? representative)
+		=> candidate is null || representative is null ||
+			(string.Equals(candidate.Slot, representative.Slot, StringComparison.OrdinalIgnoreCase)
+			&& string.Equals(candidate.PieceType, representative.PieceType, StringComparison.OrdinalIgnoreCase)
+			&& string.Equals(candidate.BodyType, representative.BodyType, StringComparison.OrdinalIgnoreCase));
+}

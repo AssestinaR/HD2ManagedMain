@@ -17,6 +17,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
     private readonly IPatchFileNameParser fileNameParser;
     private readonly IAssetArchiveIndexService assetIndex;
     private readonly IArchiveHashesProvider archiveHashes;
+    private readonly IAdvancedModAnalysisService advancedAnalysis;
+    private readonly ISourceUnitEligibilityService sourceUnitEligibility;
     private readonly IPatchWorkspaceReader workspaceReader;
     private readonly PatchUnitMeshReader sourceReader = new();
     private readonly SameKeyCanonicalUnitRebuilder unitRebuilder = new();
@@ -27,6 +29,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         IPatchFileNameParser fileNameParser,
         IAssetArchiveIndexService assetIndex,
         IArchiveHashesProvider archiveHashes,
+        IAdvancedModAnalysisService advancedAnalysis,
+        ISourceUnitEligibilityService sourceUnitEligibility,
         IPatchWorkspaceReader? workspaceReader = null,
         IPatchWorkspaceWriter? workspaceWriter = null,
         IPatchValidator? patchValidator = null)
@@ -34,6 +38,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         this.fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
         this.assetIndex = assetIndex ?? throw new ArgumentNullException(nameof(assetIndex));
         this.archiveHashes = archiveHashes ?? throw new ArgumentNullException(nameof(archiveHashes));
+        this.advancedAnalysis = advancedAnalysis ?? throw new ArgumentNullException(nameof(advancedAnalysis));
+        this.sourceUnitEligibility = sourceUnitEligibility ?? throw new ArgumentNullException(nameof(sourceUnitEligibility));
         this.workspaceReader = workspaceReader ?? new PatchWorkspaceReader();
         this.workspaceWriter = workspaceWriter ?? new PatchWorkspaceWriter();
         this.patchValidator = patchValidator ?? new PatchValidator();
@@ -55,7 +61,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             current = status.IsCurrent;
             if (!current) issues.Add(Error("GameDataIndexNotCurrent", "Game Data 资产索引不可用或已过期。", source.Id));
         }
-        var plan = issues.Count == 0 ? await PlanAsync(patch!, gameDataDirectory, cancellationToken, progress, source.Id).ConfigureAwait(false) : null;
+        var plan = issues.Count == 0 ? await PlanAsync(source, modsRootDirectory, patch!, gameDataDirectory, cancellationToken, progress).ConfigureAwait(false) : null;
         if (plan is not null) issues.AddRange(plan.Issues);
         return new ModSameKeyReconstructionState(source.Id, patch, plan, current,
             plan?.Units.Count(unit => unit.Adaptation?.ReplacementCount > 0) ?? 0,
@@ -79,7 +85,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 
         Report(progress, operationId, "Plan", "正在生成同 ID Canonical 重建计划", 0, 1);
         var index = await workspaceReader.ReadIndexAsync(patch, cancellationToken).ConfigureAwait(false);
-        var plan = await PlanAsync(patch, gameDataDirectory, cancellationToken, progress, source.Id).ConfigureAwait(false);
+        var plan = await PlanAsync(source, modsRootDirectory, patch, gameDataDirectory, cancellationToken, progress).ConfigureAwait(false);
         var issues = plan.Issues.ToList();
         if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
         var resolver = new AdaptationGameDataPackageResolver(gameDataDirectory);
@@ -106,8 +112,16 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 AvatarTransformInfo = avatarTransforms
             });
             if (!rebuilt.IsValid || rebuilt.Job is null)
-                issues.AddRange(rebuilt.Diagnostics.Select(diagnostic => Error(diagnostic.Code, diagnostic.Message, source.Id)));
-            else jobs.Add(rebuilt.Job);
+                issues.AddRange(rebuilt.Diagnostics.Select(diagnostic => Error(
+                    diagnostic.Code,
+                    $"Unit=0x{unitPlan.UnitAssetKey.FileId:x16}; {diagnostic.Message}",
+                    source.Id)));
+            else
+            {
+                jobs.Add(rebuilt.Job);
+                foreach (var observation in rebuilt.MaterialObservations ?? [])
+                    Report(progress, operationId, "MaterialBindingDiagnostics", observation.Message, completedUnits, plan.Units.Count);
+            }
             Report(progress, operationId, "BuildCandidate", $"已完成 Unit {unitPlan.UnitAssetKey.FileId:x16}", ++completedUnits, plan.Units.Count);
         }
         if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
@@ -133,11 +147,19 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 SourcePatchTocFilePath: patch,
                 RequireSourceGeometryPreservation: true,
                 RequireFiniteVisiblePositions: true,
-                RequireBoundVisibleMaterialSlots: true),
+                RequireBoundVisibleMaterialSlots: true,
+                SourceGeometryPreservationUnitKeys: (await GetEligibleSourceUnitKeysAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false))
+                    .Select(key => new AdaptationAssetKey(key.TypeId, key.FileId))
+                    .ToHashSet(),
+                SourceGeometryMeshInfoMappings: BuildSourceGeometryMeshInfoMappings(plan)),
             cancellationToken).ConfigureAwait(false);
         issues.AddRange(validation.Issues.Select(issue => new CoreIssue(
             issue.Severity == PatchValidationSeverity.Error ? CoreIssueSeverity.Error : CoreIssueSeverity.Warning,
-            $"PatchValidation.{issue.Code}", issue.Message, NodeId: source.Id)));
+            $"PatchValidation.{issue.Code}",
+            issue.AssetKey is { } assetKey
+                ? $"Unit=0x{assetKey.FileId:x16}; {issue.Message}"
+                : issue.Message,
+            NodeId: source.Id)));
         if (!validation.IsValid)
         {
             Report(progress, operationId, "ValidateCandidate", "Canonical Patch 验证失败", 1, 1);
@@ -149,8 +171,17 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             jobs.Sum(job => job.Outputs.Count), plan.Units.Sum(unit => unit.Adaptation?.MinifiedCount ?? 0), issues);
     }
 
-    private async ValueTask<SameKeyReconstructionPlan> PlanAsync(string patch, string gameData, CancellationToken cancellationToken, IProgress<OperationProgressEvent>? progress, ModNodeId nodeId)
+    private async ValueTask<SameKeyReconstructionPlan> PlanAsync(
+        ModNode source,
+        string modsRootDirectory,
+        string patch,
+        string gameData,
+        CancellationToken cancellationToken,
+        IProgress<OperationProgressEvent>? progress)
     {
+        var sourceEligibility = sourceUnitEligibility.Select(
+            await advancedAnalysis.GetRequiredAnalysesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false));
+        var nodeId = source.Id;
         var index = await workspaceReader.ReadIndexAsync(patch, cancellationToken).ConfigureAwait(false);
         var units = index.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).ToArray();
         var matches = await assetIndex.FindAssetArchivesAsync(units.Select(entry => new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId)).ToHashSet(), cancellationToken).ConfigureAwait(false);
@@ -173,15 +204,15 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             {
                 var sourceUnit = await sourceReader.ReadAsync(entry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
                 var targetUnit = await targetReader.ReadAsync(archive.ArchiveId, entry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
-                var mappings = BuildMappings(entry.AssetKey, sourceUnit.Model, targetUnit.Model);
-                var steps = mappings.Select(mapping => new UnitMeshAdaptationStep(UnitMeshAdaptationStepKind.ReplaceWithSource, mapping.TargetMeshInfoIndex, mapping.SourceMeshInfoIndex, "Same AssetKey and MeshInfoIndex mapping.", null)).ToList();
+                var mappings = BuildMappings(entry.AssetKey, sourceUnit.Model, targetUnit.Model, sourceEligibility.EligibleUnitAssetKeys.Contains(key));
+                var steps = mappings.Select(mapping => new UnitMeshAdaptationStep(UnitMeshAdaptationStepKind.ReplaceWithSource, mapping.TargetMeshInfoIndex, mapping.SourceMeshInfoIndex, "Canonical semantic and stream-layout source mapping.", null)).ToList();
                 steps.AddRange(targetUnit.Model.RawMeshData.Where(raw => steps.All(step => step.TargetMeshInfoIndex != raw.MeshInfoIndex)).Select(raw => new UnitMeshAdaptationStep(UnitMeshAdaptationStepKind.MinifyTarget, raw.MeshInfoIndex, null, "Target mesh has no source model mapping.", null)));
-                var adaptation = new UnitMeshAdaptationPlan(new UnitMeshAdaptationIntent(ToCoreEntry(entry), archive.ArchiveId, null), true, [], steps, "New Canonical same-key MeshInfo plan.");
+                var adaptation = new UnitMeshAdaptationPlan(new UnitMeshAdaptationIntent(ToCoreEntry(entry), archive.ArchiveId, null), true, [], steps, "Canonical same-key semantic and stream-layout plan.");
                 plans.Add(new SameKeyUnitReconstructionPlan(key, ToCoreEntry(entry), archive, match.Archives, adaptation, issues, TargetMeshCount: targetUnit.Model.RawMeshData.Count, CoveredTargetMeshCount: targetUnit.Model.RawMeshData.Count));
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or KeyNotFoundException)
             {
-                issues.Add(Error("UnitPlanningFailed", exception.Message, nodeId));
+                issues.Add(Error("UnitPlanningFailed", exception.Message, source.Id));
                 plans.Add(new SameKeyUnitReconstructionPlan(key, ToCoreEntry(entry), archive, match.Archives, null, issues));
             }
             progress?.Report(new OperationProgressEvent(Guid.NewGuid(), null, OperationKind.PatchRepair, OperationStage.Processing, OperationState.Progress, plans.Count, units.Length, $"已规划 Unit {plans.Count}/{units.Length}", null, DateTimeOffset.UtcNow, plans.Count, "Plan", "正在生成同 ID Canonical 计划"));
@@ -189,9 +220,51 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         return new SameKeyReconstructionPlan(new SameKeyReconstructionRequest(patch, gameData), plans, []);
     }
 
-    private static IReadOnlyList<TargetShellMeshMapping> BuildMappings(AdaptationAssetKey sourceKey, UnitMeshModel source, UnitMeshModel target)
-        => target.RawMeshData.Where(targetRaw => source.RawMeshData.Any(sourceRaw => sourceRaw.MeshInfoIndex == targetRaw.MeshInfoIndex && sourceRaw.Vertices.Count > 0 && sourceRaw.Triangles.Count > 0))
-            .Select(targetRaw => new TargetShellMeshMapping(sourceKey, targetRaw.MeshInfoIndex, targetRaw.MeshInfoIndex)).ToArray();
+    private async ValueTask<IReadOnlySet<CoreAssetKey>> GetEligibleSourceUnitKeysAsync(ModNode source, string modsRootDirectory, CancellationToken cancellationToken)
+        => sourceUnitEligibility.Select(
+            await advancedAnalysis.GetRequiredAnalysesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false))
+            .EligibleUnitAssetKeys;
+
+    private static IReadOnlyDictionary<AdaptationAssetKey, IReadOnlyDictionary<int, IReadOnlySet<int>>> BuildSourceGeometryMeshInfoMappings(SameKeyReconstructionPlan plan)
+        => plan.Units
+            .Where(unit => unit.Adaptation is not null)
+            .ToDictionary(
+                unit => new AdaptationAssetKey(unit.UnitAssetKey.TypeId, unit.UnitAssetKey.FileId),
+                unit => (IReadOnlyDictionary<int, IReadOnlySet<int>>)unit.Adaptation!.Steps
+                    .Where(step => step.Kind == UnitMeshAdaptationStepKind.ReplaceWithSource && step.SourceMeshInfoIndex is not null)
+                    .GroupBy(step => step.SourceMeshInfoIndex!.Value)
+                    .ToDictionary(group => group.Key, group => (IReadOnlySet<int>)group.Select(step => step.TargetMeshInfoIndex).ToHashSet()));
+
+    private static IReadOnlyList<TargetShellMeshMapping> BuildMappings(AdaptationAssetKey sourceKey, UnitMeshModel source, UnitMeshModel target, bool isEligibleSourceUnit)
+    {
+        if (!isEligibleSourceUnit)
+            return Array.Empty<TargetShellMeshMapping>();
+
+        var sourceLod0 = source.RawMeshData
+            .Where(raw => raw.LodIndex == 0 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
+            .OrderByDescending(raw => raw.Triangles.Count)
+            .ThenByDescending(raw => raw.Vertices.Count)
+            .FirstOrDefault();
+        var targetLod0 = target.RawMeshData
+            .Where(raw => raw.LodIndex == 0 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
+            .OrderByDescending(raw => raw.Triangles.Count)
+            .ThenByDescending(raw => raw.Vertices.Count)
+            .FirstOrDefault();
+        if (sourceLod0 is null || targetLod0 is null)
+            return Array.Empty<TargetShellMeshMapping>();
+
+        var expanded = CanonicalAutoLodMappingExpander.Expand(
+            target,
+            new Dictionary<AdaptationAssetKey, UnitMeshModel> { [sourceKey] = source },
+            [new CanonicalReplacementMapping(
+                new CanonicalMeshKey(sourceKey, sourceLod0.MeshInfoIndex),
+                new CanonicalMeshKey(sourceKey, targetLod0.MeshInfoIndex),
+                SkinningMode: CanonicalSkinningMode.BindStaticToTargetMeshTransform,
+                BoneAnchor: CanonicalBoneAnchor.TargetMeshTransform)]);
+        return expanded
+            .Select(mapping => new TargetShellMeshMapping(sourceKey, mapping.Source.MeshInfoIndex, mapping.Target.MeshInfoIndex))
+            .ToArray();
+    }
 
     private IReadOnlyList<string> FindBasePatchPaths(ModNode node, string root)
         => Directory.Exists(Path.Combine(root, node.RelativePath))
