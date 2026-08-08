@@ -5,16 +5,11 @@ namespace HD2ModAdaptation.PatchReconstruction.UnitMesh;
 // Purpose: Builds a current target Unit shell as new patch entries from explicit source-to-target mesh mappings.
 public sealed class TargetShellUnitOutputBuilder
 {
-	// Old implementation (backup)
-	// private readonly StrictUnitMeshTransfer transfer;
-	
-	// New implementation using extracted components
 	private readonly MeshTransfer transfer;
 	private readonly UnitMeshWriter writer;
 
 	public TargetShellUnitOutputBuilder(MeshTransfer? transfer = null, UnitMeshWriter? writer = null)
 	{
-		// Old: this.transfer = transfer ?? new StrictUnitMeshTransfer(allowTargetLayoutConversion: true);
 		this.transfer = transfer ?? new MeshTransfer(allowTargetLayoutConversion: true);
 		this.writer = writer ?? new UnitMeshWriter();
 	}

@@ -3,7 +3,7 @@ using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 namespace HD2ModAdaptation.Processing;
 
 // Purpose: Maps material slots from source mesh to target mesh, resolving material asset bindings.
-// Extracted from StrictUnitMeshTransfer.MaterialSlotMap for reusability.
+// Maps source material slots to the target material layout.
 public sealed class MaterialMapper
 {
 	private readonly Dictionary<uint, MaterialSlotReplacement> sourceSlotLookup;

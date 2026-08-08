@@ -31,9 +31,6 @@ public static class CoreServices
 	public static IPatchTocScanner CreatePatchTocScanner() => new PatchTocScanner();
  	public static IPatchEntryPayloadReader CreatePatchEntryPayloadReader()
 		=> new PatchEntryPayloadReader();
-	public static ISameKeyReconstructionPlanningService CreateSameKeyReconstructionPlanningService(StoragePaths paths)
-		=> new SameKeyReconstructionPlanningService(
-			CreateAssetArchiveIndexService(paths));
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IModSameKeyReconstructionService CreateModSameKeyReconstructionService(StoragePaths paths)
 		=> CreateModSameKeyReconstructionService(paths, CreateModInformationCenter(paths));
@@ -108,8 +105,6 @@ public static class CoreServices
 		=> new MaterialDeliveryFactsService(informationCenter, paths, CreateGameDataMappingFactsService(paths));
 	public static IEquipmentUnitCatalogService CreateEquipmentUnitCatalogService(StoragePaths paths)
 		=> new EquipmentUnitCatalogService(paths);
-	public static ICrossArmorTransferCandidateService CreateCrossArmorTransferCandidateService(StoragePaths paths)
-		=> new CrossArmorTransferCandidateService(CreateAssetArchiveIndexService(paths));
 	public static CanonicalCrossArmorOrchestrator CreateCanonicalCrossArmorOrchestrator()
 		=> new();
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]

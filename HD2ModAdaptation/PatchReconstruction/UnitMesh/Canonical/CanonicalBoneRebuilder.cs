@@ -1,6 +1,5 @@
 using System.Numerics;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
-using HD2ModAdaptation.PatchReconstruction.UnitMesh.SdkStyle;
 
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 

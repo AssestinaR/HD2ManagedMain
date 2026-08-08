@@ -3,7 +3,7 @@ using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 namespace HD2ModAdaptation.Processing;
 
 // Purpose: Maps bone indices from source mesh to target mesh based on real bone indices.
-// Extracted from StrictUnitMeshTransfer.BoneIndexMap for reusability.
+// Maps source bone indices through the target bone palette.
 public sealed class BoneRemapper
 {
 	private readonly Dictionary<uint, Dictionary<uint, uint>> sourceToTargetByMaterial;

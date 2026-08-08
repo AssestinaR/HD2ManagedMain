@@ -3,7 +3,7 @@ using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 namespace HD2ModAdaptation.Processing;
 
 // Purpose: Simplified mesh transfer using extracted BoneRemapper and MaterialMapper components.
-// This is a cleaner implementation of the core mesh transfer logic from StrictUnitMeshTransfer.
+// Transfers source mesh data into a target mesh while preserving the target layout contract.
 public sealed class MeshTransfer
 {
 	private readonly bool allowTargetLayoutConversion;

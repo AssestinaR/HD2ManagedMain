@@ -4,7 +4,7 @@ using Xunit;
 
 namespace HD2ModAdaptation.Tests;
 
-// Purpose: Verifies Canonical Avatar-rig expansion remains independent from the retired SdkStyle route.
+// Purpose: Verifies Canonical Avatar-rig expansion.
 public sealed class CanonicalTransformInfoExpanderTests
 {
 	[Fact]
