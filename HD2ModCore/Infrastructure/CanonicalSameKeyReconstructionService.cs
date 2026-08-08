@@ -97,7 +97,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         var plan = await PlanAsync(source, modsRootDirectory, patch, gameDataDirectory, cancellationToken, progress, operationId, index).ConfigureAwait(false);
         Report(progress, operationId, "Plan", $"Canonical 重建计划完成，用时={planStopwatch.ElapsedMilliseconds}ms", 1, 1);
         var issues = plan.Issues.ToList();
-        if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
+		if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
         var resolver = new AdaptationGameDataPackageResolver(gameDataDirectory);
         var targetReader = new GameDataUnitMeshReader(resolver);
         Report(progress, operationId, "PrepareAvatarRig", "正在读取 Canonical Avatar Rig 变换", 0, 1);
@@ -108,6 +108,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         Report(progress, operationId, "PrepareAvatarRig", $"Canonical Avatar Rig 变换读取完成，用时={avatarRigStopwatch.ElapsedMilliseconds}ms", 1, 1);
         var output = Path.GetFullPath(outputRootDirectory);
         Directory.CreateDirectory(output);
+		using var artifacts = new CanonicalDiagnosticArtifacts(output, "SameKey");
+		artifacts.Log($"[START] SourcePatch={Path.GetFileName(patch)} Units={plan.Units.Count}");
         using var operationWorkspace = operationWorkspaceFactory.Create(output, "same-key-reconstruction");
         var jobsBySequence = new PatchWorkspaceJobResult?[plan.Units.Count];
         var removed = index.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId || entry.AssetKey.TypeId == PatchUnitMeshReader.CompositeUnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
@@ -225,7 +227,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 	                    }
 	                }
 	                foreach (var observation in result.Rebuild.MaterialObservations ?? [])
-	                    Report(progress, operationId, "MaterialBindingDiagnostics", observation.Message, completedUnits, plan.Units.Count);
+	                    artifacts.Log($"[MATERIAL] Unit=0x{unitPlan.UnitAssetKey.FileId:x16}; {observation.Message}");
+	                artifacts.Log($"[UNIT] Unit=0x{unitPlan.UnitAssetKey.FileId:x16}; Cache={result.HiddenCacheHit}; SourceReadMs={result.SourceRead.TotalMilliseconds:F0}; TargetReadMs={result.TargetRead.TotalMilliseconds:F0}; RebuildMs={result.RebuildElapsed.TotalMilliseconds:F0}");
 	                Report(progress, operationId, "BuildCandidate", $"宸插畬鎴?Unit {unitPlan.UnitAssetKey.FileId:x16}", Interlocked.Increment(ref completedUnits), plan.Units.Count);
 	                return ValueTask.CompletedTask;
 	            },
@@ -255,7 +258,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 stagingElapsed += stagingStopwatch.Elapsed;
 				unitTelemetry.Add(CreateUnitJobTelemetryRow(result, stagingStopwatch.Elapsed));
                 foreach (var observation in rebuilt.MaterialObservations ?? [])
-                    Report(progress, operationId, "MaterialBindingDiagnostics", observation.Message, completedUnits, plan.Units.Count);
+                    artifacts.Log($"[MATERIAL] Unit=0x{unitPlan.UnitAssetKey.FileId:x16}; {observation.Message}");
+				artifacts.Log($"[UNIT] Unit=0x{unitPlan.UnitAssetKey.FileId:x16}; Cache={result.HiddenCacheHit}; SourceReadMs={result.SourceRead.TotalMilliseconds:F0}; TargetReadMs={result.TargetRead.TotalMilliseconds:F0}; RebuildMs={result.RebuildElapsed.TotalMilliseconds:F0}");
 
                 replacementMeshCount += rebuilt.ReplacedMeshCount;
                 minifiedMeshCount += rebuilt.HiddenMeshCount;
@@ -265,8 +269,17 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             Report(progress, operationId, "BuildCandidate", $"已完成 Unit {unitPlan.UnitAssetKey.FileId:x16}", ++completedUnits, plan.Units.Count);
         }
         Report(progress, operationId, "BuildCandidateMetrics", $"Same-key Unit 作业耗时：来源读取={sourceReadElapsed.TotalMilliseconds:F0}ms，目标读取={targetReadElapsed.TotalMilliseconds:F0}ms，重建={rebuildElapsed.TotalMilliseconds:F0}ms，落盘={stagingElapsed.TotalMilliseconds:F0}ms", completedUnits, plan.Units.Count);
-		await CanonicalUnitJobTelemetry.WriteCsvAsync(Path.Combine(output, "canonical-unit-job-telemetry.csv"), unitTelemetry, cancellationToken).ConfigureAwait(false);
-        if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
+		await CanonicalUnitJobTelemetry.WriteCsvAsync(artifacts.TelemetryPath, unitTelemetry, cancellationToken).ConfigureAwait(false);
+		await artifacts.WriteMappingsAsync(plan.Units.Select(unit => new CanonicalMappingDiagnosticRow(
+			"未分类", unit.IsGeometryEligible ? "命中" : "隐藏", $"0x{unit.UnitAssetKey.FileId:x16}", $"0x{unit.UnitAssetKey.FileId:x16}",
+			string.Empty, string.Empty, string.Empty, string.Empty, unit.TargetArchive?.ArchiveId ?? string.Empty,
+			"Same-key", unit.Issues.Count == 0 ? string.Empty : string.Join("; ", unit.Issues.Select(issue => issue.Message)))).ToArray(), cancellationToken).ConfigureAwait(false);
+		if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error))
+		{
+			artifacts.Log($"[ERROR-SUMMARY] {string.Join(" | ", issues.Where(issue => issue.Severity == CoreIssueSeverity.Error).Select(issue => issue.Message))}");
+			await artifacts.WriteReportAsync("Failed", "Unit 作业验证失败", issues.Select(issue => issue.Message).ToArray(), CancellationToken.None).ConfigureAwait(false);
+			return Failure(issues);
+		}
         Report(progress, operationId, "WriteCandidate", "正在打包 Canonical Patch", 0, 1);
         Report(progress, operationId, "CanonicalUnitJobMetrics", $"Canonical Unit job metrics: Flow=SameKey, SourceRead={sourceReadElapsed.TotalMilliseconds:F0}ms, TargetRead={targetReadElapsed.TotalMilliseconds:F0}ms, Mapping={mappingElapsed.TotalMilliseconds:F0}ms, Rebuild={rebuildElapsed.TotalMilliseconds:F0}ms, Staging={stagingElapsed.TotalMilliseconds:F0}ms, {rebuildTelemetry.Snapshot().Describe()}", completedUnits, plan.Units.Count);
         var writeStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -274,7 +287,9 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             headerTemplateTocData: (await resolver.GetPackageTocAsync(plan.Units.First().TargetArchive!.ArchiveId, cancellationToken).ConfigureAwait(false))?.Data,
             cancellationToken: cancellationToken).ConfigureAwait(false);
         Report(progress, operationId, "WriteCandidate", $"Canonical Patch 打包完成，用时={writeStopwatch.ElapsedMilliseconds}ms", 1, 1);
-        return new SameKeyReconstructionOperationResult(true, output, null, null, jobs.Count,
+        artifacts.Log($"[WRITE-DONE] Units={jobs.Count}; Replacements={replacementMeshCount}; Hidden={minifiedMeshCount}");
+		await artifacts.WriteReportAsync("WrittenForGameTest", $"Unit={jobs.Count}; 替换Mesh={replacementMeshCount}; 极小化Mesh={minifiedMeshCount}", issues.Select(issue => issue.Message).ToArray(), cancellationToken).ConfigureAwait(false);
+        return new SameKeyReconstructionOperationResult(true, output, null, artifacts.ReportPath, jobs.Count,
             replacementUnitCount, minifyOnlyUnitCount, replacementMeshCount, minifiedMeshCount, issues);
     }
 

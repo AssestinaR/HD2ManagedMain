@@ -87,6 +87,7 @@ public sealed class OperationProgressBridge
 	{
 		var now = _clock();
 		var stageId = progress.StageId ?? progress.Stage.ToString();
+		var writeManagerDetail = !IsCanonicalDetailStage(progress.StageId);
 		if (!string.Equals(stageId, _lastStageId, StringComparison.Ordinal))
 		{
 			_lastStageId = stageId;
@@ -116,10 +117,11 @@ public sealed class OperationProgressBridge
 	{
 		var stageText = progress.StageText ?? progress.Message ?? "处理中";
 		var stageId = progress.StageId ?? progress.Stage.ToString();
+		var writeManagerDetail = !IsCanonicalDetailStage(progress.StageId);
 		if (!string.Equals(_displayedStageId, stageId, StringComparison.Ordinal))
 		{
 			var now = progress.TimestampUtc;
-			if (_stageStartedAt != default)
+			if (_stageStartedAt != default && writeManagerDetail)
 				LogService.Info($"操作阶段完成：阶段={_displayedStageId}，耗时={(now - _stageStartedAt).TotalMilliseconds:0}ms，操作={progress.OperationId:N}。");
 			_displayedStageId = stageId;
 			_stageStartedAt = now;
@@ -128,7 +130,7 @@ public sealed class OperationProgressBridge
 		{
 			_notifications.ShowOrUpdate(_notificationKey, stageText, progress.State == OperationState.Failed ? NotificationLevel.Error : NotificationLevel.Info, null);
 		}
-		if (progress.IsTerminal && _stageStartedAt != default)
+		if (progress.IsTerminal && _stageStartedAt != default && writeManagerDetail)
 		{
 			LogService.Info($"操作阶段完成：阶段={_displayedStageId}，耗时={(progress.TimestampUtc - _stageStartedAt).TotalMilliseconds:0}ms，操作={progress.OperationId:N}。");
 			_stageStartedAt = default;
@@ -157,4 +159,10 @@ public sealed class OperationProgressBridge
 				break;
 		}
 	}
+
+	private static bool IsCanonicalDetailStage(string? stageId)
+		=> stageId is "InspectEligibility" or "Plan" or "PrepareAvatarRig" or "CanonicalPreparing"
+			or "TargetUnitPlan" or "RebuildTargetUnit" or "BuildCandidate" or "BuildCandidateMetrics"
+			or "CanonicalUnitJobMetrics" or "MaterialBindingDiagnostics" or "CarryThroughMaterials"
+			or "ValidateUnitReferences" or "WritePatch" or "WriteCandidate" or "CanonicalCompleted";
 }

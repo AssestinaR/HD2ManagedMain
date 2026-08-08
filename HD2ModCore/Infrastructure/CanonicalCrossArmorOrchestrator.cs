@@ -143,12 +143,14 @@ public sealed class CanonicalCrossArmorOrchestrator
 		var currentCanonicalSource = "none";
 		var reportState = new CanonicalMarkdownReportState();
 		var unitTelemetry = new List<CanonicalUnitJobTelemetryRow>();
+		CanonicalDiagnosticArtifacts? artifacts = null;
 		using var positionDiagnostics = CanonicalPositionDiagnostics.Suppress();
 		string? reportPath = null;
 		string? unitTelemetryPath = null;
 		void Log(string message)
 		{
 			reportState.Log(message);
+			artifacts?.Log(message);
 		}
 		if (!request.Plan.CanContinue)
 			return Failure(issues, "CanonicalPlanNotReady", "Canonical 链路要求现有 CrossArmorTransferPlan 已通过校验。");
@@ -162,8 +164,9 @@ public sealed class CanonicalCrossArmorOrchestrator
 		try
 		{
 			Directory.CreateDirectory(Path.GetFullPath(request.OutputDirectory));
+			artifacts = new CanonicalDiagnosticArtifacts(Path.GetFullPath(request.OutputDirectory), "CrossArmor");
 			reportPath = Path.Combine(Path.GetFullPath(request.OutputDirectory), "canonical-report.md");
-			unitTelemetryPath = Path.Combine(Path.GetFullPath(request.OutputDirectory), "canonical-unit-job-telemetry.csv");
+			unitTelemetryPath = artifacts.TelemetryPath;
 			Log($"[START] SourcePatch={Path.GetFileName(request.SourcePatchTocPath)} Output={request.OutputDirectory}");
 			await WriteMarkdownReportAsync(reportPath, request, reportState, [], [], new Dictionary<AdaptationAssetKey, CanonicalRebuildSummary>(), [], null, null, cancellationToken).ConfigureAwait(false);
 			ReportProgress(request, "CanonicalPreparing", "正在准备 Canonical 跨护甲重建。", 0, 1, totalStopwatch);
@@ -515,6 +518,13 @@ public sealed class CanonicalCrossArmorOrchestrator
 				await CanonicalUnitJobTelemetry.WriteCsvAsync(unitTelemetryPath, unitTelemetry, cancellationToken).ConfigureAwait(false);
 				Log($"[TELEMETRY] File={Path.GetFileName(unitTelemetryPath)} Rows={unitTelemetry.Count}");
 			}
+			await artifacts!.WriteMappingsAsync(request.Plan.Mappings.Select(mapping => new CanonicalMappingDiagnosticRow(
+				mapping.Target.PartKind.ToString(), mapping.WillReplace ? "命中" : "隐藏",
+				mapping.Source is null ? string.Empty : $"0x{mapping.Source.UnitAssetKey.FileId:x16}",
+				$"0x{mapping.PhysicalTarget.UnitAssetKey.FileId:x16}",
+				mapping.Source?.StoredSizeText ?? string.Empty, mapping.Target.StoredSizeText,
+				mapping.Target.BodyVariant.ToString(), mapping.Source?.BodyVariant.ToString() ?? string.Empty,
+				string.Join(';', mapping.UsedByArchiveIds), mapping.IsManual ? "手动" : "自动", mapping.Reason)).ToArray(), cancellationToken).ConfigureAwait(false);
 			ReportProgress(request, "CanonicalUnitJobMetrics", $"Canonical Unit job metrics: Flow=CrossArmor, SourceRead={sourceReadElapsed.TotalMilliseconds:F0}ms, TargetRead={targetReadElapsed.TotalMilliseconds:F0}ms, Mapping={mappingElapsed.TotalMilliseconds:F0}ms, Rebuild={rebuildElapsed.TotalMilliseconds:F0}ms, Staging={stagingElapsed.TotalMilliseconds:F0}ms, {rebuildTelemetry.Snapshot().Describe()}", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
 
 			// Unit payloads have already been staged to disk. Do not keep the full source
@@ -550,6 +560,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 			reportState.Status = fileDiagnostics.Count == 0 ? "WrittenForGameTest" : "Failed";
 			Log($"[WRITE-DONE] Patch={Path.GetFileName(written.TocFilePath)} Units={outputUnitCount} FileDiagnostics={fileDiagnostics.Count}");
 			await WriteMarkdownReportAsync(reportPath, request, reportState, replacementPlanMappings, outputEntries, rebuiltTargets, fileDiagnostics, outputUnitCount, replacementCount, cancellationToken).ConfigureAwait(false);
+			await artifacts.WriteReportAsync(reportState.Status, $"Unit={outputUnitCount}; 替换Mesh={replacementCount}; 极小化Mesh={minifiedCount}; 总耗时={totalStopwatch.Elapsed}", fileDiagnostics.Select(item => item.Message).ToArray(), cancellationToken).ConfigureAwait(false);
 			ReportProgress(request, "CanonicalCompleted", $"替换成功，文件位置：{written.OutputDirectoryPath}", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
 			if (fileDiagnostics.Count != 0)
 				return new CrossArmorTransferCandidateResult(false, written.OutputDirectoryPath, reportPath, outputUnitCount, replacementCount, minifiedCount, issues);
@@ -564,7 +575,13 @@ public sealed class CanonicalCrossArmorOrchestrator
 			Log($"[ERROR] {context}; {exception}");
 			if (reportPath is not null)
 				try { await WriteMarkdownReportAsync(reportPath, request, reportState, [], [], new Dictionary<AdaptationAssetKey, CanonicalRebuildSummary>(), [new CanonicalPlanDiagnostic("CanonicalExecutionFailed", exception.Message)], null, null, cancellationToken).ConfigureAwait(false); } catch (IOException) { }
+			if (artifacts is not null)
+				try { await artifacts.WriteReportAsync("Failed", context, [exception.Message], CancellationToken.None).ConfigureAwait(false); } catch (IOException) { }
 			return new CrossArmorTransferCandidateResult(false, Directory.Exists(request.OutputDirectory) ? request.OutputDirectory : null, reportPath, 0, 0, 0, issues);
+		}
+		finally
+		{
+			artifacts?.Dispose();
 		}
 	}
 
