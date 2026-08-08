@@ -52,6 +52,9 @@ public sealed class CanonicalCrossArmorOrchestrator
 	private readonly HD2ModAdaptation.PatchReconstruction.IPatchEntryPayloadReader sourcePayloadReader;
 	private readonly StingrayMaterialReferenceReader materialReferenceReader;
 	private readonly IPatchOperationWorkspaceFactory operationWorkspaceFactory;
+	private readonly ICanonicalHiddenUnitOutputCache hiddenUnitCache;
+	private readonly IAssetArchiveIndexService assetIndex;
+	private readonly IArchiveHashesProvider archiveHashes;
 
 	private sealed class CanonicalMarkdownReportState
 	{
@@ -97,7 +100,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 		IPatchWorkspaceWriter? patchWorkspaceWriter = null,
 		IPatchWorkspaceSessionComposer? patchWorkspaceSessionComposer = null,
 		IPatchWorkspaceReader? patchWorkspaceReader = null,
-		IPatchOperationWorkspaceFactory? operationWorkspaceFactory = null)
+		IPatchOperationWorkspaceFactory? operationWorkspaceFactory = null,
+		ICanonicalHiddenUnitOutputCache? hiddenUnitCache = null,
+		IAssetArchiveIndexService? assetIndex = null,
+		IArchiveHashesProvider? archiveHashes = null)
 	{
 		this.sourceReader = sourceReader ?? new PatchUnitMeshReader();
 		this.targetReaderFactory = targetReaderFactory ?? new Func<string, GameDataUnitMeshReader>(directory => new GameDataUnitMeshReader(new AdaptationGameDataPackageResolver(directory)));
@@ -118,6 +124,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 		this.sourcePayloadReader = sourcePayloadReader ?? new HD2ModAdaptation.PatchReconstruction.PatchEntryPayloadReader();
 		this.materialReferenceReader = materialReferenceReader ?? new StingrayMaterialReferenceReader();
 		this.operationWorkspaceFactory = operationWorkspaceFactory ?? new PatchOperationWorkspaceFactory();
+		this.hiddenUnitCache = hiddenUnitCache ?? new CanonicalHiddenUnitOutputCache();
+		var storagePaths = new StoragePaths(AppContext.BaseDirectory);
+		this.assetIndex = assetIndex ?? new AssetArchiveIndexService(storagePaths);
+		this.archiveHashes = archiveHashes ?? new FileSystemArchiveHashesProvider(storagePaths);
 	}
 
 	public async ValueTask<CrossArmorTransferCandidateResult> ExecuteAsync(
@@ -144,6 +154,8 @@ public sealed class CanonicalCrossArmorOrchestrator
 			return Failure(issues, "CanonicalSourcePatchMissing", "Canonical 链路找不到 source patch TOC。");
 		if (!Directory.Exists(request.GameDataDirectory))
 			return Failure(issues, "CanonicalGameDataMissing", "Canonical 链路找不到 Game Data 目录。");
+		var indexStatus = await assetIndex.GetIndexStatusAsync(request.GameDataDirectory, await archiveHashes.GetArchiveHashesJsonAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+		await hiddenUnitCache.InitializeAsync(indexStatus.CurrentSourceFingerprint, indexStatus.IsCurrent, cancellationToken).ConfigureAwait(false);
 
 		try
 		{
@@ -238,6 +250,25 @@ public sealed class CanonicalCrossArmorOrchestrator
 				var archiveName = targetUnit.ArchiveName;
 				if (archiveName is null)
 					return Failure(issues, "CanonicalTargetArchiveMissing", $"目标 Unit 0x{targetUnit.Key.FileId:x16} 没有明确的 Game Data archive。");
+				var hasPlannedReplacement = request.Plan.Mappings.Any(mapping => mapping.WillReplace && SameKey(mapping.PhysicalTarget.UnitAssetKey, targetUnit.Key));
+				if (!hasPlannedReplacement)
+				{
+					var cached = await hiddenUnitCache.TryReadAsync(archiveName, targetUnit.Key, cancellationToken).ConfigureAwait(false);
+					if (cached is not null)
+					{
+						currentCanonicalPhase = "UseHiddenUnitCache";
+						var stagingStopwatch = System.Diagnostics.Stopwatch.StartNew();
+						var cachedOutputEntry = operationWorkspace.Stage(cached.Entry);
+						stagingElapsed += stagingStopwatch.Elapsed;
+						outputEntries.Add(cachedOutputEntry);
+						workspaceJobs.Add(PatchWorkspaceJobResult.Unit(cachedOutputEntry, $"0x{targetUnit.Key.FileId:x16}"));
+						outputUnitCount++;
+						minifiedCount += cached.HiddenMeshCount;
+						Log($"[UNIT-CACHE-HIT] Unit=0x{targetUnit.Key.FileId:x16} HiddenMeshes={cached.HiddenMeshCount}");
+						ReportProgress(request, "RebuildTargetUnit", $"Canonical：复用隐藏 Unit 缓存 {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16}", targetIndex + 1, Math.Max(targetUnits.Length, 1), totalStopwatch);
+						continue;
+					}
+				}
 				var targetReadStopwatch = System.Diagnostics.Stopwatch.StartNew();
 				var target = await targetReader.ReadAsync(
 					archiveName,
@@ -291,6 +322,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 				var finalRawMeshes = new List<UnitRawMeshData>(target.Model.Meshes.Count);
 				var provisionalSkinnedMeshes = new List<CanonicalLodBoneInput>();
 				var sourceMaterialBindings = new List<UnitMaterialBinding>();
+				var hiddenMeshCountForUnit = 0;
 				var rebuiltBoneInfos = target.Model.BoneInfos
 					.Select((boneInfo, index) => new { Index = index, BoneInfo = boneInfo })
 					.ToDictionary(item => item.Index, item => item.BoneInfo);
@@ -312,6 +344,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 						if (!tiny.IsValid) return Failure(issues, tiny.Diagnostics);
 						finalRaw = tiny.Mesh!;
 						minifiedCount++;
+						hiddenMeshCountForUnit++;
 					}
 					else
 					{
@@ -417,6 +450,8 @@ public sealed class CanonicalCrossArmorOrchestrator
 				var outputTargetEntry = new CanonicalPatchSessionEntry(targetUnit.Key, CanonicalPatchEntryOwnership.TargetOutput,
 					rebuilt.Output!.TocData, rebuilt.Output.GpuData, Array.Empty<byte>(), target.Payload.Entry.Unknown1,
 					target.Payload.Entry.Unknown2, target.Payload.Entry.Unknown3, target.Payload.Entry.Unknown4);
+				if (!hasPlannedReplacement)
+					await hiddenUnitCache.StoreAsync(archiveName, new CanonicalHiddenUnitOutput(outputTargetEntry, hiddenMeshCountForUnit), cancellationToken).ConfigureAwait(false);
 				rebuildElapsed += rebuildStopwatch.Elapsed;
 				rebuildTelemetry.Add(new CanonicalUnitRebuildTelemetry(
 					transformExpansionElapsed, meshAssemblyElapsed, streamContractElapsed, TimeSpan.Zero,

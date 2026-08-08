@@ -25,6 +25,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
     private readonly SameKeyCanonicalUnitRebuilder unitRebuilder = new();
     private readonly IPatchWorkspaceWriter workspaceWriter;
     private readonly IPatchOperationWorkspaceFactory operationWorkspaceFactory;
+    private readonly ICanonicalHiddenUnitOutputCache hiddenUnitCache;
+    private readonly CanonicalHiddenUnitBuilder hiddenUnitBuilder;
 
     public CanonicalSameKeyReconstructionService(
         IPatchFileNameParser fileNameParser,
@@ -34,7 +36,9 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         ISourceUnitEligibilityService sourceUnitEligibility,
         IPatchWorkspaceReader? workspaceReader = null,
         IPatchWorkspaceWriter? workspaceWriter = null,
-        IPatchOperationWorkspaceFactory? operationWorkspaceFactory = null)
+        IPatchOperationWorkspaceFactory? operationWorkspaceFactory = null,
+        ICanonicalHiddenUnitOutputCache? hiddenUnitCache = null,
+        CanonicalHiddenUnitBuilder? hiddenUnitBuilder = null)
     {
         this.fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
         this.assetIndex = assetIndex ?? throw new ArgumentNullException(nameof(assetIndex));
@@ -44,6 +48,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         this.workspaceReader = workspaceReader ?? new PatchWorkspaceReader();
         this.workspaceWriter = workspaceWriter ?? new PatchWorkspaceWriter();
         this.operationWorkspaceFactory = operationWorkspaceFactory ?? new PatchOperationWorkspaceFactory();
+        this.hiddenUnitCache = hiddenUnitCache ?? new CanonicalHiddenUnitOutputCache();
+        this.hiddenUnitBuilder = hiddenUnitBuilder ?? new CanonicalHiddenUnitBuilder();
     }
 
     public async ValueTask<ModSameKeyReconstructionState> InspectAsync(
@@ -82,6 +88,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         if (patch is null) return Failure([Error("PatchRequired", "Mod 没有 Patch 主文件。", source.Id)]);
         if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory)) return Failure([Error("GameDataMissing", "Game Data 不可用。", source.Id)]);
         var status = await assetIndex.GetIndexStatusAsync(gameDataDirectory, await archiveHashes.GetArchiveHashesJsonAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+        await hiddenUnitCache.InitializeAsync(status.CurrentSourceFingerprint, status.IsCurrent, cancellationToken).ConfigureAwait(false);
         if (!status.IsCurrent) return Failure([Error("GameDataIndexNotCurrent", "Game Data 资产索引不可用或已过期。", source.Id)]);
 
         Report(progress, operationId, "Plan", "正在生成同 ID Canonical 重建计划", 0, 1);
@@ -126,27 +133,55 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             async (jobIndex, token) =>
             {
                 var unitPlan = plan.Units[jobIndex];
-                var localSourceReader = new PatchUnitMeshReader();
                 var sourceEntry = sourceEntries.Single(entry => entry.AssetKey == new AdaptationAssetKey(unitPlan.UnitAssetKey.TypeId, unitPlan.UnitAssetKey.FileId));
+                var archiveId = unitPlan.TargetArchive!.ArchiveId;
+                var sourceIsEligible = plan.EligibleSourceUnitAssetKeys?.Contains(unitPlan.UnitAssetKey) == true;
+                if (!sourceIsEligible)
+                {
+                    var cached = await hiddenUnitCache.TryReadAsync(archiveId, sourceEntry.AssetKey, token).ConfigureAwait(false);
+                    if (cached is not null)
+                    {
+                        var cachedResult = new SameKeyCanonicalUnitRebuildResult(PatchWorkspaceJobResult.Unit(cached.Entry), 0, cached.HiddenMeshCount, []);
+                        return new SameKeyUnitJobResult(jobIndex, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, cachedResult);
+                    }
+                }
                 var unitStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                var sourceUnit = await localSourceReader.ReadAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, token).ConfigureAwait(false);
-                var localSourceRead = unitStopwatch.Elapsed;
-                unitStopwatch.Restart();
                 var targetUnit = await targetReader.ReadAsync(
-                    unitPlan.TargetArchive!.ArchiveId,
+                    archiveId,
                     sourceEntry.AssetKey,
                     allowGlobalDependencySearch: true,
                     cancellationToken: token).ConfigureAwait(false);
                 var localTargetRead = unitStopwatch.Elapsed;
                 unitStopwatch.Restart();
+                if (!sourceIsEligible)
+                {
+                    var hidden = hiddenUnitBuilder.Build(targetUnit, avatarTransforms);
+                    await hiddenUnitCache.StoreAsync(archiveId, hidden, token).ConfigureAwait(false);
+                    var hiddenResult = new SameKeyCanonicalUnitRebuildResult(PatchWorkspaceJobResult.Unit(hidden.Entry), 0, hidden.HiddenMeshCount, []);
+                    return new SameKeyUnitJobResult(jobIndex, TimeSpan.Zero, localTargetRead, TimeSpan.Zero, unitStopwatch.Elapsed, hiddenResult);
+                }
+                var localSourceReader = new PatchUnitMeshReader();
+                var sourceUnit = await localSourceReader.ReadAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, token).ConfigureAwait(false);
+                var localSourceRead = unitStopwatch.Elapsed;
+                unitStopwatch.Restart();
                 var mappings = BuildMappings(sourceEntry.AssetKey, sourceUnit.Model, targetUnit.Model,
-                    plan.EligibleSourceUnitAssetKeys?.Contains(unitPlan.UnitAssetKey) == true).ToArray();
+                    sourceIsEligible).ToArray();
                 var localMapping = unitStopwatch.Elapsed;
                 unitStopwatch.Restart();
-                var rebuilt = new SameKeyCanonicalUnitRebuilder().Rebuild(new SameKeyCanonicalUnitRebuildRequest(sourceUnit, targetUnit, mappings)
+                SameKeyCanonicalUnitRebuildResult rebuilt;
+                if (mappings.Length == 0)
                 {
-                    AvatarTransformInfo = avatarTransforms
-                });
+                    var hidden = hiddenUnitBuilder.Build(targetUnit, avatarTransforms);
+                    await hiddenUnitCache.StoreAsync(archiveId, hidden, token).ConfigureAwait(false);
+                    rebuilt = new SameKeyCanonicalUnitRebuildResult(PatchWorkspaceJobResult.Unit(hidden.Entry), 0, hidden.HiddenMeshCount, []);
+                }
+                else
+                {
+                    rebuilt = new SameKeyCanonicalUnitRebuilder().Rebuild(new SameKeyCanonicalUnitRebuildRequest(sourceUnit, targetUnit, mappings)
+                    {
+                        AvatarTransformInfo = avatarTransforms
+                    });
+                }
                 return new SameKeyUnitJobResult(jobIndex, localSourceRead, localTargetRead, localMapping,
                     unitStopwatch.Elapsed, rebuilt);
             },

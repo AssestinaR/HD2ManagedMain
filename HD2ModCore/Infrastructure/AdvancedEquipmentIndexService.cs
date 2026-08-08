@@ -1,6 +1,7 @@
 using System.Globalization;
 using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure.ArchiveHashes;
@@ -18,11 +19,19 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 	private readonly StoragePaths paths;
 	private readonly IGameDataArchiveIndexer archiveIndexer;
 	private readonly UnitMeshPartClassifier classifier = new();
+	private readonly ICanonicalHiddenUnitOutputCache hiddenUnitCache;
+	private readonly CanonicalHiddenUnitBuilder hiddenUnitBuilder;
 
-	public AdvancedEquipmentIndexService(StoragePaths paths, IGameDataArchiveIndexer? archiveIndexer = null)
+	public AdvancedEquipmentIndexService(
+		StoragePaths paths,
+		IGameDataArchiveIndexer? archiveIndexer = null,
+		ICanonicalHiddenUnitOutputCache? hiddenUnitCache = null,
+		CanonicalHiddenUnitBuilder? hiddenUnitBuilder = null)
 	{
 		this.paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		this.archiveIndexer = archiveIndexer ?? new GameDataArchiveIndexer();
+		this.hiddenUnitCache = hiddenUnitCache ?? new CanonicalHiddenUnitOutputCache();
+		this.hiddenUnitBuilder = hiddenUnitBuilder ?? new CanonicalHiddenUnitBuilder();
 	}
 
 	public async ValueTask<bool> IsCurrentAsync(CancellationToken cancellationToken = default)
@@ -99,6 +108,10 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		var boneNames = LoadBoneNames(paths.BoneHashesPath);
 		var resolver = new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(Path.GetFullPath(gameDataDirectory));
 		var reader = new GameDataUnitMeshReader(resolver);
+		var fingerprint = await new AssetArchiveIndexService(paths).GetFingerprintAsync(cancellationToken).ConfigureAwait(false)
+			?? throw new InvalidOperationException("基础 Game Data 资产索引缺少版本指纹。");
+		await hiddenUnitCache.InitializeAsync(fingerprint.SourceFingerprint, gameDataIndexIsCurrent: true, cancellationToken).ConfigureAwait(false);
+		var avatarTransforms = await new CanonicalAvatarRigReader(resolver).ReadTransformInfoAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 		var parts = new List<GameDataUnitPartFact>();
 		var total = Math.Max(units.Count, 1);
 		for (var index = 0; index < units.Count; index++)
@@ -112,6 +125,18 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 				var parsed = await reader.ReadAsync(unit.ArchiveId, adaptationKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
 				parts.AddRange(classifier.Classify(adaptationKey, parsed.Model, boneNames)
 					.Select(part => new GameDataUnitPartFact(unit.ArchiveId, new CoreAssetKey(unit.AssetKey.TypeId, unit.AssetKey.FileId), part.MeshInfoIndex, part.MeshId, part.PartKind, part.Layer, part.BodyVariant, part.SemanticName, part.Confidence, part.IsVisualMesh, part.IsLod, part.Reason) { PieceType = part.PieceType }));
+				try
+				{
+					if (await hiddenUnitCache.TryReadAsync(unit.ArchiveId, adaptationKey, cancellationToken).ConfigureAwait(false) is null)
+					{
+						var hidden = hiddenUnitBuilder.Build(parsed, avatarTransforms);
+						await hiddenUnitCache.StoreAsync(unit.ArchiveId, hidden, cancellationToken).ConfigureAwait(false);
+					}
+				}
+				catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or OverflowException)
+				{
+					// Cache prewarming must never discard an otherwise valid Unit-part fact.
+				}
 			}
 			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException)
 			{
