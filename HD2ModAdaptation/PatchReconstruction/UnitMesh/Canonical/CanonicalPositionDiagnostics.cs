@@ -9,10 +9,21 @@ public static class CanonicalPositionDiagnostics
 	private const string EnabledVariable = "HD2_CANONICAL_POSITION_DIAGNOSTICS";
 	private static readonly object Sync = new();
 	private static readonly AsyncLocal<DiagnosticScope?> CurrentScope = new();
+	private static readonly AsyncLocal<bool> IsSuppressed = new();
 
 	public static bool IsEnabled
-		=> string.Equals(Environment.GetEnvironmentVariable(EnabledVariable), "1", StringComparison.Ordinal)
-			|| string.Equals(Environment.GetEnvironmentVariable(EnabledVariable), "true", StringComparison.OrdinalIgnoreCase);
+		=> !IsSuppressed.Value
+			&& (string.Equals(Environment.GetEnvironmentVariable(EnabledVariable), "1", StringComparison.Ordinal)
+			|| string.Equals(Environment.GetEnvironmentVariable(EnabledVariable), "true", StringComparison.OrdinalIgnoreCase));
+
+	// Tool workflows can suppress high-volume position traces without changing a
+	// developer's process-wide diagnostic preference for other investigations.
+	public static IDisposable Suppress()
+	{
+		var previous = IsSuppressed.Value;
+		IsSuppressed.Value = true;
+		return new SuppressionScope(previous);
+	}
 
 	public static IDisposable BeginUnit(ulong unitFileId)
 	{
@@ -101,5 +112,10 @@ public static class CanonicalPositionDiagnostics
 	{
 		public static NoopScope Instance { get; } = new();
 		public void Dispose() { }
+	}
+
+	private sealed class SuppressionScope(bool previous) : IDisposable
+	{
+		public void Dispose() => IsSuppressed.Value = previous;
 	}
 }

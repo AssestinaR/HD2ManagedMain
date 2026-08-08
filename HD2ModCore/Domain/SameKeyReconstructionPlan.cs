@@ -28,7 +28,8 @@ public sealed record SameKeyPlanningProgress(
 public sealed record SameKeyReconstructionPlan(
 	SameKeyReconstructionRequest Request,
 	IReadOnlyList<SameKeyUnitReconstructionPlan> Units,
-	IReadOnlyList<CoreIssue> Issues)
+	IReadOnlyList<CoreIssue> Issues,
+	IReadOnlySet<AssetKey>? EligibleSourceUnitAssetKeys = null)
 {
 	public int SourceUnitCount => Units.Count;
 	public int TargetResolvedCount => Units.Count(unit => unit.TargetArchive is not null);
@@ -45,12 +46,15 @@ public sealed record SameKeyUnitReconstructionPlan(
 	IReadOnlyList<CoreIssue> Issues,
 	IReadOnlyList<SameKeyMeshEvidence>? MeshEvidence = null,
 	int TargetMeshCount = 0,
-	int CoveredTargetMeshCount = 0)
+	int CoveredTargetMeshCount = 0,
+	bool IsSourceGeometryEligible = false)
 {
 	public bool IsSharedTarget => MatchingArchives.Count > 1;
 	public bool HasBlockingIssue => Issues.Any(issue => issue.Severity == CoreIssueSeverity.Error);
 	public bool HasExperimentalCandidate => Adaptation?.Steps.Any(step => step.Kind == UnitMeshAdaptationStepKind.ReplaceWithSource && step.Candidate?.Kind == UnitMeshReplacementCandidateKind.ExperimentalFallback) == true;
-	public bool IsGeometryEligible => Adaptation is { CanWrite: true, ReplacementCount: > 0 } && !HasBlockingIssue && !HasExperimentalCandidate;
+	// Same-key planning intentionally does not decode the target Unit. This fact comes
+	// from the cached source analysis; actual mesh coverage is decided by the Unit job.
+	public bool IsGeometryEligible => IsSourceGeometryEligible && TargetArchive is not null && !HasBlockingIssue;
 	public bool HasFullTargetShellCoverage => TargetMeshCount != 0 && CoveredTargetMeshCount == TargetMeshCount;
 	public IReadOnlyList<SameKeyMeshEvidence> Evidence => MeshEvidence ?? Array.Empty<SameKeyMeshEvidence>();
 }

@@ -4,16 +4,17 @@ using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.PatchWorkspace;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
-using HD2ModAdaptation.PatchReconstruction.Validation;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using CoreAssetKey = HD2ModCore.Domain.AssetKey;
 using AdaptationGameDataPackageResolver = HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver;
+using System.Collections.Concurrent;
 
 namespace HD2ModCore.Infrastructure;
 
 // Purpose: Plans and executes one same-AssetKey Patch rebuild through the new Canonical/Workspace pipeline.
 public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstructionService
 {
+    private static readonly ConcurrentDictionary<Guid, long> progressSequences = new();
     private readonly IPatchFileNameParser fileNameParser;
     private readonly IAssetArchiveIndexService assetIndex;
     private readonly IArchiveHashesProvider archiveHashes;
@@ -23,7 +24,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
     private readonly PatchUnitMeshReader sourceReader = new();
     private readonly SameKeyCanonicalUnitRebuilder unitRebuilder = new();
     private readonly IPatchWorkspaceWriter workspaceWriter;
-    private readonly IPatchValidator patchValidator;
+    private readonly IPatchOperationWorkspaceFactory operationWorkspaceFactory;
 
     public CanonicalSameKeyReconstructionService(
         IPatchFileNameParser fileNameParser,
@@ -33,7 +34,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         ISourceUnitEligibilityService sourceUnitEligibility,
         IPatchWorkspaceReader? workspaceReader = null,
         IPatchWorkspaceWriter? workspaceWriter = null,
-        IPatchValidator? patchValidator = null)
+        IPatchOperationWorkspaceFactory? operationWorkspaceFactory = null)
     {
         this.fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
         this.assetIndex = assetIndex ?? throw new ArgumentNullException(nameof(assetIndex));
@@ -42,7 +43,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         this.sourceUnitEligibility = sourceUnitEligibility ?? throw new ArgumentNullException(nameof(sourceUnitEligibility));
         this.workspaceReader = workspaceReader ?? new PatchWorkspaceReader();
         this.workspaceWriter = workspaceWriter ?? new PatchWorkspaceWriter();
-        this.patchValidator = patchValidator ?? new PatchValidator();
+        this.operationWorkspaceFactory = operationWorkspaceFactory ?? new PatchOperationWorkspaceFactory();
     }
 
     public async ValueTask<ModSameKeyReconstructionState> InspectAsync(
@@ -61,13 +62,13 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             current = status.IsCurrent;
             if (!current) issues.Add(Error("GameDataIndexNotCurrent", "Game Data 资产索引不可用或已过期。", source.Id));
         }
-        var plan = issues.Count == 0 ? await PlanAsync(source, modsRootDirectory, patch!, gameDataDirectory, cancellationToken, progress).ConfigureAwait(false) : null;
+        var plan = issues.Count == 0 ? await PlanAsync(source, modsRootDirectory, patch!, gameDataDirectory, cancellationToken, progress, operationId).ConfigureAwait(false) : null;
         if (plan is not null) issues.AddRange(plan.Issues);
         return new ModSameKeyReconstructionState(source.Id, patch, plan, current,
-            plan?.Units.Count(unit => unit.Adaptation?.ReplacementCount > 0) ?? 0,
-            plan?.Units.Count(unit => unit.Adaptation?.ReplacementCount == 0) ?? 0,
-            plan?.Units.Sum(unit => unit.Adaptation?.ReplacementCount ?? 0) ?? 0,
-            plan?.Units.Sum(unit => unit.Adaptation?.MinifiedCount ?? 0) ?? 0,
+            plan?.Units.Count(unit => unit.IsGeometryEligible) ?? 0,
+            plan?.Units.Count(unit => !unit.IsGeometryEligible) ?? 0,
+            0,
+            0,
             0, issues);
     }
 
@@ -84,33 +85,113 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         if (!status.IsCurrent) return Failure([Error("GameDataIndexNotCurrent", "Game Data 资产索引不可用或已过期。", source.Id)]);
 
         Report(progress, operationId, "Plan", "正在生成同 ID Canonical 重建计划", 0, 1);
+        var planStopwatch = System.Diagnostics.Stopwatch.StartNew();
         var index = await workspaceReader.ReadIndexAsync(patch, cancellationToken).ConfigureAwait(false);
-        var plan = await PlanAsync(source, modsRootDirectory, patch, gameDataDirectory, cancellationToken, progress).ConfigureAwait(false);
+        var plan = await PlanAsync(source, modsRootDirectory, patch, gameDataDirectory, cancellationToken, progress, operationId, index).ConfigureAwait(false);
+        Report(progress, operationId, "Plan", $"Canonical 重建计划完成，用时={planStopwatch.ElapsedMilliseconds}ms", 1, 1);
         var issues = plan.Issues.ToList();
         if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
         var resolver = new AdaptationGameDataPackageResolver(gameDataDirectory);
         var targetReader = new GameDataUnitMeshReader(resolver);
+        Report(progress, operationId, "PrepareAvatarRig", "正在读取 Canonical Avatar Rig 变换", 0, 1);
+        var avatarRigStopwatch = System.Diagnostics.Stopwatch.StartNew();
         var avatarTransforms = await new CanonicalAvatarRigReader(resolver)
             .ReadTransformInfoAsync(cancellationToken: cancellationToken)
             .ConfigureAwait(false);
-        var jobs = new List<PatchWorkspaceJobResult>();
+        Report(progress, operationId, "PrepareAvatarRig", $"Canonical Avatar Rig 变换读取完成，用时={avatarRigStopwatch.ElapsedMilliseconds}ms", 1, 1);
+        var output = Path.GetFullPath(outputRootDirectory);
+        Directory.CreateDirectory(output);
+        using var operationWorkspace = operationWorkspaceFactory.Create(output, "same-key-reconstruction");
+        var jobsBySequence = new PatchWorkspaceJobResult?[plan.Units.Count];
         var removed = index.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId || entry.AssetKey.TypeId == PatchUnitMeshReader.CompositeUnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
         var sourceEntries = index.Entries;
         Report(progress, operationId, "BuildCandidate", "正在执行 Canonical Unit 作业", 0, plan.Units.Count);
+        var sourceReadElapsed = TimeSpan.Zero;
+        var targetReadElapsed = TimeSpan.Zero;
+        var mappingElapsed = TimeSpan.Zero;
+        var rebuildElapsed = TimeSpan.Zero;
+        var stagingElapsed = TimeSpan.Zero;
+		var rebuildTelemetry = new CanonicalUnitRebuildTelemetryAccumulator();
         var completedUnits = 0;
-        foreach (var unitPlan in plan.Units)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var sourceEntry = sourceEntries.Single(entry => entry.AssetKey == new AdaptationAssetKey(unitPlan.UnitAssetKey.TypeId, unitPlan.UnitAssetKey.FileId));
-            var sourceUnit = await sourceReader.ReadAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
-            var targetArchive = unitPlan.TargetArchive!.ArchiveId;
-            var targetUnit = await targetReader.ReadAsync(targetArchive, sourceEntry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
-            var mappings = unitPlan.Adaptation!.Steps.Where(step => step.Kind == UnitMeshAdaptationStepKind.ReplaceWithSource && step.SourceMeshInfoIndex is not null)
-                .Select(step => new TargetShellMeshMapping(sourceEntry.AssetKey, step.SourceMeshInfoIndex!.Value, step.TargetMeshInfoIndex)).ToArray();
-            var rebuilt = unitRebuilder.Rebuild(new SameKeyCanonicalUnitRebuildRequest(sourceUnit, targetUnit, mappings)
+        var resultGate = new object();
+        var replacementUnitCount = 0;
+        var minifyOnlyUnitCount = 0;
+        var replacementMeshCount = 0;
+        var minifiedMeshCount = 0;
+        using var positionDiagnostics = CanonicalPositionDiagnostics.Suppress();
+        var unitJobs = plan.Units.Select((unit, index) =>
+            (Sequence: index, UnitKey: $"0x{unit.UnitAssetKey.FileId:x16}")).ToArray();
+        var results = await UnitJobExecutor.ExecuteAsync(
+            unitJobs,
+            async (jobIndex, token) =>
             {
-                AvatarTransformInfo = avatarTransforms
-            });
+                var unitPlan = plan.Units[jobIndex];
+                var localSourceReader = new PatchUnitMeshReader();
+                var sourceEntry = sourceEntries.Single(entry => entry.AssetKey == new AdaptationAssetKey(unitPlan.UnitAssetKey.TypeId, unitPlan.UnitAssetKey.FileId));
+                var unitStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                var sourceUnit = await localSourceReader.ReadAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, token).ConfigureAwait(false);
+                var localSourceRead = unitStopwatch.Elapsed;
+                unitStopwatch.Restart();
+                var targetUnit = await targetReader.ReadAsync(
+                    unitPlan.TargetArchive!.ArchiveId,
+                    sourceEntry.AssetKey,
+                    allowGlobalDependencySearch: true,
+                    cancellationToken: token).ConfigureAwait(false);
+                var localTargetRead = unitStopwatch.Elapsed;
+                unitStopwatch.Restart();
+                var mappings = BuildMappings(sourceEntry.AssetKey, sourceUnit.Model, targetUnit.Model,
+                    plan.EligibleSourceUnitAssetKeys?.Contains(unitPlan.UnitAssetKey) == true).ToArray();
+                var localMapping = unitStopwatch.Elapsed;
+                unitStopwatch.Restart();
+                var rebuilt = new SameKeyCanonicalUnitRebuilder().Rebuild(new SameKeyCanonicalUnitRebuildRequest(sourceUnit, targetUnit, mappings)
+                {
+                    AvatarTransformInfo = avatarTransforms
+                });
+                return new SameKeyUnitJobResult(jobIndex, localSourceRead, localTargetRead, localMapping,
+                    unitStopwatch.Elapsed, rebuilt);
+            },
+	            (sequence, result) =>
+	            {
+	                var unitPlan = plan.Units[sequence];
+	                lock (resultGate)
+	                {
+	                    sourceReadElapsed += result.SourceRead;
+	                    targetReadElapsed += result.TargetRead;
+	                    mappingElapsed += result.Mapping;
+	                    rebuildElapsed += result.RebuildElapsed;
+	                    var rebuilt = result.Rebuild;
+	                    if (!rebuilt.IsValid || rebuilt.Job is null)
+	                        issues.AddRange(rebuilt.Diagnostics.Select(diagnostic => Error(diagnostic.Code, $"Unit=0x{unitPlan.UnitAssetKey.FileId:x16}; {diagnostic.Message}", source.Id)));
+	                    else
+	                    {
+	                        rebuildTelemetry.Add(rebuilt.Telemetry);
+	                        var stagingStopwatch = System.Diagnostics.Stopwatch.StartNew();
+	                        jobsBySequence[sequence] = operationWorkspace.Stage(rebuilt.Job);
+	                        stagingElapsed += stagingStopwatch.Elapsed;
+	                        replacementMeshCount += rebuilt.ReplacedMeshCount;
+	                        minifiedMeshCount += rebuilt.HiddenMeshCount;
+	                        if (rebuilt.ReplacedMeshCount > 0) replacementUnitCount++;
+	                        else minifyOnlyUnitCount++;
+	                    }
+	                }
+	                foreach (var observation in result.Rebuild.MaterialObservations ?? [])
+	                    Report(progress, operationId, "MaterialBindingDiagnostics", observation.Message, completedUnits, plan.Units.Count);
+	                Report(progress, operationId, "BuildCandidate", $"宸插畬鎴?Unit {unitPlan.UnitAssetKey.FileId:x16}", Interlocked.Increment(ref completedUnits), plan.Units.Count);
+	                return ValueTask.CompletedTask;
+	            },
+	            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        var jobs = jobsBySequence.Where(job => job is not null).Select(job => job!).ToList();
+
+        if (results.Any(result => result is not null)) foreach (var result in results.OrderBy(result => result.Sequence))
+        {
+            sourceReadElapsed += result.SourceRead;
+            targetReadElapsed += result.TargetRead;
+            mappingElapsed += result.Mapping;
+            rebuildElapsed += result.RebuildElapsed;
+            var unitPlan = plan.Units[result.Sequence];
+            cancellationToken.ThrowIfCancellationRequested();
+            var rebuilt = result.Rebuild;
             if (!rebuilt.IsValid || rebuilt.Job is null)
                 issues.AddRange(rebuilt.Diagnostics.Select(diagnostic => Error(
                     diagnostic.Code,
@@ -118,57 +199,31 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                     source.Id)));
             else
             {
-                jobs.Add(rebuilt.Job);
+				rebuildTelemetry.Add(rebuilt.Telemetry);
+                var stagingStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                jobs.Add(operationWorkspace.Stage(rebuilt.Job));
+                stagingElapsed += stagingStopwatch.Elapsed;
                 foreach (var observation in rebuilt.MaterialObservations ?? [])
                     Report(progress, operationId, "MaterialBindingDiagnostics", observation.Message, completedUnits, plan.Units.Count);
+
+                replacementMeshCount += rebuilt.ReplacedMeshCount;
+                minifiedMeshCount += rebuilt.HiddenMeshCount;
+                if (rebuilt.ReplacedMeshCount > 0) replacementUnitCount++;
+                else minifyOnlyUnitCount++;
             }
             Report(progress, operationId, "BuildCandidate", $"已完成 Unit {unitPlan.UnitAssetKey.FileId:x16}", ++completedUnits, plan.Units.Count);
         }
+        Report(progress, operationId, "BuildCandidateMetrics", $"Same-key Unit 作业耗时：来源读取={sourceReadElapsed.TotalMilliseconds:F0}ms，目标读取={targetReadElapsed.TotalMilliseconds:F0}ms，重建={rebuildElapsed.TotalMilliseconds:F0}ms，落盘={stagingElapsed.TotalMilliseconds:F0}ms", completedUnits, plan.Units.Count);
         if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
-        var output = Path.GetFullPath(outputRootDirectory);
-        Directory.CreateDirectory(output);
         Report(progress, operationId, "WriteCandidate", "正在打包 Canonical Patch", 0, 1);
+        Report(progress, operationId, "CanonicalUnitJobMetrics", $"Canonical Unit job metrics: Flow=SameKey, SourceRead={sourceReadElapsed.TotalMilliseconds:F0}ms, TargetRead={targetReadElapsed.TotalMilliseconds:F0}ms, Mapping={mappingElapsed.TotalMilliseconds:F0}ms, Rebuild={rebuildElapsed.TotalMilliseconds:F0}ms, Staging={stagingElapsed.TotalMilliseconds:F0}ms, {rebuildTelemetry.Snapshot().Describe()}", completedUnits, plan.Units.Count);
+        var writeStopwatch = System.Diagnostics.Stopwatch.StartNew();
         var write = await workspaceWriter.WriteAsync(index, jobs, removed, output, Path.GetFileName(patch),
             headerTemplateTocData: (await resolver.GetPackageTocAsync(plan.Units.First().TargetArchive!.ArchiveId, cancellationToken).ConfigureAwait(false))?.Data,
             cancellationToken: cancellationToken).ConfigureAwait(false);
-        Report(progress, operationId, "ValidateCandidate", "正在回读验证 Canonical Patch", 0, 1);
-        var expectedUnitVersion = jobs.SelectMany(job => job.Outputs)
-            .Where(entry => entry.Key.TypeId == PatchUnitMeshReader.UnitTypeId)
-            .Select(entry => BitConverter.ToUInt32(entry.TocData!, 0x2c))
-            .Distinct()
-            .Take(2)
-            .ToArray();
-        var validation = await patchValidator.ValidateAsync(write.TocFilePath,
-            new PatchValidationOptions(
-                RequirePatchLocalComposite: false,
-                ReportEmptyUnitGeometry: true,
-                ExpectedUnitVersion: expectedUnitVersion.Length == 1 ? expectedUnitVersion[0] : null,
-                TreatOutdatedUnitVersionAsError: true,
-                SourcePatchTocFilePath: patch,
-                RequireSourceGeometryPreservation: true,
-                RequireFiniteVisiblePositions: true,
-                RequireBoundVisibleMaterialSlots: true,
-                SourceGeometryPreservationUnitKeys: (await GetEligibleSourceUnitKeysAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false))
-                    .Select(key => new AdaptationAssetKey(key.TypeId, key.FileId))
-                    .ToHashSet(),
-                SourceGeometryMeshInfoMappings: BuildSourceGeometryMeshInfoMappings(plan)),
-            cancellationToken).ConfigureAwait(false);
-        issues.AddRange(validation.Issues.Select(issue => new CoreIssue(
-            issue.Severity == PatchValidationSeverity.Error ? CoreIssueSeverity.Error : CoreIssueSeverity.Warning,
-            $"PatchValidation.{issue.Code}",
-            issue.AssetKey is { } assetKey
-                ? $"Unit=0x{assetKey.FileId:x16}; {issue.Message}"
-                : issue.Message,
-            NodeId: source.Id)));
-        if (!validation.IsValid)
-        {
-            Report(progress, operationId, "ValidateCandidate", "Canonical Patch 验证失败", 1, 1);
-            return Failure(issues);
-        }
-        Report(progress, operationId, "ValidateCandidate", validation.HasWarnings ? "Canonical Patch 验证完成（存在警告）" : "Canonical Patch 验证完成", 1, 1);
+        Report(progress, operationId, "WriteCandidate", $"Canonical Patch 打包完成，用时={writeStopwatch.ElapsedMilliseconds}ms", 1, 1);
         return new SameKeyReconstructionOperationResult(true, output, null, null, jobs.Count,
-            plan.Units.Count(unit => unit.Adaptation?.ReplacementCount > 0), plan.Units.Count(unit => unit.Adaptation?.ReplacementCount == 0),
-            jobs.Sum(job => job.Outputs.Count), plan.Units.Sum(unit => unit.Adaptation?.MinifiedCount ?? 0), issues);
+            replacementUnitCount, minifyOnlyUnitCount, replacementMeshCount, minifiedMeshCount, issues);
     }
 
     private async ValueTask<SameKeyReconstructionPlan> PlanAsync(
@@ -177,18 +232,30 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         string patch,
         string gameData,
         CancellationToken cancellationToken,
-        IProgress<OperationProgressEvent>? progress)
+        IProgress<OperationProgressEvent>? progress,
+        Guid? operationId,
+        PatchWorkspaceIndex? knownIndex = null)
     {
-        var sourceEligibility = sourceUnitEligibility.Select(
-            await advancedAnalysis.GetRequiredAnalysesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false));
+        var analyses = await advancedAnalysis.GetRequiredAnalysesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+        var sourceEligibility = sourceUnitEligibility.Select(analyses);
         var nodeId = source.Id;
-        var index = await workspaceReader.ReadIndexAsync(patch, cancellationToken).ConfigureAwait(false);
-        var units = index.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).ToArray();
+        var analysis = analyses.LastOrDefault(candidate => string.Equals(
+            Path.GetFullPath(candidate.Input.PatchTocFilePath),
+            Path.GetFullPath(patch),
+            StringComparison.OrdinalIgnoreCase));
+        var index = knownIndex;
+        var entries = index?.Entries ?? analysis?.Entries;
+        if (entries is null || entries.Count == 0)
+        {
+            // Cache entries may be unavailable for old cache versions; TOC metadata is
+            // still cheap to read and does not decode Unit payloads.
+            index = await workspaceReader.ReadIndexAsync(patch, cancellationToken).ConfigureAwait(false);
+            entries = index.Entries;
+        }
+        var units = entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).ToArray();
         var matches = await assetIndex.FindAssetArchivesAsync(units.Select(entry => new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId)).ToHashSet(), cancellationToken).ConfigureAwait(false);
         var byKey = matches.ToDictionary(match => match.AssetKey);
         var plans = new List<SameKeyUnitReconstructionPlan>();
-        var targetReader = new GameDataUnitMeshReader(new AdaptationGameDataPackageResolver(gameData));
-        var sourceEntries = index.Entries;
         foreach (var entry in units)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -196,44 +263,30 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             var issues = new List<CoreIssue>();
             if (!byKey.TryGetValue(key, out var match) || match.Archives.Count == 0)
             {
-                plans.Add(new SameKeyUnitReconstructionPlan(key, ToCoreEntry(entry), null, [], null, [Error("CurrentTargetMissing", "找不到同 ID current target Unit。", nodeId)]));
+                plans.Add(new SameKeyUnitReconstructionPlan(key, ToCoreEntry(entry), null, [], null, [Error("CurrentTargetMissing", "找不到同 ID current target Unit。", nodeId)], IsSourceGeometryEligible: sourceEligibility.EligibleUnitAssetKeys.Contains(key)));
                 continue;
             }
             var archive = match.Archives.OrderBy(item => item.CategoryOrder).ThenBy(item => item.ArchiveOrder).First();
-            try
-            {
-                var sourceUnit = await sourceReader.ReadAsync(entry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
-                var targetUnit = await targetReader.ReadAsync(archive.ArchiveId, entry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
-                var mappings = BuildMappings(entry.AssetKey, sourceUnit.Model, targetUnit.Model, sourceEligibility.EligibleUnitAssetKeys.Contains(key));
-                var steps = mappings.Select(mapping => new UnitMeshAdaptationStep(UnitMeshAdaptationStepKind.ReplaceWithSource, mapping.TargetMeshInfoIndex, mapping.SourceMeshInfoIndex, "Canonical semantic and stream-layout source mapping.", null)).ToList();
-                steps.AddRange(targetUnit.Model.RawMeshData.Where(raw => steps.All(step => step.TargetMeshInfoIndex != raw.MeshInfoIndex)).Select(raw => new UnitMeshAdaptationStep(UnitMeshAdaptationStepKind.MinifyTarget, raw.MeshInfoIndex, null, "Target mesh has no source model mapping.", null)));
-                var adaptation = new UnitMeshAdaptationPlan(new UnitMeshAdaptationIntent(ToCoreEntry(entry), archive.ArchiveId, null), true, [], steps, "Canonical same-key semantic and stream-layout plan.");
-                plans.Add(new SameKeyUnitReconstructionPlan(key, ToCoreEntry(entry), archive, match.Archives, adaptation, issues, TargetMeshCount: targetUnit.Model.RawMeshData.Count, CoveredTargetMeshCount: targetUnit.Model.RawMeshData.Count));
-            }
-            catch (Exception exception) when (exception is IOException or InvalidDataException or KeyNotFoundException)
-            {
-                issues.Add(Error("UnitPlanningFailed", exception.Message, source.Id));
-                plans.Add(new SameKeyUnitReconstructionPlan(key, ToCoreEntry(entry), archive, match.Archives, null, issues));
-            }
-            progress?.Report(new OperationProgressEvent(Guid.NewGuid(), null, OperationKind.PatchRepair, OperationStage.Processing, OperationState.Progress, plans.Count, units.Length, $"已规划 Unit {plans.Count}/{units.Length}", null, DateTimeOffset.UtcNow, plans.Count, "Plan", "正在生成同 ID Canonical 计划"));
+            plans.Add(new SameKeyUnitReconstructionPlan(
+                key,
+                ToCoreEntry(entry),
+                archive,
+                match.Archives,
+                null,
+                issues,
+                IsSourceGeometryEligible: sourceEligibility.EligibleUnitAssetKeys.Contains(key)));
+            Report(progress, operationId, "Plan", $"已规划 Unit {plans.Count}/{units.Length}", plans.Count, units.Length);
         }
-        return new SameKeyReconstructionPlan(new SameKeyReconstructionRequest(patch, gameData), plans, []);
+        return new SameKeyReconstructionPlan(new SameKeyReconstructionRequest(patch, gameData), plans, [], sourceEligibility.EligibleUnitAssetKeys);
     }
 
-    private async ValueTask<IReadOnlySet<CoreAssetKey>> GetEligibleSourceUnitKeysAsync(ModNode source, string modsRootDirectory, CancellationToken cancellationToken)
-        => sourceUnitEligibility.Select(
-            await advancedAnalysis.GetRequiredAnalysesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false))
-            .EligibleUnitAssetKeys;
-
-    private static IReadOnlyDictionary<AdaptationAssetKey, IReadOnlyDictionary<int, IReadOnlySet<int>>> BuildSourceGeometryMeshInfoMappings(SameKeyReconstructionPlan plan)
-        => plan.Units
-            .Where(unit => unit.Adaptation is not null)
-            .ToDictionary(
-                unit => new AdaptationAssetKey(unit.UnitAssetKey.TypeId, unit.UnitAssetKey.FileId),
-                unit => (IReadOnlyDictionary<int, IReadOnlySet<int>>)unit.Adaptation!.Steps
-                    .Where(step => step.Kind == UnitMeshAdaptationStepKind.ReplaceWithSource && step.SourceMeshInfoIndex is not null)
-                    .GroupBy(step => step.SourceMeshInfoIndex!.Value)
-                    .ToDictionary(group => group.Key, group => (IReadOnlySet<int>)group.Select(step => step.TargetMeshInfoIndex).ToHashSet()));
+    private sealed record SameKeyUnitJobResult(
+        int Sequence,
+        TimeSpan SourceRead,
+        TimeSpan TargetRead,
+        TimeSpan Mapping,
+        TimeSpan RebuildElapsed,
+        SameKeyCanonicalUnitRebuildResult Rebuild);
 
     private static IReadOnlyList<TargetShellMeshMapping> BuildMappings(AdaptationAssetKey sourceKey, UnitMeshModel source, UnitMeshModel target, bool isEligibleSourceUnit)
     {
@@ -276,7 +329,12 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
     private static SameKeyReconstructionOperationResult Failure(IReadOnlyList<CoreIssue> issues) => new(false, null, null, null, 0, 0, 0, 0, 0, issues);
 
     private static void Report(IProgress<OperationProgressEvent>? progress, Guid? operationId, string stageId, string message, long completed, long total)
-        => progress?.Report(new OperationProgressEvent(
-            operationId.GetValueOrDefault(Guid.NewGuid()), null, OperationKind.PatchRepair, OperationStage.Processing,
-            OperationState.Progress, completed, total, message, null, DateTimeOffset.UtcNow, completed, stageId, message));
+    {
+        if (progress is null) return;
+        var id = operationId.GetValueOrDefault(Guid.NewGuid());
+        var sequence = progressSequences.AddOrUpdate(id, 1, static (_, previous) => previous + 1);
+        progress.Report(new OperationProgressEvent(
+            id, null, OperationKind.PatchRepair, OperationStage.Processing,
+            OperationState.Progress, completed, total, message, null, DateTimeOffset.UtcNow, sequence, stageId, message));
+    }
 }

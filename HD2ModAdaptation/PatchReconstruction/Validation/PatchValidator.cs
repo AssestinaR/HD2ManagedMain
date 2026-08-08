@@ -47,6 +47,7 @@ public sealed class PatchValidator : IPatchValidator
 
 		ValidateEntryIdentity(entries, issues);
 		ValidateSidecars(fullPath, entries, issues);
+		var sourceGeometry = await PrepareSourceGeometryValidationAsync(entries, fullPath, options, issues, cancellationToken).ConfigureAwait(false);
 		var unitsChecked = 0;
 		var unitsReadable = 0;
 		if (options.ReadUnitPayloads)
@@ -66,6 +67,8 @@ public sealed class PatchValidator : IPatchValidator
 					ValidateUnit(entry, unit, options, issues);
 					if (options.RequirePatchLocalBone && unit.Dependencies?.HasUnresolvedExternalBone == true)
 						issues.Add(Error("MissingLocalBone", $"Unit references bone asset 0x{unit.Dependencies.BonesReference:x16}, but the bone entry is not present in this Patch.", entry.AssetKey, fullPath));
+					if (sourceGeometry?.EntriesByKey.TryGetValue(entry.AssetKey, out var sourceEntry) == true)
+						await ValidateSourceGeometryForUnitAsync(sourceEntry, sourceGeometry.Entries, unit, fullPath, options, issues, cancellationToken).ConfigureAwait(false);
 				}
 				catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException)
 				{
@@ -73,9 +76,23 @@ public sealed class PatchValidator : IPatchValidator
 				}
 			}
 		}
-		if (!string.IsNullOrWhiteSpace(options.SourcePatchTocFilePath))
-			await ValidateSourceGeometryAsync(entries, fullPath, options, issues, cancellationToken).ConfigureAwait(false);
-
+		else if (sourceGeometry is not null)
+		{
+			foreach (var sourceEntry in sourceGeometry.EntriesByKey.Values)
+			{
+				var outputEntry = entries.SingleOrDefault(entry => entry.AssetKey == sourceEntry.AssetKey);
+				if (outputEntry is null) continue;
+				try
+				{
+					var output = await unitReader.ReadAsync(outputEntry, entries, PatchUnitDependencyPolicy.AllowExternalCompositeReference, cancellationToken).ConfigureAwait(false);
+					await ValidateSourceGeometryForUnitAsync(sourceEntry, sourceGeometry.Entries, output, fullPath, options, issues, cancellationToken).ConfigureAwait(false);
+				}
+				catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException)
+				{
+					issues.Add(GeometryIssue(options, "SourceGeometryComparisonFailed", $"Geometry comparison for Unit 0x{sourceEntry.AssetKey.FileId:x16} failed: {exception.Message}", sourceEntry.AssetKey, fullPath, exception));
+				}
+			}
+		}
 		return Result(fullPath, entries, issues, unitsChecked, unitsReadable);
 	}
 
@@ -133,13 +150,14 @@ public sealed class PatchValidator : IPatchValidator
 			ValidateVisibleMaterialBindings(entry, model, issues);
 	}
 
-	private async ValueTask ValidateSourceGeometryAsync(
+	private async ValueTask<SourceGeometryValidationContext?> PrepareSourceGeometryValidationAsync(
 		IReadOnlyList<PatchTocEntry> outputEntries,
 		string outputPath,
 		PatchValidationOptions options,
 		ICollection<PatchValidationIssue> issues,
 		CancellationToken cancellationToken)
 	{
+		if (string.IsNullOrWhiteSpace(options.SourcePatchTocFilePath)) return null;
 		var sourcePath = Path.GetFullPath(options.SourcePatchTocFilePath!);
 		IReadOnlyList<PatchTocEntry> sourceEntries;
 		try
@@ -149,39 +167,46 @@ public sealed class PatchValidator : IPatchValidator
 		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException)
 		{
 			issues.Add(Error("SourcePatchUnreadable", $"Source Patch could not be scanned for geometry comparison: {exception.Message}", filePath: sourcePath, exception: exception));
-			return;
+			return null;
 		}
 
-		foreach (var sourceEntry in sourceEntries.Where(entry =>
+		var entriesToPreserve = sourceEntries.Where(entry =>
 			entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId &&
-			(options.SourceGeometryPreservationUnitKeys is null || options.SourceGeometryPreservationUnitKeys.Contains(entry.AssetKey))))
+			(options.SourceGeometryPreservationUnitKeys is null || options.SourceGeometryPreservationUnitKeys.Contains(entry.AssetKey)))
+			.ToArray();
+		var outputKeys = outputEntries.Select(entry => entry.AssetKey).ToHashSet();
+		foreach (var sourceEntry in entriesToPreserve.Where(entry => !outputKeys.Contains(entry.AssetKey)))
+			issues.Add(GeometryIssue(options, "SourceUnitMissing", $"Output Patch is missing source Unit 0x{sourceEntry.AssetKey.FileId:x16}.", sourceEntry.AssetKey, outputPath));
+		return new(sourceEntries, entriesToPreserve.ToDictionary(entry => entry.AssetKey));
+	}
+
+	private async ValueTask ValidateSourceGeometryForUnitAsync(
+		PatchTocEntry sourceEntry,
+		IReadOnlyList<PatchTocEntry> sourceEntries,
+		PatchUnitMesh output,
+		string outputPath,
+		PatchValidationOptions options,
+		ICollection<PatchValidationIssue> issues,
+		CancellationToken cancellationToken)
+	{
+		try
 		{
-			var outputEntry = outputEntries.SingleOrDefault(entry => entry.AssetKey == sourceEntry.AssetKey);
-			if (outputEntry is null)
+			var source = await unitReader.ReadAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.AllowExternalCompositeReference, cancellationToken).ConfigureAwait(false);
+			var meshInfoMappings = options.SourceGeometryMeshInfoMappings is not null
+				&& options.SourceGeometryMeshInfoMappings.TryGetValue(sourceEntry.AssetKey, out var mappedMeshInfoIndices)
+				? mappedMeshInfoIndices
+				: null;
+			foreach (var sourceMesh in source.Model.RawMeshData.Where(IsVisibleGeometry))
 			{
-				issues.Add(GeometryIssue(options, "SourceUnitMissing", $"Output Patch is missing source Unit 0x{sourceEntry.AssetKey.FileId:x16}.", sourceEntry.AssetKey, outputPath));
-				continue;
-			}
-			try
-			{
-				var source = await unitReader.ReadAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.AllowExternalCompositeReference, cancellationToken).ConfigureAwait(false);
-				var output = await unitReader.ReadAsync(outputEntry, outputEntries, PatchUnitDependencyPolicy.AllowExternalCompositeReference, cancellationToken).ConfigureAwait(false);
-				var meshInfoMappings = options.SourceGeometryMeshInfoMappings is not null
-					&& options.SourceGeometryMeshInfoMappings.TryGetValue(sourceEntry.AssetKey, out var mappedMeshInfoIndices)
-					? mappedMeshInfoIndices
-					: null;
-				foreach (var sourceMesh in source.Model.RawMeshData.Where(IsVisibleGeometry))
+				IReadOnlyCollection<int>? outputMeshInfoIndices = meshInfoMappings is null
+					? [sourceMesh.MeshInfoIndex]
+					: meshInfoMappings.TryGetValue(sourceMesh.MeshInfoIndex, out var mappedOutputMeshInfoIndices)
+						? mappedOutputMeshInfoIndices
+						: null;
+				if (outputMeshInfoIndices is null) continue;
+				foreach (var outputMeshInfoIndex in outputMeshInfoIndices)
 				{
-					IReadOnlyCollection<int>? outputMeshInfoIndices = meshInfoMappings is null
-						? [sourceMesh.MeshInfoIndex]
-						: meshInfoMappings.TryGetValue(sourceMesh.MeshInfoIndex, out var mappedOutputMeshInfoIndices)
-							? mappedOutputMeshInfoIndices
-							: null;
-					if (outputMeshInfoIndices is null)
-						continue;
-					foreach (var outputMeshInfoIndex in outputMeshInfoIndices)
-					{
-						var outputMesh = output.Model.RawMeshData.SingleOrDefault(mesh => mesh.MeshInfoIndex == outputMeshInfoIndex);
+					var outputMesh = output.Model.RawMeshData.SingleOrDefault(mesh => mesh.MeshInfoIndex == outputMeshInfoIndex);
 					if (outputMesh is null)
 					{
 						issues.Add(GeometryIssue(options, "SourceMeshMissing", $"Output Unit is missing source MeshInfo {sourceMesh.MeshInfoIndex}.", sourceEntry.AssetKey, outputPath));
@@ -200,15 +225,18 @@ public sealed class PatchValidator : IPatchValidator
 					var outputReferencedVertexCount = CountReferencedVertices(outputMesh);
 					if (sourceReferencedVertexCount != outputReferencedVertexCount || sourceMesh.Triangles.Count != outputMesh.Triangles.Count)
 						issues.Add(GeometryIssue(options, "SourceGeometryCountMismatch", $"Output MeshInfo {outputMesh.MeshInfoIndex} has {outputReferencedVertexCount} referenced vertices/{outputMesh.Triangles.Count} triangles ({outputMesh.Vertices.Count} stored vertices); source has {sourceReferencedVertexCount}/{sourceMesh.Triangles.Count} ({sourceMesh.Vertices.Count} stored vertices).", sourceEntry.AssetKey, outputPath));
-					}
 				}
 			}
-			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException)
-			{
-				issues.Add(GeometryIssue(options, "SourceGeometryComparisonFailed", $"Geometry comparison for Unit 0x{sourceEntry.AssetKey.FileId:x16} failed: {exception.Message}", sourceEntry.AssetKey, outputPath, exception));
-			}
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or KeyNotFoundException)
+		{
+			issues.Add(GeometryIssue(options, "SourceGeometryComparisonFailed", $"Geometry comparison for Unit 0x{sourceEntry.AssetKey.FileId:x16} failed: {exception.Message}", sourceEntry.AssetKey, outputPath, exception));
 		}
 	}
+
+	private sealed record SourceGeometryValidationContext(
+		IReadOnlyList<PatchTocEntry> Entries,
+		IReadOnlyDictionary<AssetKey, PatchTocEntry> EntriesByKey);
 
 	private static bool IsVisibleGeometry(UnitRawMeshData mesh) => mesh.Vertices.Count > 3 && mesh.Triangles.Count > 1;
 

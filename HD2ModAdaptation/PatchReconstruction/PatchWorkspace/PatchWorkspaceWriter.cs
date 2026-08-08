@@ -69,11 +69,7 @@ public sealed class PatchWorkspaceWriter : IPatchWorkspaceWriter
 
 		var sourceEntries = index.Entries
 			.Where(entry => !removedKeys.Contains(entry.AssetKey) && !outputKeys.Contains(entry.AssetKey))
-			.Select(entry => new CanonicalPatchSessionEntry(entry.AssetKey, CanonicalPatchEntryOwnership.RequiredDependency,
-				ReadPayload(index.SourcePatchTocPath, entry, PayloadKind.Toc),
-				ReadPayload(index.SourcePatchTocPath, entry, PayloadKind.Gpu),
-				ReadPayload(index.SourcePatchTocPath, entry, PayloadKind.Stream),
-				entry.Unknown1, entry.Unknown2, entry.Unknown3, entry.Unknown4))
+			.Select(entry => CreateSourceEntry(index.SourcePatchTocPath, entry))
 			.ToArray();
 		var session = new CanonicalPatchSession();
 		var finalized = sessionComposer.ComposeJobs(session, jobList, sourceEntries, CanonicalDependencyClosureValidation.Valid);
@@ -107,43 +103,31 @@ public sealed class PatchWorkspaceWriter : IPatchWorkspaceWriter
 		CancellationToken cancellationToken = default)
 		=> canonicalWriter.WriteAsync(session, outputDirectoryPath, patchFileName, headerTemplateTocData, overwriteExisting, cancellationToken);
 
-	private static byte[] ReadPayload(string tocPath, PatchTocEntry entry, PayloadKind kind)
+	private static CanonicalPatchSessionEntry CreateSourceEntry(string tocPath, PatchTocEntry entry)
 	{
-		var path = kind switch
+		var gpuPath = tocPath + ".gpu_resources";
+		var streamPath = tocPath + ".stream";
+		EnsureRangeExists(tocPath, entry.TocDataOffset, entry.TocDataSize, entry.AssetKey);
+		EnsureRangeExists(gpuPath, entry.GpuResourceOffset, entry.GpuResourceSize, entry.AssetKey);
+		EnsureRangeExists(streamPath, entry.StreamOffset, entry.StreamSize, entry.AssetKey);
+		return new CanonicalPatchSessionEntry(entry.AssetKey, CanonicalPatchEntryOwnership.RequiredDependency,
+			entry.TocDataSize == 0 ? Array.Empty<byte>() : null,
+			entry.GpuResourceSize == 0 ? Array.Empty<byte>() : null,
+			entry.StreamSize == 0 ? Array.Empty<byte>() : null,
+			entry.Unknown1, entry.Unknown2, entry.Unknown3, entry.Unknown4)
 		{
-			PayloadKind.Toc => tocPath,
-			PayloadKind.Gpu => tocPath + ".gpu_resources",
-			PayloadKind.Stream => tocPath + ".stream",
-			_ => throw new ArgumentOutOfRangeException(nameof(kind))
+			TocDataSource = entry.TocDataSize == 0 ? null : new CanonicalPayloadSourceRange(tocPath, entry.TocDataOffset, entry.TocDataSize),
+			GpuDataSource = entry.GpuResourceSize == 0 ? null : new CanonicalPayloadSourceRange(gpuPath, entry.GpuResourceOffset, entry.GpuResourceSize),
+			StreamDataSource = entry.StreamSize == 0 ? null : new CanonicalPayloadSourceRange(streamPath, entry.StreamOffset, entry.StreamSize)
 		};
-		ulong offset;
-		uint size;
-		switch (kind)
-		{
-			case PayloadKind.Toc:
-				offset = entry.TocDataOffset;
-				size = entry.TocDataSize;
-				break;
-			case PayloadKind.Gpu:
-				offset = entry.GpuResourceOffset;
-				size = entry.GpuResourceSize;
-				break;
-			case PayloadKind.Stream:
-				offset = entry.StreamOffset;
-				size = entry.StreamSize;
-				break;
-			default:
-				throw new ArgumentOutOfRangeException(nameof(kind));
-		}
-		if (size == 0) return Array.Empty<byte>();
-		if (!File.Exists(path)) throw new FileNotFoundException($"Patch payload sidecar is missing for {entry.AssetKey}.", path);
-		using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-		if (offset > (ulong)stream.Length || offset + size > (ulong)stream.Length) throw new InvalidDataException($"Patch payload range is outside its source file for {entry.AssetKey}.");
-		stream.Position = checked((long)offset);
-		var payload = new byte[checked((int)size)];
-		stream.ReadExactly(payload);
-		return payload;
 	}
 
-	private enum PayloadKind { Toc, Gpu, Stream }
+	private static void EnsureRangeExists(string path, ulong offset, uint size, AssetKey key)
+	{
+		if (size == 0) return;
+		if (!File.Exists(path)) throw new FileNotFoundException($"Patch payload sidecar is missing for {key}.", path);
+		var length = new FileInfo(path).Length;
+		if (offset > (ulong)length || offset + size > (ulong)length)
+			throw new InvalidDataException($"Patch payload range is outside its source file for {key}.");
+	}
 }

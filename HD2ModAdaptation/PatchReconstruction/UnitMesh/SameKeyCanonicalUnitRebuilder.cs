@@ -30,7 +30,8 @@ public sealed record SameKeyCanonicalUnitRebuildResult(
     int ReplacedMeshCount,
     int HiddenMeshCount,
     IReadOnlyList<CanonicalPlanDiagnostic> Diagnostics,
-    IReadOnlyList<CanonicalPlanDiagnostic>? MaterialObservations = null)
+    IReadOnlyList<CanonicalPlanDiagnostic>? MaterialObservations = null,
+    CanonicalUnitRebuildTelemetry? Telemetry = null)
 {
     public bool IsValid => Job is { IsValid: true } && Diagnostics.Count == 0;
 }
@@ -54,6 +55,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
         request.Validate();
         using var positionDiagnostics = CanonicalPositionDiagnostics.BeginUnit(request.Target.AssetKey.FileId);
         var diagnostics = new List<CanonicalPlanDiagnostic>();
+        var phaseStopwatch = System.Diagnostics.Stopwatch.StartNew();
         var mappings = request.MeshMappings.ToDictionary(mapping => mapping.TargetMeshInfoIndex);
         var targetModel = request.Target.Model;
         if (request.AvatarTransformInfo is not null)
@@ -77,6 +79,8 @@ public sealed class SameKeyCanonicalUnitRebuilder
                     includeAvatarSkeleton: true);
             }
         }
+        var transformExpansionElapsed = phaseStopwatch.Elapsed;
+        phaseStopwatch.Restart();
         var finalMeshes = new List<UnitRawMeshData>(request.Target.Model.Meshes.Count);
         var provisionalByMesh = new Dictionary<int, UnitBoneInfo>();
         var sourceMaterialBindings = new List<UnitMaterialBinding>();
@@ -163,24 +167,12 @@ public sealed class SameKeyCanonicalUnitRebuilder
             replacedCount++;
         }
 
+        var meshAssemblyElapsed = phaseStopwatch.Elapsed;
+        phaseStopwatch.Restart();
         if (diagnostics.Count != 0)
             return new(null, replacedCount, hiddenCount, diagnostics);
         if (finalMeshes.Count != targetModel.Meshes.Count)
             return Failure("SameKeyCanonicalMeshCoverage", "Canonical same-key rebuilding did not produce one final RawMesh for every target MeshInfo.", replacedCount, hiddenCount);
-
-        var streams = streamCompiler.TryCompile(targetModel, finalMeshes);
-        if (!streams.IsValid) return Failure(streams.Diagnostics, replacedCount, hiddenCount);
-        targetModel = targetModel with { Streams = streams.Streams };
-        var preparedMeshes = new List<UnitRawMeshData>(finalMeshes.Count);
-        foreach (var raw in finalMeshes)
-        {
-            var stream = targetModel.Streams.Single(stream => stream.Index == (int)raw.StreamIndex);
-            var prepared = preparation.TryPrepare(raw, stream);
-            if (!prepared.IsValid || prepared.Mesh is null) return Failure(prepared.Diagnostics, replacedCount, hiddenCount);
-            CanonicalPositionDiagnostics.RecordMesh("prepared", prepared.Mesh, stream);
-            preparedMeshes.Add(prepared.Mesh);
-        }
-        finalMeshes = preparedMeshes;
 
         var provisional = new List<CanonicalLodBoneInput>();
         foreach (var raw in finalMeshes)
@@ -199,20 +191,30 @@ public sealed class SameKeyCanonicalUnitRebuilder
                 if (byMesh.TryGetValue(finalMeshes[index].MeshInfoIndex, out var rewritten)) finalMeshes[index] = rewritten;
         }
 
-        // Palette compilation rewrites bone-index components and intentionally clears
-        // RawVertexRecord.Data. Re-encode every final mesh against the compiled stream
-        // contract before CanonicalUnitRebuilder appends vertex bytes to the GPU buffer.
-        var reencodedMeshes = new List<UnitRawMeshData>(finalMeshes.Count);
+        var bonePaletteElapsed = phaseStopwatch.Elapsed;
+        phaseStopwatch.Restart();
+
+        var streams = streamCompiler.TryCompile(targetModel, finalMeshes);
+        if (!streams.IsValid) return Failure(streams.Diagnostics, replacedCount, hiddenCount);
+        targetModel = targetModel with { Streams = streams.Streams };
+        var streamContractElapsed = phaseStopwatch.Elapsed;
+        phaseStopwatch.Restart();
+
+        // Palette compilation rewrites bone-index components. Encode the final vertex
+        // representation once, after both palette and stream layout are fixed.
+        var preparedMeshes = new List<UnitRawMeshData>(finalMeshes.Count);
         foreach (var raw in finalMeshes)
         {
             var stream = targetModel.Streams.Single(stream => stream.Index == (int)raw.StreamIndex);
             var prepared = preparation.TryPrepare(raw, stream);
             if (!prepared.IsValid || prepared.Mesh is null)
                 return Failure(prepared.Diagnostics, replacedCount, hiddenCount);
-            CanonicalPositionDiagnostics.RecordMesh("prepared-after-palette", prepared.Mesh, stream);
-            reencodedMeshes.Add(prepared.Mesh);
+            CanonicalPositionDiagnostics.RecordMesh("prepared-final", prepared.Mesh, stream);
+            preparedMeshes.Add(prepared.Mesh);
         }
-        finalMeshes = reencodedMeshes;
+        finalMeshes = preparedMeshes;
+        var finalPreparationElapsed = phaseStopwatch.Elapsed;
+        phaseStopwatch.Restart();
 
         var finalMaterialBindings = CanonicalMaterialBindingLayout.Build(
             targetModel.Materials,
@@ -242,9 +244,14 @@ public sealed class SameKeyCanonicalUnitRebuilder
         if (diagnostics.Count != 0)
             return new(null, replacedCount, hiddenCount, diagnostics);
 
+        var materialBindingsElapsed = phaseStopwatch.Elapsed;
+        phaseStopwatch.Restart();
         var rebuilt = unitRebuilder.TryRebuild(targetModel, request.Target.Payload.TocData, finalMeshes, rebuiltBones.Values.ToArray(), finalMaterialBindings);
         if (!rebuilt.IsValid || rebuilt.Output is null)
             return Failure(rebuilt.Diagnostics, replacedCount, hiddenCount);
+		var telemetry = new CanonicalUnitRebuildTelemetry(
+			transformExpansionElapsed, meshAssemblyElapsed, streamContractElapsed, TimeSpan.Zero,
+			bonePaletteElapsed, finalPreparationElapsed, materialBindingsElapsed, phaseStopwatch.Elapsed);
         var entry = new CanonicalPatchSessionEntry(
             request.Target.AssetKey,
             CanonicalPatchEntryOwnership.TargetOutput,
@@ -255,7 +262,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
             request.Target.Payload.Entry.Unknown2,
             request.Target.Payload.Entry.Unknown3,
             request.Target.Payload.Entry.Unknown4);
-        return new(PatchWorkspaceJobResult.Unit(entry, $"0x{request.Target.AssetKey.FileId:x16}"), replacedCount, hiddenCount, Array.Empty<CanonicalPlanDiagnostic>(), materialObservations);
+        return new(PatchWorkspaceJobResult.Unit(entry, $"0x{request.Target.AssetKey.FileId:x16}"), replacedCount, hiddenCount, Array.Empty<CanonicalPlanDiagnostic>(), materialObservations, telemetry);
     }
 
     private static UnitRawMeshData? FindRaw(UnitMeshModel model, int index, List<CanonicalPlanDiagnostic> diagnostics, string role)

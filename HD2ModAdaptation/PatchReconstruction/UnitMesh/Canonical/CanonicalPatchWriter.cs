@@ -36,7 +36,7 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 		ArgumentNullException.ThrowIfNull(session);
 		ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectoryPath);
 		ArgumentException.ThrowIfNullOrWhiteSpace(patchFileName);
-		if (!session.IsFinalized) throw new InvalidOperationException("Canonical patch writer accepts only finalized sessions.");
+		if (!session.IsFinalized || !session.IsValid) throw new InvalidOperationException("Canonical patch writer accepts only valid finalized sessions.");
 		if (session.DependencyClosureValidation != CanonicalDependencyClosureValidation.Valid)
 			throw new InvalidOperationException("Canonical patch writer requires a valid dependency closure.");
 		var entries = OrderEntries(session.Entries, headerTemplateTocData);
@@ -72,12 +72,12 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 				var streamData = entry.StreamData;
 				var gpuData = entry.GpuData;
 				var tocDataOffset = checked((ulong)toc.Position);
-				var tocLengthForEntry = tocData?.Length ?? checked((int)new FileInfo(entry.TocDataPath!).Length);
-				await WritePayloadAsync(toc, tocData, entry.TocDataPath, cancellationToken).ConfigureAwait(false);
-				var streamLengthForEntry = streamData?.Length ?? checked((int)new FileInfo(entry.StreamDataPath!).Length);
-				var streamOffset = await WriteAlignedAsync(stream, streamData, entry.StreamDataPath, cancellationToken).ConfigureAwait(false);
-				var gpuLengthForEntry = gpuData?.Length ?? checked((int)new FileInfo(entry.GpuDataPath!).Length);
-				var gpuOffset = await WriteAlignedAsync(gpu, gpuData, entry.GpuDataPath, cancellationToken).ConfigureAwait(false);
+				var tocLengthForEntry = GetPayloadLength(tocData, entry.TocDataPath, entry.TocDataSource);
+				await WritePayloadAsync(toc, tocData, entry.TocDataPath, entry.TocDataSource, cancellationToken).ConfigureAwait(false);
+				var streamLengthForEntry = GetPayloadLength(streamData, entry.StreamDataPath, entry.StreamDataSource);
+				var streamOffset = await WriteAlignedAsync(stream, streamData, entry.StreamDataPath, entry.StreamDataSource, cancellationToken).ConfigureAwait(false);
+				var gpuLengthForEntry = GetPayloadLength(gpuData, entry.GpuDataPath, entry.GpuDataSource);
+				var gpuOffset = await WriteAlignedAsync(gpu, gpuData, entry.GpuDataPath, entry.GpuDataSource, cancellationToken).ConfigureAwait(false);
 				var serialized = new PatchTocEntry(entry.Key, tocPath, patchFileName, tocDataOffset, streamOffset, gpuOffset, entry.Unknown1, entry.Unknown2,
 					checked((uint)tocLengthForEntry), checked((uint)streamLengthForEntry), checked((uint)gpuLengthForEntry), entry.Unknown3, entry.Unknown4, checked((uint)index + 1));
 				written.Add(serialized);
@@ -158,27 +158,52 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 		throw new InvalidDataException("Canonical header template is shorter than the supported TOC header layouts.");
 	}
 
-	private static async ValueTask<ulong> WriteAlignedAsync(FileStream file, byte[]? data, string? path, CancellationToken cancellationToken)
+	private static async ValueTask<ulong> WriteAlignedAsync(FileStream file, byte[]? data, string? path, CanonicalPayloadSourceRange? sourceRange, CancellationToken cancellationToken)
 	{
-		var length = data?.Length ?? (path is null ? 0 : checked((int)new FileInfo(path).Length));
+		var length = GetPayloadLength(data, path, sourceRange);
 		if (length == 0) return 0;
 		var padding = (Alignment - (int)(file.Position % Alignment)) % Alignment;
 		if (padding != 0) await file.WriteAsync(new byte[padding], cancellationToken).ConfigureAwait(false);
 		var offset = checked((ulong)file.Position);
-		await WritePayloadAsync(file, data, path, cancellationToken).ConfigureAwait(false);
+		await WritePayloadAsync(file, data, path, sourceRange, cancellationToken).ConfigureAwait(false);
 		return offset;
 	}
 
-	private static async ValueTask WritePayloadAsync(FileStream destination, byte[]? data, string? path, CancellationToken cancellationToken)
+	private static async ValueTask WritePayloadAsync(FileStream destination, byte[]? data, string? path, CanonicalPayloadSourceRange? sourceRange, CancellationToken cancellationToken)
 	{
 		if (data is not null)
 		{
 			await destination.WriteAsync(data, cancellationToken).ConfigureAwait(false);
 			return;
 		}
-		if (path is null) throw new InvalidDataException("Canonical payload has neither memory data nor staged file.");
-		await using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.SequentialScan | FileOptions.Asynchronous);
-		await source.CopyToAsync(destination, 65536, cancellationToken).ConfigureAwait(false);
+		if (path is not null)
+		{
+			await using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.SequentialScan | FileOptions.Asynchronous);
+			await source.CopyToAsync(destination, 65536, cancellationToken).ConfigureAwait(false);
+			return;
+		}
+		if (sourceRange is null) throw new InvalidDataException("Canonical payload has neither memory data, staged file, nor source range.");
+		await using var rangedSource = new FileStream(sourceRange.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.SequentialScan | FileOptions.Asynchronous);
+		if (sourceRange.Offset > (ulong)rangedSource.Length || sourceRange.Offset + sourceRange.Length > (ulong)rangedSource.Length)
+			throw new InvalidDataException("Canonical source payload range is outside its source file.");
+		rangedSource.Position = checked((long)sourceRange.Offset);
+		await CopyExactlyAsync(rangedSource, destination, sourceRange.Length, cancellationToken).ConfigureAwait(false);
+	}
+
+	private static int GetPayloadLength(byte[]? data, string? path, CanonicalPayloadSourceRange? sourceRange)
+		=> data?.Length ?? (path is not null ? checked((int)new FileInfo(path).Length) : checked((int)(sourceRange?.Length ?? 0)));
+
+	private static async ValueTask CopyExactlyAsync(Stream source, Stream destination, uint length, CancellationToken cancellationToken)
+	{
+		var buffer = new byte[checked((int)Math.Min(length, 65536u))];
+		var remaining = checked((int)length);
+		while (remaining > 0)
+		{
+			var read = await source.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining)), cancellationToken).ConfigureAwait(false);
+			if (read == 0) throw new EndOfStreamException("Canonical source payload ended before its declared range.");
+			await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+			remaining -= read;
+		}
 	}
 
 	private static void WriteEntry(byte[] data, PatchTocEntry entry)

@@ -43,6 +43,36 @@ public sealed class CanonicalPatchWriterTests : IDisposable
 	}
 
 	[Fact]
+	public async Task Writer_CopiesOnlyDeclaredSourcePayloadRanges()
+	{
+		Directory.CreateDirectory(directory);
+		var tocSource = Path.Combine(directory, "source.toc");
+		var gpuSource = Path.Combine(directory, "source.gpu");
+		var streamSource = Path.Combine(directory, "source.stream");
+		await File.WriteAllBytesAsync(tocSource, [99, 1, 2, 3, 88]);
+		await File.WriteAllBytesAsync(gpuSource, [77, 4, 5, 66]);
+		await File.WriteAllBytesAsync(streamSource, [55, 6, 44]);
+		var session = new CanonicalPatchSession();
+		session.AddEntry(new CanonicalPatchSessionEntry(new AssetKey(1, 2), CanonicalPatchEntryOwnership.TargetOutput)
+		{
+			TocDataSource = new CanonicalPayloadSourceRange(tocSource, 1, 3),
+			GpuDataSource = new CanonicalPayloadSourceRange(gpuSource, 1, 2),
+			StreamDataSource = new CanonicalPayloadSourceRange(streamSource, 1, 1)
+		});
+		Assert.True(session.Finalize(CanonicalDependencyClosureValidation.Valid).IsValid);
+
+		var result = await new CanonicalPatchWriter().WriteAsync(session, directory, "range.patch_0").AsTask();
+		var entry = Assert.Single(await new PatchTocScanner().ScanEntriesAsync(result.TocFilePath));
+		var toc = await File.ReadAllBytesAsync(result.TocFilePath);
+		var gpu = await File.ReadAllBytesAsync(result.GpuResourceFilePath);
+		var stream = await File.ReadAllBytesAsync(result.StreamFilePath);
+
+		Assert.Equal([1, 2, 3], toc.AsSpan((int)entry.TocDataOffset, (int)entry.TocDataSize).ToArray());
+		Assert.Equal([4, 5], gpu.AsSpan((int)entry.GpuResourceOffset, (int)entry.GpuResourceSize).ToArray());
+		Assert.Equal([6], stream.AsSpan((int)entry.StreamOffset, (int)entry.StreamSize).ToArray());
+	}
+
+	[Fact]
 	public async Task Writer_UsesSdk72ByteHeaderAndMinimumTocLength()
 	{
 		var session = new CanonicalPatchSession();

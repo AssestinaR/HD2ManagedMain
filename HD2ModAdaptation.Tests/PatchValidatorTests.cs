@@ -47,6 +47,26 @@ public sealed class PatchValidatorTests : IDisposable
 	}
 
 	[Fact]
+	public async Task ValidateAsync_ReportsMissingEligibleSourceUnitWithoutReadingOutputPayloads()
+	{
+		var sourcePatch = Path.Combine(directory, "source.patch_0");
+		var outputPatch = Path.Combine(directory, "output.patch_0");
+		var sourceKey = new AssetKey(PatchUnitMeshReader.UnitTypeId, 2);
+		var sourceToc = CreateInlineUnitToc();
+		await File.WriteAllBytesAsync(sourcePatch, CreatePatch([new PatchTocEntry(sourceKey, sourcePatch, Path.GetFileName(sourcePatch), TocDataSize: (uint)sourceToc.Length)], sourceToc));
+		await File.WriteAllBytesAsync(outputPatch, CreatePatch(new PatchTocEntry(new AssetKey(1, 3), outputPatch, Path.GetFileName(outputPatch), TocDataSize: 1)));
+
+		var result = await new PatchValidator().ValidateAsync(outputPatch, new PatchValidationOptions(
+			ReadUnitPayloads: false,
+			SourcePatchTocFilePath: sourcePatch,
+			RequireSourceGeometryPreservation: true,
+			SourceGeometryPreservationUnitKeys: new HashSet<AssetKey> { sourceKey }));
+
+		Assert.False(result.IsValid);
+		Assert.Contains(result.Issues, issue => issue.Code == "SourceUnitMissing" && issue.AssetKey == sourceKey);
+	}
+
+	[Fact]
 	public async Task ValidateAsync_ReportsExpectedVersionAsWarningOrError()
 	{
 		var patch = Path.Combine(directory, "version.patch_0");

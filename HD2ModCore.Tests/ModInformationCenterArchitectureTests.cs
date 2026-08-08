@@ -25,6 +25,55 @@ public sealed class ModInformationCenterArchitectureTests
 		Assert.Empty(violations);
 	}
 
+	[Fact]
+	public void CanonicalToolOperationsUseTheSharedPatchOperationWorkspace()
+	{
+		var root = FindRepositoryRoot();
+		var sameKey = File.ReadAllText(Path.Combine(root, "HD2ModCore", "Infrastructure", "CanonicalSameKeyReconstructionService.cs"));
+		var crossArmor = File.ReadAllText(Path.Combine(root, "HD2ModCore", "Infrastructure", "CanonicalCrossArmorOrchestrator.cs"));
+
+		Assert.Contains("IPatchOperationWorkspaceFactory", sameKey);
+		Assert.Contains("operationWorkspace.Stage(rebuilt.Job)", sameKey);
+		Assert.Contains("IPatchOperationWorkspaceFactory", crossArmor);
+		Assert.Contains("operationWorkspace.Stage(outputTargetEntry)", crossArmor);
+		Assert.DoesNotContain("StagePayloads(", crossArmor);
+	}
+
+	[Fact]
+	public void SharedPatchWriterPreservesUntouchedPayloadsAsSourceRanges()
+	{
+		var root = FindRepositoryRoot();
+		var writer = File.ReadAllText(Path.Combine(root, "HD2ModAdaptation", "PatchReconstruction", "PatchWorkspace", "PatchWorkspaceWriter.cs"));
+
+		Assert.Contains("CanonicalPayloadSourceRange", writer);
+		Assert.DoesNotContain("private static byte[] ReadPayload", writer);
+	}
+
+	[Fact]
+	public void PatchValidatorStreamsSourceGeometryComparisonPerUnit()
+	{
+		var root = FindRepositoryRoot();
+		var validator = File.ReadAllText(Path.Combine(root, "HD2ModAdaptation", "PatchReconstruction", "Validation", "PatchValidator.cs"));
+
+		Assert.Contains("ValidateSourceGeometryForUnitAsync", validator);
+		Assert.DoesNotContain("Dictionary<AssetKey, PatchUnitMesh>", validator);
+	}
+
+	[Fact]
+	public void SameKeyPlanningUsesCachedFactsAndDoesNotDecodeUnitPayloads()
+	{
+		var root = FindRepositoryRoot();
+		var source = File.ReadAllText(Path.Combine(root, "HD2ModCore", "Infrastructure", "CanonicalSameKeyReconstructionService.cs"));
+		var start = source.IndexOf("private async ValueTask<SameKeyReconstructionPlan> PlanAsync", StringComparison.Ordinal);
+		var end = source.IndexOf("private static IReadOnlyList<TargetShellMeshMapping> BuildMappings", StringComparison.Ordinal);
+
+		Assert.True(start >= 0 && end > start, "Unable to isolate Same-key planning implementation.");
+		var planning = source[start..end];
+		Assert.Contains("analysis?.Entries", planning);
+		Assert.DoesNotContain("sourceReader.ReadAsync", planning);
+		Assert.DoesNotContain("targetReader.ReadAsync", planning);
+	}
+
 	private static string FindRepositoryRoot()
 	{
 		var directory = new DirectoryInfo(AppContext.BaseDirectory);

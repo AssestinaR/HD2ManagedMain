@@ -16,6 +16,9 @@ public enum CanonicalDependencyClosureValidation
 	Valid = 1
 }
 
+// Purpose: Identifies an unmodified source payload without forcing it into memory.
+public sealed record CanonicalPayloadSourceRange(string FilePath, ulong Offset, uint Length);
+
 public sealed record CanonicalPatchSessionEntry(
 	AssetKey Key,
 	CanonicalPatchEntryOwnership Ownership,
@@ -30,14 +33,25 @@ public sealed record CanonicalPatchSessionEntry(
 	public string? TocDataPath { get; init; }
 	public string? GpuDataPath { get; init; }
 	public string? StreamDataPath { get; init; }
-	public byte[] EffectiveTocData => TocData ?? ReadPayload(TocDataPath, "TocData");
-	public byte[] EffectiveGpuData => GpuData ?? ReadPayload(GpuDataPath, "GpuData");
-	public byte[] EffectiveStreamData => StreamData ?? ReadPayload(StreamDataPath, "StreamData");
+	public CanonicalPayloadSourceRange? TocDataSource { get; init; }
+	public CanonicalPayloadSourceRange? GpuDataSource { get; init; }
+	public CanonicalPayloadSourceRange? StreamDataSource { get; init; }
+	public byte[] EffectiveTocData => TocData ?? ReadPayload(TocDataPath, TocDataSource, "TocData");
+	public byte[] EffectiveGpuData => GpuData ?? ReadPayload(GpuDataPath, GpuDataSource, "GpuData");
+	public byte[] EffectiveStreamData => StreamData ?? ReadPayload(StreamDataPath, StreamDataSource, "StreamData");
 
-	private byte[] ReadPayload(string? path, string name)
-		=> path is null
-			? throw new InvalidOperationException($"Canonical entry {Key} has no {name} payload.")
-			: File.ReadAllBytes(path);
+	private byte[] ReadPayload(string? path, CanonicalPayloadSourceRange? source, string name)
+	{
+		if (path is not null) return File.ReadAllBytes(path);
+		if (source is null) throw new InvalidOperationException($"Canonical entry {Key} has no {name} payload.");
+		using var stream = new FileStream(source.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+		if (source.Offset > (ulong)stream.Length || source.Offset + source.Length > (ulong)stream.Length)
+			throw new InvalidDataException($"Canonical entry {Key} has an invalid {name} source range.");
+		stream.Position = checked((long)source.Offset);
+		var data = new byte[checked((int)source.Length)];
+		stream.ReadExactly(data);
+		return data;
+	}
 }
 
 public sealed record CanonicalPatchSessionValidation(
@@ -53,6 +67,7 @@ public sealed class CanonicalPatchSession
 
 	public IReadOnlyList<CanonicalPatchSessionEntry> Entries => entries;
 	public bool IsFinalized => isFinalized;
+	public bool IsValid { get; private set; }
 	public CanonicalDependencyClosureValidation DependencyClosureValidation => dependencyClosureValidation;
 
 	public void AddEntry(CanonicalPatchSessionEntry entry)
@@ -91,11 +106,12 @@ public sealed class CanonicalPatchSession
 			diagnostics.Add(new("MissingTargetOutput", "Canonical patch session finalization requires at least one TargetOutput entry."));
 		foreach (var entry in entries)
 		{
-			if ((entry.TocData is null && entry.TocDataPath is null)
-				|| (entry.GpuData is null && entry.GpuDataPath is null)
-				|| (entry.StreamData is null && entry.StreamDataPath is null))
+			if ((entry.TocData is null && entry.TocDataPath is null && entry.TocDataSource is null)
+				|| (entry.GpuData is null && entry.GpuDataPath is null && entry.GpuDataSource is null)
+				|| (entry.StreamData is null && entry.StreamDataPath is null && entry.StreamDataSource is null))
 				diagnostics.Add(new("MissingEntryPayload", $"Canonical entry {entry.Key} must own TocData, GpuData, and StreamData."));
 		}
-		return new(diagnostics.Count == 0, diagnostics, dependencyClosureValidation);
+		IsValid = diagnostics.Count == 0;
+		return new(IsValid, diagnostics, dependencyClosureValidation);
 	}
 }

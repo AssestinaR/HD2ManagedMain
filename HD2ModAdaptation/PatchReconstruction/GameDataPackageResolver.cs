@@ -14,7 +14,6 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 	private readonly string gameDataDirectory;
 	private readonly Dictionary<string, PackageInfo> packages = new(StringComparer.OrdinalIgnoreCase);
 	private readonly Dictionary<string, Dictionary<long, int>> chunkOffsets = new(StringComparer.OrdinalIgnoreCase);
-	private readonly Dictionary<string, byte[]> reconstructedPackages = new(StringComparer.OrdinalIgnoreCase);
 	private bool initialized;
 
 	public GameDataPackageResolver(string gameDataDirectory)
@@ -23,10 +22,9 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 		this.gameDataDirectory = Path.GetFullPath(gameDataDirectory);
 	}
 
-	// Purpose: Releases reconstructed archive byte arrays before a later dependency phase.
+	// Purpose: Releases archive metadata caches before a later dependency phase.
 	public void ClearCaches()
 	{
-		reconstructedPackages.Clear();
 		chunkOffsets.Clear();
 		packages.Clear();
 		initialized = false;
@@ -120,31 +118,38 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 			.ToArray();
 	}
 
-	private async ValueTask<byte[]?> ReconstructPackageAsync(string packageName, CancellationToken cancellationToken)
-	{
-		await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-		if (reconstructedPackages.TryGetValue(packageName, out var cached)) return cached;
-		if (!packages.TryGetValue(packageName, out var package) || package.Entries.Count == 0) return null;
-		var data = new byte[checked((int)package.Size)];
-		var entries = package.Entries.OrderBy(entry => entry.ArchiveOffset).ToArray();
-		for (var index = 0; index < entries.Length; index++)
-		{
-			var entry = entries[index];
-			var nextOffset = index + 1 < entries.Length ? entries[index + 1].ArchiveOffset : package.Size;
-			var size = checked((int)(nextOffset - entry.ArchiveOffset));
-			if (size <= 0) continue;
-			var resources = await ReadBundledResourcesAsync(Path.Combine(gameDataDirectory, $"bundles.{entry.BundleIndex:00}.nxa"), entry.BundleOffset, size, cancellationToken).ConfigureAwait(false);
-			var combined = Combine(resources); Buffer.BlockCopy(combined, 0, data, checked((int)entry.ArchiveOffset), Math.Min(combined.Length, size));
-		}
-		reconstructedPackages[packageName] = data;
-		return data;
-	}
-
 	private async ValueTask<byte[]?> ReadBundledResourceAsync(string packageName, long offset, uint size, CancellationToken cancellationToken)
 	{
-		var data = await ReconstructPackageAsync(packageName, cancellationToken).ConfigureAwait(false);
-		if (data is null || offset < 0 || offset + size > data.Length) return null;
-		return data.AsSpan(checked((int)offset), checked((int)size)).ToArray();
+		await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+		if (!packages.TryGetValue(packageName, out var package) || offset < 0 || offset + size > package.Size) return null;
+
+		// A target Unit only needs a few payload ranges. Reconstructing and retaining the
+		// whole bundled archive per touched package made batch operations retain gigabytes.
+		var result = new byte[checked((int)size)];
+		var entries = package.Entries.OrderBy(entry => entry.ArchiveOffset).ToArray();
+		var resourceEnd = checked(offset + (long)size);
+		for (var index = 0; index < entries.Length; index++)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var entry = entries[index];
+			var entryEnd = index + 1 < entries.Length ? entries[index + 1].ArchiveOffset : package.Size;
+			var copyStart = Math.Max(offset, entry.ArchiveOffset);
+			var copyEnd = Math.Min(resourceEnd, entryEnd);
+			if (copyStart >= copyEnd) continue;
+
+			var entrySize = checked((int)(entryEnd - entry.ArchiveOffset));
+			var resources = await ReadBundledResourcesAsync(
+				Path.Combine(gameDataDirectory, $"bundles.{entry.BundleIndex:00}.nxa"),
+				entry.BundleOffset,
+				entrySize,
+				cancellationToken).ConfigureAwait(false);
+			var decodedEntry = Combine(resources);
+			var sourceOffset = checked((int)(copyStart - entry.ArchiveOffset));
+			var count = checked((int)(copyEnd - copyStart));
+			if (sourceOffset + count > decodedEntry.Length) return null;
+			Buffer.BlockCopy(decodedEntry, sourceOffset, result, checked((int)(copyStart - offset)), count);
+		}
+		return result;
 	}
 
 	private async ValueTask<IReadOnlyList<byte[]>> ReadBundledResourcesAsync(string path, long offset, int size, CancellationToken cancellationToken)
