@@ -11,6 +11,13 @@ using System.Windows.Threading;
 
 namespace HD2ModManager.Services
 {
+    // Purpose: Separates structural task changes from high-frequency live progress updates.
+    public sealed class BackgroundTaskChangedEventArgs : EventArgs
+    {
+        public BackgroundTaskChangedEventArgs(bool requiresProjectionRefresh) => RequiresProjectionRefresh = requiresProjectionRefresh;
+        public bool RequiresProjectionRefresh { get; }
+    }
+
     // 作用：集中记录管理器后台任务，为状态页和任务详情窗口提供可观察数据。
     public enum BackgroundTaskStatus
     {
@@ -42,6 +49,8 @@ namespace HD2ModManager.Services
         private string? _error;
         private double? _progress;
         private bool _isSelected;
+        private string? _outputDirectory;
+        private string? _reportPath;
         private readonly CancellationTokenSource _cancellation = new();
         private readonly bool _canCancel;
 
@@ -73,6 +82,10 @@ namespace HD2ModManager.Services
         public string ProgressText => Progress is null ? string.Empty : $"{Progress.Value:P0}";
         public bool HasProgress => Progress is not null;
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
+        public string? OutputDirectory { get => _outputDirectory; private set => SetField(ref _outputDirectory, value); }
+        public string? ReportPath { get => _reportPath; private set => SetField(ref _reportPath, value); }
+        public bool HasOutputDirectory => !string.IsNullOrWhiteSpace(OutputDirectory);
+        public bool HasReport => !string.IsNullOrWhiteSpace(ReportPath);
         public bool IsActive => Status is BackgroundTaskStatus.Queued or BackgroundTaskStatus.Running;
         public CancellationToken CancellationToken => _cancellation.Token;
         public bool CanCancel => _canCancel && !IsInformationCenter && IsActive;
@@ -152,6 +165,18 @@ namespace HD2ModManager.Services
             OnPropertyChanged(nameof(SuggestedAction));
         }
 
+        public void SetOutputArtifacts(string? outputDirectory, string? reportPath)
+        {
+            OutputDirectory = !string.IsNullOrWhiteSpace(outputDirectory) && System.IO.Directory.Exists(outputDirectory)
+                ? outputDirectory
+                : null;
+            ReportPath = !string.IsNullOrWhiteSpace(reportPath) && System.IO.File.Exists(reportPath)
+                ? reportPath
+                : null;
+            OnPropertyChanged(nameof(HasOutputDirectory));
+            OnPropertyChanged(nameof(HasReport));
+        }
+
         public void MarkCompleted()
         {
             Status = BackgroundTaskStatus.Completed;
@@ -217,6 +242,7 @@ namespace HD2ModManager.Services
         private readonly ObservableCollection<BackgroundTaskItem> _tasks = new();
         private readonly Dispatcher? _dispatcher = Application.Current?.Dispatcher;
         private int _changeQueued;
+        private int _projectionRefreshPending;
         public ReadOnlyObservableCollection<BackgroundTaskItem> Tasks { get; }
 
         public BackgroundTaskService()
@@ -225,7 +251,7 @@ namespace HD2ModManager.Services
             _tasks.CollectionChanged += OnTasksChanged;
         }
 
-        public event EventHandler? Changed;
+        public event EventHandler<BackgroundTaskChangedEventArgs>? Changed;
 
         public BackgroundTaskItem Enqueue(
             BackgroundTaskKind kind,
@@ -263,14 +289,21 @@ namespace HD2ModManager.Services
 
         public ReadOnlyObservableCollection<BackgroundTaskItem> Snapshot => Tasks;
 
-        private void OnTasksChanged(object? sender, NotifyCollectionChangedEventArgs e) => QueueChanged();
-        private void OnTaskPropertyChanged(object? sender, PropertyChangedEventArgs e) => QueueChanged();
+        private void OnTasksChanged(object? sender, NotifyCollectionChangedEventArgs e) => QueueChanged(true);
 
-        private void QueueChanged()
+        private void OnTaskPropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
+            // Live fields are already observed by MessageCenterItem. They do not require a second
+            // dispatcher pass to rebuild task projections.
+            if (RequiresProjectionRefresh(e.PropertyName)) QueueChanged(true);
+        }
+
+        private void QueueChanged(bool requiresProjectionRefresh)
+        {
+            if (requiresProjectionRefresh) Interlocked.Exchange(ref _projectionRefreshPending, 1);
             if (_dispatcher is null)
             {
-                Changed?.Invoke(this, EventArgs.Empty);
+                Changed?.Invoke(this, new BackgroundTaskChangedEventArgs(requiresProjectionRefresh));
                 return;
             }
 
@@ -278,9 +311,19 @@ namespace HD2ModManager.Services
             _ = _dispatcher.BeginInvoke(new Action(() =>
             {
                 Interlocked.Exchange(ref _changeQueued, 0);
-                Changed?.Invoke(this, EventArgs.Empty);
+                var projectionRefresh = Interlocked.Exchange(ref _projectionRefreshPending, 0) != 0;
+                Changed?.Invoke(this, new BackgroundTaskChangedEventArgs(projectionRefresh));
             }), System.Windows.Threading.DispatcherPriority.Background);
         }
+
+        private static bool RequiresProjectionRefresh(string? propertyName)
+            => propertyName is nameof(BackgroundTaskItem.Status)
+                or nameof(BackgroundTaskItem.IsActive)
+                or nameof(BackgroundTaskItem.StatusText)
+                or nameof(BackgroundTaskItem.CanCancel)
+                or nameof(BackgroundTaskItem.CanRetry)
+                or nameof(BackgroundTaskItem.HasReport)
+                or nameof(BackgroundTaskItem.HasOutputDirectory);
 
         private static void RunOnUi(Action action)
         {

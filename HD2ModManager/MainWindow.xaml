@@ -270,36 +270,58 @@
                 </Grid>
             </Border>
 
-            <Border x:Name="MessageCenterPanel" Style="{StaticResource AppElevatedPanel}" HorizontalAlignment="Right" VerticalAlignment="Top" Width="420" MaxHeight="560" Margin="0,0,4,0"
-                    Padding="3" Panel.ZIndex="20" RenderTransformOrigin="0.5,0"
+            <Border x:Name="MessageCenterPanel" Style="{StaticResource AppElevatedPanel}" HorizontalAlignment="Right" VerticalAlignment="Top" Width="440" MaxHeight="620" Margin="0,0,4,0"
+                    Padding="8" Panel.ZIndex="20" RenderTransformOrigin="0.5,0"
                     Visibility="Collapsed">
                 <Border.RenderTransform><TranslateTransform Y="0"/></Border.RenderTransform>
+                <Border.Resources>
+                    <DataTemplate x:Key="MessageTaskTemplate">
+                        <Border Padding="6,5" Margin="0,1" Background="Transparent" MouseLeftButtonUp="OnMessageItemClick">
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <Path Grid.RowSpan="2" Width="14" Height="14" VerticalAlignment="Center" Data="M7,1.5 A5.5,5.5 0 1 0 7,12.5 A5.5,5.5 0 1 0 7,1.5 M7,4 L7,7.5 M7,9.5 L7,9.7" Stroke="{StaticResource Accent}" StrokeThickness="1.3" StrokeStartLineCap="Round"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                <StackPanel Grid.Row="0" Grid.RowSpan="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="取消任务" Command="{Binding DataContext.CancelTaskCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}"><Path Width="12" Height="12" Data="M2,2 L10,2 10,10 2,10 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.3"/></Button>
+                                    <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="重试任务" Command="{Binding DataContext.RetryTaskCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding CanRetry, Converter={StaticResource BoolToVis}}"><Path Width="12" Height="12" Data="M10,4 A4,4 0 1 0 10,9 M10,4 L10,1.5 M10,4 L7.5,4" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Button>
+                                    <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="打开报告" Command="{Binding DataContext.OpenTaskReportCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding HasReport, Converter={StaticResource BoolToVis}}"><Path Width="12" Height="14" Data="M3,1 L8,1 11,4 L11,13 3,13 Z M8,1 L8,4 11,4 M4.5,7 L9.5,7 M4.5,10 L8.5,10" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.2" StrokeLineJoin="Round"/></Button>
+                                    <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="打开输出目录" Command="{Binding DataContext.OpenTaskOutputCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding HasOutputDirectory, Converter={StaticResource BoolToVis}}"><Path Width="14" Height="12" Data="M1,3 L5.5,3 7,4.5 13,4.5 13,11.5 1,11.5 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.2" StrokeLineJoin="Round"/></Button>
+                                </StackPanel>
+                                <TextBlock Grid.Row="1" Grid.Column="1" Foreground="{StaticResource TextSecondary}" FontSize="11" Text="{Binding Detail}" TextTrimming="CharacterEllipsis" Margin="0,2,4,0"/>
+                                <ProgressBar Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Value="{Binding Progress, Mode=OneWay}" Maximum="1" Height="3" Margin="0,21,4,0" Visibility="{Binding HasProgress, Converter={StaticResource BoolToVis}}"/>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                    <DataTemplate x:Key="MessageNotificationTemplate">
+                        <Border Padding="6,5" Margin="0,1" Background="Transparent" MouseLeftButtonUp="OnMessageItemClick">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Path Width="14" Height="14" VerticalAlignment="Top" Margin="0,2,0,0" Data="M7,1.5 A5.5,5.5 0 1 0 7,12.5 A5.5,5.5 0 1 0 7,1.5 M7,4 L7,7.5 M7,9.5 L7,9.7" Stroke="{StaticResource Accent}" StrokeThickness="1.3" StrokeStartLineCap="Round"/>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="{Binding Title}" TextWrapping="Wrap" MaxHeight="42" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding Detail}" Foreground="{StaticResource TextSecondary}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </Border.Resources>
                 <Grid>
 					<Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-					<DockPanel Margin="4,2,2,2">
-						<TextBlock Text="消息" FontWeight="SemiBold" VerticalAlignment="Center"/>
+					<DockPanel Margin="4,2,2,6">
+						<TextBlock Text="消息中心" FontWeight="SemiBold" VerticalAlignment="Center"/>
+						<TextBlock Text="运行任务与最近事件" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="10,0,0,0" VerticalAlignment="Center"/>
 					</DockPanel>
-                    <ListBox Grid.Row="1" x:Name="MessageList" ItemsSource="{Binding MessageItems}" Style="{StaticResource ModListBox}" BorderThickness="0" SelectionMode="Single" Loaded="OnMessageListLoaded" Padding="0">
-                        <ListBox.ItemTemplate>
-                            <DataTemplate>
-                                <Border Style="{StaticResource ModListRowContainer}" Height="Auto" Padding="5,4" Margin="0,1"
-                                    MouseLeftButtonUp="OnMessageItemClick">
-                                    <Grid>
-                                        <Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                        <Path Grid.Column="0" Width="16" Height="16" VerticalAlignment="Center" Data="M8,2 A6,6 0 1 0 8,14 A6,6 0 1 0 8,2 M8,5 L8,9 M8,11 L8,11.2" Stroke="{StaticResource Accent}" StrokeThickness="1.4" StrokeStartLineCap="Round"/>
-                                        <StackPanel Grid.Column="1">
-                                            <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Text="{Binding Detail}" Foreground="{StaticResource TextSecondary}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
-                                        </StackPanel>
-                                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                                            <Button Style="{StaticResource AppQuietButton}" Content="取消" Command="{Binding DataContext.CancelTaskCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}"/>
-                                            <Button Style="{StaticResource AppQuietButton}" Content="重试" Command="{Binding DataContext.RetryTaskCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding CanRetry, Converter={StaticResource BoolToVis}}"/>
-                                        </StackPanel>
-                                    </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel>
+                            <TextBlock Text="运行中任务" FontWeight="SemiBold" FontSize="12" Margin="4,4,4,2"/>
+                            <ItemsControl ItemsSource="{Binding ActiveMessageTasks}" ItemTemplate="{StaticResource MessageTaskTemplate}"/>
+                            <TextBlock Text="需要注意" FontWeight="SemiBold" FontSize="12" Margin="4,12,4,2"/>
+                            <ItemsControl ItemsSource="{Binding AttentionMessageItems}" ItemTemplate="{StaticResource MessageTaskTemplate}"/>
+                            <TextBlock Text="最近消息" FontWeight="SemiBold" FontSize="12" Margin="4,12,4,2"/>
+                            <ItemsControl ItemsSource="{Binding RecentMessageItems}" ItemTemplate="{StaticResource MessageTaskTemplate}"/>
+                        </StackPanel>
+                    </ScrollViewer>
                 </Grid>
             </Border>
 

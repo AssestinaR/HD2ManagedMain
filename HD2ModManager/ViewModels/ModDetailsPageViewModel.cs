@@ -28,7 +28,6 @@ namespace HD2ModManager.ViewModels
         private readonly BackgroundTaskService? _backgroundTasks;
         private readonly IMaterialPackagingApplicationService _materialPackaging;
         private readonly IMaterialDeliveryFactsService _materialDeliveryFacts;
-		private readonly IModSameKeyReconstructionService _sameKeyReconstruction;
         private readonly IEquipmentUnitCatalogService _equipmentUnitCatalog;
         private readonly IAdvancedModAnalysisService _advancedAnalysis;
         private readonly ISourceUnitEligibilityService _sourceUnitEligibility;
@@ -127,7 +126,6 @@ namespace HD2ModManager.ViewModels
             _paths = SettingsService.CreateStoragePaths();
 			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService();
             _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(_paths, _derivedState.InformationCenter);
-            _sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(_paths, _derivedState.InformationCenter);
             _equipmentUnitCatalog = CoreServices.CreateEquipmentUnitCatalogService(_paths);
             _advancedAnalysis = CoreServices.CreateAdvancedModAnalysisService(_paths, _derivedState.InformationCenter);
             _sourceUnitEligibility = CoreServices.CreateSourceUnitEligibilityService();
@@ -1015,14 +1013,16 @@ namespace HD2ModManager.ViewModels
                     ?? (System.Windows.Application.Current?.Dispatcher is { } dispatcher
                         ? new System.Windows.Threading.DispatcherSynchronizationContext(dispatcher)
                         : new SynchronizationContext());
-                var bridge = task is null ? null : new OperationProgressBridge(new BackgroundTaskOperationTarget(task), operationId, uiContext, notifications: _notifications, notificationKey: $"same-key:{operationId:N}");
-                var result = await Task.Run(() => _sameKeyReconstruction.GenerateCandidateAsync(
+                var bridge = task is null ? null : new OperationProgressBridge(new BackgroundTaskOperationTarget(task), operationId, uiContext);
+                var sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(_paths, _derivedState.InformationCenter);
+                var result = await Task.Run(() => sameKeyReconstruction.GenerateCandidateAsync(
                     source,
                     _library.ModsRootDirectory,
                     SettingsService.GetGameDataFolder(),
-                    destination, task?.CancellationToken ?? CancellationToken.None, bridge is null ? null : new Progress<OperationProgressEvent>(bridge.Apply), operationId).AsTask());
+                    destination, task?.CancellationToken ?? CancellationToken.None, bridge is null ? null : new InlineProgress<OperationProgressEvent>(bridge.Apply), operationId).AsTask());
                 if (!result.IsSuccessful)
                 {
+                    task?.SetOutputArtifacts(result.OutputDirectory, result.ReportMarkdownPath);
                     task?.MarkFailed(string.Join("；", result.Issues.Select(issue => issue.Message).Take(3)));
                     SameKeyReconstructionSummary = $"重建失败：{string.Join("；", result.Issues.Select(issue => issue.Message).Take(3))}";
                     LogService.Error($"修复 patch 失败：Mod={source.Metadata.Name}，输出={destination}，问题={string.Join(" | ", result.Issues.Select(issue => $"{issue.Code}: {issue.Message}"))}");
@@ -1031,12 +1031,14 @@ namespace HD2ModManager.ViewModels
                 }
 
                 SameKeyReconstructionSummary = $"重建完成：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。输出：{result.OutputDirectory}";
+                task?.SetOutputArtifacts(result.OutputDirectory, result.ReportMarkdownPath);
                 task?.MarkCompleted();
                 LogService.Info($"修复 patch 完成：Mod={source.Metadata.Name}，Unit={result.OutputUnitCount}，替换Mesh={result.ReplacementMeshCount}，极小化Mesh={result.MinifiedMeshCount}，输出={result.OutputDirectory}。");
                 if (bridge is null) _notifications?.Show("Same-key 重建结果已写入 Output 文件夹。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException or KeyNotFoundException)
             {
+                task?.SetOutputArtifacts(destination, Path.Combine(destination, "canonical-report.md"));
                 task?.MarkFailed(exception.Message);
                 SameKeyReconstructionSummary = $"重建失败：{exception.Message}";
                 LogService.Error($"修复 patch 异常：Mod={source.Metadata.Name}，输出={destination}，错误={exception}");

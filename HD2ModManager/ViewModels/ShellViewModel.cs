@@ -79,8 +79,10 @@ namespace HD2ModManager.ViewModels
         public WorkspacePageType RightPageType { get => _rightPageType; private set { if (SetField(ref _rightPageType, value)) RaiseSlotFlags(); } }
         public string? SelectedModId { get => _selectedModId; private set => SetField(ref _selectedModId, value); }
         public bool IsMessagePanelOpen { get => _isMessagePanelOpen; private set => SetField(ref _isMessagePanelOpen, value); }
-        public ReadOnlyObservableCollection<MessageCenterItem> MessageItems => _messageCenter.Items;
-        public MessageCenterItem? LatestMessageItem => _messageCenter.Items.LastOrDefault();
+        public ReadOnlyObservableCollection<MessageCenterItem> ActiveMessageTasks => _messageCenter.ActiveTasks;
+        public ReadOnlyObservableCollection<MessageCenterItem> AttentionMessageItems => _messageCenter.AttentionItems;
+        public ReadOnlyObservableCollection<MessageCenterItem> RecentMessageItems => _messageCenter.RecentNotifications;
+        public MessageCenterItem? LatestMessageItem => _messageCenter.PreviewItem;
         public int ActiveTaskCount => _backgroundTasks.CountQueued + _backgroundTasks.CountRunning;
         public bool HasUnreadTaskHubEvents => false;
         public bool IsMessagePreviewOpen { get => _isMessagePreviewOpen; private set => SetField(ref _isMessagePreviewOpen, value); }
@@ -100,6 +102,8 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ToggleMessagePanelCommand { get; }
         public RelayCommand CancelTaskCommand { get; }
         public RelayCommand RetryTaskCommand { get; }
+        public RelayCommand OpenTaskReportCommand { get; }
+        public RelayCommand OpenTaskOutputCommand { get; }
         public RelayCommand CopyMessageCommand { get; }
 
         public bool IsHomeActive => CurrentMode == WorkspaceMode.Home;
@@ -175,8 +179,9 @@ namespace HD2ModManager.ViewModels
             };
             _libraryService.SnapshotChanged += (_, _) => QueueLibrarySnapshotChanged();
             _derivedState.SnapshotChanged += (_, _) => QueueCurrentPageRefresh("派生状态变更");
-            _backgroundTasks.Changed += (_, _) => RefreshOnUiThread(() =>
+            _backgroundTasks.Changed += (_, args) => RefreshOnUiThread(() =>
             {
+                if (!args.RequiresProjectionRefresh) return;
                 RefreshTaskHubState();
                 ShowMessagePreview();
             });
@@ -203,6 +208,8 @@ namespace HD2ModManager.ViewModels
             ToggleMessagePanelCommand = new RelayCommand(ToggleMessagePanel);
             CancelTaskCommand = new RelayCommand(CancelTask, task => task is BackgroundTaskItem { CanCancel: true });
             RetryTaskCommand = new RelayCommand(async task => await RetryTaskAsync(task), task => task is BackgroundTaskItem { CanRetry: true });
+            OpenTaskReportCommand = new RelayCommand(OpenTaskReport, task => task is BackgroundTaskItem { HasReport: true });
+            OpenTaskOutputCommand = new RelayCommand(OpenTaskOutput, task => task is BackgroundTaskItem { HasOutputDirectory: true });
             CopyMessageCommand = new RelayCommand(CopyMessage, item => item is MessageCenterItem);
             _selection.SelectionChanged += (_, _) => RaiseSelectionFlags();
 
@@ -365,6 +372,11 @@ namespace HD2ModManager.ViewModels
         private async void ShowMessagePreview()
         {
             if (IsMessagePanelOpen) return;
+            if (LatestMessageItem is null)
+            {
+                IsMessagePreviewOpen = false;
+                return;
+            }
             IsMessagePreviewOpen = true;
             _messagePreviewCancellation?.Cancel();
             _messagePreviewCancellation?.Dispose();
@@ -902,13 +914,27 @@ namespace HD2ModManager.ViewModels
             await retry();
         }
 
+        private static void OpenTaskReport(object? parameter) => OpenPath((parameter as BackgroundTaskItem)?.ReportPath);
+
+        private static void OpenTaskOutput(object? parameter) => OpenPath((parameter as BackgroundTaskItem)?.OutputDirectory);
+
+        private static void OpenPath(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !System.IO.File.Exists(path) && !System.IO.Directory.Exists(path)) return;
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+
         private void RefreshTaskHubState()
         {
-            OnPropertyChanged(nameof(MessageItems));
+            OnPropertyChanged(nameof(ActiveMessageTasks));
+            OnPropertyChanged(nameof(AttentionMessageItems));
+            OnPropertyChanged(nameof(RecentMessageItems));
             OnPropertyChanged(nameof(ActiveTaskCount));
             OnPropertyChanged(nameof(HasUnreadTaskHubEvents));
             CancelTaskCommand.RaiseCanExecuteChanged();
             RetryTaskCommand.RaiseCanExecuteChanged();
+            OpenTaskReportCommand.RaiseCanExecuteChanged();
+            OpenTaskOutputCommand.RaiseCanExecuteChanged();
         }
 
         private void CloseDeletedModDetails()

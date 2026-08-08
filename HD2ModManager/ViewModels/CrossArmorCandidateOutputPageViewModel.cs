@@ -75,7 +75,7 @@ namespace HD2ModManager.ViewModels
                 ?? (Application.Current?.Dispatcher is { } dispatcher
                     ? new DispatcherSynchronizationContext(dispatcher)
                     : new SynchronizationContext());
-            var bridge = new OperationProgressBridge(new BackgroundTaskOperationTarget(task), operationId, uiContext, notifications: _notifications, notificationKey: $"cross-armor:{operationId:N}");
+            var bridge = new OperationProgressBridge(new BackgroundTaskOperationTarget(task), operationId, uiContext);
             long sequence = 0;
 
             IsGenerating = true;
@@ -85,12 +85,8 @@ namespace HD2ModManager.ViewModels
             try
             {
 				bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Preparing, OperationState.Started, sequence: sequence++));
-				var progress = new Progress<CrossArmorTransferProgress>(update =>
-				{
-					var stageText = update.StageText;
-                    State = $"{stageText}（已用时 {update.Elapsed:mm\\:ss}）。";
-					bridge.Apply(update.ToOperationProgressEvent(operationId, sequence: sequence++));
-				});
+				var progress = new InlineProgress<CrossArmorTransferProgress>(update =>
+					bridge.Apply(update.ToOperationProgressEvent(operationId, sequence: Interlocked.Increment(ref sequence))));
                 var request = new CrossArmorTransferCandidateRequest(_plan.SourcePatchTocPath, _plan.GameDataDirectory, candidateDirectory, plan, CrossArmorMaterialBindingMode.PreserveSourceReferences, _plan.PreparedSourceEntries, progress);
                 // Canonical 是当前唯一的跨护甲写出路线；计划只提供逻辑部件映射，
                 // Unit 内部的 LOD family 由替换器在读取真实 Unit 后解析。
@@ -99,6 +95,7 @@ namespace HD2ModManager.ViewModels
                 var presentation = CrossArmorCandidateResultPresenter.Map(result);
                 if (presentation.IsFailure)
                 {
+                    task.SetOutputArtifacts(result.OutputDirectory, result.ReportPath);
                     var firstIssue = result.Issues.FirstOrDefault();
                     bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Failed, OperationState.Failed,
                         message: firstIssue?.Message ?? "候选生成失败",
@@ -110,6 +107,7 @@ namespace HD2ModManager.ViewModels
                 }
 
                 bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Completed, OperationState.Completed, message: presentation.StatusText, sequence: sequence++));
+                task.SetOutputArtifacts(result.OutputDirectory, result.ReportPath);
                 var routeName = "Canonical 验证候选";
                 State = result.HasWarnings
                     ? $"{routeName}已提交，但报告不完整/有告警：{candidateDirectory}。Unit {result.OutputUnitCount}；报告：{result.ReportPath ?? "未生成"}"
@@ -124,6 +122,7 @@ namespace HD2ModManager.ViewModels
             }
             catch (Exception exception)
             {
+                task.SetOutputArtifacts(candidateDirectory, Path.Combine(candidateDirectory, "canonical-report.md"));
                 bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Failed, OperationState.Failed, message: exception.Message, sequence: sequence++));
                 State = $"生成候选失败：{exception.Message}";
                 LogService.Error($"替换护甲生成异常：输出={candidateDirectory}，错误={exception}");

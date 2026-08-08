@@ -13,13 +13,11 @@ public interface IOperationProgressTarget
 	void MarkCanceled();
 }
 
-// Purpose: Provides an injectable BackgroundTaskItem target for production and lightweight tests.
 public sealed class BackgroundTaskOperationTarget : IOperationProgressTarget
 {
 	private readonly BackgroundTaskItem _task;
 
 	public BackgroundTaskOperationTarget(BackgroundTaskItem task) => _task = task;
-
 	public void MarkStarted(string stage) => _task.MarkRunning(stage);
 	public void Update(string stage, double? progress)
 	{
@@ -31,35 +29,31 @@ public sealed class BackgroundTaskOperationTarget : IOperationProgressTarget
 	public void MarkCanceled() => _task.MarkCanceled();
 }
 
+// Purpose: Keeps high-frequency Core telemetry off the WPF dispatcher while retaining lifecycle state.
 public sealed class OperationProgressBridge
 {
 	private readonly IOperationProgressTarget _target;
 	private readonly SynchronizationContext _context;
-	private readonly Func<DateTimeOffset> _clock;
-	private readonly NotificationService? _notifications;
-	private readonly string? _notificationKey;
-	private Guid _operationId;
+	private readonly object _gate = new();
+	private readonly Guid _operationId;
 	private long _lastSequence = -1;
-	private double? _lastProgress;
-	private long _lastCompleted = -1;
-	private long _lastTotal = -1;
+	private long _lastPostedSequence = -1;
 	private string? _lastStageId;
+	private DateTimeOffset _lastProgressPublishedAt;
 	private string? _displayedStageId;
-	private DateTimeOffset _lastProgressAt;
 	private DateTimeOffset _stageStartedAt;
 	private bool _terminal;
-	private long _lastPostedSequence = -1;
-	private readonly object _gate = new();
+	private long _receivedProgressCount;
+	private long _publishedStageUpdateCount;
+	private long _suppressedProgressCount;
+	private long _uiUpdateCount;
 
-	public OperationProgressBridge(IOperationProgressTarget target, Guid expectedOperationId, SynchronizationContext context, Func<DateTimeOffset>? clock = null, NotificationService? notifications = null, string? notificationKey = null)
+	public OperationProgressBridge(IOperationProgressTarget target, Guid expectedOperationId, SynchronizationContext context)
 	{
 		_target = target ?? throw new ArgumentNullException(nameof(target));
-		if (expectedOperationId == Guid.Empty) throw new ArgumentException("操作 ID 不能为 Guid.Empty。", nameof(expectedOperationId));
+		if (expectedOperationId == Guid.Empty) throw new ArgumentException("Operation ID cannot be empty.", nameof(expectedOperationId));
 		_context = context ?? throw new ArgumentNullException(nameof(context));
 		_operationId = expectedOperationId;
-		_clock = clock ?? (() => DateTimeOffset.UtcNow);
-		_notifications = notifications;
-		_notificationKey = notificationKey;
 	}
 
 	public void Apply(OperationProgressEvent progress)
@@ -67,7 +61,18 @@ public sealed class OperationProgressBridge
 		lock (_gate)
 		{
 			if (progress.OperationId != _operationId || progress.Sequence <= _lastSequence || _terminal) return;
-			if (progress.State == OperationState.Progress && !ShouldSendProgress(progress)) { _lastSequence = progress.Sequence; return; }
+			if (progress.State == OperationState.Progress)
+			{
+				_receivedProgressCount++;
+				if (!ShouldPublishProgress(progress))
+				{
+					_suppressedProgressCount++;
+					_lastSequence = progress.Sequence;
+					return;
+				}
+				_publishedStageUpdateCount++;
+			}
+
 			_lastSequence = progress.Sequence;
 			_terminal = progress.IsTerminal;
 			var sequence = progress.Sequence;
@@ -83,27 +88,14 @@ public sealed class OperationProgressBridge
 		}
 	}
 
-	private bool ShouldSendProgress(OperationProgressEvent progress)
+	private bool ShouldPublishProgress(OperationProgressEvent progress)
 	{
-		var now = _clock();
 		var stageId = progress.StageId ?? progress.Stage.ToString();
-		var writeManagerDetail = !IsCanonicalDetailStage(progress.StageId);
-		if (!string.Equals(stageId, _lastStageId, StringComparison.Ordinal))
-		{
-			_lastStageId = stageId;
-			_lastProgress = progress.Progress;
-			_lastProgressAt = now;
-			return true;
-		}
-		var changedByPercent = progress.Progress is { } value && (_lastProgress is null || Math.Abs(value - _lastProgress.Value) >= 0.01d);
-		var changedByCount = progress.Total > 0 && (progress.Completed != _lastCompleted || progress.Total != _lastTotal);
-		var changedByTime = now - _lastProgressAt >= TimeSpan.FromMilliseconds(250);
-		if (!changedByCount && !changedByPercent && !changedByTime) return false;
-		// Unknown totals have no percentage signal; they are therefore time-throttled only.
-		_lastProgress = progress.Progress;
-		_lastCompleted = progress.Completed;
-		_lastTotal = progress.Total;
-		_lastProgressAt = now;
+		var stageChanged = !string.Equals(stageId, _lastStageId, StringComparison.Ordinal);
+		if (!stageChanged && progress.TimestampUtc - _lastProgressPublishedAt < TimeSpan.FromMilliseconds(500)) return false;
+
+		_lastStageId = stageId;
+		_lastProgressPublishedAt = progress.TimestampUtc;
 		return true;
 	}
 
@@ -115,50 +107,53 @@ public sealed class OperationProgressBridge
 
 	private void ApplyOnContext(OperationProgressEvent progress)
 	{
-		var stageText = progress.StageText ?? progress.Message ?? "处理中";
+		var stageText = progress.StageText ?? progress.Message ?? "Processing";
 		var stageId = progress.StageId ?? progress.Stage.ToString();
-		var writeManagerDetail = !IsCanonicalDetailStage(progress.StageId);
+		var isDetailStage = IsCanonicalDetailStage(progress.StageId);
 		if (!string.Equals(_displayedStageId, stageId, StringComparison.Ordinal))
 		{
-			var now = progress.TimestampUtc;
-			if (_stageStartedAt != default && writeManagerDetail)
-				LogService.Info($"操作阶段完成：阶段={_displayedStageId}，耗时={(now - _stageStartedAt).TotalMilliseconds:0}ms，操作={progress.OperationId:N}。");
+			if (_stageStartedAt != default && !isDetailStage)
+				LogService.Info($"Operation stage completed: stage={_displayedStageId}, elapsed={(progress.TimestampUtc - _stageStartedAt).TotalMilliseconds:0}ms, operation={progress.OperationId:N}.");
 			_displayedStageId = stageId;
-			_stageStartedAt = now;
+			_stageStartedAt = progress.TimestampUtc;
 		}
-		if (_notifications is not null && !string.IsNullOrWhiteSpace(_notificationKey))
+
+		if (progress.State == OperationState.Progress)
 		{
-			_notifications.ShowOrUpdate(_notificationKey, stageText, progress.State == OperationState.Failed ? NotificationLevel.Error : NotificationLevel.Info, null);
+			_target.Update(stageText, progress.Progress);
+			_uiUpdateCount++;
+			return;
 		}
-		if (progress.IsTerminal && _stageStartedAt != default && writeManagerDetail)
-		{
-			LogService.Info($"操作阶段完成：阶段={_displayedStageId}，耗时={(progress.TimestampUtc - _stageStartedAt).TotalMilliseconds:0}ms，操作={progress.OperationId:N}。");
-			_stageStartedAt = default;
-		}
+
+		if (progress.IsTerminal && _stageStartedAt != default && !isDetailStage)
+			LogService.Info($"Operation stage completed: stage={_displayedStageId}, elapsed={(progress.TimestampUtc - _stageStartedAt).TotalMilliseconds:0}ms, operation={progress.OperationId:N}.");
+
 		switch (progress.State)
 		{
 			case OperationState.Started:
 				_target.MarkStarted(stageText);
-				LogService.Info($"操作开始：类型={progress.Kind}，阶段={progress.Stage}，操作={progress.OperationId:N}。");
-				break;
-			case OperationState.Progress:
-				_target.Update(stageText, progress.Progress);
-				LogService.Info($"{stageText}，操作={progress.OperationId:N}。");
+				LogService.Info($"Operation started: kind={progress.Kind}, stage={progress.Stage}, operation={progress.OperationId:N}.");
 				break;
 			case OperationState.Completed:
 				_target.MarkCompleted();
-				LogService.Info($"操作完成：类型={progress.Kind}，操作={progress.OperationId:N}。");
+				LogTelemetry();
+				LogService.Info($"Operation completed: kind={progress.Kind}, operation={progress.OperationId:N}.");
 				break;
 			case OperationState.Failed:
-				_target.MarkFailed("操作失败" + (string.IsNullOrWhiteSpace(progress.IssueCode) ? string.Empty : $"（{progress.IssueCode}）"));
-				LogService.Error($"操作失败：类型={progress.Kind}，阶段={progress.StageId ?? progress.Stage.ToString()}，操作={progress.OperationId:N}，问题={progress.IssueCode ?? "未分类"}，消息={progress.Message ?? "无"}。");
+				_target.MarkFailed("Operation failed" + (string.IsNullOrWhiteSpace(progress.IssueCode) ? string.Empty : $" ({progress.IssueCode})"));
+				LogTelemetry();
+				LogService.Error($"Operation failed: kind={progress.Kind}, stage={progress.StageId ?? progress.Stage.ToString()}, operation={progress.OperationId:N}, issue={progress.IssueCode ?? "Unclassified"}, message={progress.Message ?? "None"}.");
 				break;
 			case OperationState.Canceled:
 				_target.MarkCanceled();
-				LogService.Info($"操作已取消：类型={progress.Kind}，操作={progress.OperationId:N}。");
+				LogTelemetry();
+				LogService.Info($"Operation canceled: kind={progress.Kind}, operation={progress.OperationId:N}.");
 				break;
 		}
 	}
+
+	private void LogTelemetry()
+		=> LogService.Info($"Progress telemetry: received={_receivedProgressCount}, stage-updates={_publishedStageUpdateCount}, suppressed={_suppressedProgressCount}, ui-updates={_uiUpdateCount}, operation={_operationId:N}.");
 
 	private static bool IsCanonicalDetailStage(string? stageId)
 		=> stageId is "InspectEligibility" or "Plan" or "PrepareAvatarRig" or "CanonicalPreparing"

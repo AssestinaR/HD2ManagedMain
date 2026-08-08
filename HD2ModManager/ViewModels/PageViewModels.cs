@@ -164,7 +164,7 @@ namespace HD2ModManager.ViewModels
             try
             {
                 task.MarkRunning("正在生成并验证重构候选");
-                var result = await _repairBatch.RepairAsync(nodes, _library.ModsRootDirectory, gameData, task.CancellationToken, new Progress<OperationProgressEvent>(bridge.Apply), operationId);
+                var result = await _repairBatch.RepairAsync(nodes, _library.ModsRootDirectory, gameData, task.CancellationToken, new InlineProgress<OperationProgressEvent>(bridge.Apply), operationId);
                 task.UpdateStage($"已修复 {result.RepairedModCount}；跳过 {result.SkippedModCount}；失败 {result.FailedModCount}；取消 {result.CanceledModCount}；未开始 {result.NotStartedModCount}");
                 if (result.CanceledModCount > 0 || result.NotStartedModCount > 0 || task.CancellationToken.IsCancellationRequested) task.MarkCanceled();
                 else task.MarkCompleted();

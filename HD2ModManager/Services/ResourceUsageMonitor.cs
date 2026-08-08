@@ -20,6 +20,7 @@ public sealed class ResourceUsageMonitor : IAsyncDisposable
 	private long _peakPrivateMemory;
 	private long _peakManagedHeap;
 	private int _sampleCount;
+	private static readonly bool LogDetailedSamples = false;
 
 	private ResourceUsageMonitor(Guid operationId, string operationName, TimeSpan interval)
 	{
@@ -78,6 +79,12 @@ public sealed class ResourceUsageMonitor : IAsyncDisposable
 		_peakPrivateMemory = Math.Max(_peakPrivateMemory, privateMemory);
 		_peakManagedHeap = Math.Max(_peakManagedHeap, managedHeap);
 		_sampleCount++;
+		if (!LogDetailedSamples)
+		{
+			_lastCpu = cpu;
+			_lastSampleTime = now;
+			return;
+		}
 		LogService.Info($"资源采样：操作={_operationName}，operation={_operationId:N}，样本={_sampleCount}，CPU={cpuPercent:0.0}%（进程/逻辑核归一化），工作集={ToMb(workingSet):0}MB，私有内存={ToMb(privateMemory):0}MB，托管堆={ToMb(managedHeap):0}MB，系统内存={ToMb(memory.Total):0}MB，可用={ToMb(memory.Available):0}MB，可用率={memory.AvailablePercent:0.0}%。");
 		_lastCpu = cpu;
 		_lastSampleTime = now;

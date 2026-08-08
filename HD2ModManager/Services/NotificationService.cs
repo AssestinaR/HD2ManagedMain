@@ -16,9 +16,16 @@ namespace HD2ModManager.Services
         private NotificationLevel _level = NotificationLevel.Info;
         public string Message { get => _message; set => SetField(ref _message, value); }
         public NotificationLevel Level { get => _level; set => SetField(ref _level, value); }
-        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public string Id { get; } = Guid.NewGuid().ToString("N");
+        public DateTime CreatedAt { get; } = DateTime.UtcNow;
+        private DateTime _updatedAt = DateTime.UtcNow;
+        private int _occurrenceCount = 1;
+        private bool _isUnread = true;
+        public DateTime UpdatedAt { get => _updatedAt; private set => SetField(ref _updatedAt, value); }
+        public int OccurrenceCount { get => _occurrenceCount; private set => SetField(ref _occurrenceCount, value); }
         public TimeSpan? Duration { get; set; } = TimeSpan.FromSeconds(6);
-        public bool IsUnread { get; set; } = true;
+        public bool IsUnread { get => _isUnread; set => SetField(ref _isUnread, value); }
+        public string? Source { get; init; }
         internal string? Tag { get; set; }
         public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -27,6 +34,22 @@ namespace HD2ModManager.Services
             if (Equals(field, value)) return;
             field = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+
+        internal void RecordRepeat(DateTime timestamp)
+        {
+            OccurrenceCount++;
+            UpdatedAt = timestamp;
+            IsUnread = true;
+        }
+
+        internal void Update(string message, NotificationLevel level, TimeSpan? duration, DateTime timestamp)
+        {
+            Message = message;
+            Level = level;
+            Duration = duration;
+            UpdatedAt = timestamp;
+            IsUnread = true;
         }
     }
 
@@ -44,13 +67,23 @@ namespace HD2ModManager.Services
             History = new ReadOnlyObservableCollection<NotificationItem>(_history);
         }
 
-        public void Show(string message, NotificationLevel level = NotificationLevel.Info, TimeSpan? duration = null)
+        public void Show(string message, NotificationLevel level = NotificationLevel.Info, TimeSpan? duration = null, string? source = null)
         {
-            var item = new NotificationItem { Message = message, Level = level, Duration = duration ?? TimeSpan.FromSeconds(6) };
             RunOnUi(() =>
             {
+                var now = DateTime.UtcNow;
+                var item = FindRecentDuplicate(message, level, source, now);
+                if (item is not null)
+                {
+                    item.RecordRepeat(now);
+                    Changed?.Invoke(this, EventArgs.Empty);
+                    return;
+                }
+
+                item = new NotificationItem { Message = message, Level = level, Duration = duration ?? TimeSpan.FromSeconds(6), Source = source };
                 _items.Add(item);
                 _history.Add(item);
+                TrimHistory();
                 if (item.Duration.HasValue) _ = AutoDismissAsync(item);
                 Changed?.Invoke(this, EventArgs.Empty);
             });
@@ -66,14 +99,12 @@ namespace HD2ModManager.Services
                     item = new NotificationItem { Message = message, Level = level, Duration = duration, Tag = key };
                     _items.Add(item);
                     _history.Add(item);
+                    TrimHistory();
                     Changed?.Invoke(this, EventArgs.Empty);
                     return;
                 }
 
-                item.Message = message;
-                item.Level = level;
-                item.IsUnread = true;
-                item.Duration = duration;
+                item.Update(message, level, duration, DateTime.UtcNow);
                 Changed?.Invoke(this, EventArgs.Empty);
             });
         }
@@ -95,6 +126,22 @@ namespace HD2ModManager.Services
         }
 
         public void Clear() => RunOnUi(_items.Clear);
+
+        private NotificationItem? FindRecentDuplicate(string message, NotificationLevel level, string? source, DateTime now)
+            => _history.LastOrDefault(item => item.Level == level
+                && string.Equals(item.Message, message, StringComparison.Ordinal)
+                && string.Equals(item.Source, source, StringComparison.Ordinal)
+                && now - item.UpdatedAt <= TimeSpan.FromSeconds(10));
+
+        private void TrimHistory()
+        {
+            const int historyLimit = 300;
+            while (_history.Count > historyLimit)
+            {
+                var oldestInfo = _history.FirstOrDefault(item => item.Level == NotificationLevel.Info);
+                _history.Remove(oldestInfo ?? _history[0]);
+            }
+        }
 
         private static void RunOnUi(Action action)
         {
