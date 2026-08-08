@@ -33,6 +33,24 @@ public sealed class PatchUnitMeshReader
 		IReadOnlyList<PatchTocEntry> patchEntries,
 		PatchUnitDependencyPolicy dependencyPolicy = PatchUnitDependencyPolicy.RequirePatchLocalComposite,
 		CancellationToken cancellationToken = default)
+		=> await ReadCoreAsync(entry, patchEntries, dependencyPolicy, new UnitMeshReadOptions(), retainPayloads: true, cancellationToken).ConfigureAwait(false);
+
+	// Canonical rebuilds consume typed mesh semantics only. Do not retain the source GPU
+	// payload or per-vertex raw byte mirrors after decoding; final encoding is regenerated.
+	public async ValueTask<PatchUnitMesh> ReadCanonicalSourceAsync(
+		PatchTocEntry entry,
+		IReadOnlyList<PatchTocEntry> patchEntries,
+		PatchUnitDependencyPolicy dependencyPolicy = PatchUnitDependencyPolicy.RequirePatchLocalComposite,
+		CancellationToken cancellationToken = default)
+		=> await ReadCoreAsync(entry, patchEntries, dependencyPolicy, UnitMeshReadOptions.CanonicalSource, retainPayloads: false, cancellationToken).ConfigureAwait(false);
+
+	private async ValueTask<PatchUnitMesh> ReadCoreAsync(
+		PatchTocEntry entry,
+		IReadOnlyList<PatchTocEntry> patchEntries,
+		PatchUnitDependencyPolicy dependencyPolicy,
+		UnitMeshReadOptions options,
+		bool retainPayloads,
+		CancellationToken cancellationToken)
 	{
 		ArgumentNullException.ThrowIfNull(entry);
 		ArgumentNullException.ThrowIfNull(patchEntries);
@@ -48,15 +66,18 @@ public sealed class PatchUnitMeshReader
 		var bonePayload = await TryReadBonePayloadAsync(payload, patchEntries, boneReference, cancellationToken).ConfigureAwait(false);
 		var boneNames = bonePayload is null ? UnitBoneNames.Empty : new UnitBoneNamesReader().Read(bonePayload.TocData);
 		var model = compositePayload is null
-			? unitMeshReader.Read(payload.TocData, payload.GpuResourceData, boneNames: boneNames)
-			: unitMeshReader.Read(payload.TocData, payload.GpuResourceData, compositePayload.TocData, compositePayload.GpuResourceData, boneNames);
+			? unitMeshReader.Read(payload.TocData, payload.GpuResourceData, boneNames: boneNames, options: options)
+			: unitMeshReader.Read(payload.TocData, payload.GpuResourceData, compositePayload.TocData, compositePayload.GpuResourceData, boneNames, options);
 		return new PatchUnitMesh(
 			entry,
-			payload,
+			retainPayloads ? payload : EmptyPayload(entry),
 			model,
-			compositePayload,
+			retainPayloads ? compositePayload : null,
 			new PatchUnitDependencyResolution(boneReference, compositeReference, bonePayload is not null, compositePayload is not null));
 	}
+
+	private static PatchEntryPayload EmptyPayload(PatchTocEntry entry)
+		=> new(entry, Array.Empty<byte>(), Array.Empty<byte>(), Array.Empty<byte>());
 
 	private async ValueTask<PatchEntryPayload?> ReadCompositePayloadAsync(
 		PatchEntryPayload unitPayload,

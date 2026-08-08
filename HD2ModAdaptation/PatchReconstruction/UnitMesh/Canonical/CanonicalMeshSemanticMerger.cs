@@ -65,7 +65,7 @@ public sealed class CanonicalMeshSemanticMerger
 		// unreadable old target triangle must not invalidate the new source topology.
 		ValidateMesh(source, "Source", diagnostics);
 
-		if (source.Vertices.Count == 0 || source.Sections.Count == 0 || source.Triangles.Count == 0)
+		if (source.Vertices.Count == 0 || source.Sections.Count == 0 || source.Sections.All(section => section.Triangles.Count == 0))
 		{
 			diagnostics.Add(new("EmptySourceMesh", "Canonical replacement requires non-empty source vertices, sections, and triangles."));
 		}

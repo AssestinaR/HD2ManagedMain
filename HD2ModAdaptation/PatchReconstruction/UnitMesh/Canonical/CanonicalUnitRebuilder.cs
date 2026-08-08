@@ -15,7 +15,8 @@ namespace HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 public sealed record CanonicalUnitRebuildResult(
 	UnitMeshModel? Model,
 	UnitMeshWriteResult? Output,
-	IReadOnlyList<CanonicalPlanDiagnostic> Diagnostics)
+	IReadOnlyList<CanonicalPlanDiagnostic> Diagnostics,
+	CanonicalUnitSerializationTelemetry? SerializationTelemetry = null)
 {
 	public bool IsValid => Model is not null && Output is not null && Diagnostics.Count == 0;
 }
@@ -48,6 +49,7 @@ public sealed class CanonicalUnitRebuilder
 
 		try
 		{
+			var phaseStopwatch = System.Diagnostics.Stopwatch.StartNew();
 			var tocData = targetOriginalTocData.ToArray();
 			var transformed = RelocateTransformInfo(target, tocData, diagnostics);
 			if (diagnostics.Count != 0)
@@ -71,6 +73,8 @@ public sealed class CanonicalUnitRebuilder
 			var rebuiltMeshes = new Dictionary<int, UnitMeshInfo>(target.Meshes.Count);
 			var gpuData = new List<byte>();
 			var rebuiltStreams = new List<UnitStreamInfo>(target.Streams.Count);
+			var setupElapsed = phaseStopwatch.Elapsed;
+			phaseStopwatch.Restart();
 
 			foreach (var stream in target.Streams.OrderBy(stream => stream.Index))
 			{
@@ -153,6 +157,8 @@ public sealed class CanonicalUnitRebuilder
 				diagnostics.Add(new("IncompleteMeshWriteback", "Every target MeshInfo must participate in stream GPU serialization and section TOC writeback."));
 			if (diagnostics.Count != 0)
 				return new(null, null, Array.AsReadOnly(diagnostics.ToArray()));
+			var gpuWriteElapsed = phaseStopwatch.Elapsed;
+			phaseStopwatch.Restart();
 
 			var orderedMeshes = target.Meshes.Select(mesh => rebuiltMeshes[mesh.Index]).ToArray();
 			var rebuiltToc = RebuildMeshInfoAndUnitTail(
@@ -167,6 +173,8 @@ public sealed class CanonicalUnitRebuilder
 				diagnostics);
 			if (diagnostics.Count != 0)
 				return new(null, null, Array.AsReadOnly(diagnostics.ToArray()));
+			var tocRebuildElapsed = phaseStopwatch.Elapsed;
+			phaseStopwatch.Restart();
 
 			var rebuiltSummaries = finalRawMeshes.Select(raw => new UnitRawMeshSummary(
 				raw.MeshInfoIndex,
@@ -190,7 +198,8 @@ public sealed class CanonicalUnitRebuilder
 				RawMeshes = rebuiltSummaries,
 				RawMeshData = finalRawMeshes
 			};
-			return new(rebuiltModel, new UnitMeshWriteResult(rebuiltToc, gpuData.ToArray()), Array.Empty<CanonicalPlanDiagnostic>());
+			return new(rebuiltModel, new UnitMeshWriteResult(rebuiltToc, gpuData.ToArray()), Array.Empty<CanonicalPlanDiagnostic>(),
+				new CanonicalUnitSerializationTelemetry(setupElapsed, gpuWriteElapsed, tocRebuildElapsed, phaseStopwatch.Elapsed));
 		}
 		catch (Exception exception) when (exception is InvalidDataException or OverflowException or ArgumentException)
 		{

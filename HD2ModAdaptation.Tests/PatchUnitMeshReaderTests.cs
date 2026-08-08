@@ -46,6 +46,23 @@ public sealed class PatchUnitMeshReaderTests
 		Assert.True(result.Dependencies.HasUnresolvedExternalBone);
 	}
 
+	[Fact]
+	public async Task ReadCanonicalSourceAsync_DropsPayloadBytesButPreservesModelAndDependencies()
+	{
+		var entry = new PatchTocEntry(new AssetKey(PatchUnitMeshReader.UnitTypeId, 0x1234), "unused.patch", "unused.patch");
+		var payload = new PatchEntryPayload(entry, CreateInlineUnitToc(compositeReference: 0, bonesReference: 0), new byte[] { 1 }, new byte[] { 2, 3, 4 });
+		var reader = new PatchUnitMeshReader(new FixedPayloadReader(payload));
+
+		var result = await reader.ReadCanonicalSourceAsync(entry, new[] { entry });
+
+		Assert.NotNull(result.Model);
+		Assert.Empty(result.Payload.TocData);
+		Assert.Empty(result.Payload.StreamData);
+		Assert.Empty(result.Payload.GpuResourceData);
+		Assert.Null(result.CompositePayload);
+		Assert.NotNull(result.Dependencies);
+	}
+
 	private static byte[] CreateUnitHeader(ulong compositeReference)
 	{
 		var data = new byte[24];

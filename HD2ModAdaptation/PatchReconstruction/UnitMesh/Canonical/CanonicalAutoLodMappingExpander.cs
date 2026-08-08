@@ -23,14 +23,14 @@ public static class CanonicalAutoLodMappingExpander
 			var sourceLod0 = sourceModel.RawMeshData
 				.Where(IsVisibleLod0)
 				.Where(raw => SemanticMatches(FindSemantic(sourceModel, raw), sourceRepresentativeSemantic))
-				.OrderByDescending(raw => raw.Triangles.Count)
+				.OrderByDescending(CountTriangles)
 				.ThenByDescending(raw => raw.Vertices.Count)
 				.FirstOrDefault()
 				?? throw new InvalidDataException($"Source Unit 0x{approved.Source.UnitKey.FileId:x16} has no real LOD0 mesh.");
 			var sourceCulling = sourceModel.RawMeshData
-				.Where(raw => raw.LodIndex == -1 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
+				.Where(raw => raw.LodIndex == -1 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
 				.Where(raw => SemanticMatches(FindSemantic(sourceModel, raw), sourceRepresentativeSemantic))
-				.OrderByDescending(raw => raw.Triangles.Count)
+				.OrderByDescending(CountTriangles)
 				.ThenByDescending(raw => raw.Vertices.Count)
 				.FirstOrDefault();
 
@@ -60,10 +60,13 @@ public static class CanonicalAutoLodMappingExpander
 		=> model.Meshes.FirstOrDefault(mesh => mesh.Index == raw.MeshInfoIndex)?.SemanticInfo;
 
 	private static bool IsVisibleLod0(UnitRawMeshData raw)
-		=> raw.LodIndex == 0 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3;
+		=> raw.LodIndex == 0 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3;
 
 	private static bool IsTargetLodSlot(UnitRawMeshData raw)
-		=> raw.LodIndex >= -1 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3;
+		=> raw.LodIndex >= -1 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3;
+
+	private static int CountTriangles(UnitRawMeshData raw)
+		=> raw.Triangles.Count != 0 ? raw.Triangles.Count : raw.Sections.Sum(section => section.Triangles.Count);
 
 	private static bool SemanticMatches(UnitMeshSemanticInfo? candidate, UnitMeshSemanticInfo? representative)
 		=> candidate is null || representative is null ||

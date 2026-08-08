@@ -31,7 +31,8 @@ public sealed record SameKeyCanonicalUnitRebuildResult(
     int HiddenMeshCount,
     IReadOnlyList<CanonicalPlanDiagnostic> Diagnostics,
     IReadOnlyList<CanonicalPlanDiagnostic>? MaterialObservations = null,
-    CanonicalUnitRebuildTelemetry? Telemetry = null)
+    CanonicalUnitRebuildTelemetry? Telemetry = null,
+    UnitMeshModel? Model = null)
 {
     public bool IsValid => Job is { IsValid: true } && Diagnostics.Count == 0;
 }
@@ -87,6 +88,10 @@ public sealed class SameKeyCanonicalUnitRebuilder
         var materialObservations = new List<CanonicalPlanDiagnostic>();
         var hiddenCount = 0;
         var replacedCount = 0;
+		var routeElapsed = TimeSpan.Zero;
+		var mergeElapsed = TimeSpan.Zero;
+		var minifyElapsed = TimeSpan.Zero;
+		var materialResolutionElapsed = TimeSpan.Zero;
 
         foreach (var targetMesh in request.Target.Model.Meshes)
         {
@@ -97,7 +102,9 @@ public sealed class SameKeyCanonicalUnitRebuilder
 
             if (!mappings.TryGetValue(targetMesh.Index, out var mapping))
             {
+				var minifyStopwatch = System.Diagnostics.Stopwatch.StartNew();
                 var hidden = minifier.TryMinify(targetRaw, targetStream);
+				minifyElapsed += minifyStopwatch.Elapsed;
                 diagnostics.AddRange(hidden.Diagnostics);
                 if (hidden.Mesh is not null) finalMeshes.Add(hidden.Mesh);
                 hiddenCount++;
@@ -107,6 +114,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
             var sourceRaw = FindRaw(request.Source.Model, mapping.SourceMeshInfoIndex, diagnostics, "source");
             if (sourceRaw is null) continue;
             CanonicalPositionDiagnostics.RecordMesh("source", sourceRaw, targetStream);
+			var detailStopwatch = System.Diagnostics.Stopwatch.StartNew();
             var transform = transformResolver.TryResolve(request.Source.Model, sourceRaw.MeshInfoIndex, targetModel, targetRaw.MeshInfoIndex);
             diagnostics.AddRange(transform.Diagnostics);
             if (!transform.IsValid) continue;
@@ -119,23 +127,27 @@ public sealed class SameKeyCanonicalUnitRebuilder
                 targetStream,
                 CanonicalSkinningMode.BindStaticToTargetMeshTransform,
                 CanonicalBoneAnchor.TargetMeshTransform);
+			routeElapsed += detailStopwatch.Elapsed;
             diagnostics.AddRange(route.Diagnostics);
             if (!route.IsValid || route.Mesh is null) continue;
             var preparedSource = route.Mesh;
             var provisionalBone = route.ProvisionalBoneInfo;
             CanonicalPositionDiagnostics.RecordMesh("after-skinning-route", preparedSource, targetStream);
 
-            var merged = merger.TryMerge(
+			detailStopwatch.Restart();
+			var merged = merger.TryMerge(
                 new CanonicalMeshSemanticMergeRequest(
                     new(request.Source.Entry.AssetKey, sourceRaw.MeshInfoIndex),
                     new(request.Target.AssetKey, targetRaw.MeshInfoIndex),
                     transform.SourceToTargetLocal!.Value),
                 targetRaw,
                 preparedSource);
-            diagnostics.AddRange(merged.Diagnostics);
+			mergeElapsed += detailStopwatch.Elapsed;
+			diagnostics.AddRange(merged.Diagnostics);
             if (!merged.IsValid || merged.Mesh is null) continue;
 
-            var materialResolution = route.IsProxy
+			detailStopwatch.Restart();
+			var materialResolution = route.IsProxy
                 ? new CanonicalMaterialBindingResolution([], [])
                 : CanonicalMaterialBindingResolver.Resolve(request.Source.Model, sourceRaw, targetRaw);
             diagnostics.AddRange(materialResolution.Diagnostics);
@@ -159,6 +171,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
             var finalMergedMesh = route.IsProxy
                 ? ApplyTargetCullingMaterialSlots(merged.Mesh, targetRaw)
                 : merged.Mesh;
+			materialResolutionElapsed += detailStopwatch.Elapsed;
             CanonicalPositionDiagnostics.RecordMesh("merged", finalMergedMesh, targetStream);
 
             finalMeshes.Add(finalMergedMesh);
@@ -251,7 +264,11 @@ public sealed class SameKeyCanonicalUnitRebuilder
             return Failure(rebuilt.Diagnostics, replacedCount, hiddenCount);
 		var telemetry = new CanonicalUnitRebuildTelemetry(
 			transformExpansionElapsed, meshAssemblyElapsed, streamContractElapsed, TimeSpan.Zero,
-			bonePaletteElapsed, finalPreparationElapsed, materialBindingsElapsed, phaseStopwatch.Elapsed);
+			bonePaletteElapsed, finalPreparationElapsed, materialBindingsElapsed, phaseStopwatch.Elapsed)
+		{
+			MeshBreakdown = new CanonicalMeshAssemblyTelemetry(routeElapsed, mergeElapsed, minifyElapsed, materialResolutionElapsed),
+			SerializationBreakdown = rebuilt.SerializationTelemetry ?? CanonicalUnitSerializationTelemetry.Empty
+		};
         var entry = new CanonicalPatchSessionEntry(
             request.Target.AssetKey,
             CanonicalPatchEntryOwnership.TargetOutput,
@@ -262,7 +279,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
             request.Target.Payload.Entry.Unknown2,
             request.Target.Payload.Entry.Unknown3,
             request.Target.Payload.Entry.Unknown4);
-        return new(PatchWorkspaceJobResult.Unit(entry, $"0x{request.Target.AssetKey.FileId:x16}"), replacedCount, hiddenCount, Array.Empty<CanonicalPlanDiagnostic>(), materialObservations, telemetry);
+        return new(PatchWorkspaceJobResult.Unit(entry, $"0x{request.Target.AssetKey.FileId:x16}"), replacedCount, hiddenCount, Array.Empty<CanonicalPlanDiagnostic>(), materialObservations, telemetry, rebuilt.Model);
     }
 
     private static UnitRawMeshData? FindRaw(UnitMeshModel model, int index, List<CanonicalPlanDiagnostic> diagnostics, string role)

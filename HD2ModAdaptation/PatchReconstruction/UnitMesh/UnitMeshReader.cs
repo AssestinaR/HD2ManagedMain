@@ -2,6 +2,18 @@ using System.Text;
 
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh;
 
+// Purpose: Selects which raw byte mirrors a Unit parser retains after decoding typed mesh semantics.
+public sealed record UnitMeshReadOptions(
+	bool PreserveVertexData = true,
+	bool PreserveComponentRawData = true,
+	bool BuildTriangleMirror = true)
+{
+	public static UnitMeshReadOptions CanonicalSource { get; } = new(
+		PreserveVertexData: false,
+		PreserveComponentRawData: false,
+		BuildTriangleMirror: false);
+}
+
 // 浣滅敤锛氱Щ妞?HD2SDK StingrayMeshFile 鐨勫彧璇荤粨鏋勮В鏋愰儴鍒嗭紝璇诲彇 Unit mesh/stream/material 鎽樿銆?
 // Purpose: Ports the read-only structural parsing portion of HD2SDK StingrayMeshFile for Unit mesh/stream/material summaries.
 public sealed class UnitMeshReader
@@ -9,11 +21,11 @@ public sealed class UnitMeshReader
 	private const int StreamInfoComponentBlockSize = 320;
 	private const uint UnsupportedOffset = 0;
 
-	public UnitMeshModel Read(ReadOnlySpan<byte> tocData, ReadOnlySpan<byte> gpuData, ReadOnlySpan<byte> compositeTocData = default, ReadOnlySpan<byte> compositeGpuData = default, UnitBoneNames? boneNames = null)
+	public UnitMeshModel Read(ReadOnlySpan<byte> tocData, ReadOnlySpan<byte> gpuData, ReadOnlySpan<byte> compositeTocData = default, ReadOnlySpan<byte> compositeGpuData = default, UnitBoneNames? boneNames = null, UnitMeshReadOptions? options = null)
 	{
 		try
 		{
-			return ReadCore(tocData, gpuData, compositeTocData, compositeGpuData, boneNames ?? UnitBoneNames.Empty);
+			return ReadCore(tocData, gpuData, compositeTocData, compositeGpuData, boneNames ?? UnitBoneNames.Empty, options ?? new UnitMeshReadOptions());
 		}
 		catch (OverflowException ex)
 		{
@@ -21,7 +33,7 @@ public sealed class UnitMeshReader
 		}
 	}
 
-	private static UnitMeshModel ReadCore(ReadOnlySpan<byte> tocData, ReadOnlySpan<byte> gpuData, ReadOnlySpan<byte> compositeTocData, ReadOnlySpan<byte> compositeGpuData, UnitBoneNames boneNames)
+	private static UnitMeshModel ReadCore(ReadOnlySpan<byte> tocData, ReadOnlySpan<byte> gpuData, ReadOnlySpan<byte> compositeTocData, ReadOnlySpan<byte> compositeGpuData, UnitBoneNames boneNames, UnitMeshReadOptions options)
 	{
 		if (tocData.Length < 96)
 		{
@@ -81,7 +93,7 @@ public sealed class UnitMeshReader
 			? Array.Empty<UnitMaterialBinding>()
 			: ReadMaterials(tocData, materialsOffset);
 		var rawMeshes = BuildRawMeshSummaries(meshes, streams, effectiveGpuData.Length);
-		var rawMeshData = ReadRawMeshData(meshes, streams, effectiveGpuData);
+		var rawMeshData = ReadRawMeshData(meshes, streams, effectiveGpuData, options);
 		meshes = ApplySdkMeshClassification(meshes, rawMeshData, materials);
 		var transformInfo = transformInfoOffset == UnsupportedOffset
 			? UnitTransformInfo.Empty
@@ -801,18 +813,24 @@ public sealed class UnitMeshReader
 
 	private static bool IsStaticMesh(UnitRawMeshData rawMesh)
 	{
-		var weightComponents = rawMesh.Vertices
-			.SelectMany(vertex => vertex.Components)
-			.Where(component => component.Type == 7)
-			.ToArray();
 		// The SDK checks decoded VertexWeights. At this layer, an absent Type=7
 		// component can also mean that a version-specific stream format was not
 		// decoded, so classify that case conservatively as unknown rather than
 		// discarding otherwise valid geometry. Only explicit all-zero weights are
 		// treated as static meshes.
-		return weightComponents.Length > 0
-			&& weightComponents.All(component => component.FloatValues.All(value => Math.Abs(value) <= 0.00001f)
-				&& component.UIntValues.All(value => value == 0));
+		var hasWeights = false;
+		foreach (var vertex in rawMesh.Vertices)
+		{
+			foreach (var component in vertex.Components)
+			{
+				if (component.Type != 7) continue;
+				hasWeights = true;
+				if (component.FloatValues.Any(value => Math.Abs(value) > 0.00001f)
+					|| component.UIntValues.Any(value => value != 0))
+					return false;
+			}
+		}
+		return hasWeights;
 	}
 
 	private static string StripPrefix(string value, string prefix)
@@ -851,7 +869,7 @@ public sealed class UnitMeshReader
 		return result;
 	}
 
-	private static IReadOnlyList<UnitRawMeshData> ReadRawMeshData(IReadOnlyList<UnitMeshInfo> meshes, IReadOnlyList<UnitStreamInfo> streams, ReadOnlySpan<byte> gpuData)
+	private static IReadOnlyList<UnitRawMeshData> ReadRawMeshData(IReadOnlyList<UnitMeshInfo> meshes, IReadOnlyList<UnitStreamInfo> streams, ReadOnlySpan<byte> gpuData, UnitMeshReadOptions options)
 	{
 		if (gpuData.IsEmpty)
 		{
@@ -874,8 +892,10 @@ public sealed class UnitMeshReader
 			}
 
 			var sections = ReadRawMeshSections(mesh, stream, gpuData);
-			var triangles = sections.SelectMany(section => section.Triangles).ToArray();
-			var vertices = ReadVertexRecords(mesh, stream, gpuData);
+			var triangles = options.BuildTriangleMirror
+				? sections.SelectMany(section => section.Triangles).ToArray()
+				: Array.Empty<UnitTriangleIndices>();
+			var vertices = ReadVertexRecords(mesh, stream, gpuData, options);
 			result.Add(new UnitRawMeshData(mesh.Index, mesh.MeshId, mesh.LodIndex, mesh.StreamIndex, sections, triangles, vertices));
 		}
 
@@ -915,7 +935,7 @@ public sealed class UnitMeshReader
 	private static uint NormalizeVertexIndex(uint index, uint baseVertexOffset)
 		=> index >= baseVertexOffset ? index - baseVertexOffset : index;
 
-	private static IReadOnlyList<UnitRawVertexRecord> ReadVertexRecords(UnitMeshInfo mesh, UnitStreamInfo stream, ReadOnlySpan<byte> gpuData)
+	private static IReadOnlyList<UnitRawVertexRecord> ReadVertexRecords(UnitMeshInfo mesh, UnitStreamInfo stream, ReadOnlySpan<byte> gpuData, UnitMeshReadOptions options)
 	{
 		if (mesh.Sections.Count == 0 || stream.VertexStride == 0)
 		{
@@ -933,16 +953,16 @@ public sealed class UnitMeshReader
 		var stride = checked((int)stream.VertexStride);
 		for (var i = 0u; i < vertexCount; i++)
 		{
-			var rawData = gpuData.Slice(cursor, stride).ToArray();
-			var components = DecodeVertexComponents(rawData, stream.Components);
-			vertices.Add(new UnitRawVertexRecord(i, rawData, components));
+			var vertexData = gpuData.Slice(cursor, stride);
+			var components = DecodeVertexComponents(vertexData, stream.Components, options.PreserveComponentRawData);
+			vertices.Add(new UnitRawVertexRecord(i, options.PreserveVertexData ? vertexData.ToArray() : Array.Empty<byte>(), components));
 			cursor += stride;
 		}
 
 		return vertices;
 	}
 
-	private static IReadOnlyList<UnitVertexComponentValue> DecodeVertexComponents(ReadOnlySpan<byte> vertexData, IReadOnlyList<UnitStreamComponentInfo> components)
+	private static IReadOnlyList<UnitVertexComponentValue> DecodeVertexComponents(ReadOnlySpan<byte> vertexData, IReadOnlyList<UnitStreamComponentInfo> components, bool preserveRawData)
 	{
 		var result = new List<UnitVertexComponentValue>(components.Count);
 		var cursor = 0;
@@ -963,15 +983,15 @@ public sealed class UnitMeshReader
 				continue;
 			}
 
-			var raw = vertexData.Slice(cursor, size).ToArray();
-			result.Add(DecodeVertexComponent(component, raw));
+			var raw = vertexData.Slice(cursor, size);
+			result.Add(DecodeVertexComponent(component, raw, preserveRawData));
 			cursor += size;
 		}
 
 		return result;
 	}
 
-	private static UnitVertexComponentValue DecodeVertexComponent(UnitStreamComponentInfo component, ReadOnlySpan<byte> raw)
+	private static UnitVertexComponentValue DecodeVertexComponent(UnitStreamComponentInfo component, ReadOnlySpan<byte> raw, bool preserveRawData)
 	{
 		var floats = Array.Empty<float>();
 		var uints = Array.Empty<uint>();
@@ -1023,7 +1043,7 @@ public sealed class UnitMeshReader
 			component.Index,
 			floats,
 			uints,
-			raw.ToArray());
+			preserveRawData ? raw.ToArray() : Array.Empty<byte>());
 	}
 
 	private static uint ReadIndex(ReadOnlySpan<byte> data, int offset, int stride)

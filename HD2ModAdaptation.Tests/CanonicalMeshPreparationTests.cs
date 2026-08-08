@@ -96,6 +96,21 @@ public sealed class CanonicalMeshPreparationTests
 		Assert.Equal(20, vertex.Data.Length);
 	}
 
+	[Fact]
+	public void Prepare_ReindexesOutputVerticesSequentially()
+	{
+		var components = new[] { Component(0, "position", 2, "vec3_float", [1, 2, 3]) };
+		var mesh = new UnitRawMeshData(
+			0, 1, 0, 0,
+			[new UnitRawMeshSectionData(0, 0, [])], [],
+			[new UnitRawVertexRecord(7, [], components), new UnitRawVertexRecord(42, [], components)]);
+
+		var result = new CanonicalMeshPreparation().TryPrepare(mesh, Stream(12, [StreamComponent(0, 2, "vec3_float", 0, 12)]));
+
+		Assert.True(result.IsValid);
+		Assert.Equal(new uint[] { 0, 1 }, result.Mesh!.Vertices.Select(vertex => vertex.Index));
+	}
+
 	private static UnitRawMeshData Mesh(IReadOnlyList<UnitVertexComponentValue> components, UnitTriangleIndices? triangle = null)
 	{
 		var triangles = triangle is null ? Array.Empty<UnitTriangleIndices>() : new[] { triangle };

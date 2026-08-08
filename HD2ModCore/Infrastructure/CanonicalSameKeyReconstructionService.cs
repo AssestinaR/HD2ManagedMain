@@ -125,6 +125,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         var minifyOnlyUnitCount = 0;
         var replacementMeshCount = 0;
         var minifiedMeshCount = 0;
+		var unitTelemetry = new List<CanonicalUnitJobTelemetryRow>();
         using var positionDiagnostics = CanonicalPositionDiagnostics.Suppress();
         var unitJobs = plan.Units.Select((unit, index) =>
             (Sequence: index, UnitKey: $"0x{unit.UnitAssetKey.FileId:x16}")).ToArray();
@@ -136,13 +137,18 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 var sourceEntry = sourceEntries.Single(entry => entry.AssetKey == new AdaptationAssetKey(unitPlan.UnitAssetKey.TypeId, unitPlan.UnitAssetKey.FileId));
                 var archiveId = unitPlan.TargetArchive!.ArchiveId;
                 var sourceIsEligible = plan.EligibleSourceUnitAssetKeys?.Contains(unitPlan.UnitAssetKey) == true;
+				var allocationBefore = GC.GetTotalAllocatedBytes(false);
+				var gen0Before = GC.CollectionCount(0);
+				var gen1Before = GC.CollectionCount(1);
+				var gen2Before = GC.CollectionCount(2);
                 if (!sourceIsEligible)
                 {
                     var cached = await hiddenUnitCache.TryReadAsync(archiveId, sourceEntry.AssetKey, token).ConfigureAwait(false);
                     if (cached is not null)
                     {
                         var cachedResult = new SameKeyCanonicalUnitRebuildResult(PatchWorkspaceJobResult.Unit(cached.Entry), 0, cached.HiddenMeshCount, []);
-                        return new SameKeyUnitJobResult(jobIndex, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, cachedResult);
+						return new SameKeyUnitJobResult(jobIndex, unitPlan.UnitAssetKey, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, cachedResult,
+							true, sourceIsEligible, 0, 0, 0, allocationBefore, gen0Before, gen1Before, gen2Before);
                     }
                 }
                 var unitStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -158,10 +164,13 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                     var hidden = hiddenUnitBuilder.Build(targetUnit, avatarTransforms);
                     await hiddenUnitCache.StoreAsync(archiveId, hidden, token).ConfigureAwait(false);
                     var hiddenResult = new SameKeyCanonicalUnitRebuildResult(PatchWorkspaceJobResult.Unit(hidden.Entry), 0, hidden.HiddenMeshCount, []);
-                    return new SameKeyUnitJobResult(jobIndex, TimeSpan.Zero, localTargetRead, TimeSpan.Zero, unitStopwatch.Elapsed, hiddenResult);
+					return new SameKeyUnitJobResult(jobIndex, unitPlan.UnitAssetKey, TimeSpan.Zero, localTargetRead, TimeSpan.Zero, unitStopwatch.Elapsed, hiddenResult,
+						false, sourceIsEligible, targetUnit.Model.Meshes.Count,
+						checked(targetUnit.Model.RawMeshData.Sum(raw => raw.Vertices.Count)), checked(targetUnit.Model.RawMeshData.Sum(raw => raw.Triangles.Count)),
+						allocationBefore, gen0Before, gen1Before, gen2Before);
                 }
                 var localSourceReader = new PatchUnitMeshReader();
-                var sourceUnit = await localSourceReader.ReadAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, token).ConfigureAwait(false);
+				var sourceUnit = await localSourceReader.ReadCanonicalSourceAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, token).ConfigureAwait(false);
                 var localSourceRead = unitStopwatch.Elapsed;
                 unitStopwatch.Restart();
                 var mappings = BuildMappings(sourceEntry.AssetKey, sourceUnit.Model, targetUnit.Model,
@@ -182,8 +191,13 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                         AvatarTransformInfo = avatarTransforms
                     });
                 }
-                return new SameKeyUnitJobResult(jobIndex, localSourceRead, localTargetRead, localMapping,
-                    unitStopwatch.Elapsed, rebuilt);
+                var outputModel = rebuilt.Model;
+				return new SameKeyUnitJobResult(jobIndex, unitPlan.UnitAssetKey, localSourceRead, localTargetRead, localMapping,
+                    unitStopwatch.Elapsed, rebuilt, false, sourceIsEligible,
+					outputModel?.Meshes.Count ?? targetUnit.Model.Meshes.Count,
+					checked((outputModel ?? targetUnit.Model).RawMeshData.Sum(raw => raw.Vertices.Count)),
+					checked((outputModel ?? targetUnit.Model).RawMeshData.Sum(raw => raw.Triangles.Count)),
+					allocationBefore, gen0Before, gen1Before, gen2Before);
             },
 	            (sequence, result) =>
 	            {
@@ -202,7 +216,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 	                        rebuildTelemetry.Add(rebuilt.Telemetry);
 	                        var stagingStopwatch = System.Diagnostics.Stopwatch.StartNew();
 	                        jobsBySequence[sequence] = operationWorkspace.Stage(rebuilt.Job);
-	                        stagingElapsed += stagingStopwatch.Elapsed;
+                        stagingElapsed += stagingStopwatch.Elapsed;
+						unitTelemetry.Add(CreateUnitJobTelemetryRow(result, stagingStopwatch.Elapsed));
 	                        replacementMeshCount += rebuilt.ReplacedMeshCount;
 	                        minifiedMeshCount += rebuilt.HiddenMeshCount;
 	                        if (rebuilt.ReplacedMeshCount > 0) replacementUnitCount++;
@@ -238,6 +253,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 var stagingStopwatch = System.Diagnostics.Stopwatch.StartNew();
                 jobs.Add(operationWorkspace.Stage(rebuilt.Job));
                 stagingElapsed += stagingStopwatch.Elapsed;
+				unitTelemetry.Add(CreateUnitJobTelemetryRow(result, stagingStopwatch.Elapsed));
                 foreach (var observation in rebuilt.MaterialObservations ?? [])
                     Report(progress, operationId, "MaterialBindingDiagnostics", observation.Message, completedUnits, plan.Units.Count);
 
@@ -249,6 +265,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             Report(progress, operationId, "BuildCandidate", $"已完成 Unit {unitPlan.UnitAssetKey.FileId:x16}", ++completedUnits, plan.Units.Count);
         }
         Report(progress, operationId, "BuildCandidateMetrics", $"Same-key Unit 作业耗时：来源读取={sourceReadElapsed.TotalMilliseconds:F0}ms，目标读取={targetReadElapsed.TotalMilliseconds:F0}ms，重建={rebuildElapsed.TotalMilliseconds:F0}ms，落盘={stagingElapsed.TotalMilliseconds:F0}ms", completedUnits, plan.Units.Count);
+		await CanonicalUnitJobTelemetry.WriteCsvAsync(Path.Combine(output, "canonical-unit-job-telemetry.csv"), unitTelemetry, cancellationToken).ConfigureAwait(false);
         if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
         Report(progress, operationId, "WriteCandidate", "正在打包 Canonical Patch", 0, 1);
         Report(progress, operationId, "CanonicalUnitJobMetrics", $"Canonical Unit job metrics: Flow=SameKey, SourceRead={sourceReadElapsed.TotalMilliseconds:F0}ms, TargetRead={targetReadElapsed.TotalMilliseconds:F0}ms, Mapping={mappingElapsed.TotalMilliseconds:F0}ms, Rebuild={rebuildElapsed.TotalMilliseconds:F0}ms, Staging={stagingElapsed.TotalMilliseconds:F0}ms, {rebuildTelemetry.Snapshot().Describe()}", completedUnits, plan.Units.Count);
@@ -317,11 +334,35 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 
     private sealed record SameKeyUnitJobResult(
         int Sequence,
+		CoreAssetKey UnitKey,
         TimeSpan SourceRead,
         TimeSpan TargetRead,
         TimeSpan Mapping,
         TimeSpan RebuildElapsed,
-        SameKeyCanonicalUnitRebuildResult Rebuild);
+        SameKeyCanonicalUnitRebuildResult Rebuild,
+		bool HiddenCacheHit,
+		bool PlannedReplacement,
+		int MeshCount,
+		int VertexCount,
+		int TriangleCount,
+		long AllocationBefore,
+		int Gen0Before,
+		int Gen1Before,
+		int Gen2Before);
+
+	private static CanonicalUnitJobTelemetryRow CreateUnitJobTelemetryRow(SameKeyUnitJobResult result, TimeSpan staging)
+	{
+		var telemetry = result.Rebuild.Telemetry ?? CanonicalUnitRebuildTelemetry.Empty;
+		return new CanonicalUnitJobTelemetryRow(
+			"SameKey", result.Sequence + 1, result.UnitKey.FileId,
+			result.HiddenCacheHit, result.PlannedReplacement, result.MeshCount, result.VertexCount, result.TriangleCount,
+			result.SourceRead, result.TargetRead, result.Mapping, telemetry.TransformExpansion, telemetry.MeshAssembly,
+			telemetry.MeshBreakdown, telemetry.BonePalette, telemetry.StreamContract, telemetry.FinalPreparation,
+			telemetry.MaterialBindings, telemetry.Serialization, telemetry.SerializationBreakdown, staging, result.RebuildElapsed + staging,
+			GC.GetTotalAllocatedBytes(false) - result.AllocationBefore, GC.GetGCMemoryInfo().HeapSizeBytes,
+			Environment.WorkingSet, GC.CollectionCount(0) - result.Gen0Before, GC.CollectionCount(1) - result.Gen1Before,
+			GC.CollectionCount(2) - result.Gen2Before);
+	}
 
     private static IReadOnlyList<TargetShellMeshMapping> BuildMappings(AdaptationAssetKey sourceKey, UnitMeshModel source, UnitMeshModel target, bool isEligibleSourceUnit)
     {
@@ -329,13 +370,13 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             return Array.Empty<TargetShellMeshMapping>();
 
         var sourceLod0 = source.RawMeshData
-            .Where(raw => raw.LodIndex == 0 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
-            .OrderByDescending(raw => raw.Triangles.Count)
+            .Where(raw => raw.LodIndex == 0 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
+            .OrderByDescending(CountTriangles)
             .ThenByDescending(raw => raw.Vertices.Count)
             .FirstOrDefault();
         var targetLod0 = target.RawMeshData
-            .Where(raw => raw.LodIndex == 0 && raw.Triangles.Count > 1 && raw.Vertices.Count > 3)
-            .OrderByDescending(raw => raw.Triangles.Count)
+            .Where(raw => raw.LodIndex == 0 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
+            .OrderByDescending(CountTriangles)
             .ThenByDescending(raw => raw.Vertices.Count)
             .FirstOrDefault();
         if (sourceLod0 is null || targetLod0 is null)
@@ -353,6 +394,9 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             .Select(mapping => new TargetShellMeshMapping(sourceKey, mapping.Source.MeshInfoIndex, mapping.Target.MeshInfoIndex))
             .ToArray();
     }
+
+	private static int CountTriangles(UnitRawMeshData raw)
+		=> raw.Triangles.Count != 0 ? raw.Triangles.Count : raw.Sections.Sum(section => section.Triangles.Count);
 
     private IReadOnlyList<string> FindBasePatchPaths(ModNode node, string root)
         => Directory.Exists(Path.Combine(root, node.RelativePath))

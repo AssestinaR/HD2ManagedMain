@@ -16,6 +16,13 @@ public sealed record CanonicalMeshPreparationResult(
 
 public sealed class CanonicalMeshPreparation
 {
+	private static readonly float[] DefaultZero = [0f, 0f, 0f, 0f];
+	private static readonly float[] DefaultNormal = [0f, 0f, 1f, 0f];
+	private static readonly float[] DefaultTangent = [0f, 1f, 0f, 0f];
+	private static readonly float[] DefaultColor = [1f, 1f, 1f, 1f];
+	private static readonly float[] DefaultWeight = [1f, 0f, 0f, 0f];
+	private static readonly uint[] DefaultBoneIndices = [0, 0, 0, 0];
+
 	public CanonicalMeshPreparationResult TryPrepare(UnitRawMeshData merged, UnitStreamInfo targetStream)
 	{
 		ArgumentNullException.ThrowIfNull(merged);
@@ -27,58 +34,28 @@ public sealed class CanonicalMeshPreparation
 			diagnostics.Add(new("InvalidTargetStream", "The target stream has a zero vertex stride."));
 
 		var targetComponents = targetStream.Components.ToArray();
-		merged = AddSdkDefaultComponents(merged, targetComponents);
-		var sourceByKey = merged.Vertices
-			.SelectMany(vertex => vertex.Components.Select(component => (vertex.Index, Component: component)))
-			.GroupBy(item => (item.Component.Type, item.Component.Index))
-			.ToDictionary(group => group.Key, group => group.First().Component);
-
+		var hasWeights = false;
 		foreach (var component in targetComponents)
 		{
 			if (!IsSupportedFormat(component.FormatName, component.Format))
 				diagnostics.Add(new("UnsupportedComponentFormat", $"Target component type {component.Type}, index {component.Index}, format {component.FormatName} cannot be safely encoded."));
-			if (!sourceByKey.ContainsKey((component.Type, component.Index)))
-				diagnostics.Add(new("MissingTargetComponent", $"Merged vertices do not contain target component type {component.Type}, index {component.Index}."));
-		}
-
-		foreach (var vertex in merged.Vertices)
-		{
-			var components = vertex.Components;
-			foreach (var target in targetComponents)
-				if (!components.Any(component => component.Type == target.Type && component.Index == target.Index))
-					diagnostics.Add(new("MissingVertexComponent", $"Vertex {vertex.Index} does not contain target component type {target.Type}, index {target.Index}."));
-			var weightComponents = components.Where(component => component.Type == 7).ToArray();
-			if (weightComponents.Length > 1 || weightComponents.Any(component => component.Index != 0))
+			if (component.Type != 7) continue;
+			if (hasWeights || component.Index != 0)
 				diagnostics.Add(new("UnsupportedWeightLayout", "Only one bone weight component at index 0 is supported."));
+			hasWeights = true;
 		}
 
 		if (diagnostics.Count != 0)
 			return new(null, Array.AsReadOnly(diagnostics.ToArray()));
 
-		var vertices = new List<UnitRawVertexRecord>(merged.Vertices.Count);
-		foreach (var vertex in merged.Vertices)
+		var vertices = new UnitRawVertexRecord[merged.Vertices.Count];
+		var hasBoneIndices = targetComponents.Any(component => component.Type == 6 && component.Index == 0);
+		for (var vertexIndex = 0; vertexIndex < merged.Vertices.Count; vertexIndex++)
 		{
-			var normalizedVertex = NormalizeSkinning(vertex, targetComponents, diagnostics);
-			if (diagnostics.Count != 0)
+			var vertex = merged.Vertices[vertexIndex];
+			if (!TryEncodeVertex(vertex, targetComponents, hasWeights, hasBoneIndices, targetStream.VertexStride, diagnostics, out var encoded))
 				return new(null, Array.AsReadOnly(diagnostics.ToArray()));
-			var source = normalizedVertex.Components.ToDictionary(component => (component.Type, component.Index));
-			var encoded = new List<UnitVertexComponentValue>(targetComponents.Length);
-			var data = new byte[checked((int)targetStream.VertexStride)];
-			var offset = 0;
-			foreach (var target in targetComponents)
-			{
-				var value = source[(target.Type, target.Index)];
-				var result = Encode(target, value, data.AsSpan(offset, checked((int)target.Size)));
-				encoded.Add(result);
-				offset = checked(offset + (int)target.Size);
-			}
-
-			if (offset != data.Length)
-			{
-				diagnostics.Add(new("DataComponentsMismatch", $"Target stream component sizes total {offset}, but vertex stride is {data.Length}."));
-				break;
-			}
-			vertices.Add(new UnitRawVertexRecord(checked((uint)vertices.Count), data, encoded));
+			vertices[vertexIndex] = encoded! with { Index = checked((uint)vertexIndex) };
 		}
 
 		if (diagnostics.Count != 0)
@@ -86,86 +63,137 @@ public sealed class CanonicalMeshPreparation
 		return new(merged with { Vertices = vertices }, Array.Empty<CanonicalPlanDiagnostic>());
 	}
 
-	private static UnitRawMeshData AddSdkDefaultComponents(UnitRawMeshData mesh, IReadOnlyList<UnitStreamComponentInfo> profile)
-		=> mesh with
-		{
-			Vertices = mesh.Vertices.Select(vertex =>
-			{
-				var present = vertex.Components.ToDictionary(component => (component.Type, component.Index));
-				var components = profile.Select(component => present.TryGetValue((component.Type, component.Index), out var value)
-					? value
-					: CreateDefault(component)).ToArray();
-				return vertex with { Components = components, Data = Array.Empty<byte>() };
-			}).ToArray()
-		};
-
-	private static UnitVertexComponentValue CreateDefault(UnitStreamComponentInfo component)
-	{
-		float[] floats = component.Type switch
-		{
-			1 or 2 => [0f, 0f, 1f, 0f],
-			3 => [0f, 1f, 0f, 0f],
-			5 => [1f, 1f, 1f, 1f],
-			7 => [1f, 0f, 0f, 0f],
-			_ => [0f, 0f, 0f, 0f]
-		};
-		var uints = component.Type == 6 ? new uint[] { 0, 0, 0, 0 } : Array.Empty<uint>();
-		return new(component.Type, component.TypeName, component.Format, component.FormatName, component.Index, floats, uints, Array.Empty<byte>());
-	}
-
-	private static UnitRawVertexRecord NormalizeSkinning(
+	private static bool TryEncodeVertex(
 		UnitRawVertexRecord vertex,
-		IReadOnlyList<UnitStreamComponentInfo> targetComponents,
-		List<CanonicalPlanDiagnostic> diagnostics)
+		IReadOnlyList<UnitStreamComponentInfo> targets,
+		bool hasWeights,
+		bool hasBoneIndices,
+		uint stride,
+		List<CanonicalPlanDiagnostic> diagnostics,
+		out UnitRawVertexRecord? encodedVertex)
 	{
-		var weights = vertex.Components.SingleOrDefault(component => component.Type == 7 && component.Index == 0);
-		if (weights is null)
-			return vertex;
-		var indices = vertex.Components.SingleOrDefault(component => component.Type == 6 && component.Index == 0);
-		if (indices is null)
+		var weights = hasWeights ? FindComponent(vertex.Components, 7, 0) : null;
+		var indices = hasBoneIndices ? FindComponent(vertex.Components, 6, 0) : null;
+		float[]? normalizedWeights = null;
+		uint[]? normalizedIndices = null;
+		if (weights is not null)
 		{
-			// A weight-only stream is retained for existing non-skinning layouts. A skinned
-			// stream always reaches the paired path below, which preserves index/weight identity.
-			return vertex with { Components = vertex.Components.Select(component => component == weights ? NormalizeWeights(component) : component).ToArray() };
-		}
-
-		var sourceWeights = weights.FloatValues.Length > 0
-			? weights.FloatValues
-			: weights.UIntValues.Select(number => number / 255f).ToArray();
-		if (indices.UIntValues.Length != sourceWeights.Length)
-		{
-			diagnostics.Add(new("BoneWeightIndexArityMismatch", $"Vertex {vertex.Index} has {indices.UIntValues.Length} bone indices but {sourceWeights.Length} bone weights."));
-			return vertex;
-		}
-
-		var selected = sourceWeights
-			.Select((weight, index) => (Weight: weight, Index: indices.UIntValues[index]))
-			.Where(item => float.IsFinite(item.Weight) && item.Weight > 0)
-			.OrderByDescending(item => item.Weight)
-			.Take(4)
-			.ToArray();
-		var total = selected.Sum(item => item.Weight);
-		var normalizedWeights = new float[4];
-		var normalizedIndices = new uint[4];
-		if (total > 0)
-		{
-			for (var index = 0; index < selected.Length; index++)
+			if (!TryNormalizeSkinning(vertex.Index, weights, indices, out normalizedWeights, out normalizedIndices, diagnostics))
 			{
-				normalizedWeights[index] = selected[index].Weight / total;
-				normalizedIndices[index] = selected[index].Index;
+				encodedVertex = null;
+				return false;
 			}
 		}
 
-		return vertex with
+		var data = new byte[checked((int)stride)];
+		var components = new UnitVertexComponentValue[targets.Count];
+		var offset = 0;
+		for (var targetIndex = 0; targetIndex < targets.Count; targetIndex++)
 		{
-			Components = vertex.Components.Select(component =>
-				component == weights
-					? component with { FloatValues = normalizedWeights, UIntValues = Array.Empty<uint>(), RawData = Array.Empty<byte>() }
-					: component == indices
-						? component with { FloatValues = Array.Empty<float>(), UIntValues = normalizedIndices, RawData = Array.Empty<byte>() }
-						: component).ToArray()
-		};
+			var target = targets[targetIndex];
+			var source = FindComponent(vertex.Components, target.Type, target.Index);
+			var floats = source?.FloatValues ?? DefaultFloats(target.Type);
+			var uints = source?.UIntValues ?? DefaultUInts(target.Type);
+			if (target.Type == 7 && target.Index == 0 && normalizedWeights is not null)
+			{
+				floats = normalizedWeights;
+				uints = Array.Empty<uint>();
+			}
+			else if (target.Type == 6 && target.Index == 0 && normalizedIndices is not null)
+			{
+				floats = Array.Empty<float>();
+				uints = normalizedIndices;
+			}
+
+			var size = checked((int)target.Size);
+			var destination = data.AsSpan(offset, size);
+			Encode(target, floats, uints, destination);
+			components[targetIndex] = new UnitVertexComponentValue(
+				target.Type, target.TypeName, target.Format, target.FormatName, target.Index,
+				floats, uints, destination.ToArray());
+			offset = checked(offset + size);
+		}
+
+		if (offset != data.Length)
+		{
+			diagnostics.Add(new("DataComponentsMismatch", $"Target stream component sizes total {offset}, but vertex stride is {data.Length}."));
+			encodedVertex = null;
+			return false;
+		}
+		encodedVertex = new UnitRawVertexRecord(vertex.Index, data, components);
+		return true;
 	}
+
+	private static bool TryNormalizeSkinning(
+		uint vertexIndex,
+		UnitVertexComponentValue weights,
+		UnitVertexComponentValue? indices,
+		out float[] normalizedWeights,
+		out uint[]? normalizedIndices,
+		List<CanonicalPlanDiagnostic> diagnostics)
+	{
+		var count = weights.FloatValues.Length > 0 ? weights.FloatValues.Length : weights.UIntValues.Length;
+		if (indices is not null && indices.UIntValues.Length != count)
+		{
+			diagnostics.Add(new("BoneWeightIndexArityMismatch", $"Vertex {vertexIndex} has {indices.UIntValues.Length} bone indices but {count} bone weights."));
+			normalizedWeights = Array.Empty<float>();
+			normalizedIndices = null;
+			return false;
+		}
+
+		Span<float> selectedWeights = stackalloc float[4];
+		Span<uint> selectedIndices = stackalloc uint[4];
+		var selectedCount = 0;
+		for (var index = 0; index < count; index++)
+		{
+			var weight = weights.FloatValues.Length > 0 ? weights.FloatValues[index] : weights.UIntValues[index] / 255f;
+			if (!float.IsFinite(weight) || weight <= 0) continue;
+			var insertion = selectedCount;
+			while (insertion > 0 && weight > selectedWeights[insertion - 1]) insertion--;
+			if (insertion >= 4) continue;
+			var limit = Math.Min(selectedCount, 3);
+			for (var shift = limit; shift > insertion; shift--)
+			{
+				selectedWeights[shift] = selectedWeights[shift - 1];
+				selectedIndices[shift] = selectedIndices[shift - 1];
+			}
+			selectedWeights[insertion] = weight;
+			if (indices is not null) selectedIndices[insertion] = indices.UIntValues[index];
+			selectedCount = Math.Min(selectedCount + 1, 4);
+		}
+
+		normalizedWeights = new float[4];
+		normalizedIndices = indices is null ? null : new uint[4];
+		var total = 0f;
+		for (var index = 0; index < selectedCount; index++) total += selectedWeights[index];
+		if (total <= 0) return true;
+		for (var index = 0; index < selectedCount; index++)
+		{
+			normalizedWeights[index] = selectedWeights[index] / total;
+			if (normalizedIndices is not null) normalizedIndices[index] = selectedIndices[index];
+		}
+		return true;
+	}
+
+	private static UnitVertexComponentValue? FindComponent(IReadOnlyList<UnitVertexComponentValue> components, uint type, uint index)
+	{
+		for (var position = 0; position < components.Count; position++)
+			if (components[position].Type == type && components[position].Index == index)
+				return components[position];
+		return null;
+	}
+
+	private static float[] DefaultFloats(uint type) => type switch
+	{
+		1 or 2 => DefaultNormal,
+		3 => DefaultTangent,
+		5 => DefaultColor,
+		7 => DefaultWeight,
+		_ => DefaultZero
+	};
+
+	private static uint[] DefaultUInts(uint type)
+		=> type == 6 ? DefaultBoneIndices : Array.Empty<uint>();
 
 	private static void ValidateIndices(UnitRawMeshData mesh, List<CanonicalPlanDiagnostic> diagnostics)
 	{
@@ -174,30 +202,8 @@ public sealed class CanonicalMeshPreparation
 				diagnostics.Add(new("IndexOutOfRange", "Canonical preparation received a triangle outside the vertex range."));
 	}
 
-	private static UnitVertexComponentValue NormalizeWeights(UnitVertexComponentValue value)
+	private static void Encode(UnitStreamComponentInfo target, float[] floats, uint[] uints, Span<byte> destination)
 	{
-		var weights = value.FloatValues.Length > 0 ? value.FloatValues : value.UIntValues.Select(number => number / 255f).ToArray();
-		var selected = weights.Select((weight, index) => (Weight: weight, Index: index))
-			.Where(item => float.IsFinite(item.Weight) && item.Weight > 0)
-			.OrderByDescending(item => item.Weight).Take(4).ToArray();
-		var normalized = new float[4];
-		var total = selected.Sum(item => item.Weight);
-		if (total > 0)
-			for (var index = 0; index < selected.Length; index++) normalized[index] = selected[index].Weight / total;
-		return value with { FloatValues = normalized, UIntValues = Array.Empty<uint>(), RawData = Array.Empty<byte>() };
-	}
-
-	private static UnitVertexComponentValue Encode(UnitStreamComponentInfo target, UnitVertexComponentValue source, Span<byte> destination)
-	{
-		var floats = source.FloatValues.ToArray();
-		var uints = source.UIntValues.ToArray();
-		if (target.Type == 0 || target.Type is 1 or 2 or 3 or 4)
-			floats = source.FloatValues;
-		else if (target.Type is 6)
-			uints = source.UIntValues.Length > 0 ? source.UIntValues : source.FloatValues.Select(value => checked((uint)Math.Max(0, value))).ToArray();
-		else if (target.Type is 5 && source.FloatValues.Length == 0)
-			floats = source.UIntValues.Select(value => value / 255f).ToArray();
-
 		var size = checked((int)target.Size);
 		switch (target.FormatName)
 		{
@@ -205,9 +211,9 @@ public sealed class CanonicalMeshPreparation
 			case "vec2_float": WriteFloats(destination, floats, 2); break;
 			case "vec3_float": WriteFloats(destination, floats, 3); break;
 			case "vec4_float": WriteFloats(destination, floats, 4); break;
-			case "rgba_r8g8b8a8": for (var i = 0; i < 4; i++) destination[i] = (byte)Math.Clamp((int)MathF.Round((floats[i] <= 1 ? floats[i] * 255 : floats[i])), 0, 255); break;
+			case "rgba_r8g8b8a8": for (var i = 0; i < 4; i++) destination[i] = (byte)Math.Clamp((int)MathF.Round((FloatAt(floats, uints, i) <= 1 ? FloatAt(floats, uints, i) * 255 : FloatAt(floats, uints, i))), 0, 255); break;
 			case "vec4_uint32": for (var i = 0; i < 4; i++) BinaryPrimitives.WriteUInt32LittleEndian(destination[(i * 4)..], uints[i]); break;
-			case "vec4_uint8": for (var i = 0; i < 4; i++) destination[i] = checked((byte)uints[i]); break;
+			case "vec4_uint8": for (var i = 0; i < 4; i++) destination[i] = checked((byte)UIntAt(floats, uints, i)); break;
 			case "vec4_1010102": BinaryPrimitives.WriteUInt32LittleEndian(destination, uints.Length > 0 ? uints[0] : PackTenBit(floats)); break;
 			case "unk_normal": BinaryPrimitives.WriteUInt32LittleEndian(destination, PackOctNormal(floats)); break;
 			case "vec4_half": for (var i = 0; i < 4; i++) BinaryPrimitives.WriteUInt16LittleEndian(destination[(i * 2)..], BitConverter.HalfToUInt16Bits((Half)floats[i])); break;
@@ -215,8 +221,13 @@ public sealed class CanonicalMeshPreparation
 			default: throw new InvalidDataException($"Unsupported target component format {target.FormatName} ({target.Format}).");
 		}
 		if (size != destination.Length) throw new InvalidDataException("Encoded component size does not match target ABI.");
-		return new(target.Type, target.TypeName, target.Format, target.FormatName, target.Index, floats, uints, destination.ToArray());
 	}
+
+	private static float FloatAt(float[] floats, uint[] uints, int index)
+		=> floats.Length > index ? floats[index] : uints[index] / 255f;
+
+	private static uint UIntAt(float[] floats, uint[] uints, int index)
+		=> uints.Length > index ? uints[index] : checked((uint)Math.Max(0, floats[index]));
 
 	private static void WriteFloats(Span<byte> destination, float[] values, int count)
 	{

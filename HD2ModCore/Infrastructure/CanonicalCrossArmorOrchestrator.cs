@@ -8,7 +8,6 @@ using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using CoreAssetKey = HD2ModCore.Domain.AssetKey;
 using AdaptationPatchTocEntry = HD2ModAdaptation.PatchReconstruction.PatchTocEntry;
 using AdaptationGameDataPackageResolver = HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver;
-using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -33,32 +32,6 @@ public sealed class CanonicalCrossArmorOrchestrator
 		IReadOnlyList<UnitRawMeshSummary> RawMeshes,
 		IReadOnlyList<(int Index, uint NumVertices, uint NumIndices, uint VertexBufferSize, uint IndexBufferSize)> Streams,
 		IReadOnlyList<(int Index, int RealIndicesCount, int RemapsCount)> BoneInfos);
-
-	private sealed record CanonicalUnitJobTelemetryRow(
-		int Sequence,
-		AdaptationAssetKey UnitKey,
-		bool UsedHiddenCache,
-		bool HasPlannedReplacement,
-		int MeshCount,
-		int VertexCount,
-		int TriangleCount,
-		TimeSpan TargetRead,
-		TimeSpan Mapping,
-		TimeSpan Transform,
-		TimeSpan MeshAssembly,
-		TimeSpan BonePalette,
-		TimeSpan StreamContract,
-		TimeSpan FinalPreparation,
-		TimeSpan MaterialBindings,
-		TimeSpan Serialization,
-		TimeSpan Staging,
-		TimeSpan Total,
-		long AllocatedBytes,
-		long ManagedHeapBytes,
-		long WorkingSetBytes,
-		int Gen0Collections,
-		int Gen1Collections,
-		int Gen2Collections);
 
 	private readonly PatchUnitMeshReader sourceReader;
 	private readonly Func<string, GameDataUnitMeshReader> targetReaderFactory;
@@ -365,6 +338,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 				var provisionalSkinnedMeshes = new List<CanonicalLodBoneInput>();
 				var sourceMaterialBindings = new List<UnitMaterialBinding>();
 				var hiddenMeshCountForUnit = 0;
+				var routeElapsed = TimeSpan.Zero;
+				var mergeElapsed = TimeSpan.Zero;
+				var minifyElapsed = TimeSpan.Zero;
+				var materialResolutionElapsed = TimeSpan.Zero;
 				var rebuiltBoneInfos = target.Model.BoneInfos
 					.Select((boneInfo, index) => new { Index = index, BoneInfo = boneInfo })
 					.ToDictionary(item => item.Index, item => item.BoneInfo);
@@ -382,7 +359,9 @@ public sealed class CanonicalCrossArmorOrchestrator
 					var participatesInLodPalette = false;
 					if (!mappingsByIndex.TryGetValue(targetMesh.Index, out var mapping))
 					{
+						var detailStopwatch = System.Diagnostics.Stopwatch.StartNew();
 						var tiny = hiddenUnitGenerator.Generate(targetRaw, stream);
+						minifyElapsed += detailStopwatch.Elapsed;
 						if (!tiny.IsValid) return Failure(issues, tiny.Diagnostics);
 						finalRaw = tiny.Mesh!;
 						minifiedCount++;
@@ -397,6 +376,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 						if (sourceRaw is null)
 							return Failure(issues, [new CanonicalPlanDiagnostic("RawMeshUnavailable", $"Source RawMesh payload 不完整，无法重建 MeshInfo {targetMesh.Index}。")]);
 						var sourceRawForMaterials = sourceRaw;
+						var detailStopwatch = System.Diagnostics.Stopwatch.StartNew();
 						var transform = transformResolver.TryResolve(source.Model, sourceRaw.MeshInfoIndex, target.Model, targetRaw.MeshInfoIndex);
 						if (!transform.IsValid) return Failure(issues, transform.Diagnostics);
 						currentCanonicalPhase = "RouteMeshSkinning";
@@ -408,18 +388,22 @@ public sealed class CanonicalCrossArmorOrchestrator
 							stream,
 							mapping.SkinningMode,
 							mapping.BoneAnchor);
+						routeElapsed += detailStopwatch.Elapsed;
 						if (!skinningRoute.IsValid) return Failure(issues, skinningRoute.Diagnostics);
 						sourceRaw = skinningRoute.Mesh!;
 						provisionalBoneInfo = skinningRoute.ProvisionalBoneInfo;
 						participatesInLodPalette = skinningRoute.ParticipatesInLodPalette;
 						currentCanonicalPhase = "MergeFinalMeshSections";
+						detailStopwatch.Restart();
 						var merged = merger.TryMerge(new(mapping.Source, mapping.Target, transform.SourceToTargetLocal!.Value), targetRaw, sourceRaw);
+						mergeElapsed += detailStopwatch.Elapsed;
 						if (!merged.IsValid) return Failure(issues, merged.Diagnostics);
 						var finalMergedMesh = merged.Mesh!;
 						// LOD -1/culling meshes can use proxy-only section slots that are not
 						// present in the Unit root Material table. They still need the standard
 						// geometry/bone/stream rebuild, but their material identity must remain
 						// target-owned rather than blocking the replacement.
+						detailStopwatch.Restart();
 						var materialResolution = targetRaw.LodIndex == -1
 							? new CanonicalMaterialBindingResolution([], [])
 							: CanonicalMaterialBindingResolver.Resolve(source.Model, sourceRawForMaterials, targetRaw);
@@ -428,6 +412,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 						IEnumerable<UnitMaterialBinding> materialBindings = materialResolution.Bindings;
 						if (targetRaw.LodIndex == -1)
 							finalMergedMesh = ApplyTargetCullingMaterialSlots(finalMergedMesh, targetRaw);
+						materialResolutionElapsed += detailStopwatch.Elapsed;
 						sourceMaterialBindings.AddRange(materialBindings);
 						finalRaw = finalMergedMesh;
 						replacementCount++;
@@ -496,9 +481,14 @@ public sealed class CanonicalCrossArmorOrchestrator
 					await hiddenUnitCache.StoreAsync(archiveName, new CanonicalHiddenUnitOutput(outputTargetEntry, hiddenMeshCountForUnit), cancellationToken).ConfigureAwait(false);
 				var serializationElapsed = phaseStopwatch.Elapsed;
 				rebuildElapsed += rebuildStopwatch.Elapsed;
-				rebuildTelemetry.Add(new CanonicalUnitRebuildTelemetry(
+				var unitRebuildTelemetry = new CanonicalUnitRebuildTelemetry(
 					transformExpansionElapsed, meshAssemblyElapsed, streamContractElapsed, TimeSpan.Zero,
-					bonePaletteElapsed, finalPreparationElapsed, materialBindingsElapsed, serializationElapsed));
+					bonePaletteElapsed, finalPreparationElapsed, materialBindingsElapsed, serializationElapsed)
+				{
+					MeshBreakdown = new CanonicalMeshAssemblyTelemetry(routeElapsed, mergeElapsed, minifyElapsed, materialResolutionElapsed),
+					SerializationBreakdown = rebuilt.SerializationTelemetry ?? CanonicalUnitSerializationTelemetry.Empty
+				};
+				rebuildTelemetry.Add(unitRebuildTelemetry);
 				phaseStopwatch.Restart();
 				outputTargetEntry = operationWorkspace.Stage(outputTargetEntry);
 				var stagingForUnit = phaseStopwatch.Elapsed;
@@ -514,14 +504,15 @@ public sealed class CanonicalCrossArmorOrchestrator
 					targetReadForUnit, mappingForUnit, transformExpansionElapsed, meshAssemblyElapsed,
 					bonePaletteElapsed, streamContractElapsed, finalPreparationElapsed, materialBindingsElapsed,
 					serializationElapsed, stagingForUnit,
-					unitStopwatch.Elapsed, allocationBefore, gen0Before, gen1Before, gen2Before));
+					unitStopwatch.Elapsed, allocationBefore, gen0Before, gen1Before, gen2Before,
+					unitRebuildTelemetry.MeshBreakdown, unitRebuildTelemetry.SerializationBreakdown));
 				outputUnitCount++;
 				Log($"[UNIT-DONE] Unit=0x{targetUnit.Key.FileId:x16} Meshes={rebuilt.Model!.Meshes.Count} Materials={rebuilt.Model.Materials.Count} Replacements={canonicalMappings.Count}");
 				ReportProgress(request, "RebuildTargetUnit", $"Canonical：重建 Unit {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16} 用时={unitStopwatch.Elapsed:hh\\:mm\\:ss}", targetIndex + 1, Math.Max(targetUnits.Length, 1), totalStopwatch);
 			}
 			if (unitTelemetryPath is not null)
 			{
-				await WriteUnitJobTelemetryAsync(unitTelemetryPath, unitTelemetry, cancellationToken).ConfigureAwait(false);
+				await CanonicalUnitJobTelemetry.WriteCsvAsync(unitTelemetryPath, unitTelemetry, cancellationToken).ConfigureAwait(false);
 				Log($"[TELEMETRY] File={Path.GetFileName(unitTelemetryPath)} Rows={unitTelemetry.Count}");
 			}
 			ReportProgress(request, "CanonicalUnitJobMetrics", $"Canonical Unit job metrics: Flow=CrossArmor, SourceRead={sourceReadElapsed.TotalMilliseconds:F0}ms, TargetRead={targetReadElapsed.TotalMilliseconds:F0}ms, Mapping={mappingElapsed.TotalMilliseconds:F0}ms, Rebuild={rebuildElapsed.TotalMilliseconds:F0}ms, Staging={stagingElapsed.TotalMilliseconds:F0}ms, {rebuildTelemetry.Snapshot().Describe()}", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
@@ -779,48 +770,20 @@ public sealed class CanonicalCrossArmorOrchestrator
 		long allocationBefore,
 		int gen0Before,
 		int gen1Before,
-		int gen2Before)
+		int gen2Before,
+		CanonicalMeshAssemblyTelemetry? meshBreakdown = null,
+		CanonicalUnitSerializationTelemetry? serializationBreakdown = null)
 		=> new(
-			sequence, unitKey, usedHiddenCache, hasPlannedReplacement, meshCount, vertexCount, triangleCount,
-			targetRead, mapping, transform, meshAssembly, bonePalette, streamContract, finalPreparation,
-			materialBindings, serialization, staging, total,
+			"CrossArmor", sequence, unitKey.FileId, usedHiddenCache, hasPlannedReplacement, meshCount, vertexCount, triangleCount,
+			TimeSpan.Zero, targetRead, mapping, transform, meshAssembly, meshBreakdown ?? CanonicalMeshAssemblyTelemetry.Empty,
+			bonePalette, streamContract, finalPreparation, materialBindings, serialization,
+			serializationBreakdown ?? CanonicalUnitSerializationTelemetry.Empty, staging, total,
 			Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - allocationBefore),
 			GC.GetTotalMemory(forceFullCollection: false),
 			Environment.WorkingSet,
 			GC.CollectionCount(0) - gen0Before,
 			GC.CollectionCount(1) - gen1Before,
 			GC.CollectionCount(2) - gen2Before);
-
-	private static async ValueTask WriteUnitJobTelemetryAsync(
-		string path,
-		IReadOnlyList<CanonicalUnitJobTelemetryRow> rows,
-		CancellationToken cancellationToken)
-	{
-		var builder = new StringBuilder();
-		builder.AppendLine("sequence,unit_file_id,hidden_cache_hit,planned_replacement,mesh_count,vertex_count,triangle_count,target_read_ms,mapping_ms,transform_ms,mesh_assembly_ms,bone_palette_ms,stream_contract_ms,prepare_final_ms,material_bindings_ms,serialization_ms,staging_ms,total_ms,allocated_bytes,managed_heap_bytes,working_set_bytes,gen0_collections,gen1_collections,gen2_collections");
-		foreach (var row in rows)
-		{
-			builder.Append(row.Sequence).Append(',')
-				.Append($"0x{row.UnitKey.FileId:x16}").Append(',')
-				.Append(row.UsedHiddenCache ? '1' : '0').Append(',')
-				.Append(row.HasPlannedReplacement ? '1' : '0').Append(',')
-				.Append(row.MeshCount).Append(',').Append(row.VertexCount).Append(',').Append(row.TriangleCount).Append(',')
-				.Append(row.TargetRead.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
-				.Append(row.Mapping.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
-				.Append(row.Transform.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
-				.Append(row.MeshAssembly.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
-				.Append(row.BonePalette.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
-				.Append(row.StreamContract.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
-				.Append(row.FinalPreparation.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
-				.Append(row.MaterialBindings.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
-				.Append(row.Serialization.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
-				.Append(row.Staging.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
-				.Append(row.Total.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
-				.Append(row.AllocatedBytes).Append(',').Append(row.ManagedHeapBytes).Append(',').Append(row.WorkingSetBytes).Append(',')
-				.Append(row.Gen0Collections).Append(',').Append(row.Gen1Collections).Append(',').Append(row.Gen2Collections).AppendLine();
-		}
-		await File.WriteAllTextAsync(path, builder.ToString(), new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
-	}
 
 	private static async ValueTask WriteMarkdownReportAsync(
 		string reportPath,
