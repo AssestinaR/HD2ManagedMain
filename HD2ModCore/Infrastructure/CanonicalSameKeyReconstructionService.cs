@@ -229,7 +229,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 	                foreach (var observation in result.Rebuild.MaterialObservations ?? [])
 	                    artifacts.Log($"[MATERIAL] Unit=0x{unitPlan.UnitAssetKey.FileId:x16}; {observation.Message}");
 	                artifacts.Log($"[UNIT] Unit=0x{unitPlan.UnitAssetKey.FileId:x16}; Cache={result.HiddenCacheHit}; SourceReadMs={result.SourceRead.TotalMilliseconds:F0}; TargetReadMs={result.TargetRead.TotalMilliseconds:F0}; RebuildMs={result.RebuildElapsed.TotalMilliseconds:F0}");
-	                Report(progress, operationId, "BuildCandidate", $"宸插畬鎴?Unit {unitPlan.UnitAssetKey.FileId:x16}", Interlocked.Increment(ref completedUnits), plan.Units.Count);
+	                var completed = Interlocked.Increment(ref completedUnits);
+	                Report(progress, operationId, "BuildCandidate", $"已完成 Unit {completed}/{plan.Units.Count}", completed, plan.Units.Count);
 	                return ValueTask.CompletedTask;
 	            },
 	            cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -266,7 +267,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 if (rebuilt.ReplacedMeshCount > 0) replacementUnitCount++;
                 else minifyOnlyUnitCount++;
             }
-            Report(progress, operationId, "BuildCandidate", $"已完成 Unit {unitPlan.UnitAssetKey.FileId:x16}", ++completedUnits, plan.Units.Count);
+            completedUnits++;
+            Report(progress, operationId, "BuildCandidate", $"已完成 Unit {completedUnits}/{plan.Units.Count}", completedUnits, plan.Units.Count);
         }
         Report(progress, operationId, "BuildCandidateMetrics", $"Same-key Unit 作业耗时：来源读取={sourceReadElapsed.TotalMilliseconds:F0}ms，目标读取={targetReadElapsed.TotalMilliseconds:F0}ms，重建={rebuildElapsed.TotalMilliseconds:F0}ms，落盘={stagingElapsed.TotalMilliseconds:F0}ms", completedUnits, plan.Units.Count);
 		await CanonicalUnitJobTelemetry.WriteCsvAsync(artifacts.TelemetryPath, unitTelemetry, cancellationToken).ConfigureAwait(false);
