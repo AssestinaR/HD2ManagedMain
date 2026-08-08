@@ -8,6 +8,7 @@ using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using CoreAssetKey = HD2ModCore.Domain.AssetKey;
 using AdaptationPatchTocEntry = HD2ModAdaptation.PatchReconstruction.PatchTocEntry;
 using AdaptationGameDataPackageResolver = HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -32,6 +33,32 @@ public sealed class CanonicalCrossArmorOrchestrator
 		IReadOnlyList<UnitRawMeshSummary> RawMeshes,
 		IReadOnlyList<(int Index, uint NumVertices, uint NumIndices, uint VertexBufferSize, uint IndexBufferSize)> Streams,
 		IReadOnlyList<(int Index, int RealIndicesCount, int RemapsCount)> BoneInfos);
+
+	private sealed record CanonicalUnitJobTelemetryRow(
+		int Sequence,
+		AdaptationAssetKey UnitKey,
+		bool UsedHiddenCache,
+		bool HasPlannedReplacement,
+		int MeshCount,
+		int VertexCount,
+		int TriangleCount,
+		TimeSpan TargetRead,
+		TimeSpan Mapping,
+		TimeSpan Transform,
+		TimeSpan MeshAssembly,
+		TimeSpan BonePalette,
+		TimeSpan StreamContract,
+		TimeSpan FinalPreparation,
+		TimeSpan MaterialBindings,
+		TimeSpan Serialization,
+		TimeSpan Staging,
+		TimeSpan Total,
+		long AllocatedBytes,
+		long ManagedHeapBytes,
+		long WorkingSetBytes,
+		int Gen0Collections,
+		int Gen1Collections,
+		int Gen2Collections);
 
 	private readonly PatchUnitMeshReader sourceReader;
 	private readonly Func<string, GameDataUnitMeshReader> targetReaderFactory;
@@ -142,8 +169,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 		var currentCanonicalPhase = "initializing";
 		var currentCanonicalSource = "none";
 		var reportState = new CanonicalMarkdownReportState();
+		var unitTelemetry = new List<CanonicalUnitJobTelemetryRow>();
 		using var positionDiagnostics = CanonicalPositionDiagnostics.Suppress();
 		string? reportPath = null;
+		string? unitTelemetryPath = null;
 		void Log(string message)
 		{
 			reportState.Log(message);
@@ -161,6 +190,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 		{
 			Directory.CreateDirectory(Path.GetFullPath(request.OutputDirectory));
 			reportPath = Path.Combine(Path.GetFullPath(request.OutputDirectory), "canonical-report.md");
+			unitTelemetryPath = Path.Combine(Path.GetFullPath(request.OutputDirectory), "canonical-unit-job-telemetry.csv");
 			Log($"[START] SourcePatch={Path.GetFileName(request.SourcePatchTocPath)} Output={request.OutputDirectory}");
 			await WriteMarkdownReportAsync(reportPath, request, reportState, [], [], new Dictionary<AdaptationAssetKey, CanonicalRebuildSummary>(), [], null, null, cancellationToken).ConfigureAwait(false);
 			ReportProgress(request, "CanonicalPreparing", "正在准备 Canonical 跨护甲重建。", 0, 1, totalStopwatch);
@@ -244,6 +274,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 				currentCanonicalSource = "none";
 				currentCanonicalPhase = "ReadTargetUnit";
 				var unitStopwatch = System.Diagnostics.Stopwatch.StartNew();
+				var allocationBefore = GC.GetTotalAllocatedBytes(precise: false);
+				var gen0Before = GC.CollectionCount(0);
+				var gen1Before = GC.CollectionCount(1);
+				var gen2Before = GC.CollectionCount(2);
 				var phaseStopwatch = System.Diagnostics.Stopwatch.StartNew();
 				ReportProgress(request, "RebuildTargetUnit", $"Canonical：重建 Unit {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16}", targetIndex, Math.Max(targetUnits.Length, 1), totalStopwatch);
 				Log($"[UNIT-BEGIN] Unit=0x{targetUnit.Key.FileId:x16} Index={targetIndex + 1}/{targetUnits.Length}");
@@ -264,6 +298,12 @@ public sealed class CanonicalCrossArmorOrchestrator
 						workspaceJobs.Add(PatchWorkspaceJobResult.Unit(cachedOutputEntry, $"0x{targetUnit.Key.FileId:x16}"));
 						outputUnitCount++;
 						minifiedCount += cached.HiddenMeshCount;
+						unitTelemetry.Add(CreateUnitJobTelemetryRow(
+							targetIndex + 1, targetUnit.Key, usedHiddenCache: true, hasPlannedReplacement,
+							meshCount: 0, vertexCount: 0, triangleCount: 0,
+							TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
+							TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, stagingStopwatch.Elapsed,
+							unitStopwatch.Elapsed, allocationBefore, gen0Before, gen1Before, gen2Before));
 						Log($"[UNIT-CACHE-HIT] Unit=0x{targetUnit.Key.FileId:x16} HiddenMeshes={cached.HiddenMeshCount}");
 						ReportProgress(request, "RebuildTargetUnit", $"Canonical：复用隐藏 Unit 缓存 {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16}", targetIndex + 1, Math.Max(targetUnits.Length, 1), totalStopwatch);
 						continue;
@@ -275,7 +315,8 @@ public sealed class CanonicalCrossArmorOrchestrator
 					targetUnit.Key,
 					allowGlobalDependencySearch: false,
 					cancellationToken: cancellationToken).ConfigureAwait(false);
-				targetReadElapsed += targetReadStopwatch.Elapsed;
+				var targetReadForUnit = targetReadStopwatch.Elapsed;
+				targetReadElapsed += targetReadForUnit;
 				phaseStopwatch.Restart();
 				var approvedUnitMappings = request.Plan.Mappings
 					.Where(mapping => mapping.WillReplace && SameKey(mapping.PhysicalTarget.UnitAssetKey, targetUnit.Key))
@@ -304,7 +345,8 @@ public sealed class CanonicalCrossArmorOrchestrator
 					target.Model,
 					sourceUnits.ToDictionary(pair => pair.Key, pair => pair.Value.Model),
 					approvedUnitMappings);
-				mappingElapsed += phaseStopwatch.Elapsed;
+				var mappingForUnit = phaseStopwatch.Elapsed;
+				mappingElapsed += mappingForUnit;
 				phaseStopwatch.Restart();
 				var rebuildStopwatch = System.Diagnostics.Stopwatch.StartNew();
 				currentCanonicalPhase = "ExpandAutoLodMappings";
@@ -452,19 +494,35 @@ public sealed class CanonicalCrossArmorOrchestrator
 					target.Payload.Entry.Unknown2, target.Payload.Entry.Unknown3, target.Payload.Entry.Unknown4);
 				if (!hasPlannedReplacement)
 					await hiddenUnitCache.StoreAsync(archiveName, new CanonicalHiddenUnitOutput(outputTargetEntry, hiddenMeshCountForUnit), cancellationToken).ConfigureAwait(false);
+				var serializationElapsed = phaseStopwatch.Elapsed;
 				rebuildElapsed += rebuildStopwatch.Elapsed;
 				rebuildTelemetry.Add(new CanonicalUnitRebuildTelemetry(
 					transformExpansionElapsed, meshAssemblyElapsed, streamContractElapsed, TimeSpan.Zero,
-					bonePaletteElapsed, finalPreparationElapsed, materialBindingsElapsed, phaseStopwatch.Elapsed));
+					bonePaletteElapsed, finalPreparationElapsed, materialBindingsElapsed, serializationElapsed));
 				phaseStopwatch.Restart();
 				outputTargetEntry = operationWorkspace.Stage(outputTargetEntry);
-				stagingElapsed += phaseStopwatch.Elapsed;
+				var stagingForUnit = phaseStopwatch.Elapsed;
+				stagingElapsed += stagingForUnit;
 				outputEntries.Add(outputTargetEntry);
 				workspaceJobs.Add(PatchWorkspaceJobResult.Unit(outputTargetEntry, $"0x{targetUnit.Key.FileId:x16}"));
 				rebuiltTargets.Add(targetUnit.Key, CreateRebuildSummary(targetUnit.Key, rebuilt.Model!));
+				unitTelemetry.Add(CreateUnitJobTelemetryRow(
+					targetIndex + 1, targetUnit.Key, usedHiddenCache: false, hasPlannedReplacement,
+					rebuilt.Model!.Meshes.Count,
+					checked(rebuilt.Model.RawMeshData.Sum(raw => raw.Vertices.Count)),
+					checked(rebuilt.Model.RawMeshData.Sum(raw => raw.Triangles.Count)),
+					targetReadForUnit, mappingForUnit, transformExpansionElapsed, meshAssemblyElapsed,
+					bonePaletteElapsed, streamContractElapsed, finalPreparationElapsed, materialBindingsElapsed,
+					serializationElapsed, stagingForUnit,
+					unitStopwatch.Elapsed, allocationBefore, gen0Before, gen1Before, gen2Before));
 				outputUnitCount++;
 				Log($"[UNIT-DONE] Unit=0x{targetUnit.Key.FileId:x16} Meshes={rebuilt.Model!.Meshes.Count} Materials={rebuilt.Model.Materials.Count} Replacements={canonicalMappings.Count}");
 				ReportProgress(request, "RebuildTargetUnit", $"Canonical：重建 Unit {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16} 用时={unitStopwatch.Elapsed:hh\\:mm\\:ss}", targetIndex + 1, Math.Max(targetUnits.Length, 1), totalStopwatch);
+			}
+			if (unitTelemetryPath is not null)
+			{
+				await WriteUnitJobTelemetryAsync(unitTelemetryPath, unitTelemetry, cancellationToken).ConfigureAwait(false);
+				Log($"[TELEMETRY] File={Path.GetFileName(unitTelemetryPath)} Rows={unitTelemetry.Count}");
 			}
 			ReportProgress(request, "CanonicalUnitJobMetrics", $"Canonical Unit job metrics: Flow=CrossArmor, SourceRead={sourceReadElapsed.TotalMilliseconds:F0}ms, TargetRead={targetReadElapsed.TotalMilliseconds:F0}ms, Mapping={mappingElapsed.TotalMilliseconds:F0}ms, Rebuild={rebuildElapsed.TotalMilliseconds:F0}ms, Staging={stagingElapsed.TotalMilliseconds:F0}ms, {rebuildTelemetry.Snapshot().Describe()}", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
 
@@ -697,6 +755,71 @@ public sealed class CanonicalCrossArmorOrchestrator
 			if (entry.StreamData is null && !File.Exists(entry.StreamDataPath)) diagnostics.Add(new("CanonicalOutputStreamPayloadMissing", $"Entry 0x{entry.Key.FileId:x16} 的 Stream payload 不存在。"));
 		}
 		return diagnostics;
+	}
+
+	private static CanonicalUnitJobTelemetryRow CreateUnitJobTelemetryRow(
+		int sequence,
+		AdaptationAssetKey unitKey,
+		bool usedHiddenCache,
+		bool hasPlannedReplacement,
+		int meshCount,
+		int vertexCount,
+		int triangleCount,
+		TimeSpan targetRead,
+		TimeSpan mapping,
+		TimeSpan transform,
+		TimeSpan meshAssembly,
+		TimeSpan bonePalette,
+		TimeSpan streamContract,
+		TimeSpan finalPreparation,
+		TimeSpan materialBindings,
+		TimeSpan serialization,
+		TimeSpan staging,
+		TimeSpan total,
+		long allocationBefore,
+		int gen0Before,
+		int gen1Before,
+		int gen2Before)
+		=> new(
+			sequence, unitKey, usedHiddenCache, hasPlannedReplacement, meshCount, vertexCount, triangleCount,
+			targetRead, mapping, transform, meshAssembly, bonePalette, streamContract, finalPreparation,
+			materialBindings, serialization, staging, total,
+			Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - allocationBefore),
+			GC.GetTotalMemory(forceFullCollection: false),
+			Environment.WorkingSet,
+			GC.CollectionCount(0) - gen0Before,
+			GC.CollectionCount(1) - gen1Before,
+			GC.CollectionCount(2) - gen2Before);
+
+	private static async ValueTask WriteUnitJobTelemetryAsync(
+		string path,
+		IReadOnlyList<CanonicalUnitJobTelemetryRow> rows,
+		CancellationToken cancellationToken)
+	{
+		var builder = new StringBuilder();
+		builder.AppendLine("sequence,unit_file_id,hidden_cache_hit,planned_replacement,mesh_count,vertex_count,triangle_count,target_read_ms,mapping_ms,transform_ms,mesh_assembly_ms,bone_palette_ms,stream_contract_ms,prepare_final_ms,material_bindings_ms,serialization_ms,staging_ms,total_ms,allocated_bytes,managed_heap_bytes,working_set_bytes,gen0_collections,gen1_collections,gen2_collections");
+		foreach (var row in rows)
+		{
+			builder.Append(row.Sequence).Append(',')
+				.Append($"0x{row.UnitKey.FileId:x16}").Append(',')
+				.Append(row.UsedHiddenCache ? '1' : '0').Append(',')
+				.Append(row.HasPlannedReplacement ? '1' : '0').Append(',')
+				.Append(row.MeshCount).Append(',').Append(row.VertexCount).Append(',').Append(row.TriangleCount).Append(',')
+				.Append(row.TargetRead.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
+				.Append(row.Mapping.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
+				.Append(row.Transform.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
+				.Append(row.MeshAssembly.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
+				.Append(row.BonePalette.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
+				.Append(row.StreamContract.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
+				.Append(row.FinalPreparation.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
+				.Append(row.MaterialBindings.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
+				.Append(row.Serialization.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
+				.Append(row.Staging.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
+				.Append(row.Total.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
+				.Append(row.AllocatedBytes).Append(',').Append(row.ManagedHeapBytes).Append(',').Append(row.WorkingSetBytes).Append(',')
+				.Append(row.Gen0Collections).Append(',').Append(row.Gen1Collections).Append(',').Append(row.Gen2Collections).AppendLine();
+		}
+		await File.WriteAllTextAsync(path, builder.ToString(), new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
 	}
 
 	private static async ValueTask WriteMarkdownReportAsync(
