@@ -95,38 +95,33 @@ public sealed class MaterialPackagingService
 		return new MaterialPackagingWriteResult(new[] { model, material }, verification);
 	}
 
-	public async ValueTask<MaterialPackagingWriteResult> MergeAsync(string sourcePatchTocPath, string candidatePatchTocPath, string outputDirectory, bool requireAllExternalMaterials, CancellationToken cancellationToken = default)
+	public async ValueTask<MaterialPackagingWriteResult> MergeAsync(string sourcePatchTocPath, string candidatePatchTocPath, string outputDirectory, bool requireAllExternalMaterials, bool onlyReferencedAssets = true, bool replaceExistingMaterials = true, CancellationToken cancellationToken = default)
 	{
 		var compatibility = await CheckCandidateAsync(sourcePatchTocPath, candidatePatchTocPath, requireAllExternalMaterials, cancellationToken).ConfigureAwait(false);
 		if (!compatibility.IsCompatible) throw new InvalidOperationException(string.Join(Environment.NewLine, compatibility.Blockers));
 		var sourceEntries = compatibility.Source.Entries;
-		var candidateEntries = compatibility.Candidate.Entries;
-		var allWinners = sourceEntries.Concat(candidateEntries).GroupBy(entry => entry.AssetKey).Select(group => group.Last()).ToArray();
-		var winnerByKey = allWinners.ToDictionary(entry => entry.AssetKey);
-		var effectiveMaterialKeys = compatibility.Source.References
-			.Where(reference => reference.Kind == PatchReferenceKind.UnitMaterial)
+		var candidateMaterials = onlyReferencedAssets
+			? compatibility.MatchingMaterialAssetKeys
+			: compatibility.Candidate.MaterialAssetKeys;
+		var candidateTextures = compatibility.Candidate.References
+			.Where(reference => reference.Kind == PatchReferenceKind.MaterialTexture
+				&& candidateMaterials.Contains(reference.SourceAssetKey)
+				&& compatibility.Candidate.TextureAssetKeys.Contains(reference.TargetAssetKey))
 			.Select(reference => reference.TargetAssetKey)
-			.Where(winnerByKey.ContainsKey)
 			.ToHashSet();
-		var effectiveTextureKeys = new HashSet<AssetKey>();
-		foreach (var materialKey in effectiveMaterialKeys)
+		var selectedCandidateEntries = compatibility.Candidate.Entries
+			.Where(entry => (entry.AssetKey.TypeId == MaterialDependencyResolver.MaterialTypeId && candidateMaterials.Contains(entry.AssetKey))
+				|| (entry.AssetKey.TypeId == MaterialDependencyResolver.TextureTypeId && candidateTextures.Contains(entry.AssetKey)))
+			.ToArray();
+		var winners = sourceEntries.ToDictionary(entry => entry.AssetKey);
+		foreach (var candidateEntry in selectedCandidateEntries)
 		{
-			var winner = winnerByKey[materialKey];
-			var winnerReferences = (winner.SourceFilePath.Equals(compatibility.Candidate.PatchTocPath, StringComparison.OrdinalIgnoreCase) ? compatibility.Candidate.References : compatibility.Source.References)
-				.Where(reference => reference.Kind == PatchReferenceKind.MaterialTexture && reference.SourceAssetKey == materialKey);
-			foreach (var reference in winnerReferences)
-			{
-				if (winnerByKey.ContainsKey(reference.TargetAssetKey)) effectiveTextureKeys.Add(reference.TargetAssetKey);
-			}
+			if (replaceExistingMaterials || !winners.ContainsKey(candidateEntry.AssetKey))
+				winners[candidateEntry.AssetKey] = candidateEntry;
 		}
-		var winners = allWinners.Where(entry => entry.AssetKey.TypeId switch
-		{
-			MaterialDependencyResolver.MaterialTypeId => effectiveMaterialKeys.Contains(entry.AssetKey),
-			MaterialDependencyResolver.TextureTypeId => effectiveTextureKeys.Contains(entry.AssetKey),
-			_ => true
-		}).ToArray();
-		var write = await subsetWriter.WriteAsync(sourcePatchTocPath, outputDirectory, winners.Select(entry => new PatchSubsetSelection(entry.SourceFilePath, entry.AssetKey)).ToArray(), cancellationToken: cancellationToken).ConfigureAwait(false);
-		var verification = await VerifyEquivalentAsync(winners, new[] { write.TocFilePath }, cancellationToken).ConfigureAwait(false);
+		var winnerEntries = winners.Values.ToArray();
+		var write = await subsetWriter.WriteAsync(sourcePatchTocPath, outputDirectory, winnerEntries.Select(entry => new PatchSubsetSelection(entry.SourceFilePath, entry.AssetKey)).ToArray(), cancellationToken: cancellationToken).ConfigureAwait(false);
+		var verification = await VerifyEquivalentAsync(winnerEntries, new[] { write.TocFilePath }, cancellationToken).ConfigureAwait(false);
 		return new MaterialPackagingWriteResult(new[] { write }, verification);
 	}
 

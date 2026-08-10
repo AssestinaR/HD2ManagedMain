@@ -20,6 +20,9 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
     private string outputDirectory = Path.Combine(AppContext.BaseDirectory, "Output");
     private MaterialPackageCandidateViewModel? selectedCandidate;
     private bool importToLibrary;
+    private bool onlyReferencedAssets = true;
+    private bool replaceExistingMaterials = true;
+    private bool candidatesLoaded;
     private bool isRunning;
     private string state;
 
@@ -28,13 +31,22 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
     public string OperationTitle { get; }
     public string Explanation { get; }
     public IReadOnlyList<MaterialPackageCandidateViewModel> Candidates { get; private set; } = Array.Empty<MaterialPackageCandidateViewModel>();
+    public IReadOnlyList<MaterialPackageCandidateViewModel> CandidateOptions => Candidates.Count != 0
+        ? Candidates
+        : [MaterialPackageCandidateViewModel.Placeholder(candidatesLoaded ? "没有找到可用材质包" : "正在读取材质包候选...")];
     public MaterialPackageCandidateViewModel? SelectedCandidate
     {
         get => selectedCandidate;
-        set { if (SetField(ref selectedCandidate, value)) GenerateCommand.RaiseCanExecuteChanged(); }
+        set
+        {
+            if (!SetField(ref selectedCandidate, value)) return;
+            GenerateCommand.RaiseCanExecuteChanged();
+        }
     }
-    public string OutputDirectory { get => outputDirectory; private set { if (SetField(ref outputDirectory, value)) GenerateCommand.RaiseCanExecuteChanged(); } }
+    public string OutputDirectory { get => outputDirectory; set { if (SetField(ref outputDirectory, value)) GenerateCommand.RaiseCanExecuteChanged(); } }
     public bool ImportToLibrary { get => importToLibrary; set => SetField(ref importToLibrary, value); }
+    public bool OnlyReferencedAssets { get => onlyReferencedAssets; set => SetField(ref onlyReferencedAssets, value); }
+    public bool ReplaceExistingMaterials { get => replaceExistingMaterials; set => SetField(ref replaceExistingMaterials, value); }
     public bool IsRunning { get => isRunning; private set { if (SetField(ref isRunning, value)) GenerateCommand.RaiseCanExecuteChanged(); } }
     public string State { get => state; private set => SetField(ref state, value); }
     public RelayCommand BrowseCommand { get; }
@@ -70,7 +82,11 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
         Title = OperationTitle;
         BrowseCommand = new RelayCommand(_ => Browse());
         GenerateCommand = new RelayCommand(async _ => await GenerateAsync(), _ => CanGenerate());
-        if (RequiresCandidate) _ = LoadCandidatesAsync();
+        if (RequiresCandidate)
+        {
+            SelectedCandidate = CandidateOptions[0];
+            _ = LoadCandidatesAsync();
+        }
     }
 
     private async Task LoadCandidatesAsync()
@@ -102,16 +118,23 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
                 candidates = await packaging.FindCandidatesAsync(source, library.Snapshot.Nodes.Values.ToArray(), modsRootDirectory, requireAllExternalMaterials);
             }
             Candidates = candidates.Select(candidate => new MaterialPackageCandidateViewModel(candidate)).ToArray();
-            SelectedCandidate = Candidates.FirstOrDefault(candidate => candidate.IsCompatible);
-            State = Candidates.Count == 0 ? "Mod 库中没有精确匹配 Material AssetKey 的材质包。" : $"找到 {Candidates.Count} 个候选，请选择完整适配项。";
+            candidatesLoaded = true;
+            SelectedCandidate = CandidateOptions[0];
+            State = Candidates.Count == 0 ? "Mod 库中没有引用目标所需 Material 的材质包。" : $"找到 {Candidates.Count} 个候选，请选择要集成的材质包。";
             notifications?.Show(Candidates.Count == 0 ? "集成材质：没有找到可用候选。" : $"集成材质：已找到 {Candidates.Count} 个候选，请选择后生成。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
             LogService.Info($"{OperationTitle}候选读取完成：Mod={SourceName}，候选数={Candidates.Count}，可用数={Candidates.Count(candidate => candidate.IsCompatible)}。");
             OnPropertyChanged(nameof(Candidates));
+            OnPropertyChanged(nameof(CandidateOptions));
             GenerateCommand.RaiseCanExecuteChanged();
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
         {
+            candidatesLoaded = true;
+            Candidates = Array.Empty<MaterialPackageCandidateViewModel>();
             State = $"读取材质候选失败：{exception.Message}";
+            SelectedCandidate = MaterialPackageCandidateViewModel.Placeholder("读取材质包候选失败");
+            OnPropertyChanged(nameof(Candidates));
+            OnPropertyChanged(nameof(CandidateOptions));
             LogService.Error($"{OperationTitle}候选读取异常：Mod={SourceName}，错误={exception}");
             notifications?.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(12));
         }
@@ -125,7 +148,7 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
 
     private bool CanGenerate() => !IsRunning
         && !string.IsNullOrWhiteSpace(OutputDirectory)
-        && (!RequiresCandidate || SelectedCandidate?.IsCompatible == true);
+        && (!RequiresCandidate || SelectedCandidate is { IsPlaceholder: false });
 
     private async Task GenerateAsync()
     {
@@ -152,7 +175,7 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
             else
             {
                 if (SelectedCandidate is null || !library.Snapshot.Nodes.TryGetValue(SelectedCandidate.NodeId, out var candidate)) return;
-                result = await packaging.MergeAsync(source, candidate, modsRootDirectory, root, requireAllExternalMaterials);
+                result = await packaging.MergeAsync(source, candidate, modsRootDirectory, root, requireAllExternalMaterials, OnlyReferencedAssets, ReplaceExistingMaterials);
             }
 
             if (!result.IsSuccessful)
@@ -189,15 +212,25 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
     private static string Sanitize(string value) => string.Concat(value.Select(character => Path.GetInvalidFileNameChars().Contains(character) ? '_' : character)).Trim();
 }
 
-public sealed record MaterialPackageCandidateViewModel(MaterialPackageCandidate Candidate)
+public sealed class MaterialPackageCandidateViewModel
 {
-    public ModNodeId NodeId => Candidate.NodeId;
-    public string Name => Candidate.Name;
-    public bool IsCompatible => Candidate.IsCompatible;
-    public int MatchingMaterialCount => Candidate.MatchingMaterialCount;
-    public int MissingMaterialCount => Candidate.MissingMaterialCount;
-    public int MissingTextureCount => Candidate.MissingTextureCount;
-    public string BlockerSummary => Candidate.Blockers.Count == 0 ? string.Empty : string.Join("；", Candidate.Blockers);
-    public string StatusText => IsCompatible ? (Candidate.Blockers.Count == 0 ? "完整适配" : "可写出（提醒）") : "不匹配";
-    public string StatusBrush => IsCompatible ? (Candidate.Blockers.Count == 0 ? "#237A3B" : "#B06A00") : "#A33";
+    private MaterialPackageCandidateViewModel(MaterialPackageCandidate? candidate, string placeholderText = "")
+    {
+        Candidate = candidate;
+        Name = candidate?.Name ?? placeholderText;
+    }
+
+    public MaterialPackageCandidateViewModel(MaterialPackageCandidate candidate) : this(candidate, string.Empty) { }
+    public MaterialPackageCandidate? Candidate { get; }
+    public bool IsPlaceholder => Candidate is null;
+    public ModNodeId NodeId => Candidate?.NodeId ?? default;
+    public string Name { get; }
+    public bool IsCompatible => Candidate?.IsCompatible == true;
+    public int MatchingMaterialCount => Candidate?.MatchingMaterialCount ?? 0;
+    public int MissingMaterialCount => Candidate?.MissingMaterialCount ?? 0;
+    public int MissingTextureCount => Candidate?.MissingTextureCount ?? 0;
+    public string BlockerSummary => Candidate is null || Candidate.Blockers.Count == 0 ? string.Empty : string.Join("；", Candidate.Blockers);
+    public string StatusText => Candidate is null ? string.Empty : Candidate.Blockers.Count == 0 ? "可集成" : "可集成（依赖由用户负责）";
+    public string StatusBrush => Candidate is null || Candidate.Blockers.Count == 0 ? "#237A3B" : "#B06A00";
+    public static MaterialPackageCandidateViewModel Placeholder(string text) => new(null, text);
 }

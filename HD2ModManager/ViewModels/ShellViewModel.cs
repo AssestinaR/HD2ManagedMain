@@ -27,6 +27,10 @@ namespace HD2ModManager.ViewModels
         private BackgroundTaskItem? _deploymentTask;
         private readonly SelectionCoordinator _selection = new();
         private readonly BottomBarCoordinator _bottomBar;
+        private readonly List<IDisposable> _materialPackagingBottomBarRegistrations = [];
+        private MaterialPackagingPageViewModel? _materialPackagingBottomBarOperation;
+        private readonly List<IDisposable> _sameKeyRebuildBottomBarRegistrations = [];
+        private SameKeyRebuildBottomBarViewModel? _sameKeyRebuildBottomBarOperation;
         private readonly SemaphoreSlim _importProcessGate = new(1, 1);
         private int _pageRefreshQueued;
 
@@ -45,6 +49,8 @@ namespace HD2ModManager.ViewModels
         private int _disposed;
 
         public PageViewModel? CurrentPage => LeftPage;
+        public bool HasMaterialPackagingBottomBar => _materialPackagingBottomBarOperation is not null;
+        public bool HasSameKeyRebuildBottomBar => _sameKeyRebuildBottomBarOperation is not null;
         public PageViewModel? LeftPage
         {
             get => _leftPage;
@@ -474,18 +480,65 @@ namespace HD2ModManager.ViewModels
 
         public void OpenMaterialPackaging(ModDetailsPageViewModel sourcePage, MaterialPackagingPageViewModel packagingPage)
         {
-            if (ReferenceEquals(sourcePage, RightPage))
-            {
-                LeftPageType = WorkspacePageType.MaterialPackaging;
-                LeftPage = packagingPage;
-            }
-            else
-            {
-                RightPageType = WorkspacePageType.MaterialPackaging;
-                RightPage = packagingPage;
-            }
-            UpdateModeFromSlots();
-            RaiseSlotFlags();
+            DismissToolBottomBars();
+            _materialPackagingBottomBarOperation = packagingPage;
+
+            RegisterMaterialPackagingRow("material-packaging-output", MaterialPackagingBottomBarRowKind.Output, insertAtRow: 1);
+            RegisterMaterialPackagingRow("material-packaging-options", MaterialPackagingBottomBarRowKind.Options);
+            if (packagingPage.RequiresCandidate)
+                RegisterMaterialPackagingRow("material-packaging-candidates", MaterialPackagingBottomBarRowKind.Candidates);
+        }
+
+        public void DismissMaterialPackagingBottomBar() => ClearMaterialPackagingBottomBar();
+
+        public void OpenSameKeyRebuild(SameKeyRebuildBottomBarViewModel operation)
+        {
+            ArgumentNullException.ThrowIfNull(operation);
+            ClearMaterialPackagingBottomBar();
+            ClearSameKeyRebuildBottomBar();
+            _sameKeyRebuildBottomBarOperation = operation;
+            RegisterSameKeyRebuildRow("same-key-rebuild-output", SameKeyRebuildBottomBarRowKind.Output, insertAtRow: 1);
+            RegisterSameKeyRebuildRow("same-key-rebuild-options", SameKeyRebuildBottomBarRowKind.Options);
+        }
+
+        public void DismissToolBottomBars()
+        {
+            ClearMaterialPackagingBottomBar();
+            ClearSameKeyRebuildBottomBar();
+        }
+
+        private void RegisterMaterialPackagingRow(string sourceId, MaterialPackagingBottomBarRowKind kind, int? insertAtRow = null)
+        {
+            if (_materialPackagingBottomBarOperation is null) return;
+            var row = new MaterialPackagingBottomBarRowViewModel(_materialPackagingBottomBarOperation, kind);
+            _materialPackagingBottomBarRegistrations.Add(_bottomBar.RegisterSurfaceSource(new BottomBarRegistrationRequest(
+                sourceId,
+                [new BottomBarRowDefinition("main", row)],
+                insertAtRow)));
+        }
+
+        private void ClearMaterialPackagingBottomBar()
+        {
+            foreach (var registration in _materialPackagingBottomBarRegistrations) registration.Dispose();
+            _materialPackagingBottomBarRegistrations.Clear();
+            _materialPackagingBottomBarOperation = null;
+        }
+
+        private void RegisterSameKeyRebuildRow(string sourceId, SameKeyRebuildBottomBarRowKind kind, int? insertAtRow = null)
+        {
+            if (_sameKeyRebuildBottomBarOperation is null) return;
+            var row = new SameKeyRebuildBottomBarRowViewModel(_sameKeyRebuildBottomBarOperation, kind);
+            _sameKeyRebuildBottomBarRegistrations.Add(_bottomBar.RegisterSurfaceSource(new BottomBarRegistrationRequest(
+                sourceId,
+                [new BottomBarRowDefinition("main", row)],
+                insertAtRow)));
+        }
+
+        private void ClearSameKeyRebuildBottomBar()
+        {
+            foreach (var registration in _sameKeyRebuildBottomBarRegistrations) registration.Dispose();
+            _sameKeyRebuildBottomBarRegistrations.Clear();
+            _sameKeyRebuildBottomBarOperation = null;
         }
 
         private void OpenSecondaryPage(WorkspacePageType pageType, PageViewModel? sourcePage)
@@ -586,6 +639,7 @@ namespace HD2ModManager.ViewModels
             _informationCenter.DiagnosticRecorded -= OnInformationDiagnosticRecorded;
             _messagePreviewCancellation?.Cancel();
             _messagePreviewCancellation?.Dispose();
+            DismissToolBottomBars();
             DisposeCurrentPages();
             _importProcessGate.Dispose();
             _lifetimeCancellation.Dispose();

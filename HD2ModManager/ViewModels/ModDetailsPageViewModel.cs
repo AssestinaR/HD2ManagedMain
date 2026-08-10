@@ -141,7 +141,7 @@ namespace HD2ModManager.ViewModels
             SplitEmbeddedMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: true), _ => CanSplitEmbeddedMaterials);
             ReplaceEmbeddedMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: false, requireAllExternalMaterials: false), _ => CanReplaceEmbeddedMaterials);
             EmbedExternalMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: false, requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
-            RebuildSameKeyCommand = new RelayCommand(async _ => await RebuildSameKeyAsync(), _ => CanRebuildSameKey);
+            RebuildSameKeyCommand = new RelayCommand(_ => OpenSameKeyRebuild(), _ => CanRebuildSameKey);
             PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
             RunAdvancedAnalysisCommand = new RelayCommand(async _ => await RunAdvancedAnalysisAsync(), _ => CanRunAdvancedAnalysis);
 			RunDependencyGraphTestCommand = new RelayCommand(async _ => await RunDependencyGraphTestAsync(), _ => CanRunDependencyGraphTest);
@@ -983,7 +983,14 @@ namespace HD2ModManager.ViewModels
             _ => "未知"
         };
 
-        private async Task RebuildSameKeyAsync()
+        private void OpenSameKeyRebuild()
+        {
+            if (!TryGetCurrentNode(out _)) return;
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is not ShellViewModel shell) return;
+            shell.OpenSameKeyRebuild(new SameKeyRebuildBottomBarViewModel(RebuildSameKeyAsync));
+        }
+
+        private async Task RebuildSameKeyAsync(string outputRootDirectory, bool importToLibrary)
         {
             if (!TryGetCurrentNode(out var source)) return;
             var sourcePatchPaths = FindBasePatchPaths(source);
@@ -996,7 +1003,9 @@ namespace HD2ModManager.ViewModels
                 OnPropertyChanged(nameof(SameKeyReconstructionSummary));
                 return;
             }
-            var outputRoot = Path.Combine(AppContext.BaseDirectory, "Output");
+            var outputRoot = string.IsNullOrWhiteSpace(outputRootDirectory)
+                ? Path.Combine(AppContext.BaseDirectory, "Output")
+                : outputRootDirectory;
             var destination = Path.Combine(outputRoot, $"{SanitizeFileName(source.Metadata.Name)}+{DateTime.Now:yyyyMMdd-HHmmssfff}+SameKey重建");
             _sameKeyReconstructionRunning = true;
             SameKeyReconstructionSummary = "正在读取 Payload 并生成 Same-key 重建结果…";
@@ -1032,6 +1041,11 @@ namespace HD2ModManager.ViewModels
                 }
 
                 SameKeyReconstructionSummary = $"重建完成：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。输出：{result.OutputDirectory}";
+                if (importToLibrary && !string.IsNullOrWhiteSpace(result.OutputDirectory))
+                {
+                    var importer = new ImportService(_library, informationCenter: _library.InformationCenter);
+                    await importer.ImportPathAsync(result.OutputDirectory, CancellationToken.None);
+                }
                 task?.SetOutputArtifacts(result.OutputDirectory, result.ReportMarkdownPath);
                 task?.MarkCompleted();
                 LogService.Info($"修复 patch 完成：Mod={source.Metadata.Name}，Unit={result.OutputUnitCount}，替换Mesh={result.ReplacementMeshCount}，极小化Mesh={result.MinifiedMeshCount}，输出={result.OutputDirectory}。");

@@ -42,29 +42,34 @@ public partial class BottomBarSurface : UserControl
             Fade(removed, removed.Opacity, 0d, 120, () => OutgoingRows.Children.Remove(removed));
         }
 
-        for (var index = 0; index < snapshot.Rows.Count; index++)
+        // Build from the visual top down so every insert index is valid while
+        // the StackPanel grows. The snapshot itself remains bottom-to-top.
+        for (var index = snapshot.Rows.Count - 1; index >= 0; index--)
         {
             var row = snapshot.Rows[index];
+            // The layout model is bottom-to-top (row 1 first), while a vertical
+            // StackPanel renders its first child at the top.
+            var visualIndex = snapshot.Rows.Count - 1 - index;
             if (!_active.TryGetValue(row.Key, out var presenter))
             {
                 presenter = TakePreparedPresenter(row.Content) ?? CreatePresenter(row.Content);
                 presenter.Tag = row.Key;
                 presenter.Opacity = 0d;
                 _active.Add(row.Key, presenter);
-                ActiveRows.Children.Insert(index, presenter);
+                ActiveRows.Children.Insert(visualIndex, presenter);
                 Fade(presenter, 0d, 1d, 150);
             }
             else
             {
                 presenter.Content = row.Content;
                 var currentIndex = ActiveRows.Children.IndexOf(presenter);
-                if (currentIndex != index)
+                if (currentIndex != visualIndex)
                 {
                     var translate = (TranslateTransform)presenter.RenderTransform;
                     translate.BeginAnimation(TranslateTransform.YProperty, null);
-                    translate.Y = (currentIndex - index) * (BottomBarLayoutEngine.RowHeight + BottomBarLayoutEngine.RowGap);
+                    translate.Y = (currentIndex - visualIndex) * (BottomBarLayoutEngine.RowHeight + BottomBarLayoutEngine.RowGap);
                     ActiveRows.Children.RemoveAt(currentIndex);
-                    ActiveRows.Children.Insert(index, presenter);
+                    ActiveRows.Children.Insert(visualIndex, presenter);
                     var move = new DoubleAnimation(translate.Y, 0d, TimeSpan.FromMilliseconds(180));
                     translate.BeginAnimation(TranslateTransform.YProperty, move);
                 }
@@ -110,6 +115,7 @@ public partial class BottomBarSurface : UserControl
             Content = content,
             DataContext = content,
             Height = BottomBarLayoutEngine.RowHeight,
+            HorizontalAlignment = HorizontalAlignment.Center,
             RenderTransform = new TranslateTransform()
         };
 

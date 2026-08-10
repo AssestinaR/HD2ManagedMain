@@ -86,14 +86,14 @@ public sealed class MaterialPackagingApplicationService : IMaterialPackagingAppl
 		}
 	}
 
-	public async ValueTask<MaterialPackagingOperationResult> MergeAsync(ModNode source, ModNode candidate, string modsRootDirectory, string outputDirectory, bool requireAllExternalMaterials, CancellationToken cancellationToken = default)
+	public async ValueTask<MaterialPackagingOperationResult> MergeAsync(ModNode source, ModNode candidate, string modsRootDirectory, string outputDirectory, bool requireAllExternalMaterials, bool onlyReferencedAssets = true, bool replaceExistingMaterials = true, CancellationToken cancellationToken = default)
 	{
 		var sourcePaths = FindBasePatchPaths(source, modsRootDirectory);
 		var candidatePaths = FindBasePatchPaths(candidate, modsRootDirectory);
 		if (sourcePaths.Count != 1 || candidatePaths.Count != 1) return Failure(source.Id, new[] { "源 Mod 和材质包都必须只含一个 Patch 文件组。" });
 		try
 		{
-			var result = await packagingService.MergeAsync(sourcePaths[0], candidatePaths[0], outputDirectory, requireAllExternalMaterials, cancellationToken).ConfigureAwait(false);
+			var result = await packagingService.MergeAsync(sourcePaths[0], candidatePaths[0], outputDirectory, requireAllExternalMaterials, onlyReferencedAssets, replaceExistingMaterials, cancellationToken).ConfigureAwait(false);
 			return ToResult(result);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)

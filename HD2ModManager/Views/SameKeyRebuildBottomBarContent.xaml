@@ -1,0 +1,16 @@
+<UserControl x:Class="HD2ModManager.Views.SameKeyRebuildBottomBarContent"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+    <Grid>
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Visibility="{Binding IsOutput, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="输出位置：" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+            <TextBox Style="{StaticResource AppTextBox}" Width="360" Text="{Binding Operation.OutputDirectory, UpdateSourceTrigger=PropertyChanged}"/>
+            <Button Style="{StaticResource AppSecondaryButton}" Content="浏览" Command="{Binding Operation.BrowseCommand}" Margin="8,0,0,0"/>
+            <Button Style="{StaticResource AppPrimaryButton}" Content="生成" Command="{Binding Operation.GenerateCommand}" Margin="8,0,0,0"/>
+        </StackPanel>
+        <CheckBox Style="{StaticResource AppCheckBox}" Content="自动导入 Mod 库" IsChecked="{Binding Operation.ImportToLibrary}" VerticalAlignment="Center" Visibility="{Binding IsOptions, Converter={StaticResource BoolToVis}}"/>
+    </Grid>
+</UserControl>
