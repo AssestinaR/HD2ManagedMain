@@ -20,6 +20,28 @@ public static class CanonicalAutoLodMappingExpander
 			var sourceRepresentative = FindRaw(sourceModel, approved.Source.MeshInfoIndex, "Source");
 			_ = FindRaw(targetModel, approved.Target.MeshInfoIndex, "Target");
 			var sourceRepresentativeSemantic = FindSemantic(sourceModel, sourceRepresentative);
+			if (sourceRepresentative.LodIndex == -1)
+			{
+				var sourceCullings = sourceModel.RawMeshData
+					.Where(raw => raw.LodIndex == -1 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
+					.Where(raw => SemanticMatches(FindSemantic(sourceModel, raw), sourceRepresentativeSemantic))
+					.ToArray();
+				foreach (var sourceCutoutMesh in sourceCullings)
+				{
+					var targetCulling = targetModel.RawMeshData
+						.Where(raw => raw.LodIndex == -1 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
+						.SingleOrDefault(raw => raw.MeshId == sourceCutoutMesh.MeshId);
+					if (targetCulling is null)
+						throw new InvalidDataException($"Target Unit 0x{approved.Target.UnitKey.FileId:x16} has no compatible culling mesh for source MeshId 0x{sourceCutoutMesh.MeshId:x8}.");
+					expandedMappings.Add(new CanonicalReplacementMapping(
+						new(approved.Source.UnitKey, sourceCutoutMesh.MeshInfoIndex),
+						new(approved.Target.UnitKey, targetCulling.MeshInfoIndex),
+						approved.SourceMeshState,
+						approved.SkinningMode,
+						approved.BoneAnchor));
+				}
+				continue;
+			}
 			var sourceLod0 = sourceModel.RawMeshData
 				.Where(IsVisibleLod0)
 				.Where(raw => SemanticMatches(FindSemantic(sourceModel, raw), sourceRepresentativeSemantic))

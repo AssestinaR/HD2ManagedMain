@@ -339,7 +339,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 				var mappingsByIndex = canonicalMappings.ToDictionary(mapping => mapping.Target.MeshInfoIndex);
 				var finalRawMeshes = new List<UnitRawMeshData>(target.Model.Meshes.Count);
 				var provisionalSkinnedMeshes = new List<CanonicalLodBoneInput>();
-				var sourceMaterialBindings = new List<UnitMaterialBinding>();
+				var sourceMaterialSections = new List<CanonicalMaterialSectionProvenance>();
 				var hiddenMeshCountForUnit = 0;
 				var routeElapsed = TimeSpan.Zero;
 				var mergeElapsed = TimeSpan.Zero;
@@ -412,11 +412,16 @@ public sealed class CanonicalCrossArmorOrchestrator
 							: CanonicalMaterialBindingResolver.Resolve(source.Model, sourceRawForMaterials, targetRaw);
 						if (!materialResolution.IsValid)
 							return Failure(issues, materialResolution.Diagnostics);
-						IEnumerable<UnitMaterialBinding> materialBindings = materialResolution.Bindings;
 						if (targetRaw.LodIndex == -1)
 							finalMergedMesh = ApplyTargetCullingMaterialSlots(finalMergedMesh, targetRaw);
 						materialResolutionElapsed += detailStopwatch.Elapsed;
-						sourceMaterialBindings.AddRange(materialBindings);
+						sourceMaterialSections.AddRange(materialResolution.ResolvedSectionBindings.Select(binding => new CanonicalMaterialSectionProvenance(
+							targetMesh.Index,
+							binding.FinalSectionIndex,
+							mapping.Source.UnitKey.FileId,
+							binding.SourceSlotId,
+							binding.PreferredTargetSlotId,
+							binding.MaterialId)));
 						finalRaw = finalMergedMesh;
 						replacementCount++;
 					}
@@ -426,6 +431,13 @@ public sealed class CanonicalCrossArmorOrchestrator
 				}
 				var meshAssemblyElapsed = phaseStopwatch.Elapsed;
 				phaseStopwatch.Restart();
+				currentCanonicalPhase = "CompileUnitMaterialLayout";
+				var compiledMaterialLayout = new CanonicalUnitMaterialLayoutCompiler().TryCompile(
+					target.Model,
+					finalRawMeshes,
+					sourceMaterialSections);
+				if (!compiledMaterialLayout.IsValid) return Failure(issues, compiledMaterialLayout.Diagnostics);
+				finalRawMeshes = compiledMaterialLayout.Meshes.ToList();
 
 				// SDK GetMeshData completes all final meshes before BoneInfo.SetRemap. Compile the
 				// shared target LOD palette only after every replacement has reached final topology.
@@ -462,11 +474,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 				var finalPreparationElapsed = phaseStopwatch.Elapsed;
 				phaseStopwatch.Restart();
 
-				var bindings = CanonicalMaterialBindingLayout.Build(
-					target.Model.Materials,
-					sourceMaterialBindings,
-					finalRawMeshes);
-				target = target with { Model = target.Model with { Materials = bindings } };
+				target = target with { Model = target.Model with { Materials = compiledMaterialLayout.Bindings } };
 				var materialBindingsElapsed = phaseStopwatch.Elapsed;
 				phaseStopwatch.Restart();
 				currentCanonicalPhase = "SerializeCanonicalUnit";

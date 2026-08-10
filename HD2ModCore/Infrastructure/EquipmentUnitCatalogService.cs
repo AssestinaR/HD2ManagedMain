@@ -89,6 +89,8 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		var candidateKeys = candidates.SelectMany(entry => entry.Parts).Select(part => part.UnitAssetKey).ToHashSet();
 		var transferableMeshes = new HashSet<(AssetKey unit, int mesh)>();
 		var currentMeshIds = new Dictionary<(AssetKey unit, int mesh), uint>();
+		var currentVisualLod0Meshes = new Dictionary<AssetKey, List<(int MeshInfoIndex, uint MeshId)>>();
+		var cullingMeshes = new Dictionary<(AssetKey unit, int mesh), (uint MeshId, string Slot, string PieceType, string Name)>();
 		var ambiguousMeshIds = new HashSet<(AssetKey unit, int mesh)>();
 		var tocScanner = new AdaptationPatchTocScanner();
 		var unitReader = new AdaptationPatchUnitMeshReader();
@@ -106,6 +108,21 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 						var meshInfo = unit.Model.Meshes.SingleOrDefault(candidate => candidate.Index == mesh.MeshInfoIndex);
 						if (meshInfo is null || meshInfo.MeshId == 0)
 							continue;
+						if (meshInfo.SemanticInfo.IsCullingBody && mesh.LodIndex == -1)
+						{
+							cullingMeshes[(unitKey, mesh.MeshInfoIndex)] = (meshInfo.MeshId, meshInfo.SemanticInfo.Slot, meshInfo.SemanticInfo.PieceType, meshInfo.SemanticInfo.Name);
+							continue;
+						}
+						if (mesh.LodIndex == 0 && meshInfo.SemanticInfo.IsVisualMesh)
+						{
+							if (!currentVisualLod0Meshes.TryGetValue(unitKey, out var currentVisualMeshes))
+							{
+								currentVisualMeshes = [];
+								currentVisualLod0Meshes.Add(unitKey, currentVisualMeshes);
+							}
+							if (!currentVisualMeshes.Contains((mesh.MeshInfoIndex, meshInfo.MeshId)))
+								currentVisualMeshes.Add((mesh.MeshInfoIndex, meshInfo.MeshId));
+						}
 
 						var key = (unitKey, mesh.MeshInfoIndex);
 						if (currentMeshIds.TryGetValue(key, out var existingMeshId) && existingMeshId != meshInfo.MeshId)
@@ -134,6 +151,24 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				Parts = entry.Parts
 					.Where(part => transferableMeshes.Contains((part.UnitAssetKey, part.MeshInfoIndex)))
 					.Select(part => part with { MeshId = currentMeshIds[(part.UnitAssetKey, part.MeshInfoIndex)] })
+					.Concat(RebindSingleReindexedVisualLod0(entry, transferableMeshes, currentVisualLod0Meshes))
+					.Concat(cullingMeshes
+						.Where(item => item.Key.unit == entry.Parts.FirstOrDefault()?.UnitAssetKey
+							&& entry.Parts.Any(part => CullingMatchesPart(item.Value, part)))
+						.Select(item =>
+						{
+							var template = entry.Parts.First(part => CullingMatchesPart(item.Value, part));
+							return template with
+							{
+								MeshInfoIndex = item.Key.mesh,
+								MeshId = item.Value.MeshId,
+								SemanticName = item.Value.Name,
+								PieceType = item.Value.PieceType,
+								IsCullingMesh = true
+							};
+						}))
+					.GroupBy(part => (part.UnitAssetKey, part.MeshInfoIndex))
+					.Select(group => group.First())
 					.ToArray()
 			})
 			.Where(entry => entry.Parts.Count != 0)
@@ -185,6 +220,11 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 			.Where(part => selectedSourceBodyVariant is null or UnitMeshBodyVariant.Unknown or UnitMeshBodyVariant.Any || part.BodyVariant == selectedSourceBodyVariant || part.BodyVariant == UnitMeshBodyVariant.Any)
 			.OrderBy(part => part.PartKind).ThenBy(part => part.Layer).ThenBy(part => part.UnitAssetKey.FileId)
 			.ToArray();
+		var displaySourceParts = sourceParts.Where(part => !part.IsCullingMesh).ToArray();
+		// A source Patch with no display geometry can still be an intentional body-cutout
+		// component. Keep that route isolated from ordinary body-shape planning.
+		if (displaySourceParts.Length != 0)
+			sourceParts = displaySourceParts;
 		plannerDebug.Add($"[SOURCE-FILTERED] Parts={sourceParts.Length}");
 		foreach (var part in sourceParts.OrderBy(part => part.PartKind).ThenBy(part => part.Layer).ThenBy(part => part.UnitAssetKey.FileId))
 			plannerDebug.Add($"[SOURCE-FILTERED] Unit=0x{part.UnitAssetKey.FileId:x16} Part={part.PartKind} Layer={part.Layer} Variant={part.BodyVariant} Bytes={part.StoredBytes} Semantic={part.SemanticName}");
@@ -946,6 +986,29 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 
 	private static bool HasTransferableGeometry(HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData mesh)
 		=> mesh.Vertices.Count > 3 || mesh.Triangles.Count > 1;
+
+	private static bool CullingMatchesPart((uint MeshId, string Slot, string PieceType, string Name) culling, EquipmentUnitPart part)
+		=> string.Equals(culling.Slot, part.PartKind.ToString(), StringComparison.OrdinalIgnoreCase)
+			&& (string.IsNullOrWhiteSpace(culling.PieceType)
+				|| string.IsNullOrWhiteSpace(part.PieceType)
+				|| string.Equals(culling.PieceType, part.PieceType, StringComparison.OrdinalIgnoreCase));
+
+	private static IEnumerable<EquipmentUnitPart> RebindSingleReindexedVisualLod0(
+		EquipmentUnitCatalogEntry entry,
+		IReadOnlySet<(AssetKey unit, int mesh)> transferableMeshes,
+		IReadOnlyDictionary<AssetKey, List<(int MeshInfoIndex, uint MeshId)>> currentVisualLod0Meshes)
+	{
+		return entry.Parts
+			.GroupBy(part => part.UnitAssetKey)
+			.Where(group => !group.Any(part => transferableMeshes.Contains((part.UnitAssetKey, part.MeshInfoIndex))))
+			.Where(group => group.Count() == 1)
+			.Where(group => currentVisualLod0Meshes.TryGetValue(group.Key, out var sourceMeshes) && sourceMeshes.Count == 1)
+			.Select(group =>
+			{
+				var source = currentVisualLod0Meshes[group.Key][0];
+				return group.First() with { MeshInfoIndex = source.MeshInfoIndex, MeshId = source.MeshId };
+			});
+	}
 
 	private static AssetKey ToCoreKey(AdaptationAssetKey assetKey) => new(assetKey.TypeId, assetKey.FileId);
 

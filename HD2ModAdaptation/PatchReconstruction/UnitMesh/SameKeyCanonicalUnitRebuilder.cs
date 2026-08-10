@@ -84,7 +84,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
         phaseStopwatch.Restart();
         var finalMeshes = new List<UnitRawMeshData>(request.Target.Model.Meshes.Count);
         var provisionalByMesh = new Dictionary<int, UnitBoneInfo>();
-        var sourceMaterialBindings = new List<UnitMaterialBinding>();
+        var sourceMaterialSections = new List<CanonicalMaterialSectionProvenance>();
         var materialObservations = new List<CanonicalPlanDiagnostic>();
         var hiddenCount = 0;
         var replacedCount = 0;
@@ -163,10 +163,13 @@ public sealed class SameKeyCanonicalUnitRebuilder
                     "SameKeyMaterialRoute",
                     $"Unit=0x{request.Target.AssetKey.FileId:x16}; SourceMeshInfo={sourceRaw.MeshInfoIndex}/Lod={sourceRaw.LodIndex}; TargetMeshInfo={targetRaw.MeshInfoIndex}/Lod={targetRaw.LodIndex}; IsProxy={route.IsProxy}; SourceVisibleSlots=[{string.Join(',', sourceSlots)}]; TargetVisibleSlots=[{string.Join(',', targetSlots)}]; ResolvedBindings=[{resolvedBindings}]."));
             }
-            foreach (var binding in materialResolution.Bindings)
-            {
-                sourceMaterialBindings.Add(binding);
-            }
+            sourceMaterialSections.AddRange(materialResolution.ResolvedSectionBindings.Select(binding => new CanonicalMaterialSectionProvenance(
+                targetMesh.Index,
+                binding.FinalSectionIndex,
+                request.Source.Entry.AssetKey.FileId,
+                binding.SourceSlotId,
+                binding.PreferredTargetSlotId,
+                binding.MaterialId)));
 
             var finalMergedMesh = route.IsProxy
                 ? ApplyTargetCullingMaterialSlots(merged.Mesh, targetRaw)
@@ -186,6 +189,14 @@ public sealed class SameKeyCanonicalUnitRebuilder
             return new(null, replacedCount, hiddenCount, diagnostics);
         if (finalMeshes.Count != targetModel.Meshes.Count)
             return Failure("SameKeyCanonicalMeshCoverage", "Canonical same-key rebuilding did not produce one final RawMesh for every target MeshInfo.", replacedCount, hiddenCount);
+
+        var compiledMaterialLayout = new CanonicalUnitMaterialLayoutCompiler().TryCompile(
+            targetModel,
+            finalMeshes,
+            sourceMaterialSections);
+        if (!compiledMaterialLayout.IsValid)
+            return Failure(compiledMaterialLayout.Diagnostics, replacedCount, hiddenCount);
+        finalMeshes = compiledMaterialLayout.Meshes.ToList();
 
         var provisional = new List<CanonicalLodBoneInput>();
         foreach (var raw in finalMeshes)
@@ -229,10 +240,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
         var finalPreparationElapsed = phaseStopwatch.Elapsed;
         phaseStopwatch.Restart();
 
-        var finalMaterialBindings = CanonicalMaterialBindingLayout.Build(
-            targetModel.Materials,
-            sourceMaterialBindings,
-            finalMeshes);
+        var finalMaterialBindings = compiledMaterialLayout.Bindings;
         foreach (var mesh in finalMeshes.Where(mesh => mesh.Sections.Any(section => section.Triangles.Count != 0)))
         {
             var unboundSlots = mesh.Sections

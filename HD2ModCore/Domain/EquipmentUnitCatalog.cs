@@ -23,6 +23,9 @@ public sealed record EquipmentUnitPart(
 	IReadOnlyList<string> SharedArchiveIds)
 {
 	public string PieceType { get; init; } = string.Empty;
+	// Culling geometry changes what the player can see, but must be written back to
+	// a culling MeshInfo rather than treated as an ordinary display LOD.
+	public bool IsCullingMesh { get; init; }
 	public long StoredBytes { get; init; }
 	public string StoredSizeText => StoredBytes <= 0 ? "大小未知" : StoredBytes switch
 	{

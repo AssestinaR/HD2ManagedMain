@@ -393,8 +393,19 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             .OrderByDescending(CountTriangles)
             .ThenByDescending(raw => raw.Vertices.Count)
             .FirstOrDefault();
-        if (sourceLod0 is null || targetLod0 is null)
-            return Array.Empty<TargetShellMeshMapping>();
+		if (sourceLod0 is null || targetLod0 is null)
+		{
+			// Pure cutout patches deliberately hide every display LOD but retain one or
+			// more real LOD=-1 culling shells. Preserve matching shells instead of
+			// converting the complete Unit into a hidden placeholder.
+			return source.RawMeshData
+				.Where(raw => raw.LodIndex == -1 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
+				.Select(sourceCulling => (Source: sourceCulling, Target: target.RawMeshData.SingleOrDefault(targetCulling =>
+					targetCulling.LodIndex == -1 && targetCulling.MeshId == sourceCulling.MeshId && CountTriangles(targetCulling) > 1 && targetCulling.Vertices.Count > 3)))
+				.Where(pair => pair.Target is not null)
+				.Select(pair => new TargetShellMeshMapping(sourceKey, pair.Source.MeshInfoIndex, pair.Target!.MeshInfoIndex))
+				.ToArray();
+		}
 
         var expanded = CanonicalAutoLodMappingExpander.Expand(
             target,

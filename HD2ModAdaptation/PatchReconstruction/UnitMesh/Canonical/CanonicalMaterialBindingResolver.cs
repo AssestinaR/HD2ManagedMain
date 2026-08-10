@@ -4,10 +4,20 @@ namespace HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 // SDK reference: GetMeshData creates one RawMaterial per Blender material slot, and Serialize writes every RawMaterial pair.
 public sealed record CanonicalMaterialBindingResolution(
 	IReadOnlyList<UnitMaterialBinding> Bindings,
-	IReadOnlyList<CanonicalPlanDiagnostic> Diagnostics)
+	IReadOnlyList<CanonicalPlanDiagnostic> Diagnostics,
+	IReadOnlyList<CanonicalMaterialSectionBinding>? SectionBindings = null)
 {
 	public bool IsValid => Diagnostics.Count == 0;
+	public IReadOnlyList<CanonicalMaterialSectionBinding> ResolvedSectionBindings => SectionBindings ?? [];
 }
+
+// A material claim is deliberately section-scoped. A Unit root Material table is
+// shared by every MeshInfo, so slot identity cannot be finalized per Mesh.
+public sealed record CanonicalMaterialSectionBinding(
+	int FinalSectionIndex,
+	uint SourceSlotId,
+	uint PreferredTargetSlotId,
+	ulong MaterialId);
 
 public static class CanonicalMaterialBindingResolver
 {
@@ -36,6 +46,7 @@ public static class CanonicalMaterialBindingResolver
 			.ToDictionary(group => group.Key, group => group.Select(binding => binding.MaterialId).ToArray());
 		var occurrenceBySlot = new Dictionary<uint, int>();
 		var bindings = new List<UnitMaterialBinding>();
+		var sectionBindings = new List<CanonicalMaterialSectionBinding>();
 		for (var index = 0; index < visibleSections.Length; index++)
 		{
 			var sourceSection = visibleSections[index];
@@ -73,8 +84,9 @@ public static class CanonicalMaterialBindingResolver
 			}
 
 			bindings.Add(new UnitMaterialBinding(targetSlot, materialId));
+			sectionBindings.Add(new CanonicalMaterialSectionBinding(index, sourceSlot, targetSlot, materialId));
 		}
 
-		return new(bindings, diagnostics);
+		return new(bindings, diagnostics, sectionBindings);
 	}
 }
