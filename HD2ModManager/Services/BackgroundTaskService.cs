@@ -51,6 +51,8 @@ namespace HD2ModManager.Services
         private bool _isSelected;
         private string? _outputDirectory;
         private string? _reportPath;
+        private bool _isAcknowledged;
+        private int _attentionViewCount;
         private readonly CancellationTokenSource _cancellation = new();
         private readonly bool _canCancel;
 
@@ -86,6 +88,8 @@ namespace HD2ModManager.Services
         public string? ReportPath { get => _reportPath; private set => SetField(ref _reportPath, value); }
         public bool HasOutputDirectory => !string.IsNullOrWhiteSpace(OutputDirectory);
         public bool HasReport => !string.IsNullOrWhiteSpace(ReportPath);
+        public bool IsAcknowledged { get => _isAcknowledged; private set => SetField(ref _isAcknowledged, value); }
+        public int AttentionViewCount { get => _attentionViewCount; private set => SetField(ref _attentionViewCount, value); }
         public bool IsActive => Status is BackgroundTaskStatus.Queued or BackgroundTaskStatus.Running;
         public CancellationToken CancellationToken => _cancellation.Token;
         public bool CanCancel => _canCancel && !IsInformationCenter && IsActive;
@@ -141,6 +145,8 @@ namespace HD2ModManager.Services
         public void MarkRunning(string stage)
         {
             if (!IsActive) return;
+            IsAcknowledged = false;
+            AttentionViewCount = 0;
             Status = BackgroundTaskStatus.Running;
             StartedAt = DateTime.UtcNow;
             UpdateStage(stage);
@@ -196,6 +202,8 @@ namespace HD2ModManager.Services
         public void MarkFailed(string error)
         {
             if (!IsActive) return;
+            IsAcknowledged = false;
+            AttentionViewCount = 0;
             Status = BackgroundTaskStatus.Failed;
             Error = error;
             FinishedAt = DateTime.UtcNow;
@@ -230,6 +238,19 @@ namespace HD2ModManager.Services
             {
                 UpdateStage("正在取消");
             }
+        }
+
+        public void Acknowledge()
+        {
+            if (Status != BackgroundTaskStatus.Failed || IsAcknowledged) return;
+            IsAcknowledged = true;
+        }
+
+        public void RecordAttentionView()
+        {
+            if (Status != BackgroundTaskStatus.Failed || IsAcknowledged) return;
+            AttentionViewCount++;
+            if (AttentionViewCount >= 2) Acknowledge();
         }
 
         private void SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
@@ -328,6 +349,7 @@ namespace HD2ModManager.Services
                 or nameof(BackgroundTaskItem.StatusText)
                 or nameof(BackgroundTaskItem.CanCancel)
                 or nameof(BackgroundTaskItem.CanRetry)
+                or nameof(BackgroundTaskItem.IsAcknowledged)
                 or nameof(BackgroundTaskItem.HasReport)
                 or nameof(BackgroundTaskItem.HasOutputDirectory);
 

@@ -110,6 +110,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand RetryTaskCommand { get; }
         public RelayCommand OpenTaskReportCommand { get; }
         public RelayCommand OpenTaskOutputCommand { get; }
+        public RelayCommand AcknowledgeMessageCommand { get; }
         public RelayCommand CopyMessageCommand { get; }
 
         public bool IsHomeActive => CurrentMode == WorkspaceMode.Home;
@@ -216,6 +217,7 @@ namespace HD2ModManager.ViewModels
             RetryTaskCommand = new RelayCommand(async task => await RetryTaskAsync(task), task => task is BackgroundTaskItem { CanRetry: true });
             OpenTaskReportCommand = new RelayCommand(OpenTaskReport, task => task is BackgroundTaskItem { HasReport: true });
             OpenTaskOutputCommand = new RelayCommand(OpenTaskOutput, task => task is BackgroundTaskItem { HasOutputDirectory: true });
+            AcknowledgeMessageCommand = new RelayCommand(AcknowledgeMessage, item => item is MessageCenterItem { CanAcknowledge: true });
             CopyMessageCommand = new RelayCommand(CopyMessage, item => item is MessageCenterItem);
             _selection.SelectionChanged += (_, _) => RaiseSelectionFlags();
 
@@ -242,6 +244,13 @@ namespace HD2ModManager.ViewModels
                 }
                 await _libraryService.LoadAsync(buildDerivedData: false, cancellationToken).ConfigureAwait(false);
                 await _profileService.ReloadFromLibraryAsync(cancellationToken).ConfigureAwait(false);
+                if (_profileService.Profiles.Count == 0)
+                {
+                    const string defaultProfileName = "配置文件（放在这边的mod才会启用）";
+                    await _profileService.CreateNewAsync(defaultProfileName, cancellationToken).ConfigureAwait(false);
+                    await _profileService.ActivateSelectedAsync(cancellationToken).ConfigureAwait(false);
+                    LogService.Info($"首次启动已创建并启用默认配置：{defaultProfileName}。");
+                }
                 await RunStartupChecksAsync(configDir, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -361,6 +370,7 @@ namespace HD2ModManager.ViewModels
 
         public void OpenMessagePanel()
         {
+            if (!IsMessagePanelOpen) _messageCenter.MarkAttentionViewed();
             IsMessagePanelOpen = true;
             IsMessagePreviewOpen = false;
             _messagePreviewCancellation?.Cancel();
@@ -910,6 +920,12 @@ namespace HD2ModManager.ViewModels
             if (value is MessageCenterItem item && !string.IsNullOrWhiteSpace(item.CopyText)) System.Windows.Clipboard.SetText(item.CopyText);
         }
 
+        private void AcknowledgeMessage(object? value)
+        {
+            if (value is not MessageCenterItem item) return;
+            _messageCenter.Acknowledge(item);
+        }
+
         private void OnInformationProductionStarted(object? sender, ModInformationProductionStarted value)
         {
             LogService.Info($"信息中心开始生产：类型={value.Kind}，节点={value.NodeId?.Value.ToString("N") ?? "全局"}，generation={value.Generation ?? "空"}，来源={value.Source}，operation={value.OperationKey}。缓存未命中或要求刷新。");
@@ -987,6 +1003,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(HasUnreadTaskHubEvents));
             CancelTaskCommand.RaiseCanExecuteChanged();
             RetryTaskCommand.RaiseCanExecuteChanged();
+            AcknowledgeMessageCommand.RaiseCanExecuteChanged();
             OpenTaskReportCommand.RaiseCanExecuteChanged();
             OpenTaskOutputCommand.RaiseCanExecuteChanged();
         }
@@ -1242,7 +1259,6 @@ namespace HD2ModManager.ViewModels
 
         private void RegisterLibraryActions(PageViewModel page)
         {
-            page.PageActions.Add(new PageActionViewModel("⟳", "刷新当前页", RefreshCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 10, kind: "Refresh"));
             page.PageActions.Add(new PageActionViewModel("＋", "导入 Mod", ImportCommand, order: 20, kind: "Import"));
             page.PageActions.Add(new PageActionViewModel("▶", "立即重新部署", ApplyChangesCommand, background: new SolidColorBrush(Color.FromRgb(46, 125, 50)), order: 30, kind: "ScheduleDeployment"));
         }

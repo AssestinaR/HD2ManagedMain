@@ -170,7 +170,7 @@
                 <ListBox.Style>
                     <Style TargetType="ListBox" BasedOn="{StaticResource ModListBox}">
                         <Style.Triggers>
-                            <DataTrigger Binding="{Binding Items.Count}" Value="0">
+                            <DataTrigger Binding="{Binding HasItems}" Value="False">
                                 <Setter Property="Template">
                                     <Setter.Value>
                                         <ControlTemplate TargetType="ListBox">

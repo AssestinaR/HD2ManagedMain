@@ -21,10 +21,14 @@ namespace HD2ModManager.Services
         private DateTime _updatedAt = DateTime.UtcNow;
         private int _occurrenceCount = 1;
         private bool _isUnread = true;
+        private bool _isAcknowledged;
+        private int _attentionViewCount;
         public DateTime UpdatedAt { get => _updatedAt; private set => SetField(ref _updatedAt, value); }
         public int OccurrenceCount { get => _occurrenceCount; private set => SetField(ref _occurrenceCount, value); }
         public TimeSpan? Duration { get; set; } = TimeSpan.FromSeconds(6);
         public bool IsUnread { get => _isUnread; set => SetField(ref _isUnread, value); }
+        public bool IsAcknowledged { get => _isAcknowledged; private set => SetField(ref _isAcknowledged, value); }
+        public int AttentionViewCount { get => _attentionViewCount; private set => SetField(ref _attentionViewCount, value); }
         public string? Source { get; init; }
         internal string? Tag { get; set; }
         public event PropertyChangedEventHandler? PropertyChanged;
@@ -41,6 +45,7 @@ namespace HD2ModManager.Services
             OccurrenceCount++;
             UpdatedAt = timestamp;
             IsUnread = true;
+            ResetAcknowledgement();
         }
 
         internal void Update(string message, NotificationLevel level, TimeSpan? duration, DateTime timestamp)
@@ -50,6 +55,26 @@ namespace HD2ModManager.Services
             Duration = duration;
             UpdatedAt = timestamp;
             IsUnread = true;
+            ResetAcknowledgement();
+        }
+
+        internal void RecordAttentionView()
+        {
+            if (IsAcknowledged) return;
+            AttentionViewCount++;
+            if (AttentionViewCount >= 2) Acknowledge();
+        }
+
+        internal void Acknowledge()
+        {
+            IsAcknowledged = true;
+            IsUnread = false;
+        }
+
+        private void ResetAcknowledgement()
+        {
+            IsAcknowledged = false;
+            AttentionViewCount = 0;
         }
     }
 
@@ -113,6 +138,25 @@ namespace HD2ModManager.Services
         {
             foreach (var item in _history) item.IsUnread = false;
             Changed?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void MarkAttentionViewed()
+        {
+            foreach (var item in _history.Where(item => item.Level is NotificationLevel.Warning or NotificationLevel.Error && !item.IsAcknowledged))
+            {
+                item.RecordAttentionView();
+            }
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void Acknowledge(NotificationItem item)
+        {
+            if (item is null) return;
+            RunOnUi(() =>
+            {
+                item.Acknowledge();
+                Changed?.Invoke(this, EventArgs.Empty);
+            });
         }
 
         private async Task AutoDismissAsync(NotificationItem item)

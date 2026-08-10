@@ -46,7 +46,10 @@ namespace HD2ModManager.Services
         public double Progress => _task?.Progress ?? 0d;
         public bool HasReport => _task?.HasReport == true;
         public bool HasOutputDirectory => _task?.HasOutputDirectory == true;
+        public bool IsAcknowledged => _notification?.IsAcknowledged == true || _task?.IsAcknowledged == true;
+        public bool CanAcknowledge => !IsAcknowledged && (_notification?.Level is NotificationLevel.Warning or NotificationLevel.Error || _task?.Status == BackgroundTaskStatus.Failed);
         public BackgroundTaskItem? Task => _task;
+        internal NotificationItem? Notification => _notification;
         public string CopyText => _task is null
             ? string.IsNullOrWhiteSpace(Detail) ? Title : $"{Title}{Environment.NewLine}{Detail}"
             : string.Join(Environment.NewLine, new[]
@@ -94,7 +97,7 @@ namespace HD2ModManager.Services
         public int RecentUnreadCount => _recentNotifications.Count(item => item.IsUnread);
         public MessageCenterItem? PreviewItem => _activeTasks.FirstOrDefault()
             ?? _attentionItems.FirstOrDefault()
-            ?? _recentNotifications.FirstOrDefault();
+            ?? _recentNotifications.FirstOrDefault(item => item.IsUnread);
         public event EventHandler? Changed;
 
         public MessageCenterService(NotificationService notifications, BackgroundTaskService tasks)
@@ -130,24 +133,40 @@ namespace HD2ModManager.Services
                 .Select(task => new MessageCenterItem(task)));
 
             Replace(_attentionItems, _tasks.Tasks
-                .Where(task => task.Status == BackgroundTaskStatus.Failed && !task.IsInformationCenter)
+                .Where(task => task.Status == BackgroundTaskStatus.Failed && !task.IsAcknowledged && !task.IsInformationCenter)
                 .Select(task => new MessageCenterItem(task))
                 .Concat(_notifications.History
-                    .Where(item => item.Level is NotificationLevel.Warning or NotificationLevel.Error)
+                    .Where(item => item.Level is NotificationLevel.Warning or NotificationLevel.Error && !item.IsAcknowledged)
                     .Select(item => new MessageCenterItem(item)))
                 .OrderByDescending(item => item.OccurredAt)
                 .Take(40));
 
             Replace(_recentNotifications, _tasks.Tasks
-                .Where(task => !task.IsInformationCenter && (task.Status is BackgroundTaskStatus.Completed or BackgroundTaskStatus.Canceled))
+                .Where(task => !task.IsInformationCenter && (task.Status is BackgroundTaskStatus.Completed or BackgroundTaskStatus.Canceled || task.Status == BackgroundTaskStatus.Failed && task.IsAcknowledged))
                 .Select(task => new MessageCenterItem(task))
                 .Concat(_notifications.History
-                    .Where(item => item.Level == NotificationLevel.Info)
+                    .Where(item => item.Level == NotificationLevel.Info || item.IsAcknowledged)
                     .Select(item => new MessageCenterItem(item)))
                 .OrderByDescending(item => item.OccurredAt)
                 .Take(80)
                 );
             Changed?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void MarkAttentionViewed()
+        {
+            _notifications.MarkAttentionViewed();
+            foreach (var task in _tasks.Tasks.Where(task => task.Status == BackgroundTaskStatus.Failed && !task.IsAcknowledged && !task.IsInformationCenter))
+            {
+                task.RecordAttentionView();
+            }
+        }
+
+        public void Acknowledge(MessageCenterItem item)
+        {
+            if (item is null || !item.CanAcknowledge) return;
+            if (item.Notification is { } notification) _notifications.Acknowledge(notification);
+            else item.Task?.Acknowledge();
         }
 
         private static void Replace(ObservableCollection<MessageCenterItem> destination, IEnumerable<MessageCenterItem> source)

@@ -30,6 +30,7 @@ namespace HD2ModManager.ViewModels
         private bool _disposed;
 
         public BulkObservableCollection<ModCardViewModel> Items { get; } = new();
+        public bool HasItems => Items.Count != 0;
 
         private string _query = string.Empty;
         public string Query
@@ -58,7 +59,6 @@ namespace HD2ModManager.ViewModels
         }
         public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
 
-        public RelayCommand RefreshCommand { get; }
         public RelayCommand RemoveModCommand { get; }
         public RelayCommand ToggleSelectionCommand { get; }
         public RelayCommand AddToProfileCommand { get; }
@@ -82,7 +82,6 @@ namespace HD2ModManager.ViewModels
             if (_selection != null) _selection.SelectionChanged += OnSelectionChanged;
             if (_profiles != null) _profiles.Changed += OnProfileChanged;
             _library.ModContentFactsChanged += OnLibraryContentFactsChanged;
-            RefreshCommand = new RelayCommand(Refresh);
             RemoveModCommand = new RelayCommand(() => { /* parameter passed via CommandParameter not used here */ });
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
             AddToProfileCommand = new RelayCommand(parameter => AddToProfile(parameter as ModCardViewModel));
@@ -243,6 +242,7 @@ namespace HD2ModManager.ViewModels
                 })
                 .ToList();
             Items.ReplaceWith(cards);
+            OnPropertyChanged(nameof(HasItems));
             OnPropertyChanged(nameof(EmptyMessage));
             OnPropertyChanged(nameof(ItemCountText));
         }

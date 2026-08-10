@@ -268,6 +268,7 @@ namespace HD2ModManager.ViewModels
         private bool _disposed;
 
         public BulkObservableCollection<ProfileListItemViewModel> Items { get; } = new();
+        public bool HasItems => Items.Count != 0;
         public ObservableCollection<string> Profiles { get; } = new();
         public string Query
         {
@@ -322,7 +323,6 @@ namespace HD2ModManager.ViewModels
         public RelayCommand RenameProfileCommand { get; }
         public RelayCommand ActivateProfileCommand { get; }
         public RelayCommand DeactivateProfileCommand { get; }
-        public RelayCommand RefreshCommand { get; }
         public RelayCommand RemoveModCommand { get; }
         public RelayCommand MoveUpCommand { get; }
         public RelayCommand MoveDownCommand { get; }
@@ -343,7 +343,6 @@ namespace HD2ModManager.ViewModels
             RenameProfileCommand = new RelayCommand(async _ => await RenameProfileAsync());
             ActivateProfileCommand = new RelayCommand(async _ => await ActivateProfileAsync());
             DeactivateProfileCommand = new RelayCommand(async _ => await DeactivateProfileAsync());
-            RefreshCommand = new RelayCommand(Refresh);
             RemoveModCommand = new RelayCommand(async parameter => await RemoveModAsync(parameter));
             MoveUpCommand = new RelayCommand(async parameter => await MoveModAsync(parameter, -1));
             MoveDownCommand = new RelayCommand(async parameter => await MoveModAsync(parameter, 1));
@@ -354,7 +353,6 @@ namespace HD2ModManager.ViewModels
             PageActions.Add(new PageActionViewModel("■", "停用活动配置", DeactivateProfileCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 16, kind: "DeactivateProfile"));
             PageActions.Add(new PageActionViewModel("✎", "重命名配置", new RelayCommand(_ => _bottomBar?.BeginRenameProfile()), background: new SolidColorBrush(Color.FromRgb(30, 99, 214)), order: 20, kind: "RenameProfile"));
             PageActions.Add(new PageActionViewModel("🗑", "删除当前配置", RemoveSelectedProfileCommand, background: new SolidColorBrush(Color.FromRgb(179, 38, 30)), order: 30, kind: "RemoveProfile"));
-            PageActions.Add(new PageActionViewModel("⟳", "刷新配置", RefreshCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 40, kind: "RefreshProfile"));
             Refresh();
             QueueStatusRefresh();
             QueueThumbnailRefresh();
@@ -486,6 +484,7 @@ namespace HD2ModManager.ViewModels
             if (profile == null)
             {
                 Items.ReplaceWith(Array.Empty<ProfileListItemViewModel>());
+                OnPropertyChanged(nameof(HasItems));
                 return;
             }
             var items = new List<ProfileListItemViewModel>();
@@ -501,6 +500,7 @@ namespace HD2ModManager.ViewModels
                 items.Add(new ProfileListItemViewModel(guid, mod?.Name ?? guid, mod?.Description, mod?.Image, ModAssetSummaryFormatter.Format(assetSummary), entry.LoadOrder, entry.AddedUtc, IsSelected(guid), derived?.UnitCompatibility, status));
             }
             Items.ReplaceWith(items);
+            OnPropertyChanged(nameof(HasItems));
             OnPropertyChanged(nameof(ItemCountText));
         }
 
