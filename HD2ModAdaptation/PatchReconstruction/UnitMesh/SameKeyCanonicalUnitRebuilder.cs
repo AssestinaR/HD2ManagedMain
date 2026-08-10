@@ -169,7 +169,8 @@ public sealed class SameKeyCanonicalUnitRebuilder
                 request.Source.Entry.AssetKey.FileId,
                 binding.SourceSlotId,
                 binding.PreferredTargetSlotId,
-                binding.MaterialId)));
+                binding.MaterialId,
+                binding.UsesTargetUnitMaterialSlotLookup)));
 
             var finalMergedMesh = route.IsProxy
                 ? ApplyTargetCullingMaterialSlots(merged.Mesh, targetRaw)

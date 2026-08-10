@@ -70,6 +70,19 @@ public sealed class CanonicalUnitMaterialLayoutCompilerTests
 			result.Bindings.Select(binding => (binding.SectionId, binding.MaterialId)));
 	}
 
+	[Fact]
+	public void Compile_ExpandedSectionUsesTargetUnitsKnownSlotForItsMaterial()
+	{
+		var result = new CanonicalUnitMaterialLayoutCompiler().TryCompile(
+			Model([new UnitMaterialBinding(900, 0x222UL)]),
+			[Mesh(0, 77, true)],
+			[new CanonicalMaterialSectionProvenance(0, 0, 0xaaaUL, 77, 77, 0x222UL, true)]);
+
+		Assert.True(result.IsValid);
+		Assert.Equal(900u, result.Meshes.Single().Sections.Single().MaterialSlotId);
+		Assert.Equal([new UnitMaterialBinding(900, 0x222UL)], result.Bindings);
+	}
+
 	private static UnitRawMeshData Mesh(int index, uint slot, bool visible)
 		=> new(index, (uint)(index + 1), 0, 0,
 			[new UnitRawMeshSectionData(0, slot, visible ? [new UnitTriangleIndices(0, 1, 2)] : [])],

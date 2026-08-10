@@ -17,7 +17,8 @@ public sealed record CanonicalMaterialSectionBinding(
 	int FinalSectionIndex,
 	uint SourceSlotId,
 	uint PreferredTargetSlotId,
-	ulong MaterialId);
+	ulong MaterialId,
+	bool UsesTargetUnitMaterialSlotLookup);
 
 public static class CanonicalMaterialBindingResolver
 {
@@ -84,7 +85,7 @@ public static class CanonicalMaterialBindingResolver
 			}
 
 			bindings.Add(new UnitMaterialBinding(targetSlot, materialId));
-			sectionBindings.Add(new CanonicalMaterialSectionBinding(index, sourceSlot, targetSlot, materialId));
+			sectionBindings.Add(new CanonicalMaterialSectionBinding(index, sourceSlot, targetSlot, materialId, expandsTargetShell));
 		}
 
 		return new(bindings, diagnostics, sectionBindings);

@@ -421,7 +421,8 @@ public sealed class CanonicalCrossArmorOrchestrator
 							mapping.Source.UnitKey.FileId,
 							binding.SourceSlotId,
 							binding.PreferredTargetSlotId,
-							binding.MaterialId)));
+							binding.MaterialId,
+							binding.UsesTargetUnitMaterialSlotLookup)));
 						finalRaw = finalMergedMesh;
 						replacementCount++;
 					}
@@ -438,6 +439,15 @@ public sealed class CanonicalCrossArmorOrchestrator
 					sourceMaterialSections);
 				if (!compiledMaterialLayout.IsValid) return Failure(issues, compiledMaterialLayout.Diagnostics);
 				finalRawMeshes = compiledMaterialLayout.Meshes.ToList();
+
+				// The material compiler establishes the final slot IDs and local material
+				// ordinals. Palette compilation rewrites its input meshes, so refresh its
+				// inputs now; retaining the pre-compiler meshes would silently restore the
+				// source slots for every skinned LOD.
+				var finalMeshesByIndex = finalRawMeshes.ToDictionary(mesh => mesh.MeshInfoIndex);
+				provisionalSkinnedMeshes = provisionalSkinnedMeshes
+					.Select(input => new CanonicalLodBoneInput(finalMeshesByIndex[input.Mesh.MeshInfoIndex], input.ProvisionalBoneInfo))
+					.ToList();
 
 				// SDK GetMeshData completes all final meshes before BoneInfo.SetRemap. Compile the
 				// shared target LOD palette only after every replacement has reached final topology.

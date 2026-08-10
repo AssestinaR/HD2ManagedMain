@@ -9,7 +9,8 @@ public sealed record CanonicalMaterialSectionProvenance(
 	ulong SourceUnitFileId,
 	uint SourceSlotId,
 	uint PreferredTargetSlotId,
-	ulong MaterialId);
+	ulong MaterialId,
+	bool UsesTargetUnitMaterialSlotLookup = false);
 
 public sealed record CanonicalUnitMaterialLayoutCompilation(
 	IReadOnlyList<UnitRawMeshData> Meshes,
@@ -41,9 +42,12 @@ public sealed class CanonicalUnitMaterialLayoutCompiler
 		var targetBindings = target.Materials
 			.GroupBy(binding => binding.SectionId)
 			.ToDictionary(group => group.Key, group => group.Select(binding => binding.MaterialId).Where(id => id != 0).Distinct().ToArray());
+		var targetSlotsByMaterial = target.Materials
+			.Where(binding => binding.MaterialId != 0)
+			.GroupBy(binding => binding.MaterialId)
+			.ToDictionary(group => group.Key, group => group.Select(binding => binding.SectionId).Distinct().ToArray());
 		var occupiedSlots = new HashSet<uint>();
 		var bindingsBySlot = new Dictionary<uint, ulong>();
-		var slotByIdentity = new Dictionary<MaterialIdentity, uint>();
 
 		// Target-owned sections (minified, culling and default-material geometry) keep
 		// their original slot identities. Reserve them before assigning transferred work.
@@ -69,23 +73,22 @@ public sealed class CanonicalUnitMaterialLayoutCompiler
 		foreach (var mesh in meshes.OrderBy(mesh => mesh.MeshInfoIndex))
 		{
 			var sections = mesh.Sections.ToArray();
+			var expandedOccurrenceByMaterial = new Dictionary<ulong, int>();
 			for (var index = 0; index < sections.Length; index++)
 			{
 				if (!claims.TryGetValue((mesh.MeshInfoIndex, index), out var sectionClaims)) continue;
 				var claim = sectionClaims[0];
-				// A source material may be assigned to several distinct target shell
-				// slots. Those slots are separate Blender material occurrences and must
-				// survive in the final Unit even when their MaterialId is identical.
-				var identity = new MaterialIdentity(claim.SourceUnitFileId, claim.SourceSlotId, claim.PreferredTargetSlotId, claim.MaterialId);
-				if (!slotByIdentity.TryGetValue(identity, out var outputSlot))
+				var occurrence = 0;
+				if (claim.UsesTargetUnitMaterialSlotLookup)
 				{
-					outputSlot = claim.PreferredTargetSlotId;
-					if (occupiedSlots.Contains(outputSlot) || bindingsBySlot.TryGetValue(outputSlot, out var existing) && existing != claim.MaterialId)
-						outputSlot = AllocateSlot(identity, occupiedSlots);
-					slotByIdentity.Add(identity, outputSlot);
-					occupiedSlots.Add(outputSlot);
-					bindingsBySlot[outputSlot] = claim.MaterialId;
+					occurrence = expandedOccurrenceByMaterial.TryGetValue(claim.MaterialId, out var current) ? current : 0;
+					expandedOccurrenceByMaterial[claim.MaterialId] = occurrence + 1;
 				}
+				var identity = new MaterialIdentity(target.NameHash, mesh.MeshInfoIndex, index, claim.MaterialId, occurrence, claim.PreferredTargetSlotId);
+				var requestedSlot = claim.UsesTargetUnitMaterialSlotLookup
+					? ResolveSdkTargetSlot(targetSlotsByMaterial, claim.MaterialId, occurrence, identity, occupiedSlots)
+					: claim.PreferredTargetSlotId;
+				var outputSlot = ResolveOutputSlot(requestedSlot, claim.MaterialId, identity, occupiedSlots, bindingsBySlot, targetBindings);
 				sections[index] = sections[index] with { MaterialSlotId = outputSlot };
 			}
 
@@ -100,6 +103,48 @@ public sealed class CanonicalUnitMaterialLayoutCompiler
 		if (diagnostics.Count != 0) return new([], [], diagnostics);
 		var usedSlots = rewritten.SelectMany(mesh => mesh.Sections).Where(section => section.Triangles.Count != 0).Select(section => section.MaterialSlotId).ToHashSet();
 		return new(rewritten, bindingsBySlot.Where(pair => usedSlots.Contains(pair.Key)).OrderBy(pair => pair.Key).Select(pair => new UnitMaterialBinding(pair.Key, pair.Value)).ToArray(), []);
+	}
+
+	private static uint ResolveSdkTargetSlot(
+		IReadOnlyDictionary<ulong, uint[]> targetSlotsByMaterial,
+		ulong materialId,
+		int occurrence,
+		MaterialIdentity identity,
+		IReadOnlySet<uint> occupied)
+		=> targetSlotsByMaterial.TryGetValue(materialId, out var slots) && occurrence < slots.Length
+			? slots[occurrence]
+			: AllocateSlot(identity, occupied);
+
+	private static uint ResolveOutputSlot(
+		uint requestedSlot,
+		ulong materialId,
+		MaterialIdentity identity,
+		HashSet<uint> occupied,
+		IDictionary<uint, ulong> bindingsBySlot,
+		IReadOnlyDictionary<uint, ulong[]> targetBindings)
+	{
+		if (bindingsBySlot.TryGetValue(requestedSlot, out var existing))
+			return existing == materialId
+				? requestedSlot
+				: ReserveNewSlot(AllocateSlot(identity, occupied), materialId, occupied, bindingsBySlot);
+		if (targetBindings.TryGetValue(requestedSlot, out var targetMaterialIds) && targetMaterialIds.Length == 1 && targetMaterialIds[0] == materialId)
+		{
+			occupied.Add(requestedSlot);
+			bindingsBySlot[requestedSlot] = materialId;
+			return requestedSlot;
+		}
+		if (occupied.Contains(requestedSlot))
+			return ReserveNewSlot(AllocateSlot(identity, occupied), materialId, occupied, bindingsBySlot);
+		occupied.Add(requestedSlot);
+		bindingsBySlot[requestedSlot] = materialId;
+		return requestedSlot;
+	}
+
+	private static uint ReserveNewSlot(uint slot, ulong materialId, ISet<uint> occupied, IDictionary<uint, ulong> bindingsBySlot)
+	{
+		occupied.Add(slot);
+		bindingsBySlot[slot] = materialId;
+		return slot;
 	}
 
 	private static uint AllocateSlot(MaterialIdentity identity, IReadOnlySet<uint> occupied)
@@ -122,9 +167,14 @@ public sealed class CanonicalUnitMaterialLayoutCompiler
 				hash *= 1099511628211UL;
 			}
 		}
-		Mix(identity.SourceUnitFileId); Mix(identity.SourceSlotId); Mix(identity.PreferredTargetSlotId); Mix(identity.MaterialId);
+		Mix(identity.TargetUnitNameHash);
+		Mix(unchecked((uint)identity.MeshInfoIndex));
+		Mix(unchecked((uint)identity.SectionIndex));
+		Mix(identity.MaterialId);
+		Mix(unchecked((uint)identity.MaterialOccurrence));
+		Mix(identity.FallbackSlotId);
 		return unchecked((uint)(hash ^ (hash >> 32)));
 	}
 
-	private sealed record MaterialIdentity(ulong SourceUnitFileId, uint SourceSlotId, uint PreferredTargetSlotId, ulong MaterialId);
+	private sealed record MaterialIdentity(ulong TargetUnitNameHash, int MeshInfoIndex, int SectionIndex, ulong MaterialId, int MaterialOccurrence, uint FallbackSlotId);
 }
