@@ -284,6 +284,13 @@ namespace HD2ModManager.Services
             });
         }
 
+        // Must run before services capture StoragePaths. It never replaces a user-selected path.
+        public static void InitializeDefaultPaths()
+        {
+            if (string.IsNullOrWhiteSpace(GetGameDataFolder())) TryDetectAndSetGameDataFolder();
+            EnsureDefaultModLibraryFolder();
+        }
+
         public static StoragePaths CreateStoragePaths()
             => new(AppDomain.CurrentDomain.BaseDirectory, GetModLibraryFolder());
 
@@ -398,8 +405,28 @@ namespace HD2ModManager.Services
                 };
                 foreach (var d in defaults) if (Directory.Exists(d)) libs.Add(d);
 
+                // Registry-free fallback: probe only well-known Steam library roots on local fixed drives.
+                // Do not recurse through drives; startup discovery must remain bounded and predictable.
+                foreach (var drive in DriveInfo.GetDrives().Where(drive => drive.IsReady && drive.DriveType == DriveType.Fixed))
+                {
+                    var root = drive.RootDirectory.FullName;
+                    var candidates = new[]
+                    {
+                        Path.Combine(root, "Steam"),
+                        Path.Combine(root, "SteamLibrary"),
+                        Path.Combine(root, "SteamGames"),
+                        Path.Combine(root, "Games", "Steam"),
+                        Path.Combine(root, "Program Files (x86)", "Steam"),
+                        Path.Combine(root, "Program Files", "Steam"),
+                    };
+                    foreach (var candidate in candidates)
+                    {
+                        if (Directory.Exists(candidate)) libs.Add(candidate);
+                    }
+                }
+
                 // probe each lib for Helldivers 2
-                foreach (var lib in libs)
+                foreach (var lib in libs.Distinct(StringComparer.OrdinalIgnoreCase))
                 {
                     try
                     {

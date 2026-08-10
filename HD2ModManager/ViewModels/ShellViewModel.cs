@@ -153,6 +153,9 @@ namespace HD2ModManager.ViewModels
             var configDir = System.IO.Path.Combine(baseDir, "config");
             System.IO.Directory.CreateDirectory(configDir);
 
+            // Services capture StoragePaths during construction, so initial path discovery must precede them.
+            SettingsService.InitializeDefaultPaths();
+
             _profileService = new ProfileService(configDir);
 
             var informationCenter = CoreServices.CreateModInformationCenter(SettingsService.CreateStoragePaths());
@@ -232,11 +235,6 @@ namespace HD2ModManager.ViewModels
         {
             try
             {
-                await Task.Run(() =>
-                {
-                    if (string.IsNullOrWhiteSpace(SettingsService.GetGameDataFolder())) SettingsService.TryDetectAndSetGameDataFolder();
-                    SettingsService.EnsureDefaultModLibraryFolder();
-                }, cancellationToken).ConfigureAwait(false);
                 if (!SettingsService.IsGameDataFolderValid())
                 {
                     _ = System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
