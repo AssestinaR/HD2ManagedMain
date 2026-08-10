@@ -333,6 +333,76 @@ namespace HD2ModManager.Services
             finally { _libraryMutationGate.Release(); }
         }
 
+        public async Task<string> ReplaceStoredFilesAsync(ModNodeId nodeId, string generatedDirectory, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(generatedDirectory);
+            var sourceDirectory = Path.GetFullPath(generatedDirectory);
+            if (!Directory.Exists(sourceDirectory)) throw new DirectoryNotFoundException(sourceDirectory);
+
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            string? rollbackDirectory = null;
+            string? backupDirectory = null;
+            var replacementCommitted = false;
+            try
+            {
+                if (!_snapshot.Nodes.TryGetValue(nodeId, out var node)) throw new InvalidOperationException("当前 Mod 已不在库中。");
+                var targetDirectory = Path.GetFullPath(Path.Combine(_paths.ModsDirectory, node.RelativePath));
+                var modsRoot = Path.GetFullPath(_paths.ModsDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                if (!targetDirectory.StartsWith(modsRoot, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("当前 Mod 不在受管理的库目录中。");
+                if (string.Equals(sourceDirectory, targetDirectory, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("输出目录不能与当前 Mod 目录相同。");
+
+                var sourcePatchFiles = EnumeratePatchFiles(sourceDirectory).ToArray();
+                if (sourcePatchFiles.Length == 0) throw new InvalidOperationException("生成结果中没有可导入的 Patch 文件。");
+
+                backupDirectory = Path.Combine(_paths.DataDirectory, "mod-replacement-backups", nodeId.Value.ToString("N"), DateTime.Now.ToString("yyyyMMdd-HHmmssfff"));
+                CopyDirectory(targetDirectory, backupDirectory, cancellationToken);
+                rollbackDirectory = targetDirectory + ".replace-rollback-" + Guid.NewGuid().ToString("N");
+                SetDirectoryReadOnly(targetDirectory, readOnly: false);
+                Directory.Move(targetDirectory, rollbackDirectory);
+                try
+                {
+                    // 保留 Mod 自有的非 Patch 文件，仅以生成结果替换 Patch 及其 sidecar。
+                    CopyNonPatchFiles(rollbackDirectory, targetDirectory, cancellationToken);
+                    CopyFiles(sourceDirectory, targetDirectory, sourcePatchFiles, cancellationToken);
+                    SetDirectoryReadOnly(targetDirectory, readOnly: true);
+                }
+                catch
+                {
+                    if (Directory.Exists(targetDirectory)) Directory.Delete(targetDirectory, recursive: true);
+                    Directory.Move(rollbackDirectory, targetDirectory);
+                    rollbackDirectory = null;
+                    throw;
+                }
+
+                Directory.Delete(rollbackDirectory, recursive: true);
+                rollbackDirectory = null;
+                replacementCommitted = true;
+                try
+                {
+                    await _informationCenter.InvalidateNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(false);
+                    ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(nodeId.Value.ToString("N"))?.IconPath);
+                    await RefreshDerivedDataAsync(new[] { nodeId.Value.ToString("N") }, ModContentChangeKind.Changed, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    LogService.Error($"Mod 文件已替换，但缓存刷新失败：节点={nodeId.Value:N}，错误={exception}");
+                }
+                return backupDirectory;
+            }
+            catch
+            {
+                if (!replacementCommitted && rollbackDirectory is not null && Directory.Exists(rollbackDirectory))
+                {
+                    var node = _snapshot.Nodes[nodeId];
+                    var target = Path.Combine(_paths.ModsDirectory, node.RelativePath);
+                    if (Directory.Exists(target)) Directory.Delete(target, recursive: true);
+                    Directory.Move(rollbackDirectory, target);
+                }
+                throw;
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
         public ModEntity? Get(string guid)
         {
             var index = Volatile.Read(ref _byGuid);
@@ -475,5 +545,55 @@ namespace HD2ModManager.Services
             BuiltUtc: DateTimeOffset.UtcNow,
             Nodes: new Dictionary<ModNodeId, DerivedModNodeData>(),
             Issues: Array.Empty<CoreIssue>());
+
+        private static void CopyDirectory(string sourceDirectory, string destinationDirectory, CancellationToken cancellationToken)
+        {
+            Directory.CreateDirectory(destinationDirectory);
+            foreach (var sourcePath in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var relative = Path.GetRelativePath(sourceDirectory, sourcePath);
+                var destinationPath = Path.Combine(destinationDirectory, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+                File.Copy(sourcePath, destinationPath, overwrite: true);
+            }
+        }
+
+        private static IEnumerable<string> EnumeratePatchFiles(string directory)
+        {
+            var parser = CoreServices.CreatePatchFileNameParser();
+            return Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+                .Where(path => parser.TryParse(Path.GetFileName(path), out _));
+        }
+
+        private static void CopyNonPatchFiles(string sourceDirectory, string destinationDirectory, CancellationToken cancellationToken)
+        {
+            var parser = CoreServices.CreatePatchFileNameParser();
+            var files = Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories)
+                .Where(path => !parser.TryParse(Path.GetFileName(path), out _));
+            CopyFiles(sourceDirectory, destinationDirectory, files, cancellationToken);
+        }
+
+        private static void CopyFiles(string sourceRoot, string destinationRoot, IEnumerable<string> sourcePaths, CancellationToken cancellationToken)
+        {
+            foreach (var sourcePath in sourcePaths)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var relative = Path.GetRelativePath(sourceRoot, sourcePath);
+                var destinationPath = Path.Combine(destinationRoot, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+                File.Copy(sourcePath, destinationPath, overwrite: true);
+            }
+        }
+
+        private static void SetDirectoryReadOnly(string directory, bool readOnly)
+        {
+            if (!Directory.Exists(directory)) return;
+            foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+            {
+                var attributes = File.GetAttributes(path);
+                File.SetAttributes(path, readOnly ? attributes | FileAttributes.ReadOnly : attributes & ~FileAttributes.ReadOnly);
+            }
+        }
     }
 }

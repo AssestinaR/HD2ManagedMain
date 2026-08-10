@@ -11,6 +11,6 @@
             <Button Style="{StaticResource AppSecondaryButton}" Content="浏览" Command="{Binding Operation.BrowseCommand}" Margin="8,0,0,0"/>
             <Button Style="{StaticResource AppPrimaryButton}" Content="生成" Command="{Binding Operation.GenerateCommand}" Margin="8,0,0,0"/>
         </StackPanel>
-        <CheckBox Style="{StaticResource AppCheckBox}" Content="自动导入 Mod 库" IsChecked="{Binding Operation.ImportToLibrary}" VerticalAlignment="Center" Visibility="{Binding IsOptions, Converter={StaticResource BoolToVis}}"/>
+        <CheckBox Style="{StaticResource AppCheckBox}" Content="自动导入 Mod 库并替换当前 Mod" IsChecked="{Binding Operation.ImportToLibrary}" VerticalAlignment="Center" Visibility="{Binding IsOptions, Converter={StaticResource BoolToVis}}"/>
     </Grid>
 </UserControl>
