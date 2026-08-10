@@ -43,6 +43,7 @@ FROM archives a
 JOIN game_data_unit_parts p ON p.archive_id=a.archive_id
 WHERE lower(a.category) IN ('armor','helmet')
   AND p.is_visual=1 AND p.is_lod=0
+  AND EXISTS(SELECT 1 FROM archive_entries e WHERE e.archive_id=a.archive_id AND e.type_id=p.unit_type_id AND e.file_id=p.unit_file_id)
 	  AND ($unitIds IS NULL OR p.unit_file_id IN (SELECT value FROM json_each($unitIds)))
 ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.archive_id,p.unit_file_id,p.mesh_info_index;";
 		command.Parameters.AddWithValue("$unitIds", unitIds is null ? DBNull.Value : JsonSerializer.Serialize(unitIds));

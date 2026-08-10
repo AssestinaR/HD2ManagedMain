@@ -140,6 +140,7 @@ namespace HD2ModManager.Services
 
         public void MarkRunning(string stage)
         {
+            if (!IsActive) return;
             Status = BackgroundTaskStatus.Running;
             StartedAt = DateTime.UtcNow;
             UpdateStage(stage);
@@ -151,11 +152,13 @@ namespace HD2ModManager.Services
 
         public void UpdateStage(string stage)
         {
+            if (!IsActive) return;
             Stage = string.IsNullOrWhiteSpace(stage) ? "处理中" : stage;
         }
 
         public void UpdateProgress(double? progress)
         {
+            if (!IsActive) return;
             Progress = progress is null ? null : Math.Clamp(progress.Value, 0d, 1d);
         }
 
@@ -179,10 +182,11 @@ namespace HD2ModManager.Services
 
         public void MarkCompleted()
         {
+            if (!IsActive) return;
             Status = BackgroundTaskStatus.Completed;
             FinishedAt = DateTime.UtcNow;
             Progress = 1d;
-            UpdateStage("已完成");
+            Stage = "已完成";
             OnPropertyChanged(nameof(IsActive));
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(CanCancel));
@@ -191,10 +195,11 @@ namespace HD2ModManager.Services
 
         public void MarkFailed(string error)
         {
+            if (!IsActive) return;
             Status = BackgroundTaskStatus.Failed;
             Error = error;
             FinishedAt = DateTime.UtcNow;
-            UpdateStage("处理失败");
+            Stage = "处理失败";
             OnPropertyChanged(nameof(IsActive));
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(CanCancel));
@@ -203,9 +208,10 @@ namespace HD2ModManager.Services
 
         public void MarkCanceled()
         {
+            if (!IsActive) return;
             Status = BackgroundTaskStatus.Canceled;
             FinishedAt = DateTime.UtcNow;
-            UpdateStage("已取消");
+            Stage = "已取消";
             OnPropertyChanged(nameof(IsActive));
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(CanCancel));

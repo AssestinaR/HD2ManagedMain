@@ -103,11 +103,13 @@ namespace HD2ModManager.ViewModels
                         sequence: sequence++));
                     State = $"生成失败：{string.Join("；", result.Issues.Select(issue => issue.Message).Take(3))}";
                     LogService.Error($"替换护甲生成失败：输出={candidateDirectory}，问题={string.Join(" | ", result.Issues.Select(issue => $"{issue.Code}: {issue.Message}"))}");
+                    task.MarkFailed(firstIssue?.Message ?? "候选生成失败");
                     return;
                 }
 
                 bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Completed, OperationState.Completed, message: presentation.StatusText, sequence: sequence++));
                 task.SetOutputArtifacts(result.OutputDirectory, result.ReportPath);
+                task.MarkCompleted();
                 var routeName = "Canonical 验证候选";
                 State = result.HasWarnings
                     ? $"{routeName}已提交，但报告不完整/有告警：{candidateDirectory}。Unit {result.OutputUnitCount}；报告：{result.ReportPath ?? "未生成"}"
@@ -117,6 +119,7 @@ namespace HD2ModManager.ViewModels
             catch (OperationCanceledException)
             {
                 bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Canceled, OperationState.Canceled, message: "生成已取消", sequence: sequence++));
+                task.MarkCanceled();
                 State = "生成已取消。";
                 LogService.Info($"替换护甲生成已取消：输出={candidateDirectory}。");
             }
@@ -124,6 +127,7 @@ namespace HD2ModManager.ViewModels
             {
                 task.SetOutputArtifacts(candidateDirectory, Path.Combine(candidateDirectory, "canonical-report.md"));
                 bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Failed, OperationState.Failed, message: exception.Message, sequence: sequence++));
+                task.MarkFailed(exception.Message);
                 State = $"生成候选失败：{exception.Message}";
                 LogService.Error($"替换护甲生成异常：输出={candidateDirectory}，错误={exception}");
             }

@@ -36,17 +36,29 @@
 
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
                 <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <Button Grid.Column="0" Style="{StaticResource AppSecondaryButton}" Content="高级" ToolTip="查看 Patch、AssetKey 与诊断信息" Command="{Binding OpenAdvancedDetailsCommand}" Padding="14,6"/>
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="打开文件夹" Command="{Binding OpenFolderCommand}" Padding="14,6"/>
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="修改图像" Click="OnSelectImageClick" Padding="14,6" Margin="8,0,0,0"/>
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="修改名称" Click="OnEditNameClick" Padding="14,6" Margin="8,0,0,0"/>
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="修改备注" Click="OnEditDescriptionClick" Padding="14,6" Margin="8,0,0,0"/>
-                    </StackPanel>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" Style="{StaticResource AppSecondaryButton}" Content="详情表格" ToolTip="查看 Patch、AssetKey 与诊断信息" Command="{Binding OpenAdvancedDetailsCommand}" Padding="14,6"/>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="打开文件夹" Command="{Binding OpenFolderCommand}" Padding="14,6"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="修改图像" Click="OnSelectImageClick" Padding="14,6" Margin="8,0,0,0"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="修改名称" Click="OnEditNameClick" Padding="14,6" Margin="8,0,0,0"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="修改备注" Click="OnEditDescriptionClick" Padding="14,6" Margin="8,0,0,0"/>
+                        </StackPanel>
+                    </Grid>
+                    <WrapPanel Grid.Row="1" HorizontalAlignment="Right" Margin="0,10,0,0">
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="修复 patch" Command="{Binding RebuildSameKeyCommand}" Margin="0,0,8,0"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="生成替换其他护甲的模组" Command="{Binding PlanCrossArmorTransferCommand}" Margin="0,0,8,0"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="拆分内嵌材质" Command="{Binding SplitEmbeddedMaterialsCommand}" Margin="0,0,8,0"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="集成外部材质" Command="{Binding EmbedExternalMaterialsCommand}"/>
+                    </WrapPanel>
                 </Grid>
             </Border>
 

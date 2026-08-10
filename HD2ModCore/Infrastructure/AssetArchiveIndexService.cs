@@ -307,7 +307,8 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.EnsureCreatedAsync(connection, cancellationToken).ConfigureAwait(false);
 
-		await using var tx = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+		await using var tx = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+		await PreserveUnitPartFactsAsync(connection, tx, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.ClearIndexDataAsync(connection, cancellationToken).ConfigureAwait(false);
 
 		var total = facts.Archives.Count;
@@ -365,6 +366,7 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 			}
 		}
 
+		await RestoreUnitPartFactsAsync(connection, tx, cancellationToken).ConfigureAwait(false);
 
 		await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -714,6 +716,33 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 		}
 
 		return result;
+	}
+
+	private static async Task PreserveUnitPartFactsAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+	{
+		await using var command = connection.CreateCommand();
+		command.Transaction = transaction;
+		command.CommandText = @"
+DROP TABLE IF EXISTS temp.preserved_game_data_unit_parts;
+CREATE TEMP TABLE preserved_game_data_unit_parts AS
+SELECT archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,reason
+FROM game_data_unit_parts;";
+		await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	private static async Task RestoreUnitPartFactsAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+	{
+		await using var command = connection.CreateCommand();
+		command.Transaction = transaction;
+		command.CommandText = @"
+INSERT OR IGNORE INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,reason)
+SELECT p.archive_id,p.unit_type_id,p.unit_file_id,p.mesh_info_index,p.mesh_id,p.part_kind,p.part_layer,p.body_variant,p.semantic_name,p.piece_type,p.confidence,p.is_visual,p.is_lod,p.reason
+FROM preserved_game_data_unit_parts p
+JOIN archives a ON a.archive_id=p.archive_id
+JOIN archive_entries e ON e.archive_id=p.archive_id AND e.type_id=p.unit_type_id AND e.file_id=p.unit_file_id
+WHERE lower(a.category) LIKE '%armor%' OR lower(a.category) LIKE '%helmet%';
+DROP TABLE preserved_game_data_unit_parts;";
+		await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
 
 	private static SqliteCommand CreateArchiveInsertCommand(SqliteConnection connection)

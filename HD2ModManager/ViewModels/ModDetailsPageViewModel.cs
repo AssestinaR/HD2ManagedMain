@@ -990,6 +990,24 @@ namespace HD2ModManager.ViewModels
             shell.OpenSameKeyRebuild(new SameKeyRebuildBottomBarViewModel(RebuildSameKeyAsync));
         }
 
+        private async Task<bool> HasCurrentGameDataIndexAsync()
+        {
+            try
+            {
+                var gameDataDirectory = SettingsService.GetGameDataFolder();
+                if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory) || !File.Exists(_paths.ArchiveHashesPath))
+                    return false;
+
+                var archiveHashes = await File.ReadAllTextAsync(_paths.ArchiveHashesPath).ConfigureAwait(false);
+                var index = CoreServices.CreateAssetArchiveIndexService(_paths);
+                return (await index.GetIndexStatusAsync(gameDataDirectory, archiveHashes).ConfigureAwait(false)).IsCurrent;
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or FormatException)
+            {
+                return false;
+            }
+        }
+
         private async Task RebuildSameKeyAsync(string outputRootDirectory, bool importToLibrary)
         {
             if (!TryGetCurrentNode(out var source)) return;
@@ -1001,6 +1019,14 @@ namespace HD2ModManager.ViewModels
                 _notifications?.Show(message, NotificationLevel.Info, TimeSpan.FromSeconds(10));
                 SameKeyReconstructionSummary = message;
                 OnPropertyChanged(nameof(SameKeyReconstructionSummary));
+                return;
+            }
+            if (!await HasCurrentGameDataIndexAsync().ConfigureAwait(false))
+            {
+                const string message = "请在设置页重建资产索引";
+                SameKeyReconstructionSummary = message;
+                OnPropertyChanged(nameof(SameKeyReconstructionSummary));
+                _notifications?.Show(message, NotificationLevel.Error, TimeSpan.FromSeconds(10));
                 return;
             }
             var outputRoot = string.IsNullOrWhiteSpace(outputRootDirectory)
@@ -1078,7 +1104,7 @@ namespace HD2ModManager.ViewModels
             try
             {
                 LogService.Info($"替换护甲计划开始：Mod={source.Metadata.Name}，节点={source.Id.Value:N}。");
-                _notifications?.Show("替换护甲：正在使用高级缓存中的 Unit 事实生成装备目录…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
+                _notifications?.Show("替换护甲：正在读取 GameData 装备部件目录…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
                 _notifications?.Show("替换护甲：正在读取来源 Patch 并匹配 GameData 部位目录…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
                 var sourcePatchPaths = FindBasePatchPaths(source);
                 if (sourcePatchPaths.Length == 0)
@@ -1090,10 +1116,25 @@ namespace HD2ModManager.ViewModels
                     OnPropertyChanged(nameof(AdvancedAnalysisSummary));
                     return;
                 }
+                if (!await HasCurrentGameDataIndexAsync().ConfigureAwait(false))
+                {
+                    const string message = "请在设置页重建资产索引";
+                    LogService.Info($"替换护甲计划结束：Mod={source.Metadata.Name}，基础 GameData 资产索引不可用或已过期。");
+                    _notifications?.Show(message, NotificationLevel.Error, TimeSpan.FromSeconds(10));
+                    return;
+                }
+
                 // Load the full logical equipment catalog first. Source eligibility
                 // comes from the source Patch analysis; Game Data only labels the
                 // eligible Unit and must not pre-filter by its mesh layout.
                 var sourceCatalogCandidates = await _equipmentUnitCatalog.GetEntriesAsync();
+                if (sourceCatalogCandidates.Count == 0)
+                {
+                    const string message = "请在设置页重建 Unit 部位";
+                    LogService.Info($"替换护甲计划结束：Mod={source.Metadata.Name}，GameData 护甲 Unit 部位目录为空。");
+                    _notifications?.Show(message, NotificationLevel.Error, TimeSpan.FromSeconds(10));
+                    return;
+                }
                 // Retained only for the legacy diagnostic message below. Cross-armor
                 // planning now derives its source facts directly from the Patch.
                 var analyses = new List<PatchGroupAnalysis>();
@@ -1117,7 +1158,6 @@ namespace HD2ModManager.ViewModels
                 var catalogPartCount = sourceCatalogCandidates.Sum(entry => entry.Parts.Count);
                 var matchedPartCount = sourceCandidates.Sum(entry => entry.Parts.Count);
                 LogService.Info($"替换护甲来源诊断：Mod={source.Metadata.Name}，高级分析={analyses.Count}，源Patch={sourcePatchPaths.Length}，可转移Unit={transferableSourceUnitKeys.Count}，GameData部件={catalogPartCount}，保留部件={matchedPartCount}，Unit目录={sourceCatalogCandidates.Count}。");
-                LogService.Info($"替换护甲来源诊断：Mod={source.Metadata.Name}，源Patch={sourcePatchPaths.Length}，可转移Unit={transferableSourceUnitKeys.Count}，GameData部件={catalogPartCount}，保留部件={matchedPartCount}，Unit目录={sourceCatalogCandidates.Count}。");
                 if (transferableSourceUnitKeys.Count != 0 && matchedPartCount == 0)
                 {
                     var catalogKeys = sourceCatalogCandidates
@@ -1130,7 +1170,7 @@ namespace HD2ModManager.ViewModels
                         .Select(key => $"0x{key.FileId:x16}");
                     LogService.Info($"替换护甲来源诊断：可转移Unit无GameData部件标签，示例={string.Join(",", unmatched)}。");
                 }
-                var allCandidates = await _equipmentUnitCatalog.GetEntriesAsync();
+                var allCandidates = sourceCatalogCandidates;
                 GameDataArchiveBrowserSnapshot? targetReplacementSnapshot = null;
                 try
                 {
