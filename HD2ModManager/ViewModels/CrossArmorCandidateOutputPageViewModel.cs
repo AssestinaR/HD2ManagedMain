@@ -80,14 +80,22 @@ namespace HD2ModManager.ViewModels
 
             IsGenerating = true;
             State = "正在按 Canonical 方法链重建目标 Unit 并写出验证候选。";
-            LogService.Info($"替换护甲生成开始：源Patch={_plan.SourcePatchTocPath}，输出={candidateDirectory}，目标数={plan.SelectedTargets.Count}。");
+            LogService.Info($"替换护甲生成开始：源Patch={_plan.SourcePatchTocPath}，输出={candidateDirectory}，目标数={plan.SelectedTargets.Count}，自动隐藏其余部件={_plan.AutoHideUnmappedTargetUnits}。");
             _plan.CandidateGenerationRunning = true;
             try
             {
 				bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Preparing, OperationState.Started, sequence: sequence++));
 				var progress = new InlineProgress<CrossArmorTransferProgress>(update =>
 					bridge.Apply(update.ToOperationProgressEvent(operationId, sequence: Interlocked.Increment(ref sequence))));
-                var request = new CrossArmorTransferCandidateRequest(_plan.SourcePatchTocPath, _plan.GameDataDirectory, candidateDirectory, plan, CrossArmorMaterialBindingMode.PreserveSourceReferences, _plan.PreparedSourceEntries, progress);
+                var request = new CrossArmorTransferCandidateRequest(
+                    _plan.SourcePatchTocPath,
+                    _plan.GameDataDirectory,
+                    candidateDirectory,
+                    plan,
+                    CrossArmorMaterialBindingMode.PreserveSourceReferences,
+                    _plan.PreparedSourceEntries,
+                    progress,
+                    AutoHideUnmappedTargetUnits: _plan.AutoHideUnmappedTargetUnits);
                 // Canonical 是当前唯一的跨护甲写出路线；计划只提供逻辑部件映射，
                 // Unit 内部的 LOD family 由替换器在读取真实 Unit 后解析。
                 var result = await Task.Run(() => CoreServices.CreateCanonicalCrossArmorOrchestrator()

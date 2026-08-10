@@ -39,20 +39,21 @@ public static class CanonicalSectionLayout
 		if (diagnostics.Count != 0)
 			return new([], [], Array.AsReadOnly(diagnostics.ToArray()));
 
-		if (visible.Length > target.Sections.Count)
-		{
-			diagnostics.Add(new("VisibleSectionCountMismatch", $"Source has {visible.Length} visible material sections, but target shell has only {target.Sections.Count}."));
-			return new([], [], Array.AsReadOnly(diagnostics.ToArray()));
-		}
-
-		// The target shell owns the serialized material-slot identity. Blender's join puts
-		// visible source polygons into the corresponding target material slots, while
-		// unfilled target sections remain empty. Carrying source slot IDs here produces
-		// a readable mesh with no Unit material binding and makes it fully transparent.
-		var output = target.Sections.Select((targetSection, targetIndex) => new UnitRawMeshSectionData(
-			checked((uint)targetIndex),
-			targetSection.MaterialSlotId,
-			targetIndex < visible.Length ? visible[targetIndex].Section.Triangles.ToArray() : Array.Empty<UnitTriangleIndices>())).ToArray();
+        var expandsTargetShell = visible.Length > target.Sections.Count;
+        // For normal replacement the target shell keeps its material-slot identity. When
+        // source geometry has more visible material groups, mirror the SDK: rebuild the
+        // final section table from the source groups and let the writer expand MeshInfo.
+        // The paired binding resolver carries the matching source Unit Material references;
+        // this does not require the source Patch to embed Material assets.
+        var output = expandsTargetShell
+            ? visible.Select((item, sectionIndex) => new UnitRawMeshSectionData(
+                checked((uint)sectionIndex),
+                item.Section.MaterialSlotId,
+                item.Section.Triangles.ToArray())).ToArray()
+            : target.Sections.Select((targetSection, targetIndex) => new UnitRawMeshSectionData(
+                checked((uint)targetIndex),
+                targetSection.MaterialSlotId,
+                targetIndex < visible.Length ? visible[targetIndex].Section.Triangles.ToArray() : Array.Empty<UnitTriangleIndices>())).ToArray();
 		Trace($"finalSections={output.Length} finalSlots={string.Join(',', output.Select(section => section.MaterialSlotId))} triangles={output.Sum(section => section.Triangles.Count)}");
 		var assignments = visible.Select((item, targetIndex) => new CanonicalSectionAssignment(
 			item.Index, item.Section, targetIndex, output[targetIndex])).ToArray();

@@ -92,6 +92,7 @@
                         <ComboBox Style="{StaticResource AppCompactComboBox}" DockPanel.Dock="Right" Width="185" ItemsSource="{Binding TargetArchiveFilters}" SelectedItem="{Binding SelectedTargetArchiveFilter}" DisplayMemberPath="DisplayName" Margin="0,0,8,0" ToolTip="仅从已经选择的目标 archive 筛选"/>
                         <TextBlock Text="目标预测" FontWeight="SemiBold" VerticalAlignment="Center"/>
                         <CheckBox Style="{StaticResource AppToggleSwitch}" Content="手动模式" IsChecked="{Binding AllowManualMappings}" Margin="12,0,0,0" ToolTip="启用后仅保留显式手动结果，不再进行自动预测。"/>
+                        <CheckBox Style="{StaticResource AppToggleSwitch}" Content="自动隐藏其余部件" IsChecked="{Binding AutoHideUnmappedTargetUnits}" Margin="12,0,0,0" ToolTip="关闭后仅输出真实替换的 Unit，其余未命中部件保持 Game Data 原样且不写入 Patch。"/>
                     </DockPanel>
                 </Border>
                 <DataGrid Grid.Row="1" Style="{StaticResource DataTableGrid}" ItemsSource="{Binding FilteredTargetMappings}" SelectedItem="{Binding SelectedTargetMapping, Mode=TwoWay}" ContextMenuOpening="OnTargetMappingContextMenuOpening">

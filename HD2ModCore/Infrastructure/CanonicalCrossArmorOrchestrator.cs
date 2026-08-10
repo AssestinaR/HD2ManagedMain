@@ -228,16 +228,16 @@ public sealed class CanonicalCrossArmorOrchestrator
 			var outputUnitCount = 0;
 			var replacementCount = 0;
 			var minifiedCount = 0;
-			// All Units referenced by the selected target archives must be emitted. The plan only
-			// contains classifiable visible meshes, whereas its parent entries also retain the
-			// hidden/LOD shells that must be minified to suppress their original Game Data form.
-			var targetUnits = request.Plan.SelectedTargets
-				.SelectMany(target => target.Parts.Select(part => new TargetUnitSource(
-					new AdaptationAssetKey(part.UnitAssetKey.TypeId, part.UnitAssetKey.FileId),
-					target.ArchiveId)))
-				.Concat(request.Plan.Mappings.Select(mapping => new TargetUnitSource(
-					new AdaptationAssetKey(mapping.PhysicalTarget.UnitAssetKey.TypeId, mapping.PhysicalTarget.UnitAssetKey.FileId),
-					FindTargetArchive(request.Plan, new AdaptationAssetKey(mapping.PhysicalTarget.UnitAssetKey.TypeId, mapping.PhysicalTarget.UnitAssetKey.FileId)))))
+			// Default mode emits every selected target Unit so unassigned shells are minified.
+			// Compact mode emits only real replacement mappings; omitted Units remain untouched
+			// in Game Data and are deliberately absent from the output Patch.
+			var mappedTargetUnits = request.Plan.Mappings.Select(mapping => new TargetUnitSource(
+				new AdaptationAssetKey(mapping.PhysicalTarget.UnitAssetKey.TypeId, mapping.PhysicalTarget.UnitAssetKey.FileId),
+				FindTargetArchive(request.Plan, new AdaptationAssetKey(mapping.PhysicalTarget.UnitAssetKey.TypeId, mapping.PhysicalTarget.UnitAssetKey.FileId))));
+			var targetUnits = (request.AutoHideUnmappedTargetUnits
+				? request.Plan.SelectedTargets.SelectMany(target => target.Parts.Select(part => new TargetUnitSource(
+					new AdaptationAssetKey(part.UnitAssetKey.TypeId, part.UnitAssetKey.FileId), target.ArchiveId))).Concat(mappedTargetUnits)
+				: mappedTargetUnits.Where(target => request.Plan.Mappings.Any(mapping => mapping.WillReplace && SameKey(mapping.PhysicalTarget.UnitAssetKey, target.Key))))
 				.GroupBy(source => source.Key)
 				.Select(group => new TargetUnitSource(group.Key, group.Select(source => source.ArchiveName).FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))))
 				.ToArray();

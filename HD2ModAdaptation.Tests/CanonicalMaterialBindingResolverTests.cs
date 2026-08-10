@@ -50,6 +50,30 @@ public sealed class CanonicalMaterialBindingResolverTests
             result.Bindings.Select(binding => (binding.SectionId, binding.MaterialId)));
     }
 
+    [Fact]
+    public void Resolve_ExpandsTargetShellUsingSourceSlotsAndBindings()
+    {
+        var source = CreateModel(
+            materialSlots: [10, 11],
+            materialBindings: [new(10, 0x100UL), new(11, 0x200UL)],
+            sections: [
+                new(0, 10, [new(0, 1, 2)]),
+                new(1, 11, [new(0, 2, 3)])]);
+        var sourceRaw = source.RawMeshData.Single();
+        var targetRaw = sourceRaw with
+        {
+            MeshInfoIndex = 1,
+            Sections = [sourceRaw.Sections[0] with { MaterialSlotId = 900 }]
+        };
+
+        var result = CanonicalMaterialBindingResolver.Resolve(source, sourceRaw, targetRaw);
+
+        Assert.True(result.IsValid);
+        Assert.Equal(
+            [(10u, 0x100UL), (11u, 0x200UL)],
+            result.Bindings.Select(binding => (binding.SectionId, binding.MaterialId)));
+    }
+
     private static UnitMeshModel CreateModel(
         IReadOnlyList<uint> materialSlots,
         IReadOnlyList<UnitMaterialBinding> materialBindings,

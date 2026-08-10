@@ -21,6 +21,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private CrossArmorBodyVariantPreference bodyVariantPreference = CrossArmorBodyVariantPreference.Slim;
 	private CrossArmorLayerPreference layerPreference = CrossArmorLayerPreference.Armor;
 	private bool allowManualMappings;
+	private bool autoHideUnmappedTargetUnits = true;
 	private CrossArmorTransferPlan? plan;
 	private readonly Dictionary<CrossArmorPhysicalTargetKey, CrossArmorManualMapping> manualMappings = new();
 	private readonly HashSet<CrossArmorPhysicalTargetKey> suppressedTargets = new();
@@ -108,6 +109,16 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			OnPropertyChanged();
 			RaiseManualMappingCommandStates();
 			QueueRefreshPlan();
+		}
+	}
+	public bool AutoHideUnmappedTargetUnits
+	{
+		get => autoHideUnmappedTargetUnits;
+		set
+		{
+			if (autoHideUnmappedTargetUnits == value) return;
+			autoHideUnmappedTargetUnits = value;
+			OnPropertyChanged();
 		}
 	}
 	public EquipmentUnitCatalogEntry? SelectedSourceArmor

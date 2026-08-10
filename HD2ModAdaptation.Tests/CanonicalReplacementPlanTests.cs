@@ -164,7 +164,7 @@ public sealed class CanonicalReplacementPlanTests
 	}
 
 	[Fact]
-	public void Merger_VisibleSourceSectionsExceedTargetCapacity_IsRejected()
+    public void Merger_VisibleSourceSectionsExceedTargetCapacity_ExpandsTargetSections()
 	{
 		var source = RawMesh([
 			new UnitRawMeshSectionData(0, 10, [new(0, 1, 2)]),
@@ -173,8 +173,10 @@ public sealed class CanonicalReplacementPlanTests
 		var result = new CanonicalMeshSemanticMerger().TryMerge(
 			RawMesh([new(7, 20, [])], [], 9), source, Matrix4x4.Identity);
 
-		Assert.False(result.IsValid);
-		Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "VisibleSectionCountMismatch");
+        Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(diagnostic => diagnostic.Message)));
+        Assert.Equal([10u, 11u], result.Mesh!.Sections.Select(section => section.MaterialSlotId));
+        Assert.Equal([0u, 1u], result.Mesh.Sections.Select(section => section.MaterialIndex));
+        Assert.All(result.Mesh.Sections, section => Assert.Single(section.Triangles));
 	}
 
 	[Fact]
