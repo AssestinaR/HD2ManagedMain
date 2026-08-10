@@ -12,12 +12,14 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 	private readonly IModInformationCenter informationCenter;
 	private readonly string modsRootDirectory;
 	private readonly IGameDataMappingFactsService? mappingService;
+	private readonly IReferenceGraphQueryIndex? referenceIndex;
 
-	public MaterialDeliveryFactsService(IModInformationCenter informationCenter, HD2ModCore.Infrastructure.StoragePaths paths, IGameDataMappingFactsService? mappingService = null)
+	public MaterialDeliveryFactsService(IModInformationCenter informationCenter, HD2ModCore.Infrastructure.StoragePaths paths, IGameDataMappingFactsService? mappingService = null, IReferenceGraphQueryIndex? referenceIndex = null)
 	{
 		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		modsRootDirectory = (paths ?? throw new ArgumentNullException(nameof(paths))).ModsDirectory;
 		this.mappingService = mappingService;
+		this.referenceIndex = referenceIndex;
 	}
 
 	public async ValueTask<MaterialDeliveryFacts> GetAsync(ModNodeId nodeId, LibrarySnapshot librarySnapshot, CancellationToken cancellationToken = default, bool includeCandidates = true, bool includeGameDataMapping = true)
@@ -73,6 +75,30 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 
 	private async ValueTask<IReadOnlyList<MaterialDeliveryCandidate>> FindCandidatesAsync(ModNodeId sourceNodeId, IReadOnlySet<AssetKey> requiredExternalMaterials, LibrarySnapshot snapshot, CancellationToken cancellationToken)
 	{
+		if (referenceIndex is not null)
+		{
+			var providers = await referenceIndex.FindProviderFactsAsync(requiredExternalMaterials, cancellationToken).ConfigureAwait(false);
+			return providers
+				.Where(provider => provider.NodeId != sourceNodeId && snapshot.Nodes.ContainsKey(provider.NodeId))
+				.GroupBy(provider => provider.NodeId)
+				.Select(group =>
+				{
+					var covered = group.Select(provider => provider.AssetKey).ToHashSet();
+					var node = snapshot.Nodes[group.Key];
+					return new MaterialDeliveryCandidate(
+						group.Key,
+						node.Metadata.Name,
+						covered.Count,
+						0,
+						covered.Count == requiredExternalMaterials.Count,
+						covered.Select(key => new AssetKey(key.TypeId, key.FileId)).ToHashSet());
+				})
+				.OrderByDescending(candidate => candidate.IsComplete)
+				.ThenByDescending(candidate => candidate.CoveredMaterialCount)
+				.ThenBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
+				.ToArray();
+		}
+
 		var candidates = new List<MaterialDeliveryCandidate>();
 		foreach (var node in snapshot.Nodes.Values.Where(node => node.Id != sourceNodeId).OrderBy(node => node.Metadata.Name, StringComparer.OrdinalIgnoreCase))
 		{

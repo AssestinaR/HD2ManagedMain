@@ -32,6 +32,14 @@ public sealed class SqliteModFactsStoreTests
 			Assert.Single(await store.FindConsumerFactsAsync(material));
 			Assert.Equal(unit, (await store.FindConsumerFactsAsync(material))[0].Reference.SourceAssetKey);
 			Assert.Equal(material, (await store.FindConsumerFactsAsync(texture))[0].Reference.SourceAssetKey);
+			var providers = await store.FindProviderFactsAsync(new[] { material, texture });
+			Assert.Equal(2, providers.Count);
+			Assert.Contains(providers, provider => provider.AssetKey == new HD2ModCore.Domain.AssetKey(material.TypeId, material.FileId));
+			Assert.Contains(providers, provider => provider.AssetKey == new HD2ModCore.Domain.AssetKey(texture.TypeId, texture.FileId));
+			var batchConsumers = await store.FindConsumerFactsAsync(new[] { material, texture, new PatchAssetKey(9, 90) });
+			Assert.Equal(2, batchConsumers.Count);
+			Assert.Contains(batchConsumers, consumer => consumer.Reference.SourceAssetKey == unit && consumer.Reference.TargetAssetKey == material);
+			Assert.Contains(batchConsumers, consumer => consumer.Reference.SourceAssetKey == material && consumer.Reference.TargetAssetKey == texture);
 
 			await store.ReplaceNodeAsync(CreateFacts(nodeId, new[]
 			{
@@ -54,9 +62,14 @@ public sealed class SqliteModFactsStoreTests
 
 	private static ReferenceGraphFacts CreateFacts(ModNodeId nodeId, IReadOnlyList<PatchAssetReference> references)
 	{
+		var assets = references
+			.SelectMany(reference => new[] { reference.SourceAssetKey, reference.TargetAssetKey })
+			.Distinct()
+			.Select(key => new PatchAssetFact(key, "test.patch.toc", 0, 0, 0, false, false, false, false))
+			.ToArray();
 		var analysis = new PatchGroupAnalysis(
 			new PatchGroupInput("test.patch.toc"),
-			[],
+			assets,
 			references,
 			[],
 			DateTimeOffset.UtcNow,

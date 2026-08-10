@@ -66,6 +66,74 @@ public sealed class SqliteModFactsStore : IReferenceGraphQueryIndex, IReferenceG
 		return result;
 	}
 
+	public async ValueTask<IReadOnlyList<ModAssetConsumerFact>> FindConsumerFactsAsync(
+		IReadOnlyCollection<HD2ModAdaptation.PatchReconstruction.AssetKey> targetAssetKeys,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(targetAssetKeys);
+		var keys = targetAssetKeys.Distinct().ToArray();
+		if (keys.Length == 0) return Array.Empty<ModAssetConsumerFact>();
+
+		await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+		var results = new List<ModAssetConsumerFact>();
+		foreach (var batch in keys.Chunk(400))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			await using var command = connection.CreateCommand();
+			var predicates = new List<string>();
+			for (var index = 0; index < batch.Length; index++)
+			{
+				predicates.Add($"(target_type_id=$type{index} AND target_file_id=$file{index})");
+				command.Parameters.AddWithValue($"$type{index}", Hex(batch[index].TypeId));
+				command.Parameters.AddWithValue($"$file{index}", Hex(batch[index].FileId));
+			}
+			command.CommandText = $"SELECT node_id,group_id,source_type_id,source_file_id,target_type_id,target_file_id,relation_kind,payload_offset,slot_id,reference_index FROM asset_references WHERE {string.Join(" OR ", predicates)}";
+			await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+			while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+			{
+				var source = new HD2ModAdaptation.PatchReconstruction.AssetKey(ParseHex(reader.GetString(2)), ParseHex(reader.GetString(3)));
+				var target = new HD2ModAdaptation.PatchReconstruction.AssetKey(ParseHex(reader.GetString(4)), ParseHex(reader.GetString(5)));
+				var reference = new PatchAssetReference(source, target, (PatchReferenceKind)reader.GetInt32(6), checked((uint)reader.GetInt64(7)), reader.IsDBNull(8) ? null : checked((uint)reader.GetInt64(8)), reader.IsDBNull(9) ? null : reader.GetInt32(9));
+				results.Add(new ModAssetConsumerFact(new ModNodeId(Guid.ParseExact(reader.GetString(0), "N")), reader.GetString(1), reference));
+			}
+		}
+		return results;
+	}
+
+	public async ValueTask<IReadOnlyList<ModAssetProviderFact>> FindProviderFactsAsync(
+		IReadOnlyCollection<HD2ModAdaptation.PatchReconstruction.AssetKey> assetKeys,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(assetKeys);
+		var keys = assetKeys.Distinct().ToArray();
+		if (keys.Length == 0) return Array.Empty<ModAssetProviderFact>();
+
+		await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+		var results = new List<ModAssetProviderFact>();
+		foreach (var batch in keys.Chunk(400))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			await using var command = connection.CreateCommand();
+			var predicates = new List<string>();
+			for (var index = 0; index < batch.Length; index++)
+			{
+				predicates.Add($"(type_id=$type{index} AND file_id=$file{index})");
+				command.Parameters.AddWithValue($"$type{index}", Hex(batch[index].TypeId));
+				command.Parameters.AddWithValue($"$file{index}", Hex(batch[index].FileId));
+			}
+			command.CommandText = $"SELECT node_id,group_id,type_id,file_id FROM mod_assets WHERE {string.Join(" OR ", predicates)}";
+			await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+			while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+			{
+				results.Add(new ModAssetProviderFact(
+					new ModNodeId(Guid.ParseExact(reader.GetString(0), "N")),
+					reader.GetString(1),
+					new HD2ModCore.Domain.AssetKey(ParseHex(reader.GetString(2)), ParseHex(reader.GetString(3)))));
+			}
+		}
+		return results;
+	}
+
 	private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
 	{
 		Directory.CreateDirectory(paths.IndexDirectory); var connection = new SqliteConnection($"Data Source={paths.ModFactsDbPath}"); await connection.OpenAsync(cancellationToken).ConfigureAwait(false);

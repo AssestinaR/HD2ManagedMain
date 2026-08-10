@@ -117,6 +117,16 @@ namespace HD2ModManager.Services
                     _onError?.Invoke(result.Issues.FirstOrDefault()?.Message ?? "AssetInventory production failed.");
                     continue;
                 }
+
+                var graph = await _informationCenter.RequestReferenceGraphAsync(
+                    node,
+                    _library.ModsRootDirectory,
+                    new ModInformationRequest(ModInformationKind.ReferenceGraph, "Import"),
+                    ct).ConfigureAwait(false);
+                if (graph.Data is null)
+                {
+                    _onError?.Invoke(graph.Issues.FirstOrDefault()?.Message ?? "ReferenceGraph production failed.");
+                }
             }
         }
 

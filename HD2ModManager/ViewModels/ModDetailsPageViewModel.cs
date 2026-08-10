@@ -124,7 +124,7 @@ namespace HD2ModManager.ViewModels
             _notifications = notifications;
 			_backgroundTasks = backgroundTasks;
             _paths = SettingsService.CreateStoragePaths();
-			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService();
+			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService(_derivedState.InformationCenter);
             _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(_paths, _derivedState.InformationCenter);
             _equipmentUnitCatalog = CoreServices.CreateEquipmentUnitCatalogService(_paths);
             _advancedAnalysis = CoreServices.CreateAdvancedModAnalysisService(_paths, _derivedState.InformationCenter);
@@ -942,7 +942,7 @@ namespace HD2ModManager.ViewModels
             if (Mod is null || !TryParseNodeId(Mod.Guid, out var nodeId)) return;
             try
             {
-                var facts = await _materialDeliveryFacts.GetAsync(nodeId, _library.Snapshot, cancellationToken, includeCandidates: false, includeGameDataMapping: false);
+				var facts = await _materialDeliveryFacts.GetAsync(nodeId, _library.Snapshot, cancellationToken, includeCandidates: true, includeGameDataMapping: false);
                 _cachedMaterialDeliveryFacts = facts;
 				_cachedMaterialDeliveryFactsNodeId = nodeId;
                 if (_disposed || cancellationToken.IsCancellationRequested) return;

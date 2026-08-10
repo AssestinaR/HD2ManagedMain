@@ -80,7 +80,9 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
             LogService.Info($"{OperationTitle}候选读取开始：Mod={SourceName}，节点={source.Id.Value:N}，复用信息中心事实={initialDeliveryFacts is not null}。");
             notifications?.Show("集成材质：正在读取材质候选和依赖闭包…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
             IReadOnlyList<MaterialPackageCandidate> candidates;
-            if (initialDeliveryFacts is not null)
+            // External-material embedding uses delivery facts; embedded-material replacement
+            // must match every Unit -> Material edge, including materials already present.
+            if (initialDeliveryFacts is not null && requireAllExternalMaterials)
             {
                 // 这里复用信息中心派生出的交付候选；GenerateAsync 仍会做最终 Payload 校验。
                 candidates = initialDeliveryFacts.Candidates

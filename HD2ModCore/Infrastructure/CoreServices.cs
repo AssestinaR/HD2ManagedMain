@@ -72,6 +72,8 @@ public static class CoreServices
 		=> new ReferenceGraphProducer(CreatePatchGroupAnalysisProvider(paths));
 	public static IReferenceGraphQueryIndex CreateReferenceGraphQueryIndex(StoragePaths paths)
 		=> new SqliteModFactsStore(paths);
+	public static IModAssetRoleFactsService CreateModAssetRoleFactsService(StoragePaths paths, IModInformationCenter informationCenter)
+		=> new ModAssetRoleFactsService(informationCenter, CreateReferenceGraphQueryIndex(paths), CreateGameDataMappingFactsService(paths));
 	public static IMaintenanceAnalysisProducer CreateMaintenanceAnalysisProducer(StoragePaths paths)
 		=> new MaintenanceAnalysisProducer(CreateModCompatibilityAnalyzer(paths));
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
@@ -102,7 +104,7 @@ public static class CoreServices
 	public static IMaterialDeliveryFactsService CreateMaterialDeliveryFactsService(StoragePaths paths)
 		=> CreateMaterialDeliveryFactsService(paths, CreateModInformationCenter(paths));
 	public static IMaterialDeliveryFactsService CreateMaterialDeliveryFactsService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new MaterialDeliveryFactsService(informationCenter, paths, CreateGameDataMappingFactsService(paths));
+		=> new MaterialDeliveryFactsService(informationCenter, paths, CreateGameDataMappingFactsService(paths), CreateReferenceGraphQueryIndex(paths));
 	public static IEquipmentUnitCatalogService CreateEquipmentUnitCatalogService(StoragePaths paths)
 		=> new EquipmentUnitCatalogService(paths);
 	public static CanonicalCrossArmorOrchestrator CreateCanonicalCrossArmorOrchestrator()
@@ -114,6 +116,8 @@ public static class CoreServices
 		=> new AdvancedModAssetQueryService(informationCenter, paths, CreateReferenceGraphQueryIndex(paths), CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
 	public static IMaterialPackagingApplicationService CreateMaterialPackagingApplicationService()
 		=> new MaterialPackagingApplicationService(CreatePatchFileNameParser());
+	public static IMaterialPackagingApplicationService CreateMaterialPackagingApplicationService(IModInformationCenter informationCenter)
+		=> new MaterialPackagingApplicationService(CreatePatchFileNameParser(), informationCenter: informationCenter);
 	public static IMaterialDependencyValidator CreateMaterialDependencyValidator()
 		=> new MaterialDependencyValidator(CreatePatchEntryPayloadReader(), new StingrayMaterialReferenceReader());
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
