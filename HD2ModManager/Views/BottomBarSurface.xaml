@@ -8,6 +8,9 @@
         <DataTemplate DataType="{x:Type local:TemporaryEditorBarPresentation}">
             <local:TemporaryEditorBarContent/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type local:SelectionActionBarPresentation}">
+            <local:SelectionActionBarContent/>
+        </DataTemplate>
     </UserControl.Resources>
     <Grid ClipToBounds="True">
         <StackPanel x:Name="ActiveRows" VerticalAlignment="Bottom"/>

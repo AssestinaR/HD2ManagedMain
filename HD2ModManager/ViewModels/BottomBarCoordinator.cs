@@ -48,6 +48,14 @@ namespace HD2ModManager.ViewModels
         public event EventHandler<BottomBarLayoutSnapshot>? LayoutChanged;
         public BottomBarRegistrationStore Registrations { get; } = new();
         public BottomBarLayoutSnapshot Layout => Registrations.Snapshot;
+        public BottomBarRegistrationToken RegisterSurfaceSource(BottomBarRegistrationRequest request)
+            => Registrations.Register(request);
+
+        public void UpdateSurfaceSource(BottomBarRegistrationRequest request)
+            => Registrations.Upsert(request);
+
+        public void RemoveSurfaceSource(string sourceId)
+            => Registrations.Remove(sourceId);
         public bool HasSelection => _selection.HasSelection;
         public bool HasTemporaryEditor => !string.IsNullOrWhiteSpace(_editMode);
         public bool IsPositionEditor => _editMode is "Move" or "Insert";
@@ -102,15 +110,25 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ShowAddToProfile));
         }
 
-        public void SetSelectionEditor(object content)
+        public void SetSelectionActions(object content)
         {
             ArgumentNullException.ThrowIfNull(content);
             Registrations.Upsert(new BottomBarRegistrationRequest(
-                "selection-editor",
+                "selection-actions",
                 [new BottomBarRowDefinition("main", content)]));
         }
 
-        public void ClearSelectionEditor() => Registrations.Remove("selection-editor");
+        public void ClearSelectionActions() => Registrations.Remove("selection-actions");
+
+        public void SetTemporaryEditor(object content)
+        {
+            ArgumentNullException.ThrowIfNull(content);
+            Registrations.Upsert(new BottomBarRegistrationRequest(
+                "temporary-editor",
+                [new BottomBarRowDefinition("main", content)]));
+        }
+
+        public void ClearTemporaryEditor() => Registrations.Remove("temporary-editor");
 
         public void BeginNameEdit(string modId, string currentValue) => BeginEdit(modId, "Name", currentValue);
         public void BeginDescriptionEdit(string modId, string currentValue) => BeginEdit(modId, "Description", currentValue);

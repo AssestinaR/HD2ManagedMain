@@ -23,7 +23,8 @@ namespace HD2ModManager
         private BottomBarLayoutSnapshot _pendingBottomBarLayout = BottomBarLayoutSnapshot.Empty;
         private BottomBarLayoutSnapshot _appliedBottomBarLayout = BottomBarLayoutSnapshot.Empty;
         private bool _bottomBarLayoutUpdateQueued;
-        private TemporaryEditorBarPresentation? _selectionEditorPresentation;
+        private SelectionActionBarPresentation? _selectionActionPresentation;
+        private TemporaryEditorBarPresentation? _temporaryEditorPresentation;
         private bool _pageTransitionQueued;
         private bool _pageLayoutWasSplit;
         [StructLayout(LayoutKind.Sequential)]
@@ -184,6 +185,13 @@ namespace HD2ModManager
             // 切换配置编辑器需要保留这段焦点特权，避免选择目标时底栏被提前收起。
             if (shell.BottomBar.IsProfileSwitchEditor) return;
             if (e.OriginalSource is DependencyObject source && IsDescendantOf(source, BottomContextBar)) return;
+            // A selectable list row changes the shared selection on MouseUp.
+            // Let that selection event close the editor so MouseDown does not
+            // start a second bottom-bar transition for the same click.
+            if (e.OriginalSource is DependencyObject rowSource
+                && IsDescendantOfType<ListBoxItem>(rowSource)
+                && !IsDescendantOfType<Button>(rowSource))
+                return;
             shell.CancelBottomBarEdit();
         }
 
@@ -192,6 +200,16 @@ namespace HD2ModManager
             while (source != null)
             {
                 if (ReferenceEquals(source, ancestor)) return true;
+                source = VisualTreeHelper.GetParent(source);
+            }
+            return false;
+        }
+
+        private static bool IsDescendantOfType<T>(DependencyObject source) where T : DependencyObject
+        {
+            while (source != null)
+            {
+                if (source is T) return true;
                 source = VisualTreeHelper.GetParent(source);
             }
             return false;
@@ -221,26 +239,34 @@ namespace HD2ModManager
         private void BottomBar_StructureChanged(object? sender, EventArgs e)
         {
             if (DataContext is not ShellViewModel shell) return;
-            _selectionEditorPresentation ??= new TemporaryEditorBarPresentation(
+            _selectionActionPresentation ??= new SelectionActionBarPresentation(
                 shell.BottomBar,
                 shell.SelectionPrimaryCommand,
                 shell.SelectionDeleteCommand,
                 shell.CancelSelectionCommand);
-            if (shell.BottomBar.HasContent)
-                shell.BottomBar.SetSelectionEditor(_selectionEditorPresentation);
+            _temporaryEditorPresentation ??= new TemporaryEditorBarPresentation(shell.BottomBar);
+
+            if (shell.BottomBar.HasSelection)
+                shell.BottomBar.SetSelectionActions(_selectionActionPresentation);
             else
-                shell.BottomBar.ClearSelectionEditor();
+                shell.BottomBar.ClearSelectionActions();
+
+            if (shell.BottomBar.HasTemporaryEditor)
+                shell.BottomBar.SetTemporaryEditor(_temporaryEditorPresentation);
+            else
+                shell.BottomBar.ClearTemporaryEditor();
             QueueBottomBarLayout(shell.BottomBar.Layout);
         }
 
         private void InitializeBottomBarLayers()
         {
             BottomBar_StructureChanged(this, EventArgs.Empty);
-            if (_selectionEditorPresentation is null) return;
+            if (_selectionActionPresentation is null || _temporaryEditorPresentation is null) return;
             BottomContextBar.Width = 0d;
             BottomContextBar.Height = 0d;
             BottomContextBar.Visibility = Visibility.Hidden;
-            BottomBarSurface.Prepare(_selectionEditorPresentation);
+            BottomBarSurface.Prepare(_selectionActionPresentation);
+            BottomBarSurface.Prepare(_temporaryEditorPresentation);
             Dispatcher.BeginInvoke(() =>
             {
                 if (DataContext is ShellViewModel { BottomBar.HasContent: false })
