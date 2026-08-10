@@ -22,4 +22,8 @@
     <Content Include="..\HD2ModManager\ThirdParty\7zip\**\*" Link="third_party\7zip\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\HD2ModManager\ViewModels\BottomBarLayout.cs" Link="BottomBarLayout.cs" />
+  </ItemGroup>
+
 </Project>

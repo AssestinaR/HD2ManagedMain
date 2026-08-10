@@ -256,7 +256,7 @@
                 </Canvas>
             </Grid>
 
-            <Border x:Name="BottomContextBar" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,22"
+            <Border x:Name="BottomContextBar" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,22"
                     Padding="14,10" CornerRadius="18" RenderTransformOrigin="0.5,0.5"
                     Visibility="Collapsed">
                 <Border.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></Border.RenderTransform>
@@ -265,8 +265,7 @@
                     </Style>
                 </Border.Style>
                 <Grid x:Name="BottomContextBarContent" VerticalAlignment="Center">
-                    <views:TemporaryEditorBarContent x:Name="BottomContextBarContentA" Opacity="1" IsHitTestVisible="True"/>
-                    <views:TemporaryEditorBarContent x:Name="BottomContextBarContentB" Opacity="0" IsHitTestVisible="False"/>
+                    <views:BottomBarSurface x:Name="BottomBarSurface"/>
                 </Grid>
             </Border>
 

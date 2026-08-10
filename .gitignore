@@ -377,3 +377,4 @@ Desktop.ini
 *.lnk
 docs/
 _diagnostics/
+tmp/

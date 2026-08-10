@@ -31,6 +31,7 @@ namespace HD2ModManager.ViewModels
             CancelEditCommand = new RelayCommand(CancelEdit);
             BeginMoveCommand = new RelayCommand(_ => BeginMove());
             BeginInsertCommand = new RelayCommand(_ => BeginInsert());
+            Registrations.LayoutChanged += (_, snapshot) => LayoutChanged?.Invoke(this, snapshot);
             _selection.SelectionChanged += (_, _) =>
             {
                 if (!_suppressSelectionCancel) CancelEdit();
@@ -44,6 +45,9 @@ namespace HD2ModManager.ViewModels
         public RelayCommand BeginMoveCommand { get; }
         public RelayCommand BeginInsertCommand { get; }
         public event EventHandler? StructureChanged;
+        public event EventHandler<BottomBarLayoutSnapshot>? LayoutChanged;
+        public BottomBarRegistrationStore Registrations { get; } = new();
+        public BottomBarLayoutSnapshot Layout => Registrations.Snapshot;
         public bool HasSelection => _selection.HasSelection;
         public bool HasTemporaryEditor => !string.IsNullOrWhiteSpace(_editMode);
         public bool IsPositionEditor => _editMode is "Move" or "Insert";
@@ -97,6 +101,16 @@ namespace HD2ModManager.ViewModels
             _isLibraryProfileCompanionVisible = visible;
             OnPropertyChanged(nameof(ShowAddToProfile));
         }
+
+        public void SetSelectionEditor(object content)
+        {
+            ArgumentNullException.ThrowIfNull(content);
+            Registrations.Upsert(new BottomBarRegistrationRequest(
+                "selection-editor",
+                [new BottomBarRowDefinition("main", content)]));
+        }
+
+        public void ClearSelectionEditor() => Registrations.Remove("selection-editor");
 
         public void BeginNameEdit(string modId, string currentValue) => BeginEdit(modId, "Name", currentValue);
         public void BeginDescriptionEdit(string modId, string currentValue) => BeginEdit(modId, "Description", currentValue);
