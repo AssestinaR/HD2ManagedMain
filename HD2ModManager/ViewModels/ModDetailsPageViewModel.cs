@@ -986,10 +986,11 @@ namespace HD2ModManager.ViewModels
         private async Task RebuildSameKeyAsync()
         {
             if (!TryGetCurrentNode(out var source)) return;
-            var cachedState = await _advancedAnalysis.GetCachedStateAsync(source, _library.ModsRootDirectory).ConfigureAwait(false);
-            if (!cachedState.IsReady)
+            var sourcePatchPaths = FindBasePatchPaths(source);
+            if (sourcePatchPaths.Length == 0)
             {
                 var message = "尚未进行当前 Mod 的高级分析，请先点击“模型解析”建立高级 Unit 分析缓存。";
+                message = "Current Mod has no usable base Patch file.";
                 _notifications?.Show(message, NotificationLevel.Info, TimeSpan.FromSeconds(10));
                 SameKeyReconstructionSummary = message;
                 OnPropertyChanged(nameof(SameKeyReconstructionSummary));
@@ -1065,32 +1066,27 @@ namespace HD2ModManager.ViewModels
             {
                 LogService.Info($"替换护甲计划开始：Mod={source.Metadata.Name}，节点={source.Id.Value:N}。");
                 _notifications?.Show("替换护甲：正在使用高级缓存中的 Unit 事实生成装备目录…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
-                var cachedState = await _advancedAnalysis.GetCachedStateAsync(source, _library.ModsRootDirectory).ConfigureAwait(false);
-                if (!cachedState.IsReady || !cachedState.IsCurrent)
+                _notifications?.Show("替换护甲：正在读取来源 Patch 并匹配 GameData 部位目录…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
+                var sourcePatchPaths = FindBasePatchPaths(source);
+                if (sourcePatchPaths.Length == 0)
                 {
                     var message = "尚未进行当前 Mod 的高级分析，请先点击“模型解析”建立高级 Unit 分析缓存。";
+                    message = "Current Mod has no usable base Patch file.";
                     _notifications?.Show(message, NotificationLevel.Info, TimeSpan.FromSeconds(10));
                     AdvancedAnalysisSummary = message;
                     OnPropertyChanged(nameof(AdvancedAnalysisSummary));
                     return;
                 }
-                var analyses = _cachedAdvancedAnalysesNodeId == source.Id
-                    ? _cachedAdvancedAnalyses
-                    : null;
-                analyses ??= await _advancedAnalysis.GetRequiredAnalysesAsync(source, _library.ModsRootDirectory).ConfigureAwait(false);
-                _cachedAdvancedAnalyses = analyses;
-				_cachedAdvancedAnalysesNodeId = source.Id;
                 // Load the full logical equipment catalog first. Source eligibility
                 // comes from the source Patch analysis; Game Data only labels the
                 // eligible Unit and must not pre-filter by its mesh layout.
                 var sourceCatalogCandidates = await _equipmentUnitCatalog.GetEntriesAsync();
-                var sourcePatchPaths = analyses
-					.Select(analysis => analysis.Input.PatchTocFilePath)
-                    .ToArray();
+                // Retained only for the legacy diagnostic message below. Cross-armor
+                // planning now derives its source facts directly from the Patch.
+                var analyses = new List<PatchGroupAnalysis>();
                 // Source eligibility is a Unit-level fact from the source Patch. The
                 // source may have been reserialized by Blender/SDK, so its MeshInfoIndex
                 // layout is not required to match the current Game Data template.
-                var transferableSourceUnitKeys = _sourceUnitEligibility.Select(analyses).EligibleUnitAssetKeys;
                 // Game Data contributes the logical Armor/Helmet label and body/layer
                 // facts only. Keep all indexed parts for an eligible Unit; the
                 // Canonical executor resolves the source Unit's own LOD0 later.
@@ -1101,14 +1097,14 @@ namespace HD2ModManager.ViewModels
                     var sourceCandidates = await _equipmentUnitCatalog
                         .FilterTransferableSourcePartsAsync(sourceCatalogCandidates, sourcePatchPaths, CancellationToken.None)
                         .ConfigureAwait(false);
-                    sourceCandidates = sourceCandidates
-                        .Where(entry => entry.Parts.Any(part => transferableSourceUnitKeys.Contains(part.UnitAssetKey)))
-                        .Select(entry => entry with { Parts = entry.Parts.Where(part => transferableSourceUnitKeys.Contains(part.UnitAssetKey)).ToArray() })
-                        .Where(entry => entry.Parts.Count != 0)
-                        .ToArray();
+                    var transferableSourceUnitKeys = sourceCandidates
+                        .SelectMany(entry => entry.Parts)
+                        .Select(part => part.UnitAssetKey)
+                        .ToHashSet();
                 var catalogPartCount = sourceCatalogCandidates.Sum(entry => entry.Parts.Count);
                 var matchedPartCount = sourceCandidates.Sum(entry => entry.Parts.Count);
                 LogService.Info($"替换护甲来源诊断：Mod={source.Metadata.Name}，高级分析={analyses.Count}，源Patch={sourcePatchPaths.Length}，可转移Unit={transferableSourceUnitKeys.Count}，GameData部件={catalogPartCount}，保留部件={matchedPartCount}，Unit目录={sourceCatalogCandidates.Count}。");
+                LogService.Info($"替换护甲来源诊断：Mod={source.Metadata.Name}，源Patch={sourcePatchPaths.Length}，可转移Unit={transferableSourceUnitKeys.Count}，GameData部件={catalogPartCount}，保留部件={matchedPartCount}，Unit目录={sourceCatalogCandidates.Count}。");
                 if (transferableSourceUnitKeys.Count != 0 && matchedPartCount == 0)
                 {
                     var catalogKeys = sourceCatalogCandidates
@@ -1144,10 +1140,9 @@ namespace HD2ModManager.ViewModels
                     _notifications?.Show("跨护甲验证候选目前仅支持源 Mod 含一个 Patch 主文件组。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
                     return;
                 }
-                var preparedSourceEntries = analyses
-                    .Where(analysis => string.Equals(analysis.Input.PatchTocFilePath, sourcePatchPaths[0], StringComparison.OrdinalIgnoreCase))
-                    .SelectMany(analysis => analysis.Entries)
-                    .ToArray();
+                var preparedSourceEntries = (await new HD2ModAdaptation.PatchReconstruction.PatchWorkspace.PatchWorkspaceReader()
+                    .ReadIndexAsync(sourcePatchPaths[0], CancellationToken.None)
+                    .ConfigureAwait(false)).Entries;
                 var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(_equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(), preparedSourceEntries, _paths, targetReplacementSnapshot);
                 await OpenCrossArmorPlanOnUiThreadAsync(viewModel).ConfigureAwait(false);
                 LogService.Info($"替换护甲计划完成：Mod={source.Metadata.Name}，源候选={sourceCandidates.Count}，目标候选={allCandidates.Count}，源Patch={sourcePatchPaths[0]}。");
@@ -1172,6 +1167,17 @@ namespace HD2ModManager.ViewModels
             {
                 if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenCrossArmorPlan(viewModel);
             }).Task.ConfigureAwait(false);
+        }
+
+        private string[] FindBasePatchPaths(ModNode source)
+        {
+            var directory = Path.Combine(_library.ModsRootDirectory, source.RelativePath);
+            if (!Directory.Exists(directory)) return Array.Empty<string>();
+            var parser = CoreServices.CreatePatchFileNameParser();
+            return Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+                .Where(path => parser.TryParse(Path.GetFileName(path), out var info) && info?.SidecarKind == PatchSidecarKind.Base)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         }
 
         private void OpenMaterialPackaging(bool splitEmbeddedMaterials, bool requireAllExternalMaterials = false)

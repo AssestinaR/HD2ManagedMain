@@ -38,14 +38,12 @@ public static class CoreServices
 		=> new CanonicalSameKeyReconstructionService(
 			CreatePatchFileNameParser(),
 			CreateAssetArchiveIndexService(paths),
-			CreateFileSystemArchiveHashesProvider(paths),
-			CreateAdvancedModAnalysisService(paths, informationCenter),
-			CreateSourceUnitEligibilityService());
+			CreateFileSystemArchiveHashesProvider(paths));
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IModRepairBatchService CreateModRepairBatchService(StoragePaths paths)
-		=> new ModRepairBatchService(paths, CreateModSameKeyReconstructionService(paths), CreateAdvancedModAnalysisService(paths), CreatePatchFileNameParser());
+		=> new ModRepairBatchService(paths, CreateModSameKeyReconstructionService(paths), CreatePatchFileNameParser());
 	public static IModRepairBatchService CreateModRepairBatchService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new ModRepairBatchService(paths, CreateModSameKeyReconstructionService(paths, informationCenter), CreateAdvancedModAnalysisService(paths, informationCenter), CreatePatchFileNameParser());
+		=> new ModRepairBatchService(paths, CreateModSameKeyReconstructionService(paths, informationCenter), CreatePatchFileNameParser());
    public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths)
 		=> new AssetArchiveIndexService(paths);
 	public static IAdvancedEquipmentIndexService CreateAdvancedEquipmentIndexService(StoragePaths paths)

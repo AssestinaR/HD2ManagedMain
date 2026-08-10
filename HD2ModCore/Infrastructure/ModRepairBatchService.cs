@@ -8,22 +8,26 @@ namespace HD2ModCore.Infrastructure;
 public sealed class ModRepairBatchService : IModRepairBatchService
 {
     private readonly IModSameKeyReconstructionService reconstruction;
-    private readonly IAdvancedModAnalysisService advancedAnalysis;
     private readonly IPatchFileNameParser fileNameParser;
     private readonly StoragePaths paths;
     private readonly Action? initializationSeam;
     private readonly Action<string>? commitSeam;
     private readonly Func<string, string, Task> manifestWriter;
 
-    public ModRepairBatchService(StoragePaths paths, IModSameKeyReconstructionService reconstruction, IAdvancedModAnalysisService advancedAnalysis, IPatchFileNameParser fileNameParser, Action? initializationSeam = null, Action<string>? commitSeam = null, Func<string, string, Task>? manifestWriter = null)
+    public ModRepairBatchService(StoragePaths paths, IModSameKeyReconstructionService reconstruction, IPatchFileNameParser fileNameParser, Action? initializationSeam = null, Action<string>? commitSeam = null, Func<string, string, Task>? manifestWriter = null)
     {
         this.paths = paths ?? throw new ArgumentNullException(nameof(paths));
         this.reconstruction = reconstruction ?? throw new ArgumentNullException(nameof(reconstruction));
-        this.advancedAnalysis = advancedAnalysis ?? throw new ArgumentNullException(nameof(advancedAnalysis));
         this.fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
         this.initializationSeam = initializationSeam;
         this.commitSeam = commitSeam;
         this.manifestWriter = manifestWriter ?? WriteManifestAtomicallyAsync;
+    }
+
+    [Obsolete("Batch repair no longer requires advanced Unit analysis. Use the overload without IAdvancedModAnalysisService.")]
+    public ModRepairBatchService(StoragePaths paths, IModSameKeyReconstructionService reconstruction, IAdvancedModAnalysisService _, IPatchFileNameParser fileNameParser, Action? initializationSeam = null, Action<string>? commitSeam = null, Func<string, string, Task>? manifestWriter = null)
+        : this(paths, reconstruction, fileNameParser, initializationSeam, commitSeam, manifestWriter)
+    {
     }
 
     public async ValueTask<ModRepairBatchResult> RepairAsync(IReadOnlyList<ModNode> sourceNodes, string modsRootDirectory, string gameDataDirectory, CancellationToken cancellationToken = default, IProgress<OperationProgressEvent>? progress = null, Guid? operationId = null)
@@ -98,11 +102,6 @@ public sealed class ModRepairBatchService : IModRepairBatchService
                 var stagingDirectory = Path.Combine(stagingRoot, source.Id.Value.ToString("N"));
                 try
                 {
-                var analysisState = await advancedAnalysis.GetStateAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false);
-                if (!analysisState.IsReady)
-                {
-                    await advancedAnalysis.AnalyzeAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false);
-                }
                 var state = await reconstruction.InspectAsync(source, modsRootDirectory, gameDataDirectory, cancellationToken, ChildProgress(childOperationId), childOperationId).ConfigureAwait(false);
                 if (!state.CanWrite)
                 {

@@ -15,7 +15,20 @@ namespace HD2ModManager.Views
         {
             if (DataContext is AdvancedModDetailsPageViewModel viewModel)
             {
+                HideLegacyAdvancedAnalysisButton(viewModel);
                 await viewModel.RefreshAdvancedDetailsAsync();
+            }
+        }
+
+        private void HideLegacyAdvancedAnalysisButton(AdvancedModDetailsPageViewModel viewModel)
+        {
+            foreach (var button in FindDescendants<Button>(this))
+            {
+                if (ReferenceEquals(button.Command, viewModel.RunAdvancedAnalysisCommand))
+                {
+                    button.Visibility = Visibility.Collapsed;
+                    return;
+                }
             }
         }
 
@@ -57,6 +70,17 @@ namespace HD2ModManager.Views
             }
 
             return null;
+        }
+
+        private static IEnumerable<T> FindDescendants<T>(DependencyObject current) where T : DependencyObject
+        {
+            var childCount = VisualTreeHelper.GetChildrenCount(current);
+            for (var index = 0; index < childCount; index++)
+            {
+                var child = VisualTreeHelper.GetChild(current, index);
+                if (child is T typed) yield return typed;
+                foreach (var nested in FindDescendants<T>(child)) yield return nested;
+            }
         }
     }
 }

@@ -18,11 +18,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
     private readonly IPatchFileNameParser fileNameParser;
     private readonly IAssetArchiveIndexService assetIndex;
     private readonly IArchiveHashesProvider archiveHashes;
-    private readonly IAdvancedModAnalysisService advancedAnalysis;
-    private readonly ISourceUnitEligibilityService sourceUnitEligibility;
     private readonly IPatchWorkspaceReader workspaceReader;
-    private readonly PatchUnitMeshReader sourceReader = new();
-    private readonly SameKeyCanonicalUnitRebuilder unitRebuilder = new();
     private readonly IPatchWorkspaceWriter workspaceWriter;
     private readonly IPatchOperationWorkspaceFactory operationWorkspaceFactory;
     private readonly ICanonicalHiddenUnitOutputCache hiddenUnitCache;
@@ -32,8 +28,6 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         IPatchFileNameParser fileNameParser,
         IAssetArchiveIndexService assetIndex,
         IArchiveHashesProvider archiveHashes,
-        IAdvancedModAnalysisService advancedAnalysis,
-        ISourceUnitEligibilityService sourceUnitEligibility,
         IPatchWorkspaceReader? workspaceReader = null,
         IPatchWorkspaceWriter? workspaceWriter = null,
         IPatchOperationWorkspaceFactory? operationWorkspaceFactory = null,
@@ -43,8 +37,6 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         this.fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
         this.assetIndex = assetIndex ?? throw new ArgumentNullException(nameof(assetIndex));
         this.archiveHashes = archiveHashes ?? throw new ArgumentNullException(nameof(archiveHashes));
-        this.advancedAnalysis = advancedAnalysis ?? throw new ArgumentNullException(nameof(advancedAnalysis));
-        this.sourceUnitEligibility = sourceUnitEligibility ?? throw new ArgumentNullException(nameof(sourceUnitEligibility));
         this.workspaceReader = workspaceReader ?? new PatchWorkspaceReader();
         this.workspaceWriter = workspaceWriter ?? new PatchWorkspaceWriter();
         this.operationWorkspaceFactory = operationWorkspaceFactory ?? new PatchOperationWorkspaceFactory();
@@ -305,15 +297,9 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         Guid? operationId,
         PatchWorkspaceIndex? knownIndex = null)
     {
-        var analyses = await advancedAnalysis.GetRequiredAnalysesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false);
-        var sourceEligibility = sourceUnitEligibility.Select(analyses);
         var nodeId = source.Id;
-        var analysis = analyses.LastOrDefault(candidate => string.Equals(
-            Path.GetFullPath(candidate.Input.PatchTocFilePath),
-            Path.GetFullPath(patch),
-            StringComparison.OrdinalIgnoreCase));
         var index = knownIndex;
-        var entries = index?.Entries ?? analysis?.Entries;
+        var entries = index?.Entries;
         if (entries is null || entries.Count == 0)
         {
             // Cache entries may be unavailable for old cache versions; TOC metadata is
@@ -322,6 +308,11 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             entries = index.Entries;
         }
         var units = entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).ToArray();
+        // This is deliberately a TOC-level candidate set. Each Unit job performs the
+        // definitive visible-geometry check while it reads the source payload.
+        var sourceEligibility = new SourceUnitEligibilitySelection(
+            units.Select(entry => new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId)).ToHashSet(),
+            Array.Empty<SourceUnitEligibility>());
         var matches = await assetIndex.FindAssetArchivesAsync(units.Select(entry => new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId)).ToHashSet(), cancellationToken).ConfigureAwait(false);
         var byKey = matches.ToDictionary(match => match.AssetKey);
         var plans = new List<SameKeyUnitReconstructionPlan>();
@@ -343,10 +334,16 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 match.Archives,
                 null,
                 issues,
-                IsSourceGeometryEligible: sourceEligibility.EligibleUnitAssetKeys.Contains(key)));
+                // The Unit job is the authoritative visible-geometry check. Planning
+                // only consumes TOC metadata and therefore never needs full analysis.
+                IsSourceGeometryEligible: true));
             Report(progress, operationId, "Plan", $"已规划 Unit {plans.Count}/{units.Length}", plans.Count, units.Length);
         }
-        return new SameKeyReconstructionPlan(new SameKeyReconstructionRequest(patch, gameData), plans, [], sourceEligibility.EligibleUnitAssetKeys);
+        return new SameKeyReconstructionPlan(
+            new SameKeyReconstructionRequest(patch, gameData),
+            plans,
+            [],
+            plans.Select(plan => plan.UnitAssetKey).ToHashSet());
     }
 
     private sealed record SameKeyUnitJobResult(
