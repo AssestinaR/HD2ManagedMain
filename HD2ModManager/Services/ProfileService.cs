@@ -332,15 +332,21 @@ namespace HD2ModManager.Services
             finally { _writeGate.Release(); }
         }
 
-        public async Task<bool> RemoveModsFromSelectedAsync(IReadOnlyList<string> nodeGuids, CancellationToken cancellationToken = default)
+        public async Task<int> RemoveModsFromSelectedAsync(IReadOnlyList<string> nodeGuids, CancellationToken cancellationToken = default)
         {
+            ArgumentNullException.ThrowIfNull(nodeGuids);
             await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-            if (nodeGuids.Count == 0 || SelectedProfileId is not ProfileId profileId) return false;
+            if (nodeGuids.Count == 0 || SelectedProfileId is not ProfileId profileId) return 0;
             var ids = nodeGuids.Where(guid => TryParseNodeId(guid, out _)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            if (ids.Count == 0) return false;
+            if (ids.Count == 0) return 0;
             var nodeIds = ids.Select(guid => TryParseNodeId(guid, out var nodeId) ? nodeId : default).ToArray();
+            var existing = _snapshot.Profiles.FirstOrDefault(profile => profile.Id == profileId)?.Entries
+                .Select(entry => entry.NodeId)
+                .ToHashSet() ?? [];
+            var removed = nodeIds.Count(existing.Contains);
+            if (removed == 0) return 0;
             var operationVersion = Interlocked.Increment(ref _stateVersion);
             var snapshot = await _manager.RemoveProfileEntriesAsync(profileId, nodeIds, cancellationToken).ConfigureAwait(false);
 
@@ -354,7 +360,7 @@ namespace HD2ModManager.Services
             };
             // 写门内完成快照提交，不把 Dispatcher 当作提交锁的一部分。
             apply();
-            return true;
+            return removed;
             }
             finally { _writeGate.Release(); }
         }

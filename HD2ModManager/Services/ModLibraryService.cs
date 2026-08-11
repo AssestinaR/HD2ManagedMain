@@ -472,6 +472,42 @@ namespace HD2ModManager.Services
             finally { _libraryMutationGate.Release(); }
         }
 
+        public async Task<int> RemoveManyAsync(IReadOnlyList<string> guids, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(guids);
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var nodeIds = guids
+                    .Select(ParseNodeId)
+                    .Where(nodeId => nodeId.HasValue)
+                    .Select(nodeId => nodeId!.Value)
+                    .Distinct()
+                    .Where(_snapshot.Nodes.ContainsKey)
+                    .ToArray();
+                if (nodeIds.Length == 0) return 0;
+
+                var thumbnailPaths = nodeIds
+                    .Select(nodeId => GetDerivedData(nodeId.Value.ToString("N"))?.IconPath)
+                    .ToArray();
+                _snapshot = await _manager.DeleteNodesAsync(nodeIds, deleteStoredFiles: true, cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _stateVersion);
+                foreach (var nodeId in nodeIds)
+                    await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+                foreach (var thumbnailPath in thumbnailPaths)
+                    ThumbnailService.DeleteCachedThumbnailsForSource(thumbnailPath);
+
+                var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
+                foreach (var nodeId in nodeIds) nodes.Remove(nodeId);
+                _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray());
+                RebuildIndex(buildDerivedData: false);
+                ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(nodeIds, ModContentChangeKind.Removed));
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                return nodeIds.Length;
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
         public ModEntity? Get(string guid)
         {
             var index = Volatile.Read(ref _byGuid);

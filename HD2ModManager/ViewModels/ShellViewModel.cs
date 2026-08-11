@@ -1162,7 +1162,7 @@ namespace HD2ModManager.ViewModels
                 task.MarkRunning("正在写入配置");
                 try
                 {
-                    var removed = await _profileService.RemoveModsFromSelectedAsync(ids, task.CancellationToken) ? ids.Count : 0;
+                    var removed = await _profileService.RemoveModsFromSelectedAsync(ids, task.CancellationToken);
                     task.MarkCompleted();
                     _notificationService.Show($"已从配置移除：{removed} 个 Mod");
                 }
@@ -1247,13 +1247,7 @@ namespace HD2ModManager.ViewModels
                 task.MarkRunning("正在删除");
                 try
                 {
-                    var removed = 0;
-                    foreach (var guid in ids)
-                    {
-                        task.CancellationToken.ThrowIfCancellationRequested();
-                        if (await _libraryService.RemoveAsync(guid, task.CancellationToken)) removed++;
-                    }
-                    await _libraryService.SaveAsync(task.CancellationToken);
+                    var removed = await _libraryService.RemoveManyAsync(ids, task.CancellationToken);
                     task.MarkCompleted();
                     _notificationService.Show($"已删除：{removed} 个 Mod");
                 }
@@ -1266,12 +1260,7 @@ namespace HD2ModManager.ViewModels
                 task.MarkRunning("正在写入配置");
                 try
                 {
-                    var removed = 0;
-                    foreach (var guid in ids)
-                    {
-                        task.CancellationToken.ThrowIfCancellationRequested();
-                        if (await _profileService.RemoveModFromSelectedAsync(guid, task.CancellationToken)) removed++;
-                    }
+                    var removed = await _profileService.RemoveModsFromSelectedAsync(ids, task.CancellationToken);
                     task.MarkCompleted();
                     _notificationService.Show($"已从配置移除：{removed} 个 Mod");
                 }
@@ -1308,13 +1297,7 @@ namespace HD2ModManager.ViewModels
             task.MarkRunning("正在删除");
             try
             {
-                var removed = 0;
-                foreach (var guid in ids)
-                {
-                    task.CancellationToken.ThrowIfCancellationRequested();
-                    if (await _libraryService.RemoveAsync(guid, task.CancellationToken)) removed++;
-                }
-                await _libraryService.SaveAsync(task.CancellationToken);
+                var removed = await _libraryService.RemoveManyAsync(ids, task.CancellationToken);
                 task.MarkCompleted();
                 _notificationService.Show($"已删除：{removed} 个 Mod");
                 _selection.Clear();

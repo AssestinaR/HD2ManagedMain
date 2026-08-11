@@ -36,22 +36,23 @@ public sealed class ModLibraryManager : IModLibraryManager
 	}
 
 	public async ValueTask<LibrarySnapshot> DeleteNodeAsync(ModNodeId nodeId, bool deleteStoredFiles, CancellationToken cancellationToken = default)
+		=> await DeleteNodesAsync([nodeId], deleteStoredFiles, cancellationToken).ConfigureAwait(false);
+
+	public async ValueTask<LibrarySnapshot> DeleteNodesAsync(IReadOnlyList<ModNodeId> nodeIds, bool deleteStoredFiles, CancellationToken cancellationToken = default)
 	{
+		ArgumentNullException.ThrowIfNull(nodeIds);
 		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
 		var nodes = new Dictionary<ModNodeId, ModNode>(snapshot.Nodes);
+		var removedIds = nodeIds.Where(nodes.ContainsKey).ToHashSet();
+		if (removedIds.Count == 0) return snapshot;
+		var removedNodes = removedIds.Select(nodeId => nodes[nodeId]).ToArray();
 
-		if (!nodes.TryGetValue(nodeId, out var node))
-		{
-			return snapshot;
-		}
-
-		// Remove the node itself.
-		nodes.Remove(nodeId);
+		foreach (var removedId in removedIds) nodes.Remove(removedId);
 
 		// Remove references from other nodes' children.
 		foreach (var kv in nodes.ToList())
 		{
-			var updatedChildren = kv.Value.Children.Where(c => c != nodeId).ToList();
+			var updatedChildren = kv.Value.Children.Where(childId => !removedIds.Contains(childId)).ToList();
 			if (updatedChildren.Count != kv.Value.Children.Count)
 			{
 				nodes[kv.Key] = kv.Value with { Children = updatedChildren };
@@ -62,7 +63,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 		var profiles = snapshot.Profiles
 			.Select(p =>
 			{
-				var entries = NormalizeEntryOrder(p.Entries.Where(e => e.NodeId != nodeId).ToList());
+				var entries = NormalizeEntryOrder(p.Entries.Where(entry => !removedIds.Contains(entry.NodeId)).ToList());
 				return entries.SequenceEqual(p.Entries)
 					? p
 					: p with { Entries = entries, ModifiedUtc = DateTimeOffset.UtcNow, Revision = checked(p.Revision + 1) };
@@ -71,7 +72,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 
 		if (deleteStoredFiles)
 		{
-			TryDeleteStoredRoot(node.RelativePath);
+			foreach (var removedNode in removedNodes) TryDeleteStoredRoot(removedNode.RelativePath);
 		}
 		var updated = snapshot with { Nodes = nodes, Profiles = profiles, SavedUtc = DateTimeOffset.UtcNow };
 		await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);

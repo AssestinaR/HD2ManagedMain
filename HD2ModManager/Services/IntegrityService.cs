@@ -92,10 +92,7 @@ namespace HD2ModManager.Services
 
             if (removeModGuids.Count > 0)
             {
-                foreach (var gid in removeModGuids)
-                {
-                    try { if (await _library.RemoveAsync(gid).ConfigureAwait(false)) updated = true; } catch { }
-                }
+                try { updated |= await _library.RemoveManyAsync(removeModGuids).ConfigureAwait(false) > 0; } catch { }
             }
 
             if (updated)
