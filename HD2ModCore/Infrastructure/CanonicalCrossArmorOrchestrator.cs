@@ -362,13 +362,22 @@ public sealed class CanonicalCrossArmorOrchestrator
 					var participatesInLodPalette = false;
 					if (!mappingsByIndex.TryGetValue(targetMesh.Index, out var mapping))
 					{
-						var detailStopwatch = System.Diagnostics.Stopwatch.StartNew();
-						var tiny = hiddenUnitGenerator.Generate(targetRaw, stream);
-						minifyElapsed += detailStopwatch.Elapsed;
-						if (!tiny.IsValid) return Failure(issues, tiny.Diagnostics);
-						finalRaw = tiny.Mesh!;
-						minifiedCount++;
-						hiddenMeshCountForUnit++;
+						if (targetRaw.LodIndex == -1)
+						{
+							// No compatible source culling mesh was supplied. Preserve the
+							// target cutout instead of converting visible source LOD0 into it.
+							finalRaw = targetRaw;
+						}
+						else
+						{
+							var detailStopwatch = System.Diagnostics.Stopwatch.StartNew();
+							var tiny = hiddenUnitGenerator.Generate(targetRaw, stream);
+							minifyElapsed += detailStopwatch.Elapsed;
+							if (!tiny.IsValid) return Failure(issues, tiny.Diagnostics);
+							finalRaw = tiny.Mesh!;
+							minifiedCount++;
+							hiddenMeshCountForUnit++;
+						}
 					}
 					else
 					{

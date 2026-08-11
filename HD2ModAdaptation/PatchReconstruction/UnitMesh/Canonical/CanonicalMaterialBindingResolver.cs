@@ -40,7 +40,6 @@ public static class CanonicalMaterialBindingResolver
 			return new([], [new("SourceMeshMissingForMaterialBinding", $"Source MeshInfo {sourceRaw.MeshInfoIndex} is missing from the material binding model.")]);
 
         var visibleSections = sourceRaw.Sections.Where(section => section.Triangles.Count != 0).ToArray();
-        var expandsTargetShell = visibleSections.Length > targetRaw.Sections.Count;
 
 		var sourceMaterialOccurrences = source.Materials
 			.GroupBy(binding => binding.SectionId)
@@ -72,12 +71,14 @@ public static class CanonicalMaterialBindingResolver
 			var occurrence = occurrenceBySlot.TryGetValue(sourceSlot, out var current) ? current : 0;
 			occurrenceBySlot[sourceSlot] = occurrence + 1;
 			var materialId = materialIds[Math.Min(occurrence, materialIds.Length - 1)];
-            // SDK rebuilds MeshInfo sections and slots from Blender's final material
-            // groups. Keep that source slot identity only when expanding past the target
-            // shell capacity; ordinary replacements retain the target shell slot.
-            var targetSlot = expandsTargetShell
-                ? sourceSlot
-                : targetRaw.Sections[index].MaterialSlotId;
+			// SDK RawMaterial.IDFromName always resolves a final Blender material by
+			// (target Unit, MaterialId, occurrence). It never reuses an unrelated
+			// target shell slot merely because both meshes happen to have the same
+			// number of sections. The compiler performs that lookup and allocates a
+			// fresh slot when the target Unit has no matching MaterialId.
+			var targetSlot = index < targetRaw.Sections.Count
+				? targetRaw.Sections[index].MaterialSlotId
+				: sourceSlot;
 			if (!allowMultipleMaterialsPerTargetSlot && bindings.Any(binding => binding.SectionId == targetSlot && binding.MaterialId != materialId))
 			{
 				diagnostics.Add(new("CanonicalMaterialSlotConflict", $"Target material slot {targetSlot} maps to multiple source Material assets."));
@@ -85,7 +86,7 @@ public static class CanonicalMaterialBindingResolver
 			}
 
 			bindings.Add(new UnitMaterialBinding(targetSlot, materialId));
-			sectionBindings.Add(new CanonicalMaterialSectionBinding(index, sourceSlot, targetSlot, materialId, expandsTargetShell));
+			sectionBindings.Add(new CanonicalMaterialSectionBinding(index, sourceSlot, targetSlot, materialId, UsesTargetUnitMaterialSlotLookup: true));
 		}
 
 		return new(bindings, diagnostics, sectionBindings);

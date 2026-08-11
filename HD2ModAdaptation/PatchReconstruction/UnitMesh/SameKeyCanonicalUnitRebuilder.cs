@@ -102,12 +102,21 @@ public sealed class SameKeyCanonicalUnitRebuilder
 
             if (!mappings.TryGetValue(targetMesh.Index, out var mapping))
             {
-				var minifyStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                var hidden = minifier.TryMinify(targetRaw, targetStream);
-				minifyElapsed += minifyStopwatch.Elapsed;
-                diagnostics.AddRange(hidden.Diagnostics);
-                if (hidden.Mesh is not null) finalMeshes.Add(hidden.Mesh);
-                hiddenCount++;
+				if (targetRaw.LodIndex == -1)
+				{
+					// A culling mesh with no explicit source counterpart must retain the
+					// target cutout; it is not a visual mesh eligible for minification.
+					finalMeshes.Add(targetRaw);
+				}
+				else
+				{
+					var minifyStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                    var hidden = minifier.TryMinify(targetRaw, targetStream);
+					minifyElapsed += minifyStopwatch.Elapsed;
+                    diagnostics.AddRange(hidden.Diagnostics);
+                    if (hidden.Mesh is not null) finalMeshes.Add(hidden.Mesh);
+                    hiddenCount++;
+				}
                 continue;
             }
 

@@ -51,7 +51,7 @@ public sealed class CanonicalMaterialBindingResolverTests
     }
 
     [Fact]
-    public void Resolve_ExpandsTargetShellUsingSourceSlotsAndBindings()
+    public void Resolve_UsesTargetMaterialLookupForExpandedShell()
     {
         var source = CreateModel(
             materialSlots: [10, 11],
@@ -70,8 +70,9 @@ public sealed class CanonicalMaterialBindingResolverTests
 
         Assert.True(result.IsValid);
         Assert.Equal(
-            [(10u, 0x100UL), (11u, 0x200UL)],
+            [(900u, 0x100UL), (11u, 0x200UL)],
             result.Bindings.Select(binding => (binding.SectionId, binding.MaterialId)));
+		Assert.All(result.ResolvedSectionBindings, binding => Assert.True(binding.UsesTargetUnitMaterialSlotLookup));
     }
 
     private static UnitMeshModel CreateModel(

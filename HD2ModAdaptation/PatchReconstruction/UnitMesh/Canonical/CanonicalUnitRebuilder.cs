@@ -542,7 +542,6 @@ public sealed class CanonicalUnitRebuilder
 		// material; those slots are valid shell identity but have no portable dependency.
 		return materialBindings
 			.Where(binding => usedSlots.Contains(binding.SectionId))
-			.Distinct()
 			.ToArray();
 	}
 

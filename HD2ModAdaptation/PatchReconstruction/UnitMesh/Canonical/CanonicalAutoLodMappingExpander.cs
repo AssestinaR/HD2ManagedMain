@@ -58,7 +58,12 @@ public static class CanonicalAutoLodMappingExpander
 
 			foreach (var targetLodSlot in targetModel.RawMeshData.Where(IsTargetLodSlot).OrderBy(raw => raw.LodIndex == -1 ? 0 : 1).ThenBy(raw => raw.LodIndex).ThenBy(raw => raw.MeshInfoIndex))
 			{
-				var sourceMesh = targetLodSlot.LodIndex == -1 && sourceCulling is not null ? sourceCulling : sourceLod0;
+				// A target culling mesh is not an ordinary visual LOD. Never fall back
+				// to source LOD0 here: that duplicates visible geometry into the culling
+				// stream when SDK exports describe culling with a different LOD marker.
+				if (targetLodSlot.LodIndex == -1 && sourceCulling is null)
+					continue;
+				var sourceMesh = targetLodSlot.LodIndex == -1 ? sourceCulling! : sourceLod0;
 				expandedMappings.Add(new CanonicalReplacementMapping(
 					new(approved.Source.UnitKey, sourceMesh.MeshInfoIndex),
 					new(approved.Target.UnitKey, targetLodSlot.MeshInfoIndex),

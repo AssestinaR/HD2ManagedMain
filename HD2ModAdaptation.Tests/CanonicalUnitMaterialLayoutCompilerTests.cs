@@ -35,7 +35,9 @@ public sealed class CanonicalUnitMaterialLayoutCompilerTests
 		Assert.True(result.IsValid);
 		Assert.Equal(77u, result.Meshes[0].Sections[0].MaterialSlotId);
 		Assert.Equal(77u, result.Meshes[1].Sections[0].MaterialSlotId);
-		Assert.Equal([(77u, 0x222UL)], result.Bindings.Select(binding => (binding.SectionId, binding.MaterialId)));
+		Assert.Equal(
+			[(77u, 0x222UL), (77u, 0x222UL)],
+			result.Bindings.Select(binding => (binding.SectionId, binding.MaterialId)));
 	}
 
 	[Fact]
@@ -59,7 +61,7 @@ public sealed class CanonicalUnitMaterialLayoutCompilerTests
 			[Mesh(0, 900, true), Mesh(1, 901, true)],
 			[
 				new CanonicalMaterialSectionProvenance(0, 0, 0xaaaUL, 77, 900, 0x222UL),
-				new CanonicalMaterialSectionProvenance(1, 0, 0xaaaUL, 77, 901, 0x222UL)
+				new CanonicalMaterialSectionProvenance(1, 0, 0xaaaUL, 78, 901, 0x222UL)
 			]);
 
 		Assert.True(result.IsValid);
@@ -68,6 +70,22 @@ public sealed class CanonicalUnitMaterialLayoutCompilerTests
 		Assert.Equal(
 			[(900u, 0x222UL), (901u, 0x222UL)],
 			result.Bindings.Select(binding => (binding.SectionId, binding.MaterialId)));
+	}
+
+	[Fact]
+	public void Compile_ReusesEstablishedTargetSlotWhenLodsReverseTheirLocalSlotOrder()
+	{
+		var result = new CanonicalUnitMaterialLayoutCompiler().TryCompile(
+			Model([]),
+			[Mesh(0, 781, true), Mesh(1, 200, true)],
+			[
+				new CanonicalMaterialSectionProvenance(0, 0, 0xaaaUL, 77, 781, 0x222UL),
+				new CanonicalMaterialSectionProvenance(1, 0, 0xaaaUL, 77, 200, 0x222UL)
+			]);
+
+		Assert.True(result.IsValid);
+		Assert.Equal(781u, result.Meshes[0].Sections[0].MaterialSlotId);
+		Assert.Equal(781u, result.Meshes[1].Sections[0].MaterialSlotId);
 	}
 
 	[Fact]

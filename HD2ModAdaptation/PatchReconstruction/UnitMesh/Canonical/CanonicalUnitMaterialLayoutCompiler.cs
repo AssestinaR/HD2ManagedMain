@@ -48,6 +48,7 @@ public sealed class CanonicalUnitMaterialLayoutCompiler
 			.ToDictionary(group => group.Key, group => group.Select(binding => binding.SectionId).Distinct().ToArray());
 		var occupiedSlots = new HashSet<uint>();
 		var bindingsBySlot = new Dictionary<uint, ulong>();
+		var ordinarySlotsBySource = new Dictionary<SourceMaterialIdentity, uint>();
 
 		// Target-owned sections (minified, culling and default-material geometry) keep
 		// their original slot identities. Reserve them before assigning transferred work.
@@ -85,10 +86,15 @@ public sealed class CanonicalUnitMaterialLayoutCompiler
 					expandedOccurrenceByMaterial[claim.MaterialId] = occurrence + 1;
 				}
 				var identity = new MaterialIdentity(target.NameHash, mesh.MeshInfoIndex, index, claim.MaterialId, occurrence, claim.PreferredTargetSlotId);
+				var sourceIdentity = new SourceMaterialIdentity(claim.SourceUnitFileId, claim.SourceSlotId, claim.MaterialId);
 				var requestedSlot = claim.UsesTargetUnitMaterialSlotLookup
 					? ResolveSdkTargetSlot(targetSlotsByMaterial, claim.MaterialId, occurrence, identity, occupiedSlots)
-					: claim.PreferredTargetSlotId;
+					: ordinarySlotsBySource.TryGetValue(sourceIdentity, out var establishedSlot)
+						? establishedSlot
+						: claim.PreferredTargetSlotId;
 				var outputSlot = ResolveOutputSlot(requestedSlot, claim.MaterialId, identity, occupiedSlots, bindingsBySlot, targetBindings);
+				if (!claim.UsesTargetUnitMaterialSlotLookup)
+					ordinarySlotsBySource.TryAdd(sourceIdentity, outputSlot);
 				sections[index] = sections[index] with { MaterialSlotId = outputSlot };
 			}
 
@@ -101,8 +107,19 @@ public sealed class CanonicalUnitMaterialLayoutCompiler
 		}
 
 		if (diagnostics.Count != 0) return new([], [], diagnostics);
-		var usedSlots = rewritten.SelectMany(mesh => mesh.Sections).Where(section => section.Triangles.Count != 0).Select(section => section.MaterialSlotId).ToHashSet();
-		return new(rewritten, bindingsBySlot.Where(pair => usedSlots.Contains(pair.Key)).OrderBy(pair => pair.Key).Select(pair => new UnitMaterialBinding(pair.Key, pair.Value)).ToArray(), []);
+		// Unit.Materials is an ordered pair table, not a normalized dictionary. The SDK
+		// writes one pair for every final mesh material occurrence, including repeated
+		// slot/material pairs across LODs. Preserve that order for later slot lookup.
+		var bindings = new List<UnitMaterialBinding>();
+		foreach (var mesh in rewritten.OrderBy(mesh => mesh.MeshInfoIndex))
+		{
+			foreach (var section in mesh.Sections.Where(section => section.Triangles.Count != 0))
+			{
+				if (bindingsBySlot.TryGetValue(section.MaterialSlotId, out var materialId))
+					bindings.Add(new UnitMaterialBinding(section.MaterialSlotId, materialId));
+			}
+		}
+		return new(rewritten, bindings, []);
 	}
 
 	private static uint ResolveSdkTargetSlot(
@@ -177,4 +194,5 @@ public sealed class CanonicalUnitMaterialLayoutCompiler
 	}
 
 	private sealed record MaterialIdentity(ulong TargetUnitNameHash, int MeshInfoIndex, int SectionIndex, ulong MaterialId, int MaterialOccurrence, uint FallbackSlotId);
+	private sealed record SourceMaterialIdentity(ulong SourceUnitFileId, uint SourceSlotId, ulong MaterialId);
 }
