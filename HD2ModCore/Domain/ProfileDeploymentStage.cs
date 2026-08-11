@@ -4,6 +4,7 @@ namespace HD2ModCore.Domain;
 public enum ProfileDeploymentStage
 {
 	Idle,
+	WaitingForStableState,
 	Deploying,
 	Deactivating,
 	Completed,

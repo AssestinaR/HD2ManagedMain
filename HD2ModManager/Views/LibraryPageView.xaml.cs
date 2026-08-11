@@ -17,29 +17,6 @@ namespace HD2ModManager.Views
             Loaded += LibraryPageView_Loaded;
         }
 
-        private void OnCardContextMenuKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
-        {
-            var cm = sender as System.Windows.Controls.ContextMenu;
-            var fe = cm?.PlacementTarget as FrameworkElement;
-            var card = fe?.DataContext as HD2ModManager.ViewModels.ModCardViewModel;
-            if (card == null) return;
-            switch (e.Key)
-            {
-                case System.Windows.Input.Key.A:
-                    VM?.AddToProfileCommand.Execute(card); e.Handled = true; break;
-                case System.Windows.Input.Key.O:
-                    VM?.OpenFolderCommand.Execute(card); e.Handled = true; break;
-                case System.Windows.Input.Key.R:
-                    OnRenameModClick(cm!, new RoutedEventArgs()); e.Handled = true; break;
-                case System.Windows.Input.Key.E:
-                    OnEditDescriptionClick(cm!, new RoutedEventArgs()); e.Handled = true; break;
-                case System.Windows.Input.Key.I:
-                    OnEditImageClick(cm!, new RoutedEventArgs()); e.Handled = true; break;
-                case System.Windows.Input.Key.D:
-                    VM?.RemoveCommand.Execute(card); e.Handled = true; break;
-            }
-        }
-
         private void LibraryPageView_Loaded(object sender, RoutedEventArgs e)
         {
             EnsureVM();
@@ -63,39 +40,13 @@ namespace HD2ModManager.Views
             }
         }
 
-        private async void OnRenameModClick(object sender, RoutedEventArgs e)
+        private void OnRenameModClick(object sender, RoutedEventArgs e)
         {
             EnsureVM();
             var card = GetCard(sender);
             if (card == null) return;
-            var oldName = card.Mod.Name;
-            var newName = Microsoft.VisualBasic.Interaction.InputBox("输入新名称:", "Rename", oldName);
-            if (VM != null) await VM.RenameModAsync(card, newName);
-        }
-
-        private async void OnEditDescriptionClick(object sender, RoutedEventArgs e)
-        {
-            EnsureVM();
-            var card = GetCard(sender);
-            if (card == null) return;
-            var newDesc = Microsoft.VisualBasic.Interaction.InputBox("编辑备注:", "Description", card.Mod.Description ?? string.Empty);
-            if (VM != null) await VM.UpdateDescriptionAsync(card, newDesc);
-        }
-
-        private void OnEditImageClick(object sender, RoutedEventArgs e)
-        {
-            EnsureVM();
-            var card = GetCard(sender);
-            if (card == null) return;
-            var ofd = new Microsoft.Win32.OpenFileDialog
-            {
-                Filter = "Images|*.png;*.jpg;*.jpeg;*.webp;*.bmp|All files|*.*",
-                Title = "选择图片"
-            };
-            if (ofd.ShowDialog() == true)
-            {
-                VM?.UpdateIcon(card, ofd.FileName);
-            }
+            var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as ShellViewModel;
+            shell?.BeginBottomBarNameEdit(card.Mod.Guid, card.Mod.Name);
         }
 
         private void OnOpenDetailsClick(object sender, RoutedEventArgs e)
@@ -105,6 +56,12 @@ namespace HD2ModManager.Views
             if (card == null) return;
             var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as HD2ModManager.ViewModels.ShellViewModel;
             shell?.OpenModDetailsFromPage(VM, card.Mod.Guid);
+        }
+
+        private void OnOpenDetailsOnRightClick(object sender, MouseButtonEventArgs e)
+        {
+            OnOpenDetailsClick(sender, e);
+            e.Handled = true;
         }
 
         private void OnRowActionMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)

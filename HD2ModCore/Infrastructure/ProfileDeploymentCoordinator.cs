@@ -3,7 +3,7 @@ using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure;
 
-// Purpose: Runs one immediate serialized deployment lane and reloads the latest active profile before every apply.
+// Purpose: Runs one serialized deployment lane with a resettable stability window and immediate flush support.
 public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 {
 	private readonly IModLibraryManager _libraryManager;
@@ -11,12 +11,18 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 	private readonly IApplyExecutor _applyExecutor;
 	private readonly StoragePaths _paths;
 	private readonly Func<string?> _gameDataDirectoryProvider;
+	private readonly IDeploymentDelay _delay;
+	private readonly TimeSpan _bufferDuration;
 	private readonly SemaphoreSlim _lane = new(1, 1);
 	private readonly object _sync = new();
 	private Task? _worker;
+	private CancellationTokenSource? _bufferCancellation;
 	private bool _deactivationRequested;
+	private bool _deploymentRequestedDuringDeactivation;
 	private long _requestedRevision;
 	private long _handledRevision;
+	private DateTimeOffset? _bufferStartedUtc;
+	private DateTimeOffset? _bufferEndsUtc;
 	private ProfileDeploymentStatus _status = ProfileDeploymentStatus.Idle;
 
 	public ProfileDeploymentCoordinator(
@@ -33,6 +39,9 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 		_applyExecutor = applyExecutor ?? throw new ArgumentNullException(nameof(applyExecutor));
 		_paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		_gameDataDirectoryProvider = gameDataDirectoryProvider ?? throw new ArgumentNullException(nameof(gameDataDirectoryProvider));
+		_delay = delay ?? new SystemDeploymentDelay();
+		_bufferDuration = bufferDuration ?? TimeSpan.FromSeconds(2);
+		if (_bufferDuration < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(bufferDuration));
 	}
 
 	public ProfileDeploymentStatus Status { get { lock (_sync) return _status; } }
@@ -40,21 +49,50 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 
 	public void NotifyActiveProfileChanged()
 	{
+		ProfileDeploymentStatus? waitingStatus = null;
 		lock (_sync)
 		{
-			if (_deactivationRequested) return;
 			_requestedRevision++;
-			if (_worker is null || _worker.IsCompleted) _worker = RunAsync();
+			if (_deactivationRequested)
+			{
+				_deploymentRequestedDuringDeactivation = true;
+				return;
+			}
+			waitingStatus = ArmStabilityWindowLocked();
+			EnsureWorkerLocked();
 		}
+		if (waitingStatus is not null) SetStatus(waitingStatus);
+	}
+
+	public async Task<ProfileDeploymentStatus> FlushAsync(CancellationToken cancellationToken = default)
+	{
+		Task worker;
+		lock (_sync)
+		{
+			if (_deactivationRequested)
+			{
+				_deploymentRequestedDuringDeactivation = true;
+				throw new InvalidOperationException("正在停用活动配置，无法立即部署。");
+			}
+			_requestedRevision++;
+			CancelStabilityWindowLocked();
+			EnsureWorkerLocked();
+			worker = _worker!;
+		}
+
+		await worker.WaitAsync(cancellationToken).ConfigureAwait(false);
+		return Status;
 	}
 
 	public async Task DeactivateAsync(CancellationToken cancellationToken = default)
 	{
 		Task? worker;
+		long deactivationRevision;
 		lock (_sync)
 		{
 			_deactivationRequested = true;
-			_requestedRevision++;
+			deactivationRevision = ++_requestedRevision;
+			CancelStabilityWindowLocked();
 			worker = _worker;
 		}
 		if (worker is not null)
@@ -77,12 +115,20 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 		finally
 		{
 			_lane.Release();
+			ProfileDeploymentStatus? waitingStatus = null;
 			lock (_sync)
 			{
 				_deactivationRequested = false;
-				_handledRevision = _requestedRevision;
+				_handledRevision = Math.Max(_handledRevision, deactivationRevision);
 				_worker = null;
+				if (_deploymentRequestedDuringDeactivation || _requestedRevision > _handledRevision)
+				{
+					_deploymentRequestedDuringDeactivation = false;
+					waitingStatus = ArmStabilityWindowLocked();
+					EnsureWorkerLocked();
+				}
 			}
+			if (waitingStatus is not null) SetStatus(waitingStatus);
 		}
 	}
 
@@ -98,6 +144,13 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 				{
 					if (_deactivationRequested || _handledRevision == _requestedRevision) return;
 					targetRevision = _requestedRevision;
+				}
+
+				await WaitForStableStateAsync(targetRevision).ConfigureAwait(false);
+				lock (_sync)
+				{
+					if (_deactivationRequested) return;
+					if (targetRevision != _requestedRevision) continue;
 				}
 
 				var snapshot = await _libraryManager.LoadOrCreateAsync().ConfigureAwait(false);
@@ -158,6 +211,61 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 		}
 	}
 
+	private async Task WaitForStableStateAsync(long targetRevision)
+	{
+		while (true)
+		{
+			DateTimeOffset? endsUtc;
+			CancellationToken token;
+			lock (_sync)
+			{
+				if (_deactivationRequested || targetRevision != _requestedRevision) return;
+				endsUtc = _bufferEndsUtc;
+				token = _bufferCancellation?.Token ?? CancellationToken.None;
+			}
+
+			if (endsUtc is null || endsUtc <= _delay.UtcNow) return;
+			try
+			{
+				await _delay.DelayAsync(endsUtc.Value - _delay.UtcNow, token).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException)
+			{
+				// A later mutation or FlushAsync reset the stability window.
+			}
+		}
+	}
+
+	private ProfileDeploymentStatus ArmStabilityWindowLocked()
+	{
+		CancelStabilityWindowLocked();
+		_bufferStartedUtc = _delay.UtcNow;
+		_bufferEndsUtc = _bufferStartedUtc.Value + _bufferDuration;
+		_bufferCancellation = new CancellationTokenSource();
+		return new ProfileDeploymentStatus(
+			ProfileDeploymentStage.WaitingForStableState,
+			null,
+			_requestedRevision,
+			_bufferStartedUtc,
+			_bufferEndsUtc,
+			"正在等待配置变更稳定。",
+			null);
+	}
+
+	private void CancelStabilityWindowLocked()
+	{
+		_bufferCancellation?.Cancel();
+		_bufferCancellation?.Dispose();
+		_bufferCancellation = null;
+		_bufferStartedUtc = null;
+		_bufferEndsUtc = null;
+	}
+
+	private void EnsureWorkerLocked()
+	{
+		if (_worker is null || _worker.IsCompleted) _worker = RunAsync();
+	}
+
 	private void SetStatus(ProfileDeploymentStatus status)
 	{
 		lock (_sync) _status = status;
@@ -184,12 +292,14 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 		lock (_sync)
 		{
 			_deactivationRequested = true;
+			CancelStabilityWindowLocked();
 			worker = _worker;
 		}
 		if (worker is not null)
 		{
 			try { await worker.ConfigureAwait(false); } catch (OperationCanceledException) { }
 		}
+		_bufferCancellation?.Dispose();
 		_lane.Dispose();
 	}
 }

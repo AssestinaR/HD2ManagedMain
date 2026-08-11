@@ -13,11 +13,13 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         BottomBarCoordinator bottomBar,
         ICommand selectionPrimaryCommand,
         ICommand selectionDeleteCommand,
+        ICommand deleteFromLibraryCommand,
         ICommand cancelSelectionCommand)
     {
         _bottomBar = bottomBar;
         SelectionPrimaryCommand = selectionPrimaryCommand;
         SelectionDeleteCommand = selectionDeleteCommand;
+        DeleteFromLibraryCommand = deleteFromLibraryCommand;
         CancelSelectionCommand = cancelSelectionCommand;
         BeginMoveCommand = bottomBar.BeginMoveCommand;
         BeginInsertCommand = bottomBar.BeginInsertCommand;
@@ -30,9 +32,11 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public bool ShowInsert => _bottomBar.ShowInsert;
     public bool ShowDelete => _bottomBar.ShowDelete;
     public bool ShowRemove => _bottomBar.ShowRemove;
+    public bool ShowDeleteFromLibrary => _bottomBar.ShowDeleteFromLibrary;
     public ICommand BeginMoveCommand { get; }
     public ICommand BeginInsertCommand { get; }
     public ICommand SelectionPrimaryCommand { get; }
     public ICommand SelectionDeleteCommand { get; }
+    public ICommand DeleteFromLibraryCommand { get; }
     public ICommand CancelSelectionCommand { get; }
 }

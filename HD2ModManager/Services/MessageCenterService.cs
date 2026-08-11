@@ -95,9 +95,11 @@ namespace HD2ModManager.Services
         public int RunningTaskCount => _activeTasks.Count;
         public int AttentionCount => _attentionItems.Count(item => item.IsUnread || item.IsTask);
         public int RecentUnreadCount => _recentNotifications.Count(item => item.IsUnread);
+        // Keep an active operation visible while it runs. Once it reaches a terminal state,
+        // its newest completion record must become the preview instead of falling back to an older alert.
         public MessageCenterItem? PreviewItem => _activeTasks.FirstOrDefault()
-            ?? _attentionItems.FirstOrDefault()
-            ?? _recentNotifications.FirstOrDefault(item => item.IsUnread);
+            ?? _recentNotifications.FirstOrDefault()
+            ?? _attentionItems.FirstOrDefault();
         public event EventHandler? Changed;
 
         public MessageCenterService(NotificationService notifications, BackgroundTaskService tasks)
@@ -129,7 +131,7 @@ namespace HD2ModManager.Services
         {
             Replace(_activeTasks, _tasks.Tasks
                 .Where(task => task.IsActive && !task.IsInformationCenter)
-                .OrderBy(task => task.StartedAt ?? task.CreatedAt)
+                .OrderByDescending(task => task.StartedAt ?? task.CreatedAt)
                 .Select(task => new MessageCenterItem(task)));
 
             Replace(_attentionItems, _tasks.Tasks

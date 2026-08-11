@@ -13,7 +13,9 @@ public interface IModLibraryManager
 	ValueTask<LibrarySnapshot> RenameProfileAsync(ProfileId profileId, string newName, CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> SetActiveProfileAsync(ProfileId? profileId, CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> AddProfileEntryAsync(ProfileId profileId, ModNodeId nodeId, CancellationToken cancellationToken = default);
+	ValueTask<LibrarySnapshot> AddProfileEntriesAsync(ProfileId profileId, IReadOnlyList<ModNodeId> nodeIds, CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> RemoveProfileEntryAsync(ProfileId profileId, ModNodeId nodeId, CancellationToken cancellationToken = default);
+	ValueTask<LibrarySnapshot> RemoveProfileEntriesAsync(ProfileId profileId, IReadOnlyList<ModNodeId> nodeIds, CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> MoveProfileEntryAsync(ProfileId profileId, ModNodeId nodeId, int direction, CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> UpdateNodeMetadataAsync(ModNodeId nodeId, ModNodeMetadata metadata, CancellationToken cancellationToken = default);
 }

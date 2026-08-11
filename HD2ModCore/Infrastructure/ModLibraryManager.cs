@@ -187,11 +187,49 @@ public sealed class ModLibraryManager : IModLibraryManager
 			cancellationToken).ConfigureAwait(false);
 	}
 
+	public async ValueTask<LibrarySnapshot> AddProfileEntriesAsync(ProfileId profileId, IReadOnlyList<ModNodeId> nodeIds, CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(nodeIds);
+		if (nodeIds.Count == 0) return await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+
+		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+		var distinctIds = nodeIds.Distinct().ToArray();
+		var missing = distinctIds.FirstOrDefault(nodeId => !snapshot.Nodes.ContainsKey(nodeId));
+		if (missing != default && !snapshot.Nodes.ContainsKey(missing))
+		{
+			throw new InvalidOperationException($"Mod node does not exist: {missing.Value:N}");
+		}
+
+		return await UpdateProfileEntriesAsync(
+			profileId,
+			entries =>
+			{
+				var known = entries.Select(entry => entry.NodeId).ToHashSet();
+				foreach (var nodeId in distinctIds)
+				{
+					if (known.Add(nodeId)) entries.Add(new ProfileEntry(nodeId, entries.Count));
+				}
+				return NormalizeEntryOrder(entries);
+			},
+			cancellationToken).ConfigureAwait(false);
+	}
+
 	public async ValueTask<LibrarySnapshot> RemoveProfileEntryAsync(ProfileId profileId, ModNodeId nodeId, CancellationToken cancellationToken = default)
 	{
 		return await UpdateProfileEntriesAsync(
 			profileId,
 			entries => NormalizeEntryOrder(entries.Where(e => e.NodeId != nodeId).ToList()),
+			cancellationToken).ConfigureAwait(false);
+	}
+
+	public async ValueTask<LibrarySnapshot> RemoveProfileEntriesAsync(ProfileId profileId, IReadOnlyList<ModNodeId> nodeIds, CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(nodeIds);
+		if (nodeIds.Count == 0) return await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+		var removed = nodeIds.ToHashSet();
+		return await UpdateProfileEntriesAsync(
+			profileId,
+			entries => NormalizeEntryOrder(entries.Where(entry => !removed.Contains(entry.NodeId)).ToList()),
 			cancellationToken).ConfigureAwait(false);
 	}
 

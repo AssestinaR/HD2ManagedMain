@@ -17,6 +17,9 @@
         <DataTemplate x:Key="RemoveIcon">
             <Path Width="16" Height="16" Data="M3,8 L13,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.8" StrokeStartLineCap="Round"/>
         </DataTemplate>
+        <DataTemplate x:Key="DeleteIcon">
+            <Path Width="16" Height="16" Data="M3,5 L13,5 M6,5 L6,3 L10,3 L10,5 M4.5,5 L5,14 L11,14 L11.5,5 M7,7.5 L7,11.5 M9,7.5 L9,11.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeStartLineCap="Round"/>
+        </DataTemplate>
     </UserControl.Resources>
     <DockPanel Background="Transparent">
         <Border DockPanel.Dock="Top" Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
@@ -48,7 +51,10 @@
             <ListBox ItemsSource="{Binding Items}" PreviewMouseLeftButtonDown="OnListBackgroundMouseDown">
                 <ListBox.ItemTemplate>
                     <DataTemplate>
-                        <Border x:Name="RowBack" Style="{StaticResource ModListRowContainer}" MouseLeftButtonUp="OnProfileRowClick">
+                        <Border x:Name="RowBack"
+                                Style="{StaticResource ModListRowContainer}"
+                                MouseLeftButtonUp="OnProfileRowClick"
+                                MouseRightButtonUp="OnOpenDetailsOnRightClick">
                             <Border.ToolTip>
                                 <StackPanel>
                                     <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
@@ -82,7 +88,7 @@
                                         <TextBlock Grid.Column="4" Text="{Binding SecondaryDetailText}" Foreground="{StaticResource TextSecondary}" FontSize="12" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                                     </Grid>
                                 </StackPanel>
-                                <Border x:Name="ActionScrim" Grid.Column="1" HorizontalAlignment="Right" Width="244" Margin="0,3,2,3" CornerRadius="10" Opacity="0" IsHitTestVisible="False">
+                                <Border x:Name="ActionScrim" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Width="276" Height="32" Margin="0,0,2,0" CornerRadius="16" Opacity="0" IsHitTestVisible="False">
                                     <Border.Background>
                                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
                                             <GradientStop Color="#00FFFFFF" Offset="0"/>
@@ -96,6 +102,7 @@
                                     <Button ToolTip="上移" Command="{Binding DataContext.MoveUpCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}" ContentTemplate="{StaticResource MoveUpIcon}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
                                     <Button ToolTip="下移" Command="{Binding DataContext.MoveDownCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}" ContentTemplate="{StaticResource MoveDownIcon}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
                                     <Button ToolTip="从配置移除" Command="{Binding DataContext.RemoveModCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}" ContentTemplate="{StaticResource RemoveIcon}" Foreground="{StaticResource StatusDanger}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
+                                    <Button ToolTip="从模组库彻底删除" Command="{Binding DataContext.DeleteModFromLibraryCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}" ContentTemplate="{StaticResource DeleteIcon}" Foreground="{StaticResource StatusDanger}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
                                 </StackPanel>
                             </Grid>
                         </Border>

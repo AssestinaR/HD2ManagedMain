@@ -250,6 +250,7 @@ namespace HD2ModManager
                 shell.BottomBar,
                 shell.SelectionPrimaryCommand,
                 shell.SelectionDeleteCommand,
+                shell.SelectionDeleteFromLibraryCommand,
                 shell.CancelSelectionCommand);
             _temporaryEditorPresentation ??= new TemporaryEditorBarPresentation(shell.BottomBar);
 

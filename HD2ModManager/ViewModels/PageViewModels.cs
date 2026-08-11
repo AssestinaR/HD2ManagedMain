@@ -409,6 +409,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ActivateProfileCommand { get; }
         public RelayCommand DeactivateProfileCommand { get; }
         public RelayCommand RemoveModCommand { get; }
+        public RelayCommand DeleteModFromLibraryCommand { get; }
         public RelayCommand MoveUpCommand { get; }
         public RelayCommand MoveDownCommand { get; }
         public RelayCommand ToggleSelectionCommand { get; }
@@ -429,6 +430,7 @@ namespace HD2ModManager.ViewModels
             ActivateProfileCommand = new RelayCommand(async _ => await ActivateProfileAsync());
             DeactivateProfileCommand = new RelayCommand(async _ => await DeactivateProfileAsync());
             RemoveModCommand = new RelayCommand(async parameter => await RemoveModAsync(parameter));
+            DeleteModFromLibraryCommand = new RelayCommand(async parameter => await DeleteModFromLibraryAsync(parameter));
             MoveUpCommand = new RelayCommand(async parameter => await MoveModAsync(parameter, -1));
             MoveDownCommand = new RelayCommand(async parameter => await MoveModAsync(parameter, 1));
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
@@ -539,6 +541,30 @@ namespace HD2ModManager.ViewModels
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
             {
                 await shell.RemoveModFromSelectedProfileAsync(guid, modName);
+            }
+        }
+
+        private async Task DeleteModFromLibraryAsync(object? parameter)
+        {
+            var guid = parameter as string;
+            if (string.IsNullOrWhiteSpace(guid)) return;
+            var modName = _library.Get(guid)?.Name ?? guid;
+            var confirm = System.Windows.MessageBox.Show(
+                $"确定彻底删除 Mod“{modName}”？\n这会从当前配置移除它，并删除模组库中的已存储文件。",
+                "彻底删除 Mod",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning);
+            if (confirm != System.Windows.MessageBoxResult.Yes) return;
+
+            try
+            {
+                if (!await _library.RemoveAsync(guid)) return;
+                _selection?.Clear();
+                Refresh();
+            }
+            catch (Exception ex)
+            {
+                System.Windows.MessageBox.Show($"删除 Mod 失败：{ex.Message}", "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
             }
         }
 

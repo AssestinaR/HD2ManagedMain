@@ -65,6 +65,7 @@ namespace HD2ModManager.ViewModels
         public bool ShowAddToProfile => IsLibrarySelection && _isLibraryProfileCompanionVisible;
         public bool ShowDelete => IsLibrarySelection;
         public bool ShowRemove => IsProfileSelection;
+        public bool ShowDeleteFromLibrary => IsProfileSelection;
         public bool ShowMove => IsProfileSelection;
         public bool ShowInsert => IsLibrarySelection;
         public string SelectionSummary => _selection.Summary;
@@ -293,6 +294,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ShowAddToProfile));
             OnPropertyChanged(nameof(ShowDelete));
             OnPropertyChanged(nameof(ShowRemove));
+            OnPropertyChanged(nameof(ShowDeleteFromLibrary));
             OnPropertyChanged(nameof(ShowMove));
             OnPropertyChanged(nameof(ShowInsert));
             OnPropertyChanged(nameof(SelectionSummary));

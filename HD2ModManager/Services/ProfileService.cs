@@ -271,6 +271,35 @@ namespace HD2ModManager.Services
             finally { _writeGate.Release(); }
         }
 
+        public async Task<int> AddModsToSelectedAsync(IReadOnlyList<string> nodeGuids, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(nodeGuids);
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (SelectedProfileId is not ProfileId profileId) return 0;
+                var nodeIds = nodeGuids
+                    .Select(guid => TryParseNodeId(guid, out var nodeId) ? (ModNodeId?)nodeId : null)
+                    .Where(nodeId => nodeId.HasValue)
+                    .Select(nodeId => nodeId!.Value)
+                    .Distinct()
+                    .ToArray();
+                if (nodeIds.Length == 0) return 0;
+
+                var existing = _snapshot.Profiles.FirstOrDefault(profile => profile.Id == profileId)?.Entries
+                    .Select(entry => entry.NodeId)
+                    .ToHashSet() ?? [];
+                var added = nodeIds.Count(nodeId => !existing.Contains(nodeId));
+                if (added == 0) return 0;
+
+                var operationVersion = Interlocked.Increment(ref _stateVersion);
+                var snapshot = await _manager.AddProfileEntriesAsync(profileId, nodeIds, cancellationToken).ConfigureAwait(false);
+                ApplyAddedProfileSnapshot(snapshot, profileId, operationVersion);
+                return added;
+            }
+            finally { _writeGate.Release(); }
+        }
+
         public bool RemoveModFromSelected(string nodeGuid)
         {
             _writeGate.Wait();
@@ -311,13 +340,9 @@ namespace HD2ModManager.Services
             if (nodeGuids.Count == 0 || SelectedProfileId is not ProfileId profileId) return false;
             var ids = nodeGuids.Where(guid => TryParseNodeId(guid, out _)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             if (ids.Count == 0) return false;
+            var nodeIds = ids.Select(guid => TryParseNodeId(guid, out var nodeId) ? nodeId : default).ToArray();
             var operationVersion = Interlocked.Increment(ref _stateVersion);
-            LibrarySnapshot snapshot = _snapshot;
-            foreach (var guid in ids)
-            {
-                if (!TryParseNodeId(guid, out var nodeId)) continue;
-                snapshot = await Task.Run(() => _manager.RemoveProfileEntryAsync(profileId, nodeId, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
-            }
+            var snapshot = await _manager.RemoveProfileEntriesAsync(profileId, nodeIds, cancellationToken).ConfigureAwait(false);
 
             Action apply = () =>
             {

@@ -33,6 +33,12 @@ namespace HD2ModManager.Views
             e.Handled = true;
         }
 
+        private void OnOpenDetailsOnRightClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            OnOpenDetailsClick(sender, e);
+            e.Handled = true;
+        }
+
         private void OnRowActionMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
             ClearTransientSelection();

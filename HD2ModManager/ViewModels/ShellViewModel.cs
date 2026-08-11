@@ -25,6 +25,7 @@ namespace HD2ModManager.ViewModels
         private readonly MessageCenterService _messageCenter;
         private readonly IProfileDeploymentCoordinator _deploymentCoordinator;
         private BackgroundTaskItem? _deploymentTask;
+		private System.Windows.Threading.DispatcherTimer? _deploymentBufferTimer;
         private readonly SelectionCoordinator _selection = new();
         private readonly BottomBarCoordinator _bottomBar;
         private readonly List<IDisposable> _materialPackagingBottomBarRegistrations = [];
@@ -105,6 +106,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand CancelSelectionCommand { get; }
         public RelayCommand SelectionPrimaryCommand { get; }
         public RelayCommand SelectionDeleteCommand { get; }
+        public RelayCommand SelectionDeleteFromLibraryCommand { get; }
         public RelayCommand ToggleMessagePanelCommand { get; }
         public RelayCommand CancelTaskCommand { get; }
         public RelayCommand RetryTaskCommand { get; }
@@ -206,7 +208,7 @@ namespace HD2ModManager.ViewModels
             ShowHomeCommand = new RelayCommand(() => Navigate(WorkspaceMode.Home));
             ShowProfileCommand = new RelayCommand(() => Navigate(WorkspaceMode.ProfileOnly));
             ShowLibraryCommand = new RelayCommand(() => Navigate(WorkspaceMode.LibraryOnly));
-            LaunchGameCommand = new RelayCommand(LaunchGame);
+            LaunchGameCommand = new RelayCommand(async _ => await LaunchGameAsync());
             ShowSplitCommand = new RelayCommand(() => Navigate(WorkspaceMode.ProfileLibrarySplit));
             ShowSettingsCommand = new RelayCommand(() => Navigate(WorkspaceMode.Settings));
             ApplyChangesCommand = new RelayCommand(QueueActiveProfileDeployment);
@@ -215,6 +217,7 @@ namespace HD2ModManager.ViewModels
             CancelSelectionCommand = new RelayCommand(_selection.Clear);
             SelectionPrimaryCommand = new RelayCommand(async _ => await ExecuteSelectionPrimaryAsync());
             SelectionDeleteCommand = new RelayCommand(async _ => await ExecuteSelectionDeleteAsync());
+            SelectionDeleteFromLibraryCommand = new RelayCommand(async _ => await ExecuteSelectionDeleteFromLibraryAsync());
             ToggleMessagePanelCommand = new RelayCommand(ToggleMessagePanel);
             CancelTaskCommand = new RelayCommand(CancelTask, task => task is BackgroundTaskItem { CanCancel: true });
             RetryTaskCommand = new RelayCommand(async task => await RetryTaskAsync(task), task => task is BackgroundTaskItem { CanRetry: true });
@@ -647,6 +650,8 @@ namespace HD2ModManager.ViewModels
             _informationCenter.DiagnosticRecorded -= OnInformationDiagnosticRecorded;
             _messagePreviewCancellation?.Cancel();
             _messagePreviewCancellation?.Dispose();
+			StopDeploymentBufferTimer();
+			_deploymentBufferTimer = null;
             DismissToolBottomBars();
             DisposeCurrentPages();
             _importProcessGate.Dispose();
@@ -754,8 +759,23 @@ namespace HD2ModManager.ViewModels
                 _notificationService.Show("当前没有活动配置。", NotificationLevel.Info, TimeSpan.FromSeconds(4));
                 return;
             }
-            _deploymentCoordinator.NotifyActiveProfileChanged();
+            _ = FlushActiveProfileDeploymentAsync();
             _notificationService.Show("已请求立即部署最新活动配置。", NotificationLevel.Info, TimeSpan.FromSeconds(4));
+        }
+
+        private async Task FlushActiveProfileDeploymentAsync()
+        {
+            try
+            {
+                var status = await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token);
+                if (status.Stage == ProfileDeploymentStage.Completed) return;
+                _notificationService.Show(status.Message ?? "活动配置部署失败。", NotificationLevel.Error, TimeSpan.FromSeconds(8));
+            }
+            catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested) { }
+            catch (Exception exception)
+            {
+                _notificationService.Show($"无法完成部署：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
+            }
         }
 
         private void OnDeploymentStatusChanged(object? sender, ProfileDeploymentStatus status)
@@ -769,23 +789,35 @@ namespace HD2ModManager.ViewModels
 
             switch (status.Stage)
             {
+				case ProfileDeploymentStage.WaitingForStableState:
+					if (_deploymentTask?.IsActive != true)
+						_deploymentTask = _backgroundTasks.Enqueue(BackgroundTaskKind.Deployment, "部署活动配置", status.Message, canCancel: false);
+					_deploymentTask.MarkRunning("等待配置变更稳定");
+					UpdateDeploymentBufferProgress(status);
+					StartDeploymentBufferTimer();
+					break;
                 case ProfileDeploymentStage.Deploying:
+					StopDeploymentBufferTimer();
                     if (_deploymentTask?.IsActive != true)
                         _deploymentTask = _backgroundTasks.Enqueue(BackgroundTaskKind.Deployment, "部署活动配置", status.Message);
                     _deploymentTask.MarkRunning(status.Message ?? "正在部署");
+					_deploymentTask.UpdateProgress(null);
                     break;
                 case ProfileDeploymentStage.Deactivating:
+					StopDeploymentBufferTimer();
                     if (_deploymentTask?.IsActive == true) _deploymentTask.Cancel();
                     _deploymentTask = _backgroundTasks.Enqueue(BackgroundTaskKind.DeactivateProfile, "停用活动配置", status.Message);
                     _deploymentTask.MarkRunning(status.Message ?? "正在清理 Patch");
                     break;
                 case ProfileDeploymentStage.Completed:
+					StopDeploymentBufferTimer();
                     _deploymentTask?.MarkCompleted();
                     if (status.ApplyResult is { } success) _applyStatus.Record(new ApplyExecutionStatus(success.Success, status.Message ?? "部署完成", success));
                     _derivedState.MarkDeploymentDirty();
                     RefreshCurrentPage();
                     break;
                 case ProfileDeploymentStage.Failed:
+					StopDeploymentBufferTimer();
                     _deploymentTask?.MarkFailed(status.Message ?? "部署失败");
                     if (status.ApplyResult is { } failure) _applyStatus.Record(new ApplyExecutionStatus(false, status.Message ?? "部署失败", failure));
                     var failureMessage = status.Message ?? "活动配置部署失败。";
@@ -798,12 +830,13 @@ namespace HD2ModManager.ViewModels
                     RefreshCurrentPage();
                     break;
                 case ProfileDeploymentStage.Canceled:
+					StopDeploymentBufferTimer();
                     _deploymentTask?.MarkCanceled();
                     break;
             }
         }
 
-        private void LaunchGame()
+        private void StartGame()
         {
             Process.Start(new ProcessStartInfo("steam://rungameid/553850")
             {
@@ -918,6 +951,64 @@ namespace HD2ModManager.ViewModels
             if (value is MessageCenterItem item && !string.IsNullOrWhiteSpace(item.CopyText)) System.Windows.Clipboard.SetText(item.CopyText);
         }
 
+		private async Task LaunchGameAsync()
+		{
+			if (_profileService.ActiveProfile is not null)
+			{
+				ProfileDeploymentStatus status;
+				try
+				{
+					status = await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token);
+				}
+				catch (Exception exception)
+				{
+					_notificationService.Show($"无法在启动前完成部署：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
+					return;
+				}
+
+				if (status.Stage != ProfileDeploymentStage.Completed)
+				{
+					_notificationService.Show(status.Message ?? "启动前部署失败，未启动游戏。", NotificationLevel.Error, TimeSpan.FromSeconds(8));
+					return;
+				}
+			}
+
+			StartGame();
+		}
+
+		private void StartDeploymentBufferTimer()
+		{
+			_deploymentBufferTimer ??= new System.Windows.Threading.DispatcherTimer(
+				TimeSpan.FromMilliseconds(100),
+				System.Windows.Threading.DispatcherPriority.Background,
+				(_, _) => UpdateDeploymentBufferProgress(_deploymentCoordinator.Status),
+				System.Windows.Application.Current?.Dispatcher);
+			if (!_deploymentBufferTimer.IsEnabled) _deploymentBufferTimer.Start();
+		}
+
+		private void StopDeploymentBufferTimer()
+		{
+			if (_deploymentBufferTimer?.IsEnabled == true) _deploymentBufferTimer.Stop();
+		}
+
+		private void UpdateDeploymentBufferProgress(ProfileDeploymentStatus status)
+		{
+			if (status.Stage != ProfileDeploymentStage.WaitingForStableState
+				|| status.BufferStartedUtc is not { } startedUtc
+				|| status.BufferEndsUtc is not { } endsUtc)
+			{
+				StopDeploymentBufferTimer();
+				return;
+			}
+
+			var total = endsUtc - startedUtc;
+			var elapsed = DateTimeOffset.UtcNow - startedUtc;
+			var progress = total <= TimeSpan.Zero ? 1d : Math.Clamp(elapsed.TotalMilliseconds / total.TotalMilliseconds, 0d, 1d);
+			var remaining = Math.Max(0, (int)Math.Ceiling((endsUtc - DateTimeOffset.UtcNow).TotalSeconds));
+			_deploymentTask?.UpdateStage($"等待配置稳定（{remaining} 秒）");
+			_deploymentTask?.UpdateProgress(progress);
+		}
+
         private void AcknowledgeMessage(object? value)
         {
             if (value is not MessageCenterItem item) return;
@@ -997,6 +1088,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ActiveMessageTasks));
             OnPropertyChanged(nameof(AttentionMessageItems));
             OnPropertyChanged(nameof(RecentMessageItems));
+            OnPropertyChanged(nameof(LatestMessageItem));
             OnPropertyChanged(nameof(ActiveTaskCount));
             OnPropertyChanged(nameof(HasUnreadTaskHubEvents));
             CancelTaskCommand.RaiseCanExecuteChanged();
@@ -1046,12 +1138,7 @@ namespace HD2ModManager.ViewModels
                 task.MarkRunning("正在写入配置");
                 try
                 {
-                    var added = 0;
-                    foreach (var guid in ids)
-                    {
-                        task.CancellationToken.ThrowIfCancellationRequested();
-                        if (await _profileService.AddModToSelectedAsync(guid, task.CancellationToken)) added++;
-                    }
+                    var added = await _profileService.AddModsToSelectedAsync(ids, task.CancellationToken);
                     task.MarkCompleted();
                     _notificationService.Show($"已加入正在编辑的配置：{added} 个 Mod");
                 }
@@ -1075,12 +1162,7 @@ namespace HD2ModManager.ViewModels
                 task.MarkRunning("正在写入配置");
                 try
                 {
-                    var removed = 0;
-                    foreach (var guid in ids)
-                    {
-                        task.CancellationToken.ThrowIfCancellationRequested();
-                        if (await _profileService.RemoveModFromSelectedAsync(guid, task.CancellationToken)) removed++;
-                    }
+                    var removed = await _profileService.RemoveModsFromSelectedAsync(ids, task.CancellationToken) ? ids.Count : 0;
                     task.MarkCompleted();
                     _notificationService.Show($"已从配置移除：{removed} 个 Mod");
                 }
@@ -1207,6 +1289,45 @@ namespace HD2ModManager.ViewModels
 
             _selection.Clear();
             RefreshCurrentPage();
+        }
+
+        private async Task ExecuteSelectionDeleteFromLibraryAsync()
+        {
+            if (!_selection.HasSelection
+                || !string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase)) return;
+
+            var ids = _selection.SelectedIds.ToList();
+            var confirm = System.Windows.MessageBox.Show(
+                $"确定彻底删除选中的 {ids.Count} 个 Mod？\n这会从所有配置移除它们，并删除模组库中的已存储文件。",
+                "批量删除 Mod",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning);
+            if (confirm != System.Windows.MessageBoxResult.Yes) return;
+
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "批量删除 Mod", $"{ids.Count} 个 Mod");
+            task.MarkRunning("正在删除");
+            try
+            {
+                var removed = 0;
+                foreach (var guid in ids)
+                {
+                    task.CancellationToken.ThrowIfCancellationRequested();
+                    if (await _libraryService.RemoveAsync(guid, task.CancellationToken)) removed++;
+                }
+                await _libraryService.SaveAsync(task.CancellationToken);
+                task.MarkCompleted();
+                _notificationService.Show($"已删除：{removed} 个 Mod");
+                _selection.Clear();
+                RefreshCurrentPage();
+            }
+            catch (OperationCanceledException)
+            {
+                task.MarkCanceled();
+            }
+            catch (Exception exception)
+            {
+                task.MarkFailed(exception.Message);
+            }
         }
 
         private void RaiseSelectionFlags()

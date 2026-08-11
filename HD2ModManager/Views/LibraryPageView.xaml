@@ -14,6 +14,9 @@
         <DataTemplate x:Key="DetailsIcon">
             <Path Width="16" Height="16" Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 M8,6 L8,11 M8,4 L8,4.2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
         </DataTemplate>
+        <DataTemplate x:Key="RenameIcon">
+            <Path Width="16" Height="16" Data="M3,12.5 L3,14 L4.5,14 L13,5.5 L10.5,3 Z M9.5,4 L12,6.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
+        </DataTemplate>
         <DataTemplate x:Key="AddIcon">
             <Path Width="16" Height="16" Data="M8,2 L8,14 M2,8 L14,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round"/>
         </DataTemplate>
@@ -50,7 +53,10 @@
             <ListBox ItemsSource="{Binding Items}" PreviewMouseLeftButtonDown="OnListBackgroundMouseDown">
                 <ListBox.ItemTemplate>
                     <DataTemplate>
-                        <Border x:Name="RowBack" Style="{StaticResource ModListRowContainer}" MouseLeftButtonUp="OnModRowClick">
+                        <Border x:Name="RowBack"
+                                Style="{StaticResource ModListRowContainer}"
+                                MouseLeftButtonUp="OnModRowClick"
+                                MouseRightButtonUp="OnOpenDetailsOnRightClick">
                             <Border.ToolTip>
                                 <StackPanel>
                                     <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
@@ -100,7 +106,7 @@
                                         <TextBlock Grid.Column="4" Text="{Binding AssetSummaryText}" Foreground="{StaticResource TextSecondary}" FontSize="12" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                                     </Grid>
                                 </StackPanel>
-                                <Border x:Name="ActionScrim" Grid.Column="1" HorizontalAlignment="Right" Width="220" Margin="0,3,2,3" CornerRadius="10" Opacity="0" IsHitTestVisible="False">
+                                <Border x:Name="ActionScrim" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Width="220" Height="32" Margin="0,0,2,0" CornerRadius="16" Opacity="0" IsHitTestVisible="False">
                                     <Border.Background>
                                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
                                             <GradientStop Color="#00FFFFFF" Offset="0"/>
@@ -110,24 +116,13 @@
                                     </Border.Background>
                                 </Border>
                                 <StackPanel x:Name="ActionPanel" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right" Opacity="0" IsHitTestVisible="False">
+                                    <Button Style="{StaticResource RowIconButton}" ToolTip="重命名" ContentTemplate="{StaticResource RenameIcon}" Click="OnRenameModClick" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
                                     <Button Style="{StaticResource RowIconButton}" ToolTip="查看详情" ContentTemplate="{StaticResource DetailsIcon}" Click="OnOpenDetailsClick" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
                                     <Button Style="{StaticResource RowIconButton}" ToolTip="加入正在编辑的配置" ContentTemplate="{StaticResource AddIcon}" Command="{Binding DataContext.AddToProfileCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
                                     <Button Style="{StaticResource RowIconButton}" ToolTip="打开文件夹" ContentTemplate="{StaticResource FolderIcon}" Command="{Binding DataContext.OpenFolderCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
                                     <Button Style="{StaticResource RowIconButton}" ToolTip="删除" ContentTemplate="{StaticResource DeleteIcon}" Command="{Binding DataContext.RemoveCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Foreground="{StaticResource StatusDanger}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
                                 </StackPanel>
                             </Grid>
-                            <Border.ContextMenu>
-                                <ContextMenu PreviewKeyDown="OnCardContextMenuKeyDown">
-                                    <MenuItem Header="Add to Profile (A)" Command="{Binding DataContext.AddToProfileCommand, Source={x:Reference Root}}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
-                                    <MenuItem Header="Open Folder (O)" Command="{Binding DataContext.OpenFolderCommand, Source={x:Reference Root}}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
-                                    <Separator/>
-                                    <MenuItem Header="Rename (R)" Click="OnRenameModClick"/>
-                                    <MenuItem Header="Edit Description (E)" Click="OnEditDescriptionClick"/>
-                                    <MenuItem Header="Edit Image (I)" Click="OnEditImageClick"/>
-                                    <Separator/>
-                                    <MenuItem Header="Remove (D)" Command="{Binding DataContext.RemoveCommand, Source={x:Reference Root}}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
-                                </ContextMenu>
-                            </Border.ContextMenu>
                         </Border>
                         <DataTemplate.Triggers>
                             <Trigger SourceName="RowBack" Property="IsMouseOver" Value="True">
