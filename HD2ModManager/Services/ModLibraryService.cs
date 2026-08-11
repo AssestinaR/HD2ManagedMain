@@ -102,6 +102,31 @@ namespace HD2ModManager.Services
         public Task RefreshDerivedDataAsync(CancellationToken cancellationToken = default)
             => RefreshDerivedDataAsync(guids: null, ModContentChangeKind.Changed, cancellationToken);
 
+        // Content commits must not expose a new Patch payload before both lightweight facts
+        // and its reference graph have replaced the corresponding stale cache entries.
+        public async Task RefreshCommittedContentAsync(
+            IEnumerable<ModNodeId> nodeIds,
+            ModContentChangeKind changeKind = ModContentChangeKind.Changed,
+            bool alreadyInvalidated = false,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(nodeIds);
+            var affectedNodeIds = nodeIds.Distinct().ToArray();
+            if (affectedNodeIds.Length == 0) return;
+
+            if (!alreadyInvalidated)
+            {
+                foreach (var nodeId in affectedNodeIds)
+                    await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+            }
+
+            await RefreshDerivedDataAsync(
+                affectedNodeIds.Select(nodeId => nodeId.Value.ToString("N")),
+                changeKind,
+                cancellationToken,
+                includeReferenceGraphs: true).ConfigureAwait(false);
+        }
+
         public async Task<bool> SynchronizeAsync(CancellationToken cancellationToken = default)
         {
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -124,7 +149,11 @@ namespace HD2ModManager.Services
                 await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
             RebuildIndex(buildDerivedData: false);
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
-            await RefreshDerivedDataAsync(result.AddedNodeIds.Concat(result.ChangedNodeIds).Select(id => id.Value.ToString("N")), ModContentChangeKind.Changed, cancellationToken).ConfigureAwait(false);
+            await RefreshCommittedContentAsync(
+                result.AddedNodeIds.Concat(result.ChangedNodeIds),
+                ModContentChangeKind.Changed,
+                alreadyInvalidated: true,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
             return true;
             }
             finally
@@ -136,7 +165,11 @@ namespace HD2ModManager.Services
         public async Task RefreshDerivedDataAsync(IEnumerable<string>? guids, CancellationToken cancellationToken = default)
             => await RefreshDerivedDataAsync(guids, ModContentChangeKind.Changed, cancellationToken).ConfigureAwait(false);
 
-        public async Task RefreshDerivedDataAsync(IEnumerable<string>? guids, ModContentChangeKind changeKind, CancellationToken cancellationToken = default)
+        public async Task RefreshDerivedDataAsync(
+            IEnumerable<string>? guids,
+            ModContentChangeKind changeKind,
+            CancellationToken cancellationToken = default,
+            bool includeReferenceGraphs = false)
         {
             await _derivedRefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -154,6 +187,13 @@ namespace HD2ModManager.Services
                         LogService.Info("丢弃过期的派生数据构建结果并重试：模组库快照已变化。");
                         cancellationToken.ThrowIfCancellationRequested();
                         continue;
+                    }
+
+                    if (includeReferenceGraphs)
+                    {
+                        var graphIssues = await RefreshReferenceGraphsAsync(snapshot, rebuilt.Nodes.Keys, cancellationToken).ConfigureAwait(false);
+                        if (graphIssues.Count != 0)
+                            rebuilt = rebuilt with { Issues = rebuilt.Issues.Concat(graphIssues).ToArray() };
                     }
 
                     if (nodeIds is null)
@@ -180,6 +220,31 @@ namespace HD2ModManager.Services
             {
                 _derivedRefreshGate.Release();
             }
+        }
+
+        private async Task<IReadOnlyList<CoreIssue>> RefreshReferenceGraphsAsync(
+            LibrarySnapshot snapshot,
+            IEnumerable<ModNodeId> nodeIds,
+            CancellationToken cancellationToken)
+        {
+            var issues = new List<CoreIssue>();
+            foreach (var nodeId in nodeIds.Distinct())
+            {
+                if (!snapshot.Nodes.TryGetValue(nodeId, out var node)) continue;
+                var result = await _informationCenter.RequestReferenceGraphAsync(
+                    node,
+                    _paths.ModsDirectory,
+                    new ModInformationRequest(ModInformationKind.ReferenceGraph, "ContentCommit"),
+                    cancellationToken).ConfigureAwait(false);
+                if (result.Data is not null) continue;
+
+                var nodeIssues = result.Issues.Count != 0
+                    ? result.Issues
+                    : new[] { new CoreIssue(CoreIssueSeverity.Error, "ReferenceGraphRefreshFailed", "Reference graph refresh returned no data.", node.RelativePath, node.Id) };
+                issues.AddRange(nodeIssues);
+                LogService.Error($"内容提交后的引用图刷新失败：节点={node.Id.Value:N}，问题={string.Join(" | ", nodeIssues.Select(issue => issue.Message))}");
+            }
+            return issues;
         }
 
         public void Save()
@@ -381,7 +446,11 @@ namespace HD2ModManager.Services
                 {
                     await _informationCenter.InvalidateNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(false);
                     ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(nodeId.Value.ToString("N"))?.IconPath);
-                    await RefreshDerivedDataAsync(new[] { nodeId.Value.ToString("N") }, ModContentChangeKind.Changed, CancellationToken.None).ConfigureAwait(false);
+                    await RefreshCommittedContentAsync(
+                        new[] { nodeId },
+                        ModContentChangeKind.Changed,
+                        alreadyInvalidated: true,
+                        cancellationToken: CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception exception)
                 {

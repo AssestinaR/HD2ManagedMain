@@ -77,15 +77,22 @@ namespace HD2ModManager.Services
                     .Where(node => before.TryGetValue(node.Id, out var previous) && !Equals(previous, node))
                     .Select(node => node.Id)
                     .ToArray();
-                foreach (var nodeId in importedGuids
+                var affectedNodeIds = importedGuids
                     .Select(guid => Guid.TryParse(guid, out var value) ? new ModNodeId(value) : (ModNodeId?)null)
                     .Concat(changedExistingNodeIds.Select(id => (ModNodeId?)id))
                     .Where(id => id.HasValue)
                     .Select(id => id!.Value)
-                    .Distinct())
+                    .Distinct()
+                    .ToArray();
+                foreach (var nodeId in affectedNodeIds)
                 {
                     await _informationCenter.InvalidateNodeAsync(nodeId, ct).ConfigureAwait(false);
                 }
+                await _library.RefreshCommittedContentAsync(
+                    affectedNodeIds,
+                    ModContentChangeKind.Changed,
+                    alreadyInvalidated: true,
+                    cancellationToken: ct).ConfigureAwait(false);
                 if (notifyLibraryChanged) _library.NotifyImportCompleted();
                 _onInfo?.Invoke($"Imported {result.SourceDisplayName}");
                 return importedGuids.Where(g => _library.Get(g) != null).ToList();
@@ -94,39 +101,6 @@ namespace HD2ModManager.Services
             {
                 _onError?.Invoke(ex.Message);
                 throw;
-            }
-        }
-
-        public async Task AnalyzeImportedAsync(IEnumerable<string> importedGuids, CancellationToken ct)
-        {
-            var guids = importedGuids.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            if (guids.Length == 0) return;
-            var snapshot = _library.Snapshot;
-            foreach (var guid in guids)
-            {
-                if (!Guid.TryParse(guid, out var value)) continue;
-                var nodeId = new ModNodeId(value);
-                if (!snapshot.Nodes.TryGetValue(nodeId, out var node)) continue;
-                var result = await _informationCenter.RequestAssetInventoryAsync(
-                    node,
-                    _library.ModsRootDirectory,
-                    new ModInformationRequest(ModInformationKind.AssetInventory, "Import"),
-                    ct).ConfigureAwait(false);
-                if (result.Data is null)
-                {
-                    _onError?.Invoke(result.Issues.FirstOrDefault()?.Message ?? "AssetInventory production failed.");
-                    continue;
-                }
-
-                var graph = await _informationCenter.RequestReferenceGraphAsync(
-                    node,
-                    _library.ModsRootDirectory,
-                    new ModInformationRequest(ModInformationKind.ReferenceGraph, "Import"),
-                    ct).ConfigureAwait(false);
-                if (graph.Data is null)
-                {
-                    _onError?.Invoke(graph.Issues.FirstOrDefault()?.Message ?? "ReferenceGraph production failed.");
-                }
             }
         }
 

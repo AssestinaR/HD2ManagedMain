@@ -40,6 +40,8 @@ namespace HD2ModManager.ViewModels
         private readonly IModRepairBatchService _repairBatch;
         private readonly StoragePaths _paths;
         private bool _isRepairingOutdatedMods;
+        private int? _lastDetectedOutdatedModCount;
+        private int _lastUnreadableUnitVersionCount;
         private DeploymentCapability _deploymentCapability = DeploymentCapability.Unavailable("尚未检测。");
 
         public string ActiveProfile => _profiles.ActiveKey ?? "未启用";
@@ -51,10 +53,18 @@ namespace HD2ModManager.ViewModels
         public string GameDataHealth => BuildGameDataHealth();
         public string AssetMetadataHealth => BuildAssetMetadataHealth();
         public int EnabledModCount => _profiles.ActiveProfile?.Entries.Count ?? 0;
-        public int OutdatedModCount => _library.Snapshot.Nodes.Values.Count(node => _library.GetDerivedData(node.Id.Value.ToString("N"))?.UnitCompatibility.IsOutdated == true);
-        public string OutdatedModSummary => OutdatedModCount == 0 ? "未发现过时 Mod" : $"{OutdatedModCount} 个过时";
-        public bool CanRepairOutdatedMods => !_isRepairingOutdatedMods && OutdatedModCount > 0;
-        public bool IsRepairingOutdatedMods { get => _isRepairingOutdatedMods; private set { if (SetField(ref _isRepairingOutdatedMods, value)) { OnPropertyChanged(nameof(CanRepairOutdatedMods)); RepairOutdatedModsCommand.RaiseCanExecuteChanged(); } } }
+        public int OutdatedModCount => _lastDetectedOutdatedModCount ?? 0;
+        public string OutdatedModSummary => IsRepairingOutdatedMods
+            ? "检测中"
+            : _lastDetectedOutdatedModCount is null
+                ? "尚未检测"
+                : _lastDetectedOutdatedModCount == 0
+                    ? _lastUnreadableUnitVersionCount == 0 ? "未发现过时 Mod" : $"未发现；{_lastUnreadableUnitVersionCount} 个未确认"
+                    : $"{_lastDetectedOutdatedModCount} 个过时";
+        // Detection is refreshed after rebuilding the GameData index, so the command must
+        // remain available even when the previous projection found no outdated Mods.
+        public bool CanRepairOutdatedMods => !_isRepairingOutdatedMods && ModCount > 0;
+        public bool IsRepairingOutdatedMods { get => _isRepairingOutdatedMods; private set { if (SetField(ref _isRepairingOutdatedMods, value)) { OnPropertyChanged(nameof(OutdatedModSummary)); OnPropertyChanged(nameof(CanRepairOutdatedMods)); RepairOutdatedModsCommand.RaiseCanExecuteChanged(); } } }
         public string TaskHealth => _backgroundTasks.CountQueued + _backgroundTasks.CountRunning is var active && active > 0
             ? $"{active} 项任务进行中或排队"
             : "当前没有进行中的任务";
@@ -149,21 +159,79 @@ namespace HD2ModManager.ViewModels
                 System.Windows.MessageBox.Show("请先配置有效的 Game Data 文件夹。", "一键修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
                 return;
             }
-
-            var nodes = _library.Snapshot.Nodes.Values
-                .Where(node => _library.GetDerivedData(node.Id.Value.ToString("N"))?.UnitCompatibility.IsOutdated == true)
-                .ToArray();
-            if (nodes.Length == 0) return;
-            var confirm = System.Windows.MessageBox.Show($"将为 {nodes.Length} 个检测为旧版 Unit 的 Mod 生成当前版本候选，并仅在候选完整通过内部检查后替换原 Patch。\n\n原 Patch 与 sidecar 会独立备份到管理器目录 backups。是否继续？", "一键修复过时 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
-            if (confirm != System.Windows.MessageBoxResult.Yes) return;
-
             IsRepairingOutdatedMods = true;
-            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.RepairMods, "批量修复过时 Mod", $"共 {nodes.Length} 个 Mod", origin: "首页维护", userVisibleReason: "重建过时 Unit，并在验证成功后安全替换原始 Patch。", suggestedAction: "完成后将重新分析并重新部署活动配置。");
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.RepairMods, "检测并修复过时 Mod", "正在更新 GameData 索引", origin: "首页维护", userVisibleReason: "先使用最新 GameData 索引检测过时 Unit；仅为确认过时的 Mod 生成候选并安全替换原始 Patch。", suggestedAction: "完成后将重新分析并重新部署活动配置。");
             var operationId = Guid.NewGuid();
             var bridge = new OperationProgressBridge(new BackgroundTaskOperationTarget(task), operationId, SynchronizationContext.Current ?? new SynchronizationContext());
             try
             {
-                task.MarkRunning("正在生成并验证重构候选");
+                if (!File.Exists(_paths.ArchiveHashesPath))
+                    throw new InvalidOperationException("缺少 archivehashes.json；请先在设置页更新在线资产信息。");
+
+                task.MarkRunning("正在重建 GameData 资产索引");
+                var archiveHashes = await File.ReadAllTextAsync(_paths.ArchiveHashesPath, task.CancellationToken);
+                var assetIndex = CoreServices.CreateAssetArchiveIndexService(_paths);
+                var lastProgressUpdate = 0L;
+                var indexProgress = new Progress<IndexBuildProgress>(item =>
+                {
+                    var now = Environment.TickCount64;
+                    if (now - Interlocked.Read(ref lastProgressUpdate) < 200 && item.Current < item.Total) return;
+                    Interlocked.Exchange(ref lastProgressUpdate, now);
+                    task.UpdateStage($"正在重建 GameData 资产索引 {item.Current}/{item.Total}");
+                    task.UpdateProgress(item.Total <= 0 ? null : (double)item.Current / item.Total);
+                });
+                await Task.Run(() => assetIndex.BuildOrRebuildAsync(gameData, archiveHashes, indexProgress, task.CancellationToken).AsTask(), task.CancellationToken);
+                var indexStatus = await assetIndex.GetIndexStatusAsync(gameData, archiveHashes, task.CancellationToken);
+                if (!indexStatus.IsCurrent)
+                    throw new InvalidOperationException("GameData 资产索引重建后仍不可用或已过时。");
+
+                task.UpdateStage("正在读取 Unit 版本并检测过时 Mod");
+                var nodes = new List<ModNode>();
+                var unreadableCount = 0;
+                var candidates = _library.Snapshot.Nodes.Values
+                    .OrderBy(node => node.Metadata.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                for (var index = 0; index < candidates.Length; index++)
+                {
+                    task.CancellationToken.ThrowIfCancellationRequested();
+                    var candidate = candidates[index];
+                    task.UpdateStage($"正在检测 Mod {index + 1}/{candidates.Length}");
+                    task.UpdateProgress(candidates.Length == 0 ? null : (double)(index + 1) / candidates.Length);
+                    var version = await _library.InformationCenter.RequestUnitVersionAsync(
+                        candidate,
+                        _library.ModsRootDirectory,
+                        new ModInformationRequest(ModInformationKind.UnitVersion, "BatchOutdatedDetection", RequireFresh: true),
+                        task.CancellationToken);
+                    if (version.Data?.Report.IsOutdated == true)
+                    {
+                        nodes.Add(candidate);
+                    }
+                    else if (version.Data is null || version.Data.Report.Status == UnitCompatibilityStatus.Unreadable)
+                    {
+                        unreadableCount++;
+                    }
+                }
+                SetOutdatedDetectionResult(nodes.Count, unreadableCount);
+                if (nodes.Count == 0)
+                {
+                    task.MarkCompleted();
+                    var summary = unreadableCount == 0
+                        ? "检测完成：未发现需要修复的过时 Mod。"
+                        : $"检测完成：未发现需要修复的过时 Mod；{unreadableCount} 个 Mod 的 Unit 版本无法确认，已跳过。";
+                    System.Windows.MessageBox.Show(summary, "检测并修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                    return;
+                }
+
+                var unreadableNotice = unreadableCount == 0 ? string.Empty : $"\n另有 {unreadableCount} 个 Mod 的 Unit 版本无法确认，本次将跳过。";
+                var confirm = System.Windows.MessageBox.Show($"已检测到 {nodes.Count} 个过时 Mod。{unreadableNotice}\n\n将仅为这些 Mod 生成当前版本候选，并仅在候选完整通过内部检查后替换原 Patch。原 Patch 与 sidecar 会独立备份到管理器目录 backups。是否继续？", "检测并修复过时 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
+                if (confirm != System.Windows.MessageBoxResult.Yes)
+                {
+                    task.MarkCompleted();
+                    return;
+                }
+
+                task.UpdateStage("正在生成并验证重构候选");
+                task.UpdateProgress(null);
                 var result = await _repairBatch.RepairAsync(nodes, _library.ModsRootDirectory, gameData, task.CancellationToken, new InlineProgress<OperationProgressEvent>(bridge.Apply), operationId);
                 task.UpdateStage($"已修复 {result.RepairedModCount}；跳过 {result.SkippedModCount}；失败 {result.FailedModCount}；取消 {result.CanceledModCount}；未开始 {result.NotStartedModCount}");
                 if (result.CanceledModCount > 0 || result.NotStartedModCount > 0 || task.CancellationToken.IsCancellationRequested) task.MarkCanceled();
@@ -174,6 +242,7 @@ namespace HD2ModManager.ViewModels
                     // 否则下次启动会把本次已知修改误判为外部修改并删除所有信息中心缓存。
                     await _library.SynchronizeAsync(task.CancellationToken);
                     if (_profiles.ActiveProfile is not null) _profiles.NotifyActiveModContentChanged();
+                    ClearOutdatedDetectionResult();
                 }
                 System.Windows.MessageBox.Show($"批次完成。\n已修复：{result.RepairedModCount}\n跳过：{result.SkippedModCount}\n失败：{result.FailedModCount}\n取消：{result.CanceledModCount}\n未开始：{result.NotStartedModCount}\n\n备份与审计清单：{result.BatchDirectory}", "一键修复", System.Windows.MessageBoxButton.OK, result.FailedModCount == 0 ? System.Windows.MessageBoxImage.Information : System.Windows.MessageBoxImage.Warning);
             }
@@ -191,6 +260,22 @@ namespace HD2ModManager.ViewModels
                 IsRepairingOutdatedMods = false;
                 Refresh();
             }
+        }
+
+        private void SetOutdatedDetectionResult(int outdatedCount, int unreadableCount)
+        {
+            _lastDetectedOutdatedModCount = outdatedCount;
+            _lastUnreadableUnitVersionCount = unreadableCount;
+            OnPropertyChanged(nameof(OutdatedModCount));
+            OnPropertyChanged(nameof(OutdatedModSummary));
+        }
+
+        private void ClearOutdatedDetectionResult()
+        {
+            _lastDetectedOutdatedModCount = null;
+            _lastUnreadableUnitVersionCount = 0;
+            OnPropertyChanged(nameof(OutdatedModCount));
+            OnPropertyChanged(nameof(OutdatedModSummary));
         }
 
         private async void MoveLibraryToRecommended()
