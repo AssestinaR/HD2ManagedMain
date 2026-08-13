@@ -527,9 +527,23 @@ namespace HD2ModManager
 
         private static void ShowInitialPage(ContentControl host, object? page)
         {
-            host.Content = page;
+            host.Content = CreatePageContent(page);
             host.Opacity = 1;
         }
+
+        // Decoration planning is a full-workspace tool page. Host its concrete view
+        // explicitly so it is not affected by implicit-template resolution during a
+        // page transition.
+        private static object? CreatePageContent(object? page) => page switch
+        {
+            DecorationPlanPageViewModel plan => new DecorationPlanPageView { DataContext = plan },
+            _ => page,
+        };
+
+        private static bool IsCurrentPageContent(ContentControl host, object? page)
+            => ReferenceEquals(host.Content, page)
+                || host.Content is FrameworkElement { DataContext: var dataContext }
+                    && ReferenceEquals(dataContext, page);
 
         private void CaptureSinglePageForSplitTransition()
         {
@@ -584,13 +598,15 @@ namespace HD2ModManager
 
         private void TransitionPage(ContentControl currentHost, ContentControl previousHost, object? nextPage)
         {
-            if (ReferenceEquals(currentHost.Content, nextPage)) return;
+            if (IsCurrentPageContent(currentHost, nextPage)) return;
+
+            var nextContent = CreatePageContent(nextPage);
 
             currentHost.BeginAnimation(OpacityProperty, null);
             previousHost.BeginAnimation(OpacityProperty, null);
             previousHost.Content = currentHost.Content;
             previousHost.Opacity = previousHost.Content is null ? 0 : 1;
-            currentHost.Content = nextPage;
+            currentHost.Content = nextContent;
             currentHost.Opacity = 0;
 
             _ = currentHost.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Render, new Action(() =>
@@ -602,7 +618,7 @@ namespace HD2ModManager
                 var fadeOut = new DoubleAnimation(0, duration) { EasingFunction = easing };
                 fadeOut.Completed += (_, _) =>
                 {
-                    if (ReferenceEquals(currentHost.Content, nextPage)) previousHost.Content = null;
+                    if (ReferenceEquals(currentHost.Content, nextContent)) previousHost.Content = null;
                 };
                 previousHost.BeginAnimation(OpacityProperty, fadeOut);
             }));

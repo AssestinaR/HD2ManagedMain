@@ -84,13 +84,16 @@ namespace HD2ModManager.ViewModels
 		public bool CanRunDependencyGraphTest => !_disposed && !_dependencyGraphTestRunning && TryGetCurrentNode(out _);
         public bool CanCompareDependencyGraph => !_disposed && !_dependencyGraphComparisonRunning && TryGetCurrentNode(out _);
         // 内嵌材质是否存在属于轻量 ReferenceGraph 事实；包装检查只负责写出前的最终安全复核。
-        public bool CanSplitEmbeddedMaterials => !_disposed
+        public bool IsStandardMod => !IsDecoration;
+        public bool CanSplitEmbeddedMaterials => !_disposed && !IsDecoration
             && ((_materialState?.HasEmbeddedMaterials == true) || (_cachedMaterialDeliveryFacts?.EmbeddedMaterialCount > 0))
             && TryGetCurrentNode(out _);
-        public bool CanReplaceEmbeddedMaterials => !_disposed && TryGetCurrentNode(out _);
-        public bool CanEmbedExternalMaterials => !_disposed && TryGetCurrentNode(out _);
-        public bool CanRebuildSameKey => !_disposed && !_sameKeyReconstructionRunning && TryGetCurrentNode(out _);
-        public bool CanPlanCrossArmorTransfer => !_disposed && TryGetCurrentNode(out _);
+        public bool CanReplaceEmbeddedMaterials => !_disposed && !IsDecoration && TryGetCurrentNode(out _);
+        public bool CanEmbedExternalMaterials => !_disposed && !IsDecoration && TryGetCurrentNode(out _);
+        public bool CanRebuildSameKey => !_disposed && !IsDecoration && !_sameKeyReconstructionRunning && TryGetCurrentNode(out _);
+        public bool CanPlanCrossArmorTransfer => !_disposed && !IsDecoration && TryGetCurrentNode(out _);
+        public bool IsDecoration => Mod?.IsDecoration == true;
+        public bool CanPlanDecoration => !_disposed && !IsDecoration && TryGetCurrentNode(out _);
         private bool HasPatchGroups => Mod?.FileGroups?.Count > 0;
         public BulkObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
@@ -111,6 +114,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand EmbedExternalMaterialsCommand { get; }
         public RelayCommand RebuildSameKeyCommand { get; }
 		public RelayCommand PlanCrossArmorTransferCommand { get; }
+        public RelayCommand PlanDecorationCommand { get; }
         public RelayCommand RunAdvancedAnalysisCommand { get; }
 		public RelayCommand RunDependencyGraphTestCommand { get; }
         public RelayCommand CompareDependencyGraphCommand { get; }
@@ -143,6 +147,7 @@ namespace HD2ModManager.ViewModels
             EmbedExternalMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: false, requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
             RebuildSameKeyCommand = new RelayCommand(_ => OpenSameKeyRebuild(), _ => CanRebuildSameKey);
             PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
+            PlanDecorationCommand = new RelayCommand(_ => OpenDecorationPlan(), _ => CanPlanDecoration);
             RunAdvancedAnalysisCommand = new RelayCommand(async _ => await RunAdvancedAnalysisAsync(), _ => CanRunAdvancedAnalysis);
 			RunDependencyGraphTestCommand = new RelayCommand(async _ => await RunDependencyGraphTestAsync(), _ => CanRunDependencyGraphTest);
 			CompareDependencyGraphCommand = new RelayCommand(async _ => await CompareDependencyGraphAsync(), _ => CanCompareDependencyGraph);
@@ -713,6 +718,9 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(CanRunAdvancedAnalysis));
 			OnPropertyChanged(nameof(DependencyGraphTestSummary));
 			OnPropertyChanged(nameof(CanPlanCrossArmorTransfer));
+			OnPropertyChanged(nameof(CanPlanDecoration));
+			OnPropertyChanged(nameof(IsDecoration));
+			OnPropertyChanged(nameof(IsStandardMod));
             RaiseMaterialCommandStates();
             RaiseSameKeyReconstructionCommandState();
         }
@@ -1273,6 +1281,7 @@ namespace HD2ModManager.ViewModels
 			OnPropertyChanged(nameof(CanPlanCrossArmorTransfer));
             RebuildSameKeyCommand.RaiseCanExecuteChanged();
 			PlanCrossArmorTransferCommand.RaiseCanExecuteChanged();
+			PlanDecorationCommand.RaiseCanExecuteChanged();
         }
 
         private static string SanitizeFileName(string name) => string.Concat(name.Select(character => System.IO.Path.GetInvalidFileNameChars().Contains(character) ? '_' : character)).Trim();
@@ -1280,10 +1289,22 @@ namespace HD2ModManager.ViewModels
         private void AddToProfile()
         {
             if (Mod == null) return;
+            if (Mod.IsDecoration)
+            {
+                _notifications?.Show("装饰 Mod 不能加入配置；请在目标主 Mod 中启用它。", NotificationLevel.Info);
+                return;
+            }
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
             {
                 _ = shell.AddModToSelectedProfileAsync(Mod.Guid, Mod.Name);
             }
+        }
+
+        private void OpenDecorationPlan()
+        {
+            if (Mod is null || Mod.IsDecoration) return;
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
+                shell.OpenDecorationPlan(Mod.Guid);
         }
 
         private async Task DeleteAsync()

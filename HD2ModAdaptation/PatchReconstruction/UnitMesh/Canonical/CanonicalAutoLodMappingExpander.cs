@@ -32,7 +32,13 @@ public static class CanonicalAutoLodMappingExpander
 						.Where(raw => raw.LodIndex == -1 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
 						.SingleOrDefault(raw => raw.MeshId == sourceCutoutMesh.MeshId);
 					if (targetCulling is null)
-						throw new InvalidDataException($"Target Unit 0x{approved.Target.UnitKey.FileId:x16} has no compatible culling mesh for source MeshId 0x{sourceCutoutMesh.MeshId:x8}.");
+					{
+						// Culling shells are optional cutouts, not interchangeable display LODs.
+						// Different armor Units commonly use different MeshIds for the same
+						// semantic slot. With no exact shell counterpart, retain the target
+						// culling mesh during rebuild instead of failing the whole candidate.
+						continue;
+					}
 					expandedMappings.Add(new CanonicalReplacementMapping(
 						new(approved.Source.UnitKey, sourceCutoutMesh.MeshInfoIndex),
 						new(approved.Target.UnitKey, targetCulling.MeshInfoIndex),

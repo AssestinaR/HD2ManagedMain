@@ -188,6 +188,7 @@ public sealed class ProfileDeploymentCoordinatorTests
 		public LibrarySnapshot Snapshot;
 		public FakeLibraryManager(LibrarySnapshot snapshot) => Snapshot = snapshot;
 		public ValueTask<LibrarySnapshot> LoadOrCreateAsync(CancellationToken cancellationToken = default) => ValueTask.FromResult(Snapshot);
+		public ValueTask<LibrarySnapshot> UpsertNodeAsync(ModNode node, CancellationToken cancellationToken = default) => ValueTask.FromResult(Snapshot);
 		public ValueTask<LibrarySnapshot> DeleteNodeAsync(ModNodeId nodeId, bool deleteStoredFiles, CancellationToken cancellationToken = default) => ValueTask.FromResult(Snapshot);
 		public ValueTask<LibrarySnapshot> DeleteNodesAsync(IReadOnlyList<ModNodeId> nodeIds, bool deleteStoredFiles, CancellationToken cancellationToken = default) => ValueTask.FromResult(Snapshot);
 		public ValueTask<LibrarySnapshot> UpsertProfileAsync(Profile profile, CancellationToken cancellationToken = default) => ValueTask.FromResult(Snapshot);

@@ -7,6 +7,7 @@ namespace HD2ModCore.Application;
 public interface IModLibraryManager
 {
 	ValueTask<LibrarySnapshot> LoadOrCreateAsync(CancellationToken cancellationToken = default);
+	ValueTask<LibrarySnapshot> UpsertNodeAsync(ModNode node, CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> DeleteNodeAsync(ModNodeId nodeId, bool deleteStoredFiles, CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> DeleteNodesAsync(IReadOnlyList<ModNodeId> nodeIds, bool deleteStoredFiles, CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> UpsertProfileAsync(Profile profile, CancellationToken cancellationToken = default);

@@ -35,6 +35,19 @@ public sealed class ModLibraryManager : IModLibraryManager
 		return empty;
 	}
 
+	public async ValueTask<LibrarySnapshot> UpsertNodeAsync(ModNode node, CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(node);
+		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+		var nodes = new Dictionary<ModNodeId, ModNode>(snapshot.Nodes)
+		{
+			[node.Id] = node
+		};
+		var updated = snapshot with { Nodes = nodes, SavedUtc = DateTimeOffset.UtcNow };
+		await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
+		return updated;
+	}
+
 	public async ValueTask<LibrarySnapshot> DeleteNodeAsync(ModNodeId nodeId, bool deleteStoredFiles, CancellationToken cancellationToken = default)
 		=> await DeleteNodesAsync([nodeId], deleteStoredFiles, cancellationToken).ConfigureAwait(false);
 
@@ -87,6 +100,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 		}
 
 		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+		EnsureProfileEntriesAreDeployable(snapshot, profile.Entries);
 		var profiles = snapshot.Profiles.ToList();
 
 		var index = profiles.FindIndex(p => p.Id == profile.Id);
@@ -171,6 +185,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 		{
 			throw new InvalidOperationException($"Mod node does not exist: {nodeId.Value:N}");
 		}
+		EnsureNodeIsDeployable(snapshot.Nodes[nodeId]);
 
 		return await UpdateProfileEntriesAsync(
 			profileId,
@@ -200,6 +215,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 		{
 			throw new InvalidOperationException($"Mod node does not exist: {missing.Value:N}");
 		}
+		foreach (var nodeId in distinctIds) EnsureNodeIsDeployable(snapshot.Nodes[nodeId]);
 
 		return await UpdateProfileEntriesAsync(
 			profileId,
@@ -315,6 +331,20 @@ public sealed class ModLibraryManager : IModLibraryManager
 		return entries
 			.Select((entry, index) => entry with { LoadOrder = index })
 			.ToList();
+	}
+
+	private static void EnsureProfileEntriesAreDeployable(LibrarySnapshot snapshot, IReadOnlyList<ProfileEntry> entries)
+	{
+		foreach (var entry in entries)
+		{
+			if (snapshot.Nodes.TryGetValue(entry.NodeId, out var node)) EnsureNodeIsDeployable(node);
+		}
+	}
+
+	private static void EnsureNodeIsDeployable(ModNode node)
+	{
+		if (node.Metadata.Kind == ModNodeKind.Decoration)
+			throw new InvalidOperationException($"Decoration Mod cannot be added to a profile: {node.Metadata.Name}");
 	}
 
 	private void TryDeleteStoredRoot(string nodeRelativePath)

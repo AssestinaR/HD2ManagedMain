@@ -353,6 +353,11 @@ namespace HD2ModManager.ViewModels
         private void AddToProfile(ModCardViewModel? card)
         {
             if (card == null || _profiles == null) return;
+            if (card.Mod.IsDecoration)
+            {
+                _notifications?.Show("装饰 Mod 不能加入配置；合并器接入后将在目标主 Mod 中启用。", NotificationLevel.Info);
+                return;
+            }
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
             {
                 _ = shell.AddModToSelectedProfileAsync(card.Mod.Guid, card.Mod.Name);

@@ -6,4 +6,5 @@ public sealed record ModNodeMetadata(
 	string Name,
 	string? Notes,
 	DateTimeOffset CreatedUtc,
-	DateTimeOffset? ModifiedUtc);
+	DateTimeOffset? ModifiedUtc,
+	ModNodeKind Kind = ModNodeKind.Standard);
