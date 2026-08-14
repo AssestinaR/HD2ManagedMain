@@ -9,7 +9,14 @@
         </Grid.ColumnDefinitions>
 
         <!-- Reserved for the first-run guide and other onboarding content. -->
-        <Border Grid.Column="0" Style="{StaticResource CardContainer}" Padding="22"/>
+        <Border Grid.Column="0" Style="{StaticResource CardContainer}" Padding="22">
+            <StackPanel VerticalAlignment="Top">
+                <Button Style="{StaticResource AppSecondaryButton}"
+                        Content="列表组件测试"
+                        HorizontalAlignment="Left"
+                        Click="OnOpenModListPanelTestClick"/>
+            </StackPanel>
+        </Border>
 
         <Grid Grid.Column="2">
             <Border Style="{StaticResource CardContainer}"

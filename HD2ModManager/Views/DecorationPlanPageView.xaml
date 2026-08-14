@@ -109,6 +109,7 @@
                             EmptyMessage="没有可作为目标的 Mod。"
                             ItemsSource="{Binding TargetMods}"
                             SearchText="{Binding TargetQuery, UpdateSourceTrigger=PropertyChanged}"
-                            RowClicked="OnTargetModRowClick"/>
+                            SelectionPolicy="Multiple"
+                            SelectionRequested="OnSelectionRequested"/>
     </Grid>
 </UserControl>

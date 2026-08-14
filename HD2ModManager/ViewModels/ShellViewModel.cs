@@ -500,6 +500,8 @@ namespace HD2ModManager.ViewModels
                 RegisterMaterialPackagingRow("material-packaging-candidates", MaterialPackagingBottomBarRowKind.Candidates);
         }
 
+        public void OpenModListPanelTest() => OpenSinglePage(WorkspacePageType.ModListPanelTest);
+
         public void OpenDecorationPlan(string sourceModId)
         {
             if (string.IsNullOrWhiteSpace(sourceModId)) return;
@@ -1350,6 +1352,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),
                 WorkspacePageType.MaterialPackaging => throw new InvalidOperationException("材质打包必须通过 Mod 详情创建。"),
                 WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty),
+                WorkspacePageType.ModListPanelTest => new ModListPanelTestPageViewModel(),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
             };
             return page;
@@ -1395,6 +1398,7 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.CrossArmorPlan => "跨护甲计划",
             WorkspacePageType.MaterialPackaging => "材质候选与输出",
             WorkspacePageType.DecorationPlan => "生成装饰 Mod",
+            WorkspacePageType.ModListPanelTest => "列表组件测试",
             _ => "页面",
         };
 

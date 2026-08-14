@@ -99,13 +99,10 @@ namespace HD2ModManager.Views
             if (VM is not null) VM.ShowOnlyOutdated = !VM.ShowOnlyOutdated;
         }
 
-        private void OnModRowClick(object sender, ModListRowEventArgs e)
+        private void OnSelectionRequested(object? sender, ModListSelectionRequestEventArgs e)
         {
             EnsureVM();
-            if (e.Item is ModCardViewModel card)
-            {
-                VM?.SelectRow(card, e.Modifiers);
-            }
+            VM?.ApplySelection(e.SelectedKeys);
         }
 
     }

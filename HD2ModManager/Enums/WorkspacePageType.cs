@@ -14,5 +14,6 @@ namespace HD2ModManager.Enums
         CrossArmorPlan,
         MaterialPackaging,
         DecorationPlan,
+        ModListPanelTest,
     }
 }

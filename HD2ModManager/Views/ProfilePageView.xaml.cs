@@ -8,10 +8,10 @@ public partial class ProfilePageView : UserControl
 {
     public ProfilePageView() => InitializeComponent();
 
-    private void OnProfileRowClick(object sender, ModListRowEventArgs e)
+    private void OnSelectionRequested(object? sender, ModListSelectionRequestEventArgs e)
     {
-        if (DataContext is ProfilePageViewModel vm && e.Item is ProfileListItemViewModel item)
-            vm.SelectRow(item.Guid, e.Modifiers);
+        if (DataContext is ProfilePageViewModel vm)
+            vm.ApplySelection(e.SelectedKeys);
     }
 
     private void OnRowActionInvoked(object? sender, ModListRowActionEventArgs e)

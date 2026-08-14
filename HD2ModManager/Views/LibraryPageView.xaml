@@ -30,7 +30,8 @@
                         SearchActionsTemplate="{StaticResource LibrarySearchActions}"
                         RowActions="Rename, Details, AddToProfile, OpenFolder, DeleteFromLibrary"
                         RowActionInvoked="OnRowActionInvoked"
-                        RowClicked="OnModRowClick"
+                        SelectionPolicy="Multiple"
+                        SelectionRequested="OnSelectionRequested"
                         RowRightClicked="OnOpenDetailsOnRightClick"
                         BackgroundClicked="OnListBackgroundClick"/>
 </UserControl>

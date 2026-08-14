@@ -23,7 +23,6 @@ namespace HD2ModManager.ViewModels
         private readonly ObservableCollection<string> _selectedGuids = new();
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string?> _thumbnailSources = new(StringComparer.OrdinalIgnoreCase);
-        private string? _selectionAnchorGuid;
         private CancellationTokenSource? _searchCancellation;
         private CancellationTokenSource? _thumbnailCancellation;
         private int _lifecycleVersion;
@@ -106,39 +105,11 @@ namespace HD2ModManager.ViewModels
             Refresh();
         }
 
-        public void SelectRow(ModCardViewModel card, ModifierKeys modifiers)
+        public void ApplySelection(IReadOnlyList<string> selectedKeys)
         {
-            var allCards = Items.ToList();
-            if ((modifiers & ModifierKeys.Shift) == ModifierKeys.Shift && !string.IsNullOrWhiteSpace(_selectionAnchorGuid))
-            {
-                var anchorIndex = allCards.FindIndex(c => string.Equals(c.Mod.Guid, _selectionAnchorGuid, System.StringComparison.OrdinalIgnoreCase));
-                var targetIndex = allCards.FindIndex(c => string.Equals(c.Mod.Guid, card.Mod.Guid, System.StringComparison.OrdinalIgnoreCase));
-                if (anchorIndex >= 0 && targetIndex >= 0)
-                {
-                    _selectedGuids.Clear();
-                    foreach (var selected in allCards.Skip(System.Math.Min(anchorIndex, targetIndex)).Take(System.Math.Abs(anchorIndex - targetIndex) + 1))
-                    {
-                        _selectedGuids.Add(selected.Mod.Guid);
-                    }
-                }
-            }
-            else if ((modifiers & ModifierKeys.Control) == ModifierKeys.Control)
-            {
-                if (!_selectedGuids.Remove(card.Mod.Guid)) _selectedGuids.Add(card.Mod.Guid);
-                _selectionAnchorGuid = card.Mod.Guid;
-            }
-            else
-            {
-                _selectedGuids.Clear();
-                _selectedGuids.Add(card.Mod.Guid);
-                _selectionAnchorGuid = card.Mod.Guid;
-            }
-
-            var selectedInDisplayOrder = Items
-                .Where(item => _selectedGuids.Contains(item.Mod.Guid, StringComparer.OrdinalIgnoreCase))
-                .Select(item => item.Mod.Guid)
-                .ToList();
-            _selection?.Replace(SelectionScope, selectedInDisplayOrder);
+            _selectedGuids.Clear();
+            foreach (var key in selectedKeys) _selectedGuids.Add(key);
+            _selection?.Replace(SelectionScope, selectedKeys);
             RefreshSelectionFlags();
         }
 
@@ -422,9 +393,10 @@ namespace HD2ModManager.ViewModels
         }
     }
 
-    public class ModCardViewModel : BaseViewModel
+    public class ModCardViewModel : BaseViewModel, IModListSelectable
     {
         public HD2ModManager.Models.ModEntity Mod { get; }
+        public string SelectionKey => Mod.Guid;
         private string? _thumbnailSourcePath;
         public ModAssetSummary? AssetSummary { get; }
         public string Name => Mod.Name;

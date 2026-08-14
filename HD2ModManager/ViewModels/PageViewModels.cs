@@ -346,7 +346,6 @@ namespace HD2ModManager.ViewModels
         private readonly BottomBarCoordinator? _bottomBar;
         private readonly ObservableCollection<string> _selectedGuids = new();
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
-        private string? _selectionAnchorGuid;
         private string _query = string.Empty;
         private CancellationTokenSource? _searchCancellation;
         private CancellationTokenSource? _thumbnailCancellation;
@@ -458,40 +457,11 @@ namespace HD2ModManager.ViewModels
             Refresh();
         }
 
-        public void SelectRow(string guid, ModifierKeys modifiers)
+        public void ApplySelection(IReadOnlyList<string> selectedKeys)
         {
-            if (string.IsNullOrWhiteSpace(guid)) return;
-            if ((modifiers & ModifierKeys.Shift) == ModifierKeys.Shift && !string.IsNullOrWhiteSpace(_selectionAnchorGuid))
-            {
-                var all = Items.ToList();
-                var anchorIndex = all.FindIndex(i => string.Equals(i.Guid, _selectionAnchorGuid, StringComparison.OrdinalIgnoreCase));
-                var targetIndex = all.FindIndex(i => string.Equals(i.Guid, guid, StringComparison.OrdinalIgnoreCase));
-                if (anchorIndex >= 0 && targetIndex >= 0)
-                {
-                    _selectedGuids.Clear();
-                    foreach (var item in all.Skip(Math.Min(anchorIndex, targetIndex)).Take(Math.Abs(anchorIndex - targetIndex) + 1))
-                    {
-                        _selectedGuids.Add(item.Guid);
-                    }
-                }
-            }
-            else if ((modifiers & ModifierKeys.Control) == ModifierKeys.Control)
-            {
-                if (!_selectedGuids.Remove(guid)) _selectedGuids.Add(guid);
-                _selectionAnchorGuid = guid;
-            }
-            else
-            {
-                _selectedGuids.Clear();
-                _selectedGuids.Add(guid);
-                _selectionAnchorGuid = guid;
-            }
-
-            var selectedInDisplayOrder = Items
-                .Where(item => _selectedGuids.Contains(item.Guid, StringComparer.OrdinalIgnoreCase))
-                .Select(item => item.Guid)
-                .ToList();
-            _selection?.Replace(SelectionScope, selectedInDisplayOrder);
+            _selectedGuids.Clear();
+            foreach (var key in selectedKeys) _selectedGuids.Add(key);
+            _selection?.Replace(SelectionScope, selectedKeys);
             RefreshSelectionFlags();
         }
 
@@ -806,9 +776,10 @@ namespace HD2ModManager.ViewModels
         private async void Confirm() => await _page.RenameCurrentProfileAsync(NewName);
     }
 
-    public sealed class ProfileListItemViewModel : BaseViewModel
+    public sealed class ProfileListItemViewModel : BaseViewModel, IModListSelectable
     {
         public string Guid { get; }
+        public string SelectionKey => Guid;
         public string Name { get; }
         public string? Description { get; }
         public string? ImagePath { get; }

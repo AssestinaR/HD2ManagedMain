@@ -139,6 +139,12 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
                 || (item.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) == true);
     }
 
+    public void ApplyTargetSelection(IReadOnlyList<string> selectedKeys)
+    {
+        var selected = selectedKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in TargetMods) item.IsSelected = selected.Contains(item.ModId);
+    }
+
     private void OnSelectionChanged()
     {
         OnPropertyChanged(nameof(CanGenerate));
@@ -207,7 +213,7 @@ public sealed class DecorationSourceUnitItem : BaseViewModel
     public bool IncludeCulling { get => _includeCulling; set { if (SetField(ref _includeCulling, value)) _changed(); } }
 }
 
-public sealed class DecorationTargetModItem : BaseViewModel
+public sealed class DecorationTargetModItem : BaseViewModel, IModListSelectable
 {
     private readonly Action _changed;
     private bool _isSelected;
@@ -221,6 +227,7 @@ public sealed class DecorationTargetModItem : BaseViewModel
         _changed = changed;
     }
     public string ModId { get; }
+    public string SelectionKey => ModId;
     public string Name { get; }
     public string? Description { get; }
     public string? Image { get; }

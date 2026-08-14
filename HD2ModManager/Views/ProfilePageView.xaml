@@ -30,7 +30,8 @@
                         SearchActionsTemplate="{StaticResource ProfileSearchActions}"
                         RowActions="Details, MoveUp, MoveDown, RemoveFromProfile, DeleteFromLibrary"
                         RowActionInvoked="OnRowActionInvoked"
-                        RowClicked="OnProfileRowClick"
+                        SelectionPolicy="Multiple"
+                        SelectionRequested="OnSelectionRequested"
                         RowRightClicked="OnOpenDetailsOnRightClick"
                         BackgroundClicked="OnListBackgroundClick"/>
 </UserControl>

@@ -23,6 +23,7 @@ public partial class ModListPanel : UserControl
     private readonly DispatcherTimer _transitionTimer = new();
     private bool _transitionScheduled;
     private bool _isTransitionAnimationRunning;
+    private string? _selectionAnchorKey;
 
     public ModListPanel()
     {
@@ -45,6 +46,7 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty EmptyMessageProperty = DependencyProperty.Register(nameof(EmptyMessage), typeof(string), typeof(ModListPanel), new PropertyMetadata("没有可显示的 Mod。"));
     public static readonly DependencyProperty ShowHeaderProperty = DependencyProperty.Register(nameof(ShowHeader), typeof(bool), typeof(ModListPanel), new PropertyMetadata(true));
     public static readonly DependencyProperty ShowSelectionCheckboxProperty = DependencyProperty.Register(nameof(ShowSelectionCheckbox), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
+    public static readonly DependencyProperty SelectionPolicyProperty = DependencyProperty.Register(nameof(SelectionPolicy), typeof(ModListSelectionPolicy), typeof(ModListPanel), new PropertyMetadata(ModListSelectionPolicy.None));
     public static readonly DependencyProperty SearchTextProperty = DependencyProperty.Register(nameof(SearchText), typeof(string), typeof(ModListPanel), new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty = DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ModListPanel), new PropertyMetadata(ScrollBarVisibility.Auto));
     public static readonly DependencyProperty RowActionsProperty = DependencyProperty.Register(nameof(RowActions), typeof(ModListRowAction), typeof(ModListPanel), new PropertyMetadata(ModListRowAction.None, OnRowActionsChanged));
@@ -60,6 +62,7 @@ public partial class ModListPanel : UserControl
     public string EmptyMessage { get => (string)GetValue(EmptyMessageProperty); set => SetValue(EmptyMessageProperty, value); }
     public bool ShowHeader { get => (bool)GetValue(ShowHeaderProperty); set => SetValue(ShowHeaderProperty, value); }
     public bool ShowSelectionCheckbox { get => (bool)GetValue(ShowSelectionCheckboxProperty); set => SetValue(ShowSelectionCheckboxProperty, value); }
+    public ModListSelectionPolicy SelectionPolicy { get => (ModListSelectionPolicy)GetValue(SelectionPolicyProperty); set => SetValue(SelectionPolicyProperty, value); }
     public string SearchText { get => (string)GetValue(SearchTextProperty); set => SetValue(SearchTextProperty, value); }
     public ScrollBarVisibility VerticalScrollBarVisibility { get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty); set => SetValue(VerticalScrollBarVisibilityProperty, value); }
     public ModListRowAction RowActions { get => (ModListRowAction)GetValue(RowActionsProperty); set => SetValue(RowActionsProperty, value); }
@@ -69,6 +72,7 @@ public partial class ModListPanel : UserControl
 
     public event EventHandler<ModListRowEventArgs>? RowClicked;
     public event EventHandler<ModListRowEventArgs>? RowRightClicked;
+    public event EventHandler<ModListSelectionRequestEventArgs>? SelectionRequested;
     public event EventHandler<ModListRowActionEventArgs>? RowActionInvoked;
     public event EventHandler? BackgroundClicked;
 
@@ -111,8 +115,54 @@ public partial class ModListPanel : UserControl
     private void OnRowClick(object sender, MouseButtonEventArgs e)
     {
         if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null || FindAncestor<CheckBox>(e.OriginalSource as DependencyObject) is not null) return;
-        RowClicked?.Invoke(this, new ModListRowEventArgs((sender as FrameworkElement)?.DataContext, Keyboard.Modifiers));
+        var item = (sender as FrameworkElement)?.DataContext;
+        if (item is IModListSelectable selectable && SelectionPolicy is not ModListSelectionPolicy.None and not ModListSelectionPolicy.ReadOnly)
+        {
+            var selectedKeys = ResolveSelection(selectable, Keyboard.Modifiers);
+            SelectionRequested?.Invoke(this, new ModListSelectionRequestEventArgs(item, selectedKeys, Keyboard.Modifiers));
+        }
+        else
+        {
+            RowClicked?.Invoke(this, new ModListRowEventArgs(item, Keyboard.Modifiers));
+        }
         e.Handled = true;
+    }
+
+    private IReadOnlyList<string> ResolveSelection(IModListSelectable clicked, ModifierKeys modifiers)
+    {
+        var selectableItems = ItemsList.Items.OfType<IModListSelectable>().ToList();
+        if (SelectionPolicy == ModListSelectionPolicy.Single)
+        {
+            _selectionAnchorKey = clicked.SelectionKey;
+            return [clicked.SelectionKey];
+        }
+
+        var selected = selectableItems.Where(item => item.IsSelected).Select(item => item.SelectionKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if ((modifiers & ModifierKeys.Shift) == ModifierKeys.Shift && !string.IsNullOrWhiteSpace(_selectionAnchorKey))
+        {
+            var anchorIndex = selectableItems.FindIndex(item => string.Equals(item.SelectionKey, _selectionAnchorKey, StringComparison.OrdinalIgnoreCase));
+            var clickedIndex = selectableItems.FindIndex(item => string.Equals(item.SelectionKey, clicked.SelectionKey, StringComparison.OrdinalIgnoreCase));
+            if (anchorIndex >= 0 && clickedIndex >= 0)
+            {
+                selected.Clear();
+                foreach (var item in selectableItems.Skip(Math.Min(anchorIndex, clickedIndex)).Take(Math.Abs(anchorIndex - clickedIndex) + 1))
+                    selected.Add(item.SelectionKey);
+            }
+        }
+        else if ((modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+        {
+            if (!selected.Remove(clicked.SelectionKey)) selected.Add(clicked.SelectionKey);
+            _selectionAnchorKey = clicked.SelectionKey;
+        }
+        else
+        {
+            selected.Clear();
+            selected.Add(clicked.SelectionKey);
+            _selectionAnchorKey = clicked.SelectionKey;
+        }
+
+        return selectableItems.Where(item => selected.Contains(item.SelectionKey)).Select(item => item.SelectionKey).ToList();
     }
 
     private void OnRowRightClick(object sender, MouseButtonEventArgs e)
@@ -139,6 +189,30 @@ public partial class ModListPanel : UserControl
             return;
         }
         BackgroundClicked?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnItemsListPreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (e.Handled || e.Delta == 0) return;
+        var innerScrollViewer = FindDescendant<ScrollViewer>(ItemsList);
+        if (innerScrollViewer is null) return;
+
+        var scrollingUp = e.Delta > 0;
+        var canScrollInDirection = innerScrollViewer.ScrollableHeight > 0
+            && (scrollingUp
+                ? innerScrollViewer.VerticalOffset > 0.5
+                : innerScrollViewer.VerticalOffset < innerScrollViewer.ScrollableHeight - 0.5);
+        if (canScrollInDirection) return;
+
+        var outerScrollViewer = FindAncestor<ScrollViewer>(ItemsList);
+        if (outerScrollViewer is null) return;
+
+        e.Handled = true;
+        outerScrollViewer.RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
+        {
+            RoutedEvent = Mouse.MouseWheelEvent,
+            Source = outerScrollViewer,
+        });
     }
 
     private static void OnItemsSourceChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
@@ -313,6 +387,18 @@ public partial class ModListPanel : UserControl
         {
             if (current is T ancestor) return ancestor;
             current = VisualTreeHelper.GetParent(current);
+        }
+        return null;
+    }
+
+    private static T? FindDescendant<T>(DependencyObject? current) where T : DependencyObject
+    {
+        if (current is null) return null;
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(current); index++)
+        {
+            var child = VisualTreeHelper.GetChild(current, index);
+            if (child is T match) return match;
+            if (FindDescendant<T>(child) is { } nested) return nested;
         }
         return null;
     }

@@ -7,9 +7,9 @@ public partial class DecorationPlanPageView : UserControl
 {
     public DecorationPlanPageView() => InitializeComponent();
 
-    private void OnTargetModRowClick(object sender, ModListRowEventArgs e)
+    private void OnSelectionRequested(object? sender, ModListSelectionRequestEventArgs e)
     {
-        if (e.Item is DecorationTargetModItem item)
-            item.IsSelected = !item.IsSelected;
+        if (DataContext is DecorationPlanPageViewModel vm)
+            vm.ApplyTargetSelection(e.SelectedKeys);
     }
 }
