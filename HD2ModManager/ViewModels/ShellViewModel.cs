@@ -1161,7 +1161,6 @@ namespace HD2ModManager.ViewModels
                     return;
                 }
                 _selection.Clear();
-                RefreshCurrentPage();
             }
             else if (string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase))
             {
@@ -1185,7 +1184,6 @@ namespace HD2ModManager.ViewModels
                     return;
                 }
                 _selection.Clear();
-                RefreshCurrentPage();
             }
         }
 
@@ -1199,7 +1197,6 @@ namespace HD2ModManager.ViewModels
                 {
                     task.MarkCompleted();
                     _notificationService.Show($"已加入正在编辑的配置：{modName}");
-                    RefreshCurrentPage();
                 }
                 else
                 {
@@ -1226,7 +1223,6 @@ namespace HD2ModManager.ViewModels
                 {
                     task.MarkCompleted();
                     _notificationService.Show($"已从配置移除：{modName}");
-                    RefreshCurrentPage();
                 }
                 else
                 {
@@ -1285,7 +1281,6 @@ namespace HD2ModManager.ViewModels
             }
 
             _selection.Clear();
-            RefreshCurrentPage();
         }
 
         private async Task ExecuteSelectionDeleteFromLibraryAsync()

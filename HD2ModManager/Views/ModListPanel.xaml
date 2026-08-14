@@ -57,7 +57,8 @@
             </Grid>
         </Border>
         <Border Style="{StaticResource CardContainer}" Padding="0">
-            <ListBox ItemsSource="{Binding ItemsSource, ElementName=Root}"
+            <Grid ClipToBounds="True">
+            <ListBox x:Name="ItemsList" ItemsSource="{Binding ItemsSource, ElementName=Root}"
                      PreviewMouseLeftButtonDown="OnListBackgroundMouseDown"
                      SelectionMode="Multiple"
                      ScrollViewer.VerticalScrollBarVisibility="{Binding VerticalScrollBarVisibility, ElementName=Root}">
@@ -205,6 +206,8 @@
                     </Style>
                 </ListBox.Style>
             </ListBox>
+            <Canvas x:Name="TransitionOverlay" IsHitTestVisible="False" Panel.ZIndex="10"/>
+            </Grid>
         </Border>
     </DockPanel>
 </UserControl>

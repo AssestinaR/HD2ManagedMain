@@ -352,7 +352,7 @@ namespace HD2ModManager.ViewModels
         private CancellationTokenSource? _thumbnailCancellation;
         private bool _disposed;
 
-        public BulkObservableCollection<ProfileListItemViewModel> Items { get; } = new();
+        public BulkObservableCollection<ProfileListItemViewModel> Items { get; } = new(item => item.Guid);
         public bool HasItems => Items.Count != 0;
         public ObservableCollection<string> Profiles { get; } = new();
         public string Query
@@ -375,7 +375,7 @@ namespace HD2ModManager.ViewModels
             {
                 if (!SetField(ref _showOnlyOutdated, value)) return;
                 OnPropertyChanged(nameof(OutdatedFilterText));
-                Refresh();
+                Refresh(ListTransitionKind.Filter);
             }
         }
         public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
@@ -575,10 +575,9 @@ namespace HD2ModManager.ViewModels
             var guid = parameter as string;
             if (string.IsNullOrWhiteSpace(guid)) return;
             await _profiles.MoveModInSelectedAsync(guid, direction);
-            Refresh();
         }
 
-        public void Refresh()
+        public void Refresh(ListTransitionKind transitionKind = ListTransitionKind.Automatic)
         {
             Profiles.Clear();
             foreach (var profileItem in _profiles.All()) Profiles.Add(profileItem.Name);
@@ -598,7 +597,7 @@ namespace HD2ModManager.ViewModels
             var profile = _profiles.SelectedProfile;
             if (profile == null)
             {
-                Items.ReplaceWith(Array.Empty<ProfileListItemViewModel>());
+                Items.ReplaceWith(Array.Empty<ProfileListItemViewModel>(), transitionKind);
                 OnPropertyChanged(nameof(HasItems));
                 return;
             }
@@ -614,7 +613,7 @@ namespace HD2ModManager.ViewModels
                 _userStatuses.TryGetValue(guid, out var status);
                 items.Add(new ProfileListItemViewModel(guid, mod?.Name ?? guid, mod?.Description, mod?.Image, ModAssetSummaryFormatter.Format(assetSummary), entry.LoadOrder, entry.AddedUtc, IsSelected(guid), derived?.UnitCompatibility, status));
             }
-            Items.ReplaceWith(items);
+            Items.ReplaceWith(items, transitionKind);
             OnPropertyChanged(nameof(HasItems));
             OnPropertyChanged(nameof(ItemCountText));
             OnPropertyChanged(nameof(HeaderSummary));
@@ -673,26 +672,26 @@ namespace HD2ModManager.ViewModels
             try
             {
                 await Task.Delay(180, cancellationToken);
-                if (!cancellationToken.IsCancellationRequested) Refresh();
+                if (!cancellationToken.IsCancellationRequested) Refresh(ListTransitionKind.Filter);
             }
             catch (OperationCanceledException) { }
         }
 
-        private async Task RefreshUserStatusesAsync()
+        private void RefreshUserStatuses()
         {
-            await Task.Yield();
             var statuses = _derivedState.ProjectStatuses(_profiles.SelectedProfileId);
             _userStatuses.Clear();
             foreach (var pair in statuses) _userStatuses[pair.Key.Value.ToString("N")] = pair.Value;
-            Refresh();
         }
 
         private void QueueStatusRefresh()
         {
             if (_disposed) return;
+            // Status projection is part of the same list snapshot. A second Reset after
+            // Task.Yield used to replace the containers while a list transition was playing.
+            RefreshUserStatuses();
             Refresh();
             QueueThumbnailRefresh();
-            _ = RefreshUserStatusesAsync();
         }
 
         private static void RunOnUiThread(Action action)

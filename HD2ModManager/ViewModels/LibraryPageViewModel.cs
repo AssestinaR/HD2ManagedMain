@@ -29,7 +29,7 @@ namespace HD2ModManager.ViewModels
         private int _lifecycleVersion;
         private bool _disposed;
 
-        public BulkObservableCollection<ModCardViewModel> Items { get; } = new();
+        public BulkObservableCollection<ModCardViewModel> Items { get; } = new(item => item.Mod.Guid);
         public bool HasItems => Items.Count != 0;
 
         private string _query = string.Empty;
@@ -54,7 +54,7 @@ namespace HD2ModManager.ViewModels
             {
                 if (!SetField(ref _showOnlyOutdated, value)) return;
                 OnPropertyChanged(nameof(OutdatedFilterText));
-                Refresh();
+                Refresh(ListTransitionKind.Filter);
             }
         }
         public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
@@ -214,7 +214,7 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        public void Refresh()
+        public void Refresh(ListTransitionKind transitionKind = ListTransitionKind.Automatic)
         {
             var all = _library.All().ToList();
             if (_hideSelectedProfileMembers && _profiles?.SelectedProfile is not null)
@@ -241,7 +241,7 @@ namespace HD2ModManager.ViewModels
                     return new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, derived?.UnitCompatibility, status, thumbnailSource);
                 })
                 .ToList();
-            Items.ReplaceWith(cards);
+            Items.ReplaceWith(cards, transitionKind);
             OnPropertyChanged(nameof(HasItems));
             OnPropertyChanged(nameof(EmptyMessage));
             OnPropertyChanged(nameof(ItemCountText));
@@ -258,7 +258,7 @@ namespace HD2ModManager.ViewModels
             try
             {
                 await Task.Delay(180, cancellationToken);
-                if (!_disposed && !cancellationToken.IsCancellationRequested && _searchCancellation?.Token == cancellationToken) Refresh();
+                if (!_disposed && !cancellationToken.IsCancellationRequested && _searchCancellation?.Token == cancellationToken) Refresh(ListTransitionKind.Filter);
             }
             catch (OperationCanceledException) { }
         }
@@ -303,7 +303,7 @@ namespace HD2ModManager.ViewModels
                     }
                 }
                 if (IsCurrentThumbnailRefresh(version, cancellation))
-                    RunOnUiThread(Refresh);
+                    RunOnUiThread(() => Refresh());
             }
             catch (OperationCanceledException) { }
         }

@@ -276,7 +276,6 @@ namespace HD2ModManager.ViewModels
             {
                 _notifications.Show(_editMode == "Move" ? "已移动配置项。" : "已插入配置项。");
                 CancelEdit();
-                _refresh();
             }
         }
 

@@ -1,10 +1,14 @@
 using System.Collections;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
+using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views;
 
@@ -12,10 +16,30 @@ namespace HD2ModManager.Views;
 public partial class ModListPanel : UserControl
 {
     private readonly Dictionary<Border, SelectionIndicatorSubscription> _selectionIndicatorSubscriptions = new();
+    private INotifyCollectionChanged? _observedItems;
+    private IListTransitionNotifier? _transitionNotifier;
+    private ListTransitionBatch? _pendingTransitionBatch;
+    private Dictionary<string, ListTransitionSnapshot> _beforeTransition = new(StringComparer.OrdinalIgnoreCase);
+    private readonly DispatcherTimer _transitionTimer = new();
+    private bool _transitionScheduled;
+    private bool _isTransitionAnimationRunning;
 
-    public ModListPanel() => InitializeComponent();
+    public ModListPanel()
+    {
+        InitializeComponent();
+        _transitionTimer.Interval = TimeSpan.FromMilliseconds(230);
+        _transitionTimer.Tick += OnTransitionTimerTick;
+        Loaded += (_, _) => ObserveItemsSource(ItemsSource);
+        Unloaded += (_, _) =>
+        {
+            _transitionTimer.Stop();
+            ItemsList.LayoutUpdated -= OnItemsListLayoutUpdated;
+            _transitionScheduled = false;
+            ObserveItemsSource(null);
+        };
+    }
 
-    public static readonly DependencyProperty ItemsSourceProperty = DependencyProperty.Register(nameof(ItemsSource), typeof(IEnumerable), typeof(ModListPanel));
+    public static readonly DependencyProperty ItemsSourceProperty = DependencyProperty.Register(nameof(ItemsSource), typeof(IEnumerable), typeof(ModListPanel), new PropertyMetadata(null, OnItemsSourceChanged));
     public static readonly DependencyProperty HeaderTitleProperty = DependencyProperty.Register(nameof(HeaderTitle), typeof(string), typeof(ModListPanel), new PropertyMetadata("模组"));
     public static readonly DependencyProperty HeaderSummaryProperty = DependencyProperty.Register(nameof(HeaderSummary), typeof(string), typeof(ModListPanel), new PropertyMetadata(string.Empty));
     public static readonly DependencyProperty EmptyMessageProperty = DependencyProperty.Register(nameof(EmptyMessage), typeof(string), typeof(ModListPanel), new PropertyMetadata("没有可显示的 Mod。"));
@@ -107,6 +131,172 @@ public partial class ModListPanel : UserControl
             return;
         }
         BackgroundClicked?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static void OnItemsSourceChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
+    {
+        if (target is ModListPanel panel && panel.IsLoaded)
+            panel.ObserveItemsSource(args.NewValue as IEnumerable);
+    }
+
+    private void ObserveItemsSource(IEnumerable? source)
+    {
+        if (_observedItems is not null) _observedItems.CollectionChanged -= OnItemsCollectionChanged;
+        if (_transitionNotifier is not null) _transitionNotifier.TransitionStarting -= OnItemsTransitionStarting;
+        _observedItems = source as INotifyCollectionChanged;
+        _transitionNotifier = source as IListTransitionNotifier;
+        if (_observedItems is not null) _observedItems.CollectionChanged += OnItemsCollectionChanged;
+        if (_transitionNotifier is not null) _transitionNotifier.TransitionStarting += OnItemsTransitionStarting;
+    }
+
+    private void OnItemsTransitionStarting(object? sender, ListTransitionBatch batch)
+    {
+        _pendingTransitionBatch = batch;
+        if (batch.Animate) CaptureTransitionSnapshot();
+    }
+
+    private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args)
+    {
+        if (_beforeTransition.Count == 0) CaptureTransitionSnapshot();
+        if (_beforeTransition.Count != 0) QueueTransitionAfterLayout();
+    }
+
+    private void CaptureTransitionSnapshot()
+    {
+        if (!IsLoaded || ItemsList.ItemContainerGenerator.Status != System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated) return;
+        var snapshots = new Dictionary<string, ListTransitionSnapshot>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in ItemsList.Items)
+        {
+            if (ItemsList.ItemContainerGenerator.ContainerFromItem(item) is not FrameworkElement container || !container.IsVisible) continue;
+            var key = GetItemKey(item);
+            if (key is null) continue;
+            var position = container.TransformToAncestor(ItemsList).Transform(new Point());
+            if (container.ActualWidth <= 0 || container.ActualHeight <= 0) continue;
+            snapshots[key] = new ListTransitionSnapshot(key, position, new Size(container.ActualWidth, container.ActualHeight), CaptureContainerBitmap(container));
+        }
+        _beforeTransition = snapshots;
+    }
+
+    private void QueueTransitionAfterLayout()
+    {
+        if (_transitionScheduled || _isTransitionAnimationRunning) return;
+        _transitionScheduled = true;
+        ItemsList.LayoutUpdated += OnItemsListLayoutUpdated;
+    }
+
+    private void OnItemsListLayoutUpdated(object? sender, EventArgs e)
+    {
+        if (!_transitionScheduled) return;
+        if (_isTransitionAnimationRunning) return;
+        if (ItemsList.ItemContainerGenerator.Status != System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated) return;
+
+        _transitionScheduled = false;
+        ItemsList.LayoutUpdated -= OnItemsListLayoutUpdated;
+        _ = Dispatcher.InvokeAsync(PlayPendingTransition, DispatcherPriority.Render);
+    }
+
+    private void PlayPendingTransition()
+    {
+        if (_beforeTransition.Count == 0 || !IsLoaded) return;
+        var batch = _pendingTransitionBatch;
+        _pendingTransitionBatch = null;
+        if (batch is { Animate: false })
+        {
+            _beforeTransition.Clear();
+            return;
+        }
+        var before = _beforeTransition;
+        _beforeTransition = new Dictionary<string, ListTransitionSnapshot>(StringComparer.OrdinalIgnoreCase);
+        var animated = false;
+        var afterKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in ItemsList.Items)
+        {
+            if (ItemsList.ItemContainerGenerator.ContainerFromItem(item) is not FrameworkElement container || !container.IsVisible) continue;
+            var key = GetItemKey(item);
+            if (key is null) continue;
+            afterKeys.Add(key);
+            var position = container.TransformToAncestor(ItemsList).Transform(new Point());
+            animated |= before.TryGetValue(key, out var old)
+                ? AnimateMovedContainer(container, old.Position.Y - position.Y)
+                : AnimateAddedContainer(container);
+        }
+
+        foreach (var removed in before.Values.Where(snapshot => !afterKeys.Contains(snapshot.Key)).Take(12))
+            animated |= AnimateRemovedSnapshot(removed);
+
+        if (!animated) return;
+        _isTransitionAnimationRunning = true;
+        _transitionTimer.Stop();
+        _transitionTimer.Start();
+    }
+
+    private void OnTransitionTimerTick(object? sender, EventArgs e)
+    {
+        _transitionTimer.Stop();
+        _isTransitionAnimationRunning = false;
+        if (_beforeTransition.Count != 0) QueueTransitionAfterLayout();
+    }
+
+    private static bool AnimateMovedContainer(FrameworkElement container, double deltaY)
+    {
+        if (Math.Abs(deltaY) < 0.5) return false;
+        var transform = new TranslateTransform(0, deltaY);
+        container.RenderTransform = transform;
+        transform.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(200))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        });
+        return true;
+    }
+
+    private static bool AnimateAddedContainer(FrameworkElement container)
+    {
+        container.Opacity = 0;
+        container.RenderTransform = new TranslateTransform(0, 5);
+        container.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(120)));
+        ((TranslateTransform)container.RenderTransform).BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(140))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        });
+        return true;
+    }
+
+    private bool AnimateRemovedSnapshot(ListTransitionSnapshot snapshot)
+    {
+        if (snapshot.Bitmap is null) return false;
+        var ghost = new Image { Source = snapshot.Bitmap, Width = snapshot.Size.Width, Height = snapshot.Size.Height, Opacity = 1, IsHitTestVisible = false };
+        Canvas.SetLeft(ghost, snapshot.Position.X);
+        Canvas.SetTop(ghost, snapshot.Position.Y);
+        TransitionOverlay.Children.Add(ghost);
+        var animation = new DoubleAnimation(0, TimeSpan.FromMilliseconds(120)) { BeginTime = TimeSpan.FromMilliseconds(20) };
+        animation.Completed += (_, _) => TransitionOverlay.Children.Remove(ghost);
+        ghost.BeginAnimation(OpacityProperty, animation);
+        return true;
+    }
+
+    private static BitmapSource? CaptureContainerBitmap(FrameworkElement container)
+    {
+        try
+        {
+            var width = Math.Max(1, (int)Math.Ceiling(container.ActualWidth));
+            var height = Math.Max(1, (int)Math.Ceiling(container.ActualHeight));
+            var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(container);
+            bitmap.Freeze();
+            return bitmap;
+        }
+        catch { return null; }
+    }
+
+    private static string? GetItemKey(object? item)
+    {
+        if (item is null) return null;
+        foreach (var propertyName in new[] { "Guid", "ModId", "Id" })
+        {
+            if (item.GetType().GetProperty(propertyName)?.GetValue(item)?.ToString() is { Length: > 0 } value) return value;
+        }
+        var mod = item.GetType().GetProperty("Mod")?.GetValue(item);
+        return mod?.GetType().GetProperty("Guid")?.GetValue(mod)?.ToString();
     }
 
     private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
@@ -213,6 +403,8 @@ public partial class ModListPanel : UserControl
         public PropertyChangedEventHandler? Handler { get; set; }
         public bool IsSelected { get; set; }
     }
+
+    private sealed record ListTransitionSnapshot(string Key, Point Position, Size Size, BitmapSource? Bitmap);
 }
 
 public sealed class ModListRowEventArgs(object? item, ModifierKeys modifiers) : EventArgs
