@@ -39,22 +39,30 @@ namespace HD2ModManager.Views
             }
         }
 
-        private void OnRenameModClick(object sender, RoutedEventArgs e)
+        private void OnRowActionInvoked(object? sender, ModListRowActionEventArgs e)
         {
             EnsureVM();
-            var card = GetCard(sender);
-            if (card == null) return;
+            if (VM is null || e.Item is not ModCardViewModel card) return;
+            ClearTransientSelection();
             var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as ShellViewModel;
-            shell?.BeginBottomBarNameEdit(card.Mod.Guid, card.Mod.Name);
-        }
-
-        private void OnOpenDetailsClick(object sender, RoutedEventArgs e)
-        {
-            EnsureVM();
-            var card = GetCard(sender);
-            if (card == null) return;
-            var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as HD2ModManager.ViewModels.ShellViewModel;
-            shell?.OpenModDetailsFromPage(VM, card.Mod.Guid);
+            switch (e.Action)
+            {
+                case ModListRowAction.Rename:
+                    shell?.BeginBottomBarNameEdit(card.Mod.Guid, card.Mod.Name);
+                    break;
+                case ModListRowAction.Details:
+                    shell?.OpenModDetailsFromPage(VM, card.Mod.Guid);
+                    break;
+                case ModListRowAction.AddToProfile:
+                    VM.AddToProfileCommand.Execute(card);
+                    break;
+                case ModListRowAction.OpenFolder:
+                    VM.OpenFolderCommand.Execute(card);
+                    break;
+                case ModListRowAction.DeleteFromLibrary:
+                    VM.RemoveCommand.Execute(card);
+                    break;
+            }
         }
 
         private void OnOpenDetailsOnRightClick(object sender, ModListRowEventArgs e)
@@ -62,11 +70,6 @@ namespace HD2ModManager.Views
             if (e.Item is not ModCardViewModel card) return;
             var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as ShellViewModel;
             shell?.OpenModDetailsFromPage(VM, card.Mod.Guid);
-        }
-
-        private void OnRowActionMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
-        {
-            ClearTransientSelection();
         }
 
         private void OnListBackgroundClick(object? sender, EventArgs e)
@@ -103,11 +106,6 @@ namespace HD2ModManager.Views
             {
                 VM?.SelectRow(card, e.Modifiers);
             }
-        }
-
-        private static ModCardViewModel? GetCard(object sender)
-        {
-            return (sender as FrameworkElement)?.DataContext as ModCardViewModel;
         }
 
     }

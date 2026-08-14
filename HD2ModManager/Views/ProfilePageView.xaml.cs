@@ -14,13 +14,29 @@ public partial class ProfilePageView : UserControl
             vm.SelectRow(item.Guid, e.Modifiers);
     }
 
-    private void OnOpenDetailsClick(object sender, RoutedEventArgs e)
+    private void OnRowActionInvoked(object? sender, ModListRowActionEventArgs e)
     {
-        if (DataContext is not ProfilePageViewModel vm) return;
-        if ((sender as FrameworkElement)?.DataContext is not ProfileListItemViewModel item) return;
+        if (DataContext is not ProfilePageViewModel vm || e.Item is not ProfileListItemViewModel item) return;
+        ClearTransientSelection();
         var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as ShellViewModel;
-        shell?.OpenModDetailsFromPage(vm, item.Guid);
-        e.Handled = true;
+        switch (e.Action)
+        {
+            case ModListRowAction.Details:
+                shell?.OpenModDetailsFromPage(vm, item.Guid);
+                break;
+            case ModListRowAction.MoveUp:
+                vm.MoveUpCommand.Execute(item.Guid);
+                break;
+            case ModListRowAction.MoveDown:
+                vm.MoveDownCommand.Execute(item.Guid);
+                break;
+            case ModListRowAction.RemoveFromProfile:
+                vm.RemoveModCommand.Execute(item.Guid);
+                break;
+            case ModListRowAction.DeleteFromLibrary:
+                vm.DeleteModFromLibraryCommand.Execute(item.Guid);
+                break;
+        }
     }
 
     private void OnOpenDetailsOnRightClick(object sender, ModListRowEventArgs e)
@@ -29,8 +45,6 @@ public partial class ProfilePageView : UserControl
         var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as ShellViewModel;
         shell?.OpenModDetailsFromPage(vm, item.Guid);
     }
-
-    private void OnRowActionMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e) => ClearTransientSelection();
 
     private void OnListBackgroundClick(object? sender, EventArgs e) => ClearTransientSelection();
 

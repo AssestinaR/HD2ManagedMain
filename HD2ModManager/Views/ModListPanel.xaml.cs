@@ -47,7 +47,7 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty ShowSelectionCheckboxProperty = DependencyProperty.Register(nameof(ShowSelectionCheckbox), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty SearchTextProperty = DependencyProperty.Register(nameof(SearchText), typeof(string), typeof(ModListPanel), new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty = DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ModListPanel), new PropertyMetadata(ScrollBarVisibility.Auto));
-    public static readonly DependencyProperty RowActionsTemplateProperty = DependencyProperty.Register(nameof(RowActionsTemplate), typeof(DataTemplate), typeof(ModListPanel), new PropertyMetadata(null, OnRowActionsTemplateChanged));
+    public static readonly DependencyProperty RowActionsProperty = DependencyProperty.Register(nameof(RowActions), typeof(ModListRowAction), typeof(ModListPanel), new PropertyMetadata(ModListRowAction.None, OnRowActionsChanged));
     public static readonly DependencyProperty SearchActionsTemplateProperty = DependencyProperty.Register(nameof(SearchActionsTemplate), typeof(DataTemplate), typeof(ModListPanel), new PropertyMetadata(null, OnSearchActionsTemplateChanged));
     private static readonly DependencyPropertyKey HasRowActionsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasRowActions), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty HasRowActionsProperty = HasRowActionsPropertyKey.DependencyProperty;
@@ -62,13 +62,14 @@ public partial class ModListPanel : UserControl
     public bool ShowSelectionCheckbox { get => (bool)GetValue(ShowSelectionCheckboxProperty); set => SetValue(ShowSelectionCheckboxProperty, value); }
     public string SearchText { get => (string)GetValue(SearchTextProperty); set => SetValue(SearchTextProperty, value); }
     public ScrollBarVisibility VerticalScrollBarVisibility { get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty); set => SetValue(VerticalScrollBarVisibilityProperty, value); }
-    public DataTemplate? RowActionsTemplate { get => (DataTemplate?)GetValue(RowActionsTemplateProperty); set => SetValue(RowActionsTemplateProperty, value); }
+    public ModListRowAction RowActions { get => (ModListRowAction)GetValue(RowActionsProperty); set => SetValue(RowActionsProperty, value); }
     public DataTemplate? SearchActionsTemplate { get => (DataTemplate?)GetValue(SearchActionsTemplateProperty); set => SetValue(SearchActionsTemplateProperty, value); }
     public bool HasRowActions => (bool)GetValue(HasRowActionsProperty);
     public bool HasSearchActions => (bool)GetValue(HasSearchActionsProperty);
 
     public event EventHandler<ModListRowEventArgs>? RowClicked;
     public event EventHandler<ModListRowEventArgs>? RowRightClicked;
+    public event EventHandler<ModListRowActionEventArgs>? RowActionInvoked;
     public event EventHandler? BackgroundClicked;
 
     private void OnToggleSearchClick(object sender, RoutedEventArgs e)
@@ -118,6 +119,13 @@ public partial class ModListPanel : UserControl
     {
         if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null) return;
         RowRightClicked?.Invoke(this, new ModListRowEventArgs((sender as FrameworkElement)?.DataContext, Keyboard.Modifiers));
+        e.Handled = true;
+    }
+
+    private void OnRowActionClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: { } item, Tag: ModListRowAction action }) return;
+        RowActionInvoked?.Invoke(this, new ModListRowActionEventArgs(item, action));
         e.Handled = true;
     }
 
@@ -391,8 +399,8 @@ public partial class ModListPanel : UserControl
         });
     }
 
-    private static void OnRowActionsTemplateChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
-        => target.SetValue(HasRowActionsPropertyKey, args.NewValue is DataTemplate);
+    private static void OnRowActionsChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
+        => target.SetValue(HasRowActionsPropertyKey, (ModListRowAction)args.NewValue != ModListRowAction.None);
 
     private static void OnSearchActionsTemplateChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
         => target.SetValue(HasSearchActionsPropertyKey, args.NewValue is DataTemplate);
@@ -411,4 +419,35 @@ public sealed class ModListRowEventArgs(object? item, ModifierKeys modifiers) : 
 {
     public object? Item { get; } = item;
     public ModifierKeys Modifiers { get; } = modifiers;
+}
+
+[Flags]
+public enum ModListRowAction
+{
+    None = 0,
+    Rename = 1 << 0,
+    Details = 1 << 1,
+    AddToProfile = 1 << 2,
+    OpenFolder = 1 << 3,
+    MoveUp = 1 << 4,
+    MoveDown = 1 << 5,
+    RemoveFromProfile = 1 << 6,
+    DeleteFromLibrary = 1 << 7,
+}
+
+public sealed class ModListRowActionEventArgs(object item, ModListRowAction action) : EventArgs
+{
+    public object Item { get; } = item;
+    public ModListRowAction Action { get; } = action;
+}
+
+public sealed class RowActionVisibilityConverter : System.Windows.Data.IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
+        => value is ModListRowAction actions && parameter is ModListRowAction action && actions.HasFlag(action)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
+        => throw new NotSupportedException();
 }

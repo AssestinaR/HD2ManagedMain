@@ -21,15 +21,6 @@
         <DataTemplate x:Key="LibrarySearchActions">
             <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
         </DataTemplate>
-        <DataTemplate x:Key="LibraryRowActions">
-            <StackPanel Orientation="Horizontal">
-                <Button Style="{StaticResource RowIconButton}" ToolTip="重命名" ContentTemplate="{StaticResource RenameIcon}" Click="OnRenameModClick" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
-                <Button Style="{StaticResource RowIconButton}" ToolTip="查看详情" ContentTemplate="{StaticResource DetailsIcon}" Click="OnOpenDetailsClick" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
-                <Button Style="{StaticResource RowIconButton}" ToolTip="加入正在编辑的配置" Command="{Binding DataContext.AddToProfileCommand, RelativeSource={RelativeSource AncestorType=local:ModListPanel}}" CommandParameter="{Binding}" ContentTemplate="{StaticResource AddIcon}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
-                <Button Style="{StaticResource RowIconButton}" ToolTip="打开文件夹" Command="{Binding DataContext.OpenFolderCommand, RelativeSource={RelativeSource AncestorType=local:ModListPanel}}" CommandParameter="{Binding}" ContentTemplate="{StaticResource FolderIcon}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
-                <Button Style="{StaticResource RowIconButton}" ToolTip="删除" Command="{Binding DataContext.RemoveCommand, RelativeSource={RelativeSource AncestorType=local:ModListPanel}}" CommandParameter="{Binding}" ContentTemplate="{StaticResource DeleteIcon}" Foreground="{StaticResource StatusDanger}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
-            </StackPanel>
-        </DataTemplate>
     </UserControl.Resources>
     <local:ModListPanel ItemsSource="{Binding Items}"
                         HeaderTitle="模组库"
@@ -37,7 +28,8 @@
                         EmptyMessage="{Binding EmptyMessage}"
                         SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
                         SearchActionsTemplate="{StaticResource LibrarySearchActions}"
-                        RowActionsTemplate="{StaticResource LibraryRowActions}"
+                        RowActions="Rename, Details, AddToProfile, OpenFolder, DeleteFromLibrary"
+                        RowActionInvoked="OnRowActionInvoked"
                         RowClicked="OnModRowClick"
                         RowRightClicked="OnOpenDetailsOnRightClick"
                         BackgroundClicked="OnListBackgroundClick"/>

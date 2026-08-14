@@ -21,15 +21,6 @@
         <DataTemplate x:Key="ProfileSearchActions">
             <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
         </DataTemplate>
-        <DataTemplate x:Key="ProfileRowActions">
-            <StackPanel Orientation="Horizontal">
-                <Button ToolTip="查看详情" Click="OnOpenDetailsClick" Style="{StaticResource RowIconButton}" ContentTemplate="{StaticResource DetailsIcon}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
-                <Button ToolTip="上移" Command="{Binding DataContext.MoveUpCommand, RelativeSource={RelativeSource AncestorType=local:ModListPanel}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}" ContentTemplate="{StaticResource MoveUpIcon}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
-                <Button ToolTip="下移" Command="{Binding DataContext.MoveDownCommand, RelativeSource={RelativeSource AncestorType=local:ModListPanel}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}" ContentTemplate="{StaticResource MoveDownIcon}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
-                <Button ToolTip="从配置移除" Command="{Binding DataContext.RemoveModCommand, RelativeSource={RelativeSource AncestorType=local:ModListPanel}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}" ContentTemplate="{StaticResource RemoveIcon}" Foreground="{StaticResource StatusDanger}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
-                <Button ToolTip="从模组库彻底删除" Command="{Binding DataContext.DeleteModFromLibraryCommand, RelativeSource={RelativeSource AncestorType=local:ModListPanel}}" CommandParameter="{Binding Guid}" Style="{StaticResource RowIconButton}" ContentTemplate="{StaticResource DeleteIcon}" Foreground="{StaticResource StatusDanger}" PreviewMouseLeftButtonDown="OnRowActionMouseDown"/>
-            </StackPanel>
-        </DataTemplate>
     </UserControl.Resources>
     <local:ModListPanel ItemsSource="{Binding Items}"
                         HeaderTitle="{Binding CurrentProfileTitle}"
@@ -37,7 +28,8 @@
                         EmptyMessage="{Binding EmptyMessage}"
                         SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
                         SearchActionsTemplate="{StaticResource ProfileSearchActions}"
-                        RowActionsTemplate="{StaticResource ProfileRowActions}"
+                        RowActions="Details, MoveUp, MoveDown, RemoveFromProfile, DeleteFromLibrary"
+                        RowActionInvoked="OnRowActionInvoked"
                         RowClicked="OnProfileRowClick"
                         RowRightClicked="OnOpenDetailsOnRightClick"
                         BackgroundClicked="OnListBackgroundClick"/>

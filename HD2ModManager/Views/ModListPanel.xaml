@@ -6,6 +6,7 @@
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
+        <local:RowActionVisibilityConverter x:Key="RowActionVisibility"/>
     </UserControl.Resources>
     <DockPanel Background="Transparent">
         <Border x:Name="HeaderCard"
@@ -118,20 +119,45 @@
                                                    TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                                     </Grid>
                                 </StackPanel>
-                                <Border x:Name="ActionScrim" Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center"
-                                        Width="220" Height="32" Margin="0,0,2,0" CornerRadius="16" Opacity="0" IsHitTestVisible="False">
-                                    <Border.Background>
-                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                                            <GradientStop Color="#00FFFFFF" Offset="0"/>
-                                            <GradientStop Color="#FFFFFFFF" Offset="0.28"/>
-                                            <GradientStop Color="#FFFFFFFF" Offset="1"/>
-                                        </LinearGradientBrush>
-                                    </Border.Background>
+                                <Border x:Name="ActionPanel" Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                        Height="32" Padding="2" Margin="0,0,2,0" CornerRadius="16"
+                                        Background="{StaticResource SurfaceCard}" Opacity="0" IsHitTestVisible="False"
+                                        Visibility="{Binding HasRowActions, ElementName=Root, Converter={StaticResource BoolToVis}}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Tag="{x:Static local:ModListRowAction.Rename}" ToolTip="重命名" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
+                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.Rename}}">
+                                            <Path Width="16" Height="16" Data="M3,12.5 L3,14 L4.5,14 L13,5.5 L10.5,3 Z M9.5,4 L12,6.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.Details}" ToolTip="查看详情" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
+                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.Details}}">
+                                            <Path Width="16" Height="16" Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 M8,6 L8,11 M8,4 L8,4.2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.AddToProfile}" ToolTip="加入正在编辑的配置" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
+                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.AddToProfile}}">
+                                            <Path Width="16" Height="16" Data="M8,2 L8,14 M2,8 L14,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.OpenFolder}" ToolTip="打开文件夹" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
+                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.OpenFolder}}">
+                                            <Path Width="16" Height="16" Data="M1.5,5 L6.5,5 L8,3 L14.5,3 L14.5,13 L1.5,13 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.MoveUp}" ToolTip="上移" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
+                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.MoveUp}}">
+                                            <Path Width="16" Height="16" Data="M8,13 L8,3 M3.5,7.5 L8,3 L12.5,7.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeLineJoin="Round"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.MoveDown}" ToolTip="下移" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
+                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.MoveDown}}">
+                                            <Path Width="16" Height="16" Data="M8,3 L8,13 M3.5,8.5 L8,13 L12.5,8.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeLineJoin="Round"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.RemoveFromProfile}" ToolTip="从配置移除" Style="{StaticResource RowIconButton}" Margin="0" Foreground="{StaticResource StatusDanger}" Click="OnRowActionClick"
+                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.RemoveFromProfile}}">
+                                            <Path Width="16" Height="16" Data="M3,8 L13,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.8" StrokeStartLineCap="Round"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.DeleteFromLibrary}" ToolTip="从模组库彻底删除" Style="{StaticResource RowIconButton}" Margin="0" Foreground="{StaticResource StatusDanger}" Click="OnRowActionClick"
+                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.DeleteFromLibrary}}">
+                                            <Path Width="16" Height="16" Data="M3,5 L13,5 M6,5 L6,3 L10,3 L10,5 M4.5,5 L5,14 L11,14 L11.5,5 M7,7.5 L7,11.5 M9,7.5 L9,11.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
+                                        </Button>
+                                    </StackPanel>
                                 </Border>
-                                <ContentPresenter x:Name="ActionPanel" Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center"
-                                                  Content="{Binding}" ContentTemplate="{Binding RowActionsTemplate, ElementName=Root}"
-                                                  Opacity="0" IsHitTestVisible="False"
-                                                  Visibility="{Binding HasRowActions, ElementName=Root, Converter={StaticResource BoolToVis}}"/>
                             </Grid>
                         </Border>
                         <Border x:Name="SelectedIndicator"
@@ -165,12 +191,10 @@
                                 </MultiDataTrigger.Conditions>
                                 <Setter TargetName="ActionPanel" Property="Opacity" Value="1"/>
                                 <Setter TargetName="ActionPanel" Property="IsHitTestVisible" Value="True"/>
-                                <Setter TargetName="ActionScrim" Property="Opacity" Value="1"/>
                                 <MultiDataTrigger.EnterActions>
                                     <BeginStoryboard>
                                         <Storyboard>
                                             <DoubleAnimation Storyboard.TargetName="ActionPanel" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
-                                            <DoubleAnimation Storyboard.TargetName="ActionScrim" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
                                         </Storyboard>
                                     </BeginStoryboard>
                                 </MultiDataTrigger.EnterActions>
@@ -178,7 +202,6 @@
                                     <BeginStoryboard>
                                         <Storyboard>
                                             <DoubleAnimation Storyboard.TargetName="ActionPanel" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
-                                            <DoubleAnimation Storyboard.TargetName="ActionScrim" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
                                         </Storyboard>
                                     </BeginStoryboard>
                                 </MultiDataTrigger.ExitActions>
