@@ -39,6 +39,22 @@ public sealed class ModListPanelTestPageViewModel : PageViewModel
         LastAction = selected.Count == 0 ? "未选择条目。" : $"已选择 {selected.Count} 个条目。";
     }
 
+    public void Reorder(IReadOnlyList<string> draggedKeys, int insertionIndex)
+    {
+        var dragged = draggedKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ordered = Items.ToList();
+        var moving = ordered.Where(item => dragged.Contains(item.Guid)).ToList();
+        if (moving.Count == 0) return;
+
+        var originalIndex = Math.Clamp(insertionIndex, 0, ordered.Count);
+        var removedBefore = ordered.Take(originalIndex).Count(item => dragged.Contains(item.Guid));
+        ordered.RemoveAll(item => dragged.Contains(item.Guid));
+        ordered.InsertRange(Math.Clamp(originalIndex - removedBefore, 0, ordered.Count), moving);
+        if (Items.Select(item => item.Guid).SequenceEqual(ordered.Select(item => item.Guid), StringComparer.OrdinalIgnoreCase)) return;
+        Items.ReplaceWith(ordered);
+        LastAction = $"已通过拖拽移动 {moving.Count} 个条目。";
+    }
+
     private void Add()
     {
         var items = Items.ToList();

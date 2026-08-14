@@ -40,9 +40,11 @@
                                     HeaderTitle="固定高度列表"
                                     HeaderSummary="条目超出时应由列表内部滚动。"
                                     SelectionPolicy="Multiple"
+                                    AllowInternalReorder="True"
                                     RowActions="Details, Rename"
                                     SelectionRequested="OnSelectionRequested"
-                                    RowActionInvoked="OnRowActionInvoked"/>
+                                    RowActionInvoked="OnRowActionInvoked"
+                                    InternalReorderRequested="OnInternalReorderRequested"/>
             </Grid>
             <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
@@ -52,9 +54,11 @@
                                         HeaderSummary="禁用内部滚动条后，列表应随条目数量增长。"
                                         VerticalScrollBarVisibility="Disabled"
                                         SelectionPolicy="Multiple"
+                                        AllowInternalReorder="True"
                                         RowActions="Details, Rename"
                                         SelectionRequested="OnSelectionRequested"
                                         RowActionInvoked="OnRowActionInvoked"
+                                        InternalReorderRequested="OnInternalReorderRequested"
                                         Margin="0,8,0,0"/>
                 </StackPanel>
             </ScrollViewer>

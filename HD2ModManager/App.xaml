@@ -111,6 +111,7 @@
                 <Setter Property="Padding" Value="{StaticResource ModListScrollPadding}"/>
                 <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                 <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
+                <Setter Property="VirtualizingPanel.ScrollUnit" Value="Pixel"/>
                 <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
                 <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto"/>
                 <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>

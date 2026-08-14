@@ -19,4 +19,10 @@ public partial class ModListPanelTestPageView : UserControl
         if (DataContext is ModListPanelTestPageViewModel vm)
             vm.ApplySelection(e.SelectedKeys);
     }
+
+    private void OnInternalReorderRequested(object? sender, ModListInternalReorderEventArgs e)
+    {
+        if (DataContext is ModListPanelTestPageViewModel vm)
+            vm.Reorder(e.DraggedKeys, e.InsertionIndex);
+    }
 }

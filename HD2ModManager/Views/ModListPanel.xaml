@@ -62,7 +62,10 @@
             <Grid ClipToBounds="True">
             <ListBox x:Name="ItemsList" ItemsSource="{Binding ItemsSource, ElementName=Root}"
                      PreviewMouseLeftButtonDown="OnListBackgroundMouseDown"
+                     PreviewMouseLeftButtonUp="OnItemsListPreviewMouseLeftButtonUp"
+                     PreviewMouseMove="OnItemsListPreviewMouseMove"
                      PreviewMouseWheel="OnItemsListPreviewMouseWheel"
+                     LostMouseCapture="OnItemsListLostMouseCapture"
                      SelectionMode="Multiple"
                      ScrollViewer.VerticalScrollBarVisibility="{Binding VerticalScrollBarVisibility, ElementName=Root}">
                 <ListBox.ItemTemplate>
@@ -234,6 +237,10 @@
                 </ListBox.Style>
             </ListBox>
             <Canvas x:Name="TransitionOverlay" IsHitTestVisible="False" Panel.ZIndex="10"/>
+            <Canvas x:Name="DropOverlay" IsHitTestVisible="False" Panel.ZIndex="20">
+                <Border x:Name="DropInsertionIndicator" Height="2" Background="{StaticResource Accent}"
+                        Visibility="Collapsed" IsHitTestVisible="False"/>
+            </Canvas>
             </Grid>
         </Border>
     </DockPanel>

@@ -14,6 +14,12 @@ public partial class ProfilePageView : UserControl
             vm.ApplySelection(e.SelectedKeys);
     }
 
+    private async void OnInternalReorderRequested(object? sender, ModListInternalReorderEventArgs e)
+    {
+        if (DataContext is ProfilePageViewModel vm)
+            await vm.ReorderAsync(e.DraggedKeys, e.InsertionIndex);
+    }
+
     private void OnRowActionInvoked(object? sender, ModListRowActionEventArgs e)
     {
         if (DataContext is not ProfilePageViewModel vm || e.Item is not ProfileListItemViewModel item) return;

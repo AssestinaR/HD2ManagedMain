@@ -359,7 +359,9 @@ namespace HD2ModManager.ViewModels
             get => _query;
             set
             {
-                if (SetField(ref _query, value)) QueueSearchRefresh();
+                if (!SetField(ref _query, value)) return;
+                OnPropertyChanged(nameof(CanReorder));
+                QueueSearchRefresh();
             }
         }
         public string CurrentProfileTitle => _profiles.SelectedKey ?? "未选择配置";
@@ -374,10 +376,12 @@ namespace HD2ModManager.ViewModels
             {
                 if (!SetField(ref _showOnlyOutdated, value)) return;
                 OnPropertyChanged(nameof(OutdatedFilterText));
+                OnPropertyChanged(nameof(CanReorder));
                 Refresh(ListTransitionKind.Filter);
             }
         }
         public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
+        public bool CanReorder => string.IsNullOrWhiteSpace(Query) && !ShowOnlyOutdated;
 
         private string? _selectedProfileKey;
         private string _renameText = string.Empty;
@@ -463,6 +467,30 @@ namespace HD2ModManager.ViewModels
             foreach (var key in selectedKeys) _selectedGuids.Add(key);
             _selection?.Replace(SelectionScope, selectedKeys);
             RefreshSelectionFlags();
+        }
+
+        public async Task ReorderAsync(IReadOnlyList<string> draggedKeys, int insertionIndex)
+        {
+            if (!CanReorder || draggedKeys.Count == 0 || _profiles.SelectedProfile is not { } profile) return;
+
+            var ordered = _profiles.GetSortedEntries(profile)
+                .Select(entry => entry.NodeId.Value.ToString("N"))
+                .ToList();
+            var dragged = draggedKeys
+                .Where(ordered.Contains)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (dragged.Count == 0) return;
+
+            var originalIndex = Math.Clamp(insertionIndex, 0, ordered.Count);
+            var draggedSet = dragged.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var removedBefore = ordered.Take(originalIndex).Count(draggedSet.Contains);
+            ordered.RemoveAll(draggedSet.Contains);
+            ordered.InsertRange(Math.Clamp(originalIndex - removedBefore, 0, ordered.Count), dragged);
+            var current = _profiles.GetSortedEntries(profile)
+                .Select(entry => entry.NodeId.Value.ToString("N"));
+            if (current.SequenceEqual(ordered, StringComparer.OrdinalIgnoreCase)) return;
+            await _profiles.ReplaceSelectedEntriesAsync(ordered);
         }
 
         private async Task CreateProfileAsync()

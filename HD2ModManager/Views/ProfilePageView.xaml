@@ -32,6 +32,8 @@
                         RowActionInvoked="OnRowActionInvoked"
                         SelectionPolicy="Multiple"
                         SelectionRequested="OnSelectionRequested"
+                        AllowInternalReorder="{Binding CanReorder}"
+                        InternalReorderRequested="OnInternalReorderRequested"
                         RowRightClicked="OnOpenDetailsOnRightClick"
                         BackgroundClicked="OnListBackgroundClick"/>
 </UserControl>

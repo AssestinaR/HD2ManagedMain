@@ -24,16 +24,34 @@ public partial class ModListPanel : UserControl
     private bool _transitionScheduled;
     private bool _isTransitionAnimationRunning;
     private string? _selectionAnchorKey;
+    private readonly DispatcherTimer _dragAutoScrollTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
+    private DragCandidate? _dragCandidate;
+    private Point _dragStartPoint;
+    private Point? _dragPointerOnScreen;
+    private ScrollViewer? _dragAutoScrollViewer;
+    private int _dragAutoScrollDirection;
+    private double _dragAutoScrollStep;
+    private bool _isInternalDragActive;
+    private InternalDragPayload? _activeInternalDragPayload;
+    private Cursor? _previousOverrideCursor;
+    private DateTime _dragWheelCooldownUntilUtc;
+    private ScrollViewer? _smoothScrollViewer;
+    private double _smoothScrollTarget;
+    private DateTime _smoothScrollLastFrameUtc;
 
     public ModListPanel()
     {
         InitializeComponent();
         _transitionTimer.Interval = TimeSpan.FromMilliseconds(230);
         _transitionTimer.Tick += OnTransitionTimerTick;
+        _dragAutoScrollTimer.Tick += OnDragAutoScrollTick;
         Loaded += (_, _) => ObserveItemsSource(ItemsSource);
         Unloaded += (_, _) =>
         {
             _transitionTimer.Stop();
+            EndInternalDrag();
+            StopDragAutoScroll();
+            StopSmoothScroll();
             ItemsList.LayoutUpdated -= OnItemsListLayoutUpdated;
             _transitionScheduled = false;
             ObserveItemsSource(null);
@@ -47,6 +65,7 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty ShowHeaderProperty = DependencyProperty.Register(nameof(ShowHeader), typeof(bool), typeof(ModListPanel), new PropertyMetadata(true));
     public static readonly DependencyProperty ShowSelectionCheckboxProperty = DependencyProperty.Register(nameof(ShowSelectionCheckbox), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty SelectionPolicyProperty = DependencyProperty.Register(nameof(SelectionPolicy), typeof(ModListSelectionPolicy), typeof(ModListPanel), new PropertyMetadata(ModListSelectionPolicy.None));
+    public static readonly DependencyProperty AllowInternalReorderProperty = DependencyProperty.Register(nameof(AllowInternalReorder), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty SearchTextProperty = DependencyProperty.Register(nameof(SearchText), typeof(string), typeof(ModListPanel), new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty = DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ModListPanel), new PropertyMetadata(ScrollBarVisibility.Auto));
     public static readonly DependencyProperty RowActionsProperty = DependencyProperty.Register(nameof(RowActions), typeof(ModListRowAction), typeof(ModListPanel), new PropertyMetadata(ModListRowAction.None, OnRowActionsChanged));
@@ -63,6 +82,7 @@ public partial class ModListPanel : UserControl
     public bool ShowHeader { get => (bool)GetValue(ShowHeaderProperty); set => SetValue(ShowHeaderProperty, value); }
     public bool ShowSelectionCheckbox { get => (bool)GetValue(ShowSelectionCheckboxProperty); set => SetValue(ShowSelectionCheckboxProperty, value); }
     public ModListSelectionPolicy SelectionPolicy { get => (ModListSelectionPolicy)GetValue(SelectionPolicyProperty); set => SetValue(SelectionPolicyProperty, value); }
+    public bool AllowInternalReorder { get => (bool)GetValue(AllowInternalReorderProperty); set => SetValue(AllowInternalReorderProperty, value); }
     public string SearchText { get => (string)GetValue(SearchTextProperty); set => SetValue(SearchTextProperty, value); }
     public ScrollBarVisibility VerticalScrollBarVisibility { get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty); set => SetValue(VerticalScrollBarVisibilityProperty, value); }
     public ModListRowAction RowActions { get => (ModListRowAction)GetValue(RowActionsProperty); set => SetValue(RowActionsProperty, value); }
@@ -74,6 +94,7 @@ public partial class ModListPanel : UserControl
     public event EventHandler<ModListRowEventArgs>? RowRightClicked;
     public event EventHandler<ModListSelectionRequestEventArgs>? SelectionRequested;
     public event EventHandler<ModListRowActionEventArgs>? RowActionInvoked;
+    public event EventHandler<ModListInternalReorderEventArgs>? InternalReorderRequested;
     public event EventHandler? BackgroundClicked;
 
     private void OnToggleSearchClick(object sender, RoutedEventArgs e)
@@ -184,6 +205,19 @@ public partial class ModListPanel : UserControl
         if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null || FindAncestor<CheckBox>(e.OriginalSource as DependencyObject) is not null) return;
         if (FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject) is not null)
         {
+            if (AllowInternalReorder
+                && FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is IModListSelectable { IsSelected: true } selectable)
+            {
+                var selectedKeys = ItemsList.Items.OfType<IModListSelectable>()
+                    .Where(item => item.IsSelected)
+                    .Select(item => item.SelectionKey)
+                    .ToList();
+                if (selectedKeys.Count != 0)
+                {
+                    _dragCandidate = new DragCandidate(selectable.SelectionKey, selectedKeys);
+                    _dragStartPoint = e.GetPosition(ItemsList);
+                }
+            }
             // The panel owns row selection, so prevent Selector's drag-selection auto-scroll.
             e.Handled = true;
             return;
@@ -191,28 +225,296 @@ public partial class ModListPanel : UserControl
         BackgroundClicked?.Invoke(this, EventArgs.Empty);
     }
 
+    private void OnItemsListPreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_isInternalDragActive)
+        {
+            EndInternalDrag(e.GetPosition(ItemsList));
+            e.Handled = true;
+            return;
+        }
+
+        _dragCandidate = null;
+    }
+
+    private void OnItemsListPreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        var position = e.GetPosition(ItemsList);
+        if (_isInternalDragActive)
+        {
+            UpdateInternalDrag(position);
+            return;
+        }
+
+        if (_dragCandidate is null || e.LeftButton != MouseButtonState.Pressed) return;
+        if (Math.Abs(position.X - _dragStartPoint.X) < SystemParameters.MinimumHorizontalDragDistance
+            && Math.Abs(position.Y - _dragStartPoint.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+
+        var candidate = _dragCandidate;
+        _dragCandidate = null;
+        BeginInternalDrag(candidate, position);
+    }
+
+    private void BeginInternalDrag(DragCandidate candidate, Point position)
+    {
+        _isInternalDragActive = true;
+        _activeInternalDragPayload = new InternalDragPayload(candidate.SelectedKeys);
+        _previousOverrideCursor = Mouse.OverrideCursor;
+        Mouse.OverrideCursor = Cursors.SizeAll;
+        Mouse.Capture(ItemsList, CaptureMode.Element);
+        UpdateInternalDrag(position);
+    }
+
+    private void UpdateInternalDrag(Point position)
+    {
+        _dragPointerOnScreen = ItemsList.PointToScreen(position);
+        UpdateDropInsertionIndicator(position);
+        UpdateDragAutoScroll();
+    }
+
+    private void EndInternalDrag(Point? dropPosition = null)
+    {
+        var payload = _activeInternalDragPayload;
+        _activeInternalDragPayload = null;
+        _dragCandidate = null;
+        _isInternalDragActive = false;
+        try
+        {
+            if (payload is not null && dropPosition is { } position)
+                InternalReorderRequested?.Invoke(this, new ModListInternalReorderEventArgs(payload.SelectedKeys, GetInsertionIndex(position)));
+        }
+        finally
+        {
+            if (Mouse.Captured == ItemsList) Mouse.Capture(null);
+            Mouse.OverrideCursor = _previousOverrideCursor;
+            _previousOverrideCursor = null;
+            HideDropInsertionIndicator();
+            StopDragAutoScroll();
+        }
+    }
+
+    private void OnItemsListLostMouseCapture(object sender, MouseEventArgs e)
+    {
+        if (_isInternalDragActive) EndInternalDrag();
+    }
+
+    private int GetInsertionIndex(Point position)
+    {
+        var realized = GetRealizedContainers();
+        if (realized.Count == 0) return ItemsList.Items.Count;
+        foreach (var row in realized)
+        {
+            var rowPosition = row.Container.TransformToAncestor(ItemsList).Transform(new Point());
+            if (position.Y < rowPosition.Y + (row.Container.ActualHeight / 2)) return row.Index;
+        }
+        return realized[^1].Index + 1;
+    }
+
+    private void UpdateDropInsertionIndicator(Point position)
+    {
+        var insertionIndex = GetInsertionIndex(position);
+        var realized = GetRealizedContainers();
+        if (realized.Count == 0) return;
+        var before = realized.FirstOrDefault(row => row.Index >= insertionIndex);
+        var top = before is not null
+            ? before.Container.TransformToAncestor(ItemsList).Transform(new Point()).Y - 1
+            : realized[^1].Container.TransformToAncestor(ItemsList).Transform(new Point()).Y + realized[^1].Container.ActualHeight - 1;
+        Canvas.SetLeft(DropInsertionIndicator, 8);
+        Canvas.SetTop(DropInsertionIndicator, Math.Max(0, top));
+        DropInsertionIndicator.Width = Math.Max(0, ItemsList.ActualWidth - 16);
+        DropInsertionIndicator.Visibility = Visibility.Visible;
+    }
+
+    private List<RealizedRow> GetRealizedContainers()
+    {
+        var rows = new List<RealizedRow>();
+        for (var index = 0; index < ItemsList.Items.Count; index++)
+        {
+            if (ItemsList.ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement container && container.IsVisible)
+                rows.Add(new RealizedRow(index, container));
+        }
+        return rows;
+    }
+
+    private void HideDropInsertionIndicator() => DropInsertionIndicator.Visibility = Visibility.Collapsed;
+
+    private void UpdateDragAutoScroll()
+    {
+        if (!TryResolveDragAutoScroll(out var scrollViewer, out var direction, out var step))
+        {
+            StopDragAutoScroll();
+            return;
+        }
+
+        _dragAutoScrollViewer = scrollViewer;
+        _dragAutoScrollDirection = direction;
+        _dragAutoScrollStep = step;
+        if (!_dragAutoScrollTimer.IsEnabled) _dragAutoScrollTimer.Start();
+    }
+
+    private void OnDragAutoScrollTick(object? sender, EventArgs e)
+    {
+        if (_dragAutoScrollDirection == 0)
+        {
+            StopDragAutoScroll();
+            return;
+        }
+
+        if (DateTime.UtcNow < _dragWheelCooldownUntilUtc) return;
+
+        if (_dragPointerOnScreen is not { } pointerOnScreen)
+        {
+            StopDragAutoScroll();
+            return;
+        }
+
+        var position = ItemsList.PointFromScreen(pointerOnScreen);
+        UpdateDragAutoScroll();
+        if (_dragAutoScrollViewer is null) return;
+        _dragAutoScrollViewer.ScrollToVerticalOffset(Math.Clamp(
+            _dragAutoScrollViewer.VerticalOffset + (_dragAutoScrollDirection * _dragAutoScrollStep),
+            0,
+            _dragAutoScrollViewer.ScrollableHeight));
+        UpdateDropInsertionIndicator(position);
+    }
+
+    private void StopDragAutoScroll()
+    {
+        _dragAutoScrollDirection = 0;
+        _dragAutoScrollStep = 0;
+        _dragAutoScrollViewer = null;
+        _dragPointerOnScreen = null;
+        _dragWheelCooldownUntilUtc = default;
+        _dragAutoScrollTimer.Stop();
+    }
+
+    private bool TryResolveDragAutoScroll(out ScrollViewer? scrollViewer, out int direction, out double step)
+    {
+        const double edgeSize = 32;
+        if (_dragPointerOnScreen is not { } pointerOnScreen)
+        {
+            scrollViewer = null;
+            direction = 0;
+            step = 0;
+            return false;
+        }
+
+        foreach (var candidate in GetDragScrollViewers())
+        {
+            if (candidate.ActualHeight <= 0 || candidate.ScrollableHeight <= 0) continue;
+            var pointer = candidate.PointFromScreen(pointerOnScreen);
+            if (pointer.Y < -edgeSize || pointer.Y > candidate.ActualHeight + edgeSize) continue;
+            var topDistance = pointer.Y;
+            var bottomDistance = candidate.ActualHeight - pointer.Y;
+            direction = topDistance < edgeSize ? -1 : bottomDistance < edgeSize ? 1 : 0;
+            if (direction == 0) continue;
+            if (direction < 0 && candidate.VerticalOffset <= 0.5) continue;
+            if (direction > 0 && candidate.VerticalOffset >= candidate.ScrollableHeight - 0.5) continue;
+
+            var distance = direction < 0 ? topDistance : bottomDistance;
+            var pressure = Math.Clamp((edgeSize - distance) / edgeSize, 0, 1);
+            scrollViewer = candidate;
+            step = 1.5 + (10.5 * pressure * pressure);
+            return true;
+        }
+
+        scrollViewer = null;
+        direction = 0;
+        step = 0;
+        return false;
+    }
+
+    private IEnumerable<ScrollViewer> GetDragScrollViewers()
+    {
+        var yielded = new HashSet<ScrollViewer>();
+        if (FindDescendant<ScrollViewer>(ItemsList) is { } inner && yielded.Add(inner))
+            yield return inner;
+
+        for (DependencyObject? current = ItemsList; current is not null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (current is ScrollViewer candidate && yielded.Add(candidate))
+                yield return candidate;
+        }
+    }
+
     private void OnItemsListPreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
         if (e.Handled || e.Delta == 0) return;
-        var innerScrollViewer = FindDescendant<ScrollViewer>(ItemsList);
-        if (innerScrollViewer is null) return;
+        if (_isInternalDragActive)
+            _dragWheelCooldownUntilUtc = DateTime.UtcNow.AddMilliseconds(260);
+        HandleSmoothScrollWheel(e);
+    }
 
-        var scrollingUp = e.Delta > 0;
-        var canScrollInDirection = innerScrollViewer.ScrollableHeight > 0
-            && (scrollingUp
-                ? innerScrollViewer.VerticalOffset > 0.5
-                : innerScrollViewer.VerticalOffset < innerScrollViewer.ScrollableHeight - 0.5);
-        if (canScrollInDirection) return;
+    private void HandleSmoothScrollWheel(MouseWheelEventArgs e)
+    {
+        if (e.Handled || e.Delta == 0) return;
+        if (TryQueueSmoothScroll(e.Delta)) e.Handled = true;
+    }
 
-        var outerScrollViewer = FindAncestor<ScrollViewer>(ItemsList);
-        if (outerScrollViewer is null) return;
+    private bool TryQueueSmoothScroll(int wheelDelta)
+    {
+        var offsetDelta = -(wheelDelta / 120d) * 84;
+        var direction = Math.Sign(offsetDelta);
+        var scrollViewer = GetDragScrollViewers().FirstOrDefault(candidate => CanScroll(candidate, direction));
+        if (scrollViewer is null) return false;
+        QueueSmoothScroll(scrollViewer, offsetDelta);
+        return true;
+    }
 
-        e.Handled = true;
-        outerScrollViewer.RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
+    private static bool CanScroll(ScrollViewer scrollViewer, int direction)
+        => scrollViewer.ScrollableHeight > 0
+            && (direction < 0
+                ? scrollViewer.VerticalOffset > 0.5
+                : scrollViewer.VerticalOffset < scrollViewer.ScrollableHeight - 0.5);
+
+    private void QueueSmoothScroll(ScrollViewer scrollViewer, double offsetDelta)
+    {
+        if (!ReferenceEquals(_smoothScrollViewer, scrollViewer))
         {
-            RoutedEvent = Mouse.MouseWheelEvent,
-            Source = outerScrollViewer,
-        });
+            StopSmoothScroll();
+            _smoothScrollViewer = scrollViewer;
+            _smoothScrollTarget = scrollViewer.VerticalOffset;
+        }
+
+        _smoothScrollTarget = Math.Clamp(_smoothScrollTarget + offsetDelta, 0, scrollViewer.ScrollableHeight);
+        if (_smoothScrollLastFrameUtc == default)
+        {
+            _smoothScrollLastFrameUtc = DateTime.UtcNow;
+            CompositionTarget.Rendering += OnSmoothScrollRendering;
+        }
+    }
+
+    private void OnSmoothScrollRendering(object? sender, EventArgs e)
+    {
+        if (_smoothScrollViewer is null)
+        {
+            StopSmoothScroll();
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        var elapsedMilliseconds = Math.Clamp((now - _smoothScrollLastFrameUtc).TotalMilliseconds, 1, 50);
+        _smoothScrollLastFrameUtc = now;
+        var current = _smoothScrollViewer.VerticalOffset;
+        var distance = _smoothScrollTarget - current;
+        if (Math.Abs(distance) < 0.2)
+        {
+            _smoothScrollViewer.ScrollToVerticalOffset(_smoothScrollTarget);
+            StopSmoothScroll();
+            return;
+        }
+
+        var factor = 1 - Math.Exp(-elapsedMilliseconds / 70d);
+        _smoothScrollViewer.ScrollToVerticalOffset(Math.Clamp(current + (distance * factor), 0, _smoothScrollViewer.ScrollableHeight));
+    }
+
+    private void StopSmoothScroll()
+    {
+        if (_smoothScrollLastFrameUtc != default)
+            CompositionTarget.Rendering -= OnSmoothScrollRendering;
+        _smoothScrollViewer = null;
+        _smoothScrollTarget = 0;
+        _smoothScrollLastFrameUtc = default;
     }
 
     private static void OnItemsSourceChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
@@ -498,6 +800,12 @@ public partial class ModListPanel : UserControl
         public bool IsSelected { get; set; }
     }
 
+    private sealed record DragCandidate(string PressedKey, IReadOnlyList<string> SelectedKeys);
+
+    private sealed record InternalDragPayload(IReadOnlyList<string> SelectedKeys);
+
+    private sealed record RealizedRow(int Index, FrameworkElement Container);
+
     private sealed record ListTransitionSnapshot(string Key, Point Position, Size Size, BitmapSource? Bitmap);
 }
 
@@ -525,6 +833,12 @@ public sealed class ModListRowActionEventArgs(object item, ModListRowAction acti
 {
     public object Item { get; } = item;
     public ModListRowAction Action { get; } = action;
+}
+
+public sealed class ModListInternalReorderEventArgs(IReadOnlyList<string> draggedKeys, int insertionIndex) : EventArgs
+{
+    public IReadOnlyList<string> DraggedKeys { get; } = draggedKeys;
+    public int InsertionIndex { get; } = insertionIndex;
 }
 
 public sealed class RowActionVisibilityConverter : System.Windows.Data.IValueConverter
