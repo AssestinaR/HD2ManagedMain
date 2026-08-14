@@ -1,7 +1,6 @@
 ﻿using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media.Animation;
 using System.Windows.Media;
 using System.Windows.Input;
 using HD2ModManager.ViewModels;
@@ -58,10 +57,11 @@ namespace HD2ModManager.Views
             shell?.OpenModDetailsFromPage(VM, card.Mod.Guid);
         }
 
-        private void OnOpenDetailsOnRightClick(object sender, MouseButtonEventArgs e)
+        private void OnOpenDetailsOnRightClick(object sender, ModListRowEventArgs e)
         {
-            OnOpenDetailsClick(sender, e);
-            e.Handled = true;
+            if (e.Item is not ModCardViewModel card) return;
+            var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as ShellViewModel;
+            shell?.OpenModDetailsFromPage(VM, card.Mod.Guid);
         }
 
         private void OnRowActionMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -69,12 +69,8 @@ namespace HD2ModManager.Views
             ClearTransientSelection();
         }
 
-        private void OnListBackgroundMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        private void OnListBackgroundClick(object? sender, EventArgs e)
         {
-            if (e.OriginalSource is DependencyObject source && FindAncestor<Border>(source)?.DataContext is ModCardViewModel card)
-            {
-                return;
-            }
             ClearTransientSelection();
         }
 
@@ -94,53 +90,18 @@ namespace HD2ModManager.Views
                 shell.ClearTransientSelection();
         }
 
-        private void OnToggleSearchClick(object sender, RoutedEventArgs e)
-        {
-            if (HeaderSearchBox.Visibility == Visibility.Visible)
-            {
-                var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(140));
-                fadeOut.Completed += (_, _) =>
-                {
-                    HeaderSearchBox.Visibility = Visibility.Collapsed;
-                    HeaderTitle.Visibility = Visibility.Visible;
-                    HeaderSummary.Visibility = Visibility.Visible;
-                    HeaderTitle.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(160)));
-                    HeaderSummary.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(160)));
-                };
-                HeaderSearchBox.BeginAnimation(OpacityProperty, fadeOut);
-                var actionFadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(140));
-                actionFadeOut.Completed += (_, _) => HeaderActionPanel.Visibility = Visibility.Collapsed;
-                HeaderActionPanel.BeginAnimation(OpacityProperty, actionFadeOut);
-                return;
-            }
-
-            var titleFadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(140));
-            titleFadeOut.Completed += (_, _) => HeaderTitle.Visibility = Visibility.Collapsed;
-            HeaderTitle.BeginAnimation(OpacityProperty, titleFadeOut);
-            var summaryFadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(140));
-            summaryFadeOut.Completed += (_, _) => HeaderSummary.Visibility = Visibility.Collapsed;
-            HeaderSummary.BeginAnimation(OpacityProperty, summaryFadeOut);
-            HeaderActionPanel.Visibility = Visibility.Visible;
-            HeaderActionPanel.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(160)));
-            HeaderSearchBox.Visibility = Visibility.Visible;
-            HeaderSearchBox.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(160)));
-            HeaderSearchBox.Focus();
-        }
-
         private void OnToggleOutdatedFilterClick(object sender, RoutedEventArgs e)
         {
             EnsureVM();
             if (VM is not null) VM.ShowOnlyOutdated = !VM.ShowOnlyOutdated;
         }
 
-        private void OnModRowClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        private void OnModRowClick(object sender, ModListRowEventArgs e)
         {
-            if (e.OriginalSource is DependencyObject source && FindAncestor<Button>(source) != null) return;
             EnsureVM();
-            if ((sender as FrameworkElement)?.DataContext is ModCardViewModel card)
+            if (e.Item is ModCardViewModel card)
             {
-                VM?.SelectRow(card, System.Windows.Input.Keyboard.Modifiers);
-                e.Handled = true;
+                VM?.SelectRow(card, e.Modifiers);
             }
         }
 

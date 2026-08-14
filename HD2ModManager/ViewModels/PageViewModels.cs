@@ -365,6 +365,8 @@ namespace HD2ModManager.ViewModels
         }
         public string CurrentProfileTitle => _profiles.SelectedKey ?? "未选择配置";
         public string ItemCountText => $"显示 {Items.Count} / {_profiles.SelectedProfile?.Entries.Count ?? 0} 个 Mod";
+        public string HeaderSummary => $"{ItemCountText} · {ActiveProfileText} · {SelectedProfileState}";
+        public string EmptyMessage => "当前配置中没有 Mod。可以从模组库添加；若右侧为空，则所有 Mod 都已加入此配置。";
         private bool _showOnlyOutdated;
         public bool ShowOnlyOutdated
         {
@@ -588,6 +590,8 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ActiveProfileText));
             OnPropertyChanged(nameof(SelectedProfileState));
             OnPropertyChanged(nameof(ItemCountText));
+            OnPropertyChanged(nameof(HeaderSummary));
+            OnPropertyChanged(nameof(EmptyMessage));
             _switchAction?.SyncFromPage();
             _renameAction?.SyncFromPage();
 
@@ -613,6 +617,7 @@ namespace HD2ModManager.ViewModels
             Items.ReplaceWith(items);
             OnPropertyChanged(nameof(HasItems));
             OnPropertyChanged(nameof(ItemCountText));
+            OnPropertyChanged(nameof(HeaderSummary));
         }
 
         public void RefreshFromShell() => QueueStatusRefresh();
@@ -809,6 +814,7 @@ namespace HD2ModManager.ViewModels
         public string? Description { get; }
         public string? ImagePath { get; }
         public string AssetSummary { get; }
+        public string AssetSummaryText => SecondaryDetailText;
         public int LoadOrder { get; }
         public DateTimeOffset AddedUtc { get; }
         public ModUserStatus? UserStatus { get; }
@@ -816,6 +822,8 @@ namespace HD2ModManager.ViewModels
         public bool IsModelOutdated => UnitCompatibility?.IsOutdated == true;
         public string ModelCompatibilitySummary => UnitCompatibility?.Summary ?? "模型版本尚未检测。";
         public string StatusText => UserStatus is null ? $"配置成员 · 顺序 {LoadOrder}" : $"{UserStatus.Title} · 顺序 {LoadOrder}";
+        public string UserStatusTitle => StatusText;
+        public bool IsVisible => true;
         public string SecondaryDetailText => string.Join(" · ", new[] { Description, AssetSummary }.Where(value => !string.IsNullOrWhiteSpace(value)));
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }

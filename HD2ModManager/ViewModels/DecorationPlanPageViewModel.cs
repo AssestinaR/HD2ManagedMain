@@ -224,6 +224,10 @@ public sealed class DecorationTargetModItem : BaseViewModel
     public string Name { get; }
     public string? Description { get; }
     public string? Image { get; }
+    public string? ImagePath => Image;
+    public string AssetSummaryText => "";
+    public bool IsModelOutdated => false;
+    public string UserStatusTitle => "候选 Mod";
     public bool IsVisible { get => _isVisible; set => SetField(ref _isVisible, value); }
     public bool IsSelected { get => _isSelected; set { if (SetField(ref _isSelected, value)) _changed(); } }
 }

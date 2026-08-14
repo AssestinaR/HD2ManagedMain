@@ -430,6 +430,7 @@ namespace HD2ModManager.ViewModels
         public string Name => Mod.Name;
         public string AssetSummaryText => ModAssetSummaryFormatter.Format(AssetSummary);
         public string? ImagePath => ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+        public bool IsVisible => true;
         public bool ShowImage => true;
         public string? Description => Mod.Description;
         private bool _isSelected;
