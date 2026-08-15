@@ -5,4 +5,5 @@
 public sealed record ExportManifestNode(
 	string RelativePath,
 	string Name,
-	string? Notes);
+	string? Notes,
+	string? Guid = null);

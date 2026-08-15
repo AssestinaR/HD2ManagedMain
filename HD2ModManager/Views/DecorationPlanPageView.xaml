@@ -35,7 +35,7 @@
                             <TextBlock Text="来源：{Binding SourceName}" Style="{StaticResource AppSupportingText}" Margin="0,4,0,0"/>
                             <TextBlock Text="{Binding State}" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
                         </StackPanel>
-                        <Button Grid.Column="1" Style="{StaticResource AppPrimaryButton}" Content="生成" Command="{Binding GenerateCommand}" IsEnabled="{Binding CanGenerate}" MinWidth="78" Margin="12,0,0,0" VerticalAlignment="Top"/>
+                        <Button Grid.Column="1" Style="{StaticResource AppPrimaryButton}" Content="生成" Command="{Binding GenerateCommand}" MinWidth="78" Margin="12,0,0,0" VerticalAlignment="Top"/>
                     </Grid>
                     <Grid Grid.Row="1" Margin="0,12,0,0">
                         <Grid.RowDefinitions>
@@ -89,7 +89,7 @@
                         <DataGrid.Columns>
                             <DataGridTemplateColumn Header="选择" Width="0.65*">
                                 <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate><CheckBox Style="{StaticResource AppCheckBox}" IsChecked="{Binding IsSelected}" HorizontalAlignment="Center" VerticalAlignment="Center"/></DataTemplate>
+                                    <DataTemplate><CheckBox Style="{StaticResource AppCheckBox}" IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" VerticalAlignment="Center"/></DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
                             <DataGridTextColumn Header="Unit ID" Binding="{Binding FileId, StringFormat=0x{0:x16}}" Width="1.55*"/>

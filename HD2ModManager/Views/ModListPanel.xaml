@@ -7,6 +7,7 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
         <local:RowActionVisibilityConverter x:Key="RowActionVisibility"/>
+        <local:DecorationRowActionVisibilityConverter x:Key="DecorationRowActionVisibility"/>
         <DropShadowEffect x:Key="RowActionPillShadow" BlurRadius="8" ShadowDepth="2" Opacity="0.16" Color="#243042"/>
     </UserControl.Resources>
     <DockPanel Background="Transparent">
@@ -122,7 +123,14 @@
                                         <TextBlock Grid.Column="2" Text="{Binding UserStatusTitle}" Foreground="{StaticResource Accent}" FontSize="12" Margin="0,0,5,0"/>
                                         <TextBlock Grid.Column="3" Text="·" Foreground="{StaticResource TextSecondary}" FontSize="12" Margin="0,0,5,0"/>
                                         <TextBlock Grid.Column="4" Text="{Binding AssetSummaryText}" Foreground="{StaticResource TextSecondary}" FontSize="12"
-                                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                    <Style.Triggers><DataTrigger Binding="{Binding ShowsPatchMetadata}" Value="False"><Setter Property="Text" Value="{Binding UserStatusSummary}"/><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
                                     </Grid>
                                 </StackPanel>
                                 <Border x:Name="ActionPanel" Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center"
@@ -140,8 +148,24 @@
                                             <Path Width="16" Height="16" Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 M8,6 L8,11 M8,4 L8,4.2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
                                         </Button>
                                         <Button Tag="{x:Static local:ModListRowAction.AddToProfile}" ToolTip="加入正在编辑的配置" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.AddToProfile}}">
+                                                >
+                                            <Button.Visibility>
+                                                <MultiBinding Converter="{StaticResource DecorationRowActionVisibility}" ConverterParameter="{x:Static local:ModListRowAction.AddToProfile}">
+                                                    <Binding Path="RowActions" ElementName="Root"/>
+                                                    <Binding Path="Mod.IsDecoration"/>
+                                                </MultiBinding>
+                                            </Button.Visibility>
                                             <Path Width="16" Height="16" Data="M8,2 L8,14 M2,8 L14,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.ToggleDecoration}" ToolTip="启用或禁用装饰" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
+                                                >
+                                            <Button.Visibility>
+                                                <MultiBinding Converter="{StaticResource DecorationRowActionVisibility}" ConverterParameter="{x:Static local:ModListRowAction.ToggleDecoration}">
+                                                    <Binding Path="RowActions" ElementName="Root"/>
+                                                    <Binding Path="Mod.IsDecoration"/>
+                                                </MultiBinding>
+                                            </Button.Visibility>
+                                            <Path Width="16" Height="16" Data="M8,1.5 L8,8 M4,3.5 A6,6 0 1 0 12,3.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
                                         </Button>
                                         <Button Tag="{x:Static local:ModListRowAction.OpenFolder}" ToolTip="打开文件夹" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
                                                 Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.OpenFolder}}">

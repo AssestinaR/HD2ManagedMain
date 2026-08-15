@@ -94,6 +94,8 @@ namespace HD2ModManager.ViewModels
         public bool CanPlanCrossArmorTransfer => !_disposed && !IsDecoration && TryGetCurrentNode(out _);
         public bool IsDecoration => Mod?.IsDecoration == true;
         public bool CanPlanDecoration => !_disposed && !IsDecoration && TryGetCurrentNode(out _);
+        public BulkObservableCollection<ModCardViewModel> HostDecorations { get; } = new();
+        public bool HasHostDecorations => !IsDecoration && HostDecorations.Count > 0;
         private bool HasPatchGroups => Mod?.FileGroups?.Count > 0;
         public BulkObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
@@ -155,12 +157,12 @@ namespace HD2ModManager.ViewModels
             {
                 if (_disposed) return;
                 Refresh();
-                _ = RefreshInformationProductsAsync();
+                if (!IsDecoration) _ = RefreshInformationProductsAsync();
                 if (_advancedDetailsLoaded) _ = RefreshAdvancedDetailsAsync();
             });
             _derivedState.SnapshotChanged += _snapshotChangedHandler;
             Refresh();
-			_ = RefreshInformationProductsAsync();
+            if (!IsDecoration) _ = RefreshInformationProductsAsync();
         }
 
         private async Task RefreshInformationProductsAsync()
@@ -699,6 +701,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(FileGroupCount));
             OnPropertyChanged(nameof(PatchSummary));
             RefreshDerivedStatus();
+            RefreshHostDecorations();
             OnPropertyChanged(nameof(ProfileStatus));
             OnPropertyChanged(nameof(FileIntegritySummary));
             OnPropertyChanged(nameof(ConflictSummary));
@@ -721,6 +724,7 @@ namespace HD2ModManager.ViewModels
 			OnPropertyChanged(nameof(CanPlanDecoration));
 			OnPropertyChanged(nameof(IsDecoration));
 			OnPropertyChanged(nameof(IsStandardMod));
+            OnPropertyChanged(nameof(HasHostDecorations));
             RaiseMaterialCommandStates();
             RaiseSameKeyReconstructionCommandState();
         }
@@ -996,6 +1000,49 @@ namespace HD2ModManager.ViewModels
             if (!TryGetCurrentNode(out _)) return;
             if (System.Windows.Application.Current?.MainWindow?.DataContext is not ShellViewModel shell) return;
             shell.OpenSameKeyRebuild(new SameKeyRebuildBottomBarViewModel(RebuildSameKeyAsync));
+        }
+
+        public async Task ToggleDecorationForCurrentHostAsync(ModCardViewModel? card)
+        {
+            if (card?.Mod.IsDecoration != true || Mod is null || IsDecoration) return;
+            var enabled = _library.IsDecorationEnabledForHost(card.Mod.Guid, Mod.Guid);
+            var result = await _library.SetDecorationEnabledForHostAsync(card.Mod.Guid, Mod.Guid, !enabled).ConfigureAwait(true);
+            _notifications?.Show(result.StatusText);
+            RefreshHostDecorations();
+        }
+
+        public void OpenModFolder(string modId)
+        {
+            var mod = _library.Get(modId);
+            if (mod is null) return;
+            var path = _library.GetDerivedData(mod.Guid)?.AbsoluteDirectory ?? _library.ResolveAbsolutePath(mod.SourcePath);
+            if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
+                Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+        }
+
+        public async Task DeleteDecorationAsync(string decorationId)
+        {
+            var decoration = _library.Get(decorationId);
+            if (decoration?.IsDecoration != true) return;
+            if (!await _library.RemoveAsync(decorationId).ConfigureAwait(true)) return;
+            _notifications?.Show($"已删除：{decoration.Name}");
+            Refresh();
+        }
+
+        private void RefreshHostDecorations()
+        {
+            if (Mod is null || IsDecoration)
+            {
+                HostDecorations.ReplaceWith(Array.Empty<ModCardViewModel>());
+                return;
+            }
+
+            var cards = _library.GetDecorationsForHost(Mod.Guid)
+                .Select(decoration => new ModCardViewModel(
+                    decoration,
+                    decorationStatus: _library.IsDecorationEnabledForHost(decoration.Guid, Mod.Guid) ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。"))
+                .ToArray();
+            HostDecorations.ReplaceWith(cards);
         }
 
         private async Task<bool> HasCurrentGameDataIndexAsync()

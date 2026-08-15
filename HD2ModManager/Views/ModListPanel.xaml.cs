@@ -827,6 +827,7 @@ public enum ModListRowAction
     MoveDown = 1 << 5,
     RemoveFromProfile = 1 << 6,
     DeleteFromLibrary = 1 << 7,
+    ToggleDecoration = 1 << 8,
 }
 
 public sealed class ModListRowActionEventArgs(object item, ModListRowAction action) : EventArgs
@@ -849,5 +850,24 @@ public sealed class RowActionVisibilityConverter : System.Windows.Data.IValueCon
             : Visibility.Collapsed;
 
     public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+public sealed class DecorationRowActionVisibilityConverter : System.Windows.Data.IMultiValueConverter
+{
+    public object Convert(object[] values, Type targetType, object parameter, System.Globalization.CultureInfo culture)
+    {
+        if (values.Length < 2 || values[0] is not ModListRowAction available || parameter is not ModListRowAction requested || !available.HasFlag(requested))
+            return Visibility.Collapsed;
+        var isDecoration = values[1] is true;
+        return requested switch
+        {
+            ModListRowAction.AddToProfile when isDecoration => Visibility.Collapsed,
+            ModListRowAction.ToggleDecoration when !isDecoration => Visibility.Collapsed,
+            _ => Visibility.Visible
+        };
+    }
+
+    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, System.Globalization.CultureInfo culture)
         => throw new NotSupportedException();
 }

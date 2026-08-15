@@ -62,7 +62,12 @@ namespace HD2ModManager.ViewModels
         public bool HasContent => HasSelection || HasTemporaryEditor;
         public bool IsLibrarySelection => HasSelection && string.Equals(_selection.Scope, "Library", StringComparison.OrdinalIgnoreCase);
         public bool IsProfileSelection => HasSelection && string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase);
-        public bool ShowAddToProfile => IsLibrarySelection && _isLibraryProfileCompanionVisible;
+        public bool IsDecorationHostSelection => HasSelection && _selection.Scope?.StartsWith("DecorationHost:", StringComparison.Ordinal) == true;
+        private bool HasSelectedDecorations => _selection.SelectedIds.Any(id => _library.Get(id)?.IsDecoration == true);
+        private bool HasSelectedStandardMods => _selection.SelectedIds.Any(id => _library.Get(id)?.IsDecoration != true);
+        public bool ShowAddToProfile => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
+        public bool ShowEnableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && HasSelectedDecorations;
+        public bool ShowDisableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && HasSelectedDecorations;
         public bool ShowDelete => IsLibrarySelection;
         public bool ShowRemove => IsProfileSelection;
         public bool ShowDeleteFromLibrary => IsProfileSelection;
@@ -290,7 +295,10 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(HasContent));
             OnPropertyChanged(nameof(IsLibrarySelection));
             OnPropertyChanged(nameof(IsProfileSelection));
+            OnPropertyChanged(nameof(IsDecorationHostSelection));
             OnPropertyChanged(nameof(ShowAddToProfile));
+            OnPropertyChanged(nameof(ShowEnableDecorations));
+            OnPropertyChanged(nameof(ShowDisableDecorations));
             OnPropertyChanged(nameof(ShowDelete));
             OnPropertyChanged(nameof(ShowRemove));
             OnPropertyChanged(nameof(ShowDeleteFromLibrary));

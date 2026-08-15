@@ -45,6 +45,7 @@ namespace HD2ModManager.Services
         private Dictionary<string, ModEntity> _byGuid = new(StringComparer.OrdinalIgnoreCase);
         private readonly SemaphoreSlim _derivedRefreshGate = new(1, 1);
         private readonly SemaphoreSlim _libraryMutationGate = new(1, 1);
+        private readonly DecorationActivationStore _decorationActivations;
         private long _stateVersion;
 
         public ReadOnlyDictionary<string, ModEntity> ByGuid => new(_byGuid);
@@ -55,6 +56,54 @@ namespace HD2ModManager.Services
         public event EventHandler<ModContentFactsChangedEventArgs>? ModContentFactsChanged;
         public event EventHandler? SnapshotChanged;
 
+        public async Task<DecorationActivationSummary> ToggleDecorationForAllAvailableHostsAsync(string decorationId, CancellationToken cancellationToken = default)
+        {
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var available = GetAvailableDecorationHostIds(decorationId);
+                var enabled = _decorationActivations.GetEnabledHosts(decorationId).Intersect(available, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (available.Count == 0) return new DecorationActivationSummary(0, 0, false, "无可用主体。");
+                var enable = !available.All(enabled.Contains);
+                await _decorationActivations.SetEnabledHostsAsync(decorationId, enable ? enabled.Concat(available) : Array.Empty<string>(), cancellationToken).ConfigureAwait(false);
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                return new DecorationActivationSummary(enable ? available.Count : 0, available.Count, enable, enable ? $"为 {available.Count} 个 Mod 启用了。" : "已对全部主体禁用。");
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
+        public async Task<DecorationActivationSummary> SetDecorationEnabledForHostAsync(string decorationId, string hostId, bool enabled, CancellationToken cancellationToken = default)
+        {
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var available = GetAvailableDecorationHostIds(decorationId);
+                if (!available.Contains(hostId, StringComparer.OrdinalIgnoreCase)) return new DecorationActivationSummary(0, available.Count, false, "当前主体不支持该装饰。");
+                var hosts = _decorationActivations.GetEnabledHosts(decorationId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (enabled) hosts.Add(hostId); else hosts.Remove(hostId);
+                await _decorationActivations.SetEnabledHostsAsync(decorationId, hosts, cancellationToken).ConfigureAwait(false);
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                var enabledCount = hosts.Count(id => available.Contains(id, StringComparer.OrdinalIgnoreCase));
+                return new DecorationActivationSummary(enabledCount, available.Count, enabled, enabled ? "已为当前主体启用。" : "已对当前主体禁用。");
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
+        public DecorationActivationSummary GetDecorationActivationSummary(string decorationId)
+        {
+            var available = GetAvailableDecorationHostIds(decorationId);
+            var enabled = _decorationActivations.GetEnabledHosts(decorationId).Count(id => available.Contains(id, StringComparer.OrdinalIgnoreCase));
+            return new DecorationActivationSummary(enabled, available.Count, available.Count != 0 && enabled == available.Count,
+                available.Count == 0 ? "无可用主体。" : enabled == 0 ? "尚未启用。" : enabled == available.Count ? $"为 {enabled} 个 Mod 启用了。" : $"为 {enabled}/{available.Count} 个 Mod 启用了。");
+        }
+
+        public bool IsDecorationEnabledForHost(string decorationId, string hostId)
+            => GetAvailableDecorationHostIds(decorationId).Contains(hostId, StringComparer.OrdinalIgnoreCase)
+               && _decorationActivations.GetEnabledHosts(decorationId).Contains(hostId, StringComparer.OrdinalIgnoreCase);
+
+        public IReadOnlyList<ModEntity> GetDecorationsForHost(string hostId)
+            => All().Where(mod => mod.IsDecoration && GetAvailableDecorationHostIds(mod.Guid).Contains(hostId, StringComparer.OrdinalIgnoreCase)).ToArray();
+
         public ModLibraryService(string libraryPath, HD2ModCore.Application.IModInformationCenter informationCenter)
         {
             _paths = SettingsService.CreateStoragePaths();
@@ -62,6 +111,7 @@ namespace HD2ModManager.Services
             _informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
             _synchronizer = CoreServices.CreateModLibrarySynchronizer();
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, _informationCenter);
+            _decorationActivations = new DecorationActivationStore(Path.Combine(_paths.DataDirectory, "decoration-activations.json"));
             _snapshot = EmptySnapshot();
             _derivedData = EmptyDerivedData();
         }
@@ -346,7 +396,10 @@ namespace HD2ModManager.Services
             try
             {
                 if (!TryParseNodeId(guid, out var nodeId)) return false;
+                var removedIsDecoration = _byGuid.TryGetValue(guid, out var entity) && entity.IsDecoration;
                 _snapshot = await _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true, cancellationToken).ConfigureAwait(false);
+                if (removedIsDecoration) await _decorationActivations.RemoveDecorationAsync(guid, cancellationToken).ConfigureAwait(false);
+                else await _decorationActivations.RemoveHostAsync(guid, cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref _stateVersion);
                 await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
                 ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
@@ -509,9 +562,10 @@ namespace HD2ModManager.Services
             finally { _libraryMutationGate.Release(); }
         }
 
-        public async Task<ModEntity> CreateDecorationAsync(string sourceModId, DecorationPlanDocument plan, string displayName, CancellationToken cancellationToken = default)
+        public async Task<ModEntity> CreateDecorationAsync(string sourceModId, IReadOnlyList<DecorationSourceUnit> sourceUnits, DecorationPlanDocument plan, string displayName, IReadOnlyDictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>>? preparedEntries = null, CancellationToken cancellationToken = default)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(sourceModId);
+            ArgumentNullException.ThrowIfNull(sourceUnits);
             ArgumentNullException.ThrowIfNull(plan);
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -522,17 +576,20 @@ namespace HD2ModManager.Services
                 var nodeId = ModNodeId.New();
                 var safeName = string.Concat(displayName.Select(character => Path.GetInvalidFileNameChars().Contains(character) ? '_' : character)).Trim();
                 if (string.IsNullOrWhiteSpace(safeName)) safeName = "Decoration";
-                var relativePath = Path.Combine("decorations", $"{safeName}-{nodeId.Value:N}");
+                // Decoration packages are peer Mod-library entries. Their marker files, not a
+                // special parent directory, distinguish them from deployable patch packages.
+                var relativePath = $"{safeName}-{nodeId.Value:N}";
                 var directory = Path.Combine(_paths.ModsDirectory, relativePath);
                 Directory.CreateDirectory(directory);
-                plan.SourceModId = sourceModId;
-                plan.CreatedUtc = DateTime.UtcNow;
-                var planPath = Path.Combine(directory, "decoration-plan.json");
+                plan.Name = displayName;
+                plan.Plan.CreatedUtc = DateTime.UtcNow;
+                plan.Payloads = (await new DecorationPayloadCompiler(CoreServices.CreateModFileResolver())
+                    .CompileAsync(source, _paths.ModsDirectory, sourceUnits, plan.Plan, directory, preparedEntries, cancellationToken).ConfigureAwait(false)).ToList();
+                var planPath = Path.Combine(directory, "decoration.json");
                 await File.WriteAllTextAsync(planPath, JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }), cancellationToken).ConfigureAwait(false);
-                await File.WriteAllTextAsync(Path.Combine(directory, "README.txt"), "Decoration package placeholder. Mesh bundle and Overwrite output will be generated by the decoration merge engine.", cancellationToken).ConfigureAwait(false);
 
                 var now = DateTimeOffset.UtcNow;
-                var node = new ModNode(nodeId, relativePath, new ModNodeMetadata(displayName, $"Decoration source: {source.Metadata.Name}", now, now, ModNodeKind.Decoration), [], []);
+                var node = new ModNode(nodeId, relativePath, new ModNodeMetadata(displayName, "Decoration model fragment", now, now, ModNodeKind.Decoration), [], []);
                 _snapshot = await _manager.UpsertNodeAsync(node, cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref _stateVersion);
                 RebuildIndex(buildDerivedData: false);
@@ -550,6 +607,22 @@ namespace HD2ModManager.Services
         }
 
         public IEnumerable<ModEntity> All() => Volatile.Read(ref _byGuid).Values;
+
+        private IReadOnlySet<string> GetAvailableDecorationHostIds(string decorationId)
+        {
+            var decoration = Get(decorationId);
+            if (decoration is null || !decoration.IsDecoration) return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var path = Path.Combine(_paths.ModsDirectory, decoration.SourcePath ?? string.Empty, "decoration.json");
+                if (!File.Exists(path)) return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var plan = JsonSerializer.Deserialize<DecorationPlanDocument>(File.ReadAllText(path), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                var targets = plan?.Plan?.TargetModGuids ?? [];
+                var standard = _snapshot.Nodes.Values.Where(node => node.Metadata.Kind == ModNodeKind.Standard).Select(node => node.Id.Value.ToString("N")).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                return targets.Where(standard.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            }
+            catch (JsonException) { return new HashSet<string>(StringComparer.OrdinalIgnoreCase); }
+        }
 
         public DerivedModNodeData? GetDerivedData(string guid)
         {

@@ -47,7 +47,7 @@
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <Button Grid.Column="0" Style="{StaticResource AppSecondaryButton}" Content="详情表格" ToolTip="查看 Patch、AssetKey 与诊断信息" Command="{Binding OpenAdvancedDetailsCommand}" Padding="14,6"/>
+                        <Button Grid.Column="0" Style="{StaticResource AppSecondaryButton}" Content="详情表格" ToolTip="查看 Patch、AssetKey 与诊断信息" Command="{Binding OpenAdvancedDetailsCommand}" Padding="14,6" Visibility="{Binding IsStandardMod, Converter={StaticResource BoolToVis}}"/>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                             <Button Style="{StaticResource AppSecondaryButton}" Content="打开文件夹" Command="{Binding OpenFolderCommand}" Padding="14,6"/>
                             <Button Style="{StaticResource AppSecondaryButton}" Content="修改图像" Click="OnSelectImageClick" Padding="14,6" Margin="8,0,0,0"/>
@@ -67,7 +67,7 @@
                 </Grid>
             </Border>
 
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding IsStandardMod, Converter={StaticResource BoolToVis}}">
                 <StackPanel>
                     <TextBlock Text="当前状态" Style="{StaticResource SectionTitle}"/>
                     <TextBlock Text="{Binding UserStatusTitle}" Foreground="#1E63D6" FontWeight="SemiBold" FontSize="16" Margin="0,8,0,0"/>
@@ -75,7 +75,7 @@
                 </StackPanel>
             </Border>
 
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding IsStandardMod, Converter={StaticResource BoolToVis}}">
                 <StackPanel>
                     <TextBlock Text="资产标签" Style="{StaticResource SectionTitle}"/>
                     <TextBlock Text="{Binding AssetTagsString}" FontFamily="Consolas" Foreground="#444" TextWrapping="Wrap" Margin="0,8,0,0"/>
@@ -83,7 +83,7 @@
                 </StackPanel>
             </Border>
 
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding IsStandardMod, Converter={StaticResource BoolToVis}}">
                 <StackPanel>
                     <TextBlock Text="模型兼容性" Style="{StaticResource SectionTitle}"/>
                     <TextBlock Text="模型过时" Foreground="{StaticResource StatusDanger}" FontWeight="SemiBold" FontSize="16" Margin="0,8,0,0">
@@ -99,6 +99,15 @@
                     <TextBlock Text="{Binding UnitCompatibilitySummary}" Foreground="#555" TextWrapping="Wrap" Margin="0,4,0,0"/>
                 </StackPanel>
             </Border>
+
+            <local:ModListPanel ItemsSource="{Binding HostDecorations}"
+                                ShowHeader="False"
+                                VerticalScrollBarVisibility="Disabled"
+                                RowActions="Rename, Details, ToggleDecoration, OpenFolder, DeleteFromLibrary"
+                                RowActionInvoked="OnHostDecorationRowActionInvoked"
+                                SelectionPolicy="Multiple"
+                                SelectionRequested="OnHostDecorationSelectionRequested"
+                                Visibility="{Binding HasHostDecorations, Converter={StaticResource BoolToVis}}"/>
         </StackPanel>
     </ScrollViewer>
 </UserControl>

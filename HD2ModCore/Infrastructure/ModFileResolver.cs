@@ -36,7 +36,7 @@ public sealed class ModFileResolver : IModFileResolver
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var name = Path.GetFileName(filePath);
-			if (_fileNameParser.TryParse(name, out _))
+			if (_fileNameParser.TryParse(name, out var info) && info?.SidecarKind == PatchSidecarKind.Base)
 			{
 				files.Add(filePath);
 			}

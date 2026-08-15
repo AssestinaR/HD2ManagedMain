@@ -6,4 +6,5 @@ public sealed record ExportManifest(
 	int Version,
 	string RootName,
 	DateTimeOffset ExportedUtc,
-	IReadOnlyList<ExportManifestNode> Nodes);
+	IReadOnlyList<ExportManifestNode> Nodes,
+	string? Guid = null);

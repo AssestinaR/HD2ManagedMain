@@ -17,5 +17,6 @@ namespace HD2ModManager.Models
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
         public string? SourcePath { get; set; }
         public bool IsDecoration { get; set; }
+        public ModCapabilities Capabilities => ModCapabilities.For(IsDecoration);
     }
 }

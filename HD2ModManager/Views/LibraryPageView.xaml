@@ -19,7 +19,10 @@
             <Path Width="16" Height="16" Data="M3,5 L13,5 M6,5 L6,3 L10,3 L10,5 M4.5,5 L5,14 L11,14 L11.5,5 M7,7.5 L7,11.5 M9,7.5 L9,11.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
         </DataTemplate>
         <DataTemplate x:Key="LibrarySearchActions">
-            <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
+            <StackPanel Orientation="Horizontal">
+                <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
+                <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding DecorationFilterText}" Click="OnToggleDecorationFilterClick" Margin="10,0,0,0"/>
+            </StackPanel>
         </DataTemplate>
     </UserControl.Resources>
     <local:ModListPanel ItemsSource="{Binding Items}"
@@ -28,7 +31,7 @@
                         EmptyMessage="{Binding EmptyMessage}"
                         SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
                         SearchActionsTemplate="{StaticResource LibrarySearchActions}"
-                        RowActions="Rename, Details, AddToProfile, OpenFolder, DeleteFromLibrary"
+                        RowActions="Rename, Details, AddToProfile, ToggleDecoration, OpenFolder, DeleteFromLibrary"
                         RowActionInvoked="OnRowActionInvoked"
                         SelectionPolicy="Multiple"
                         SelectionRequested="OnSelectionRequested"

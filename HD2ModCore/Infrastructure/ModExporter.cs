@@ -130,7 +130,8 @@ public sealed class ModExporter : IModExporter
 			.Select(n => new ExportManifestNode(
 				RelativePath: n.RelativePath.Replace('\\', '/'),
 				Name: n.Metadata.Name,
-				Notes: n.Metadata.Notes))
+				Notes: n.Metadata.Notes,
+				Guid: n.Id.Value.ToString("D")))
 			.OrderBy(n => n.RelativePath, StringComparer.OrdinalIgnoreCase)
 			.ToList();
 
@@ -138,7 +139,8 @@ public sealed class ModExporter : IModExporter
 			Version: ManifestVersion,
 			RootName: root.Metadata.Name,
 			ExportedUtc: DateTimeOffset.UtcNow,
-			Nodes: items);
+			Nodes: items,
+			Guid: root.Id.Value.ToString("D"));
 	}
 
 	private static string SanitizeFileName(string name)

@@ -79,10 +79,17 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 			.ToArray();
 	}
 
-	public async ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(
+	public ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(
 		IReadOnlyList<EquipmentUnitCatalogEntry> candidates,
 		IReadOnlyList<string> patchTocPaths,
 		CancellationToken cancellationToken = default)
+		=> FilterTransferableSourcePartsAsync(candidates, patchTocPaths, cancellationToken, null);
+
+	public async ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(
+		IReadOnlyList<EquipmentUnitCatalogEntry> candidates,
+		IReadOnlyList<string> patchTocPaths,
+		CancellationToken cancellationToken,
+		IReadOnlyDictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>>? preparedEntries)
 	{
 		ArgumentNullException.ThrowIfNull(candidates);
 		ArgumentNullException.ThrowIfNull(patchTocPaths);
@@ -96,7 +103,10 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		var unitReader = new AdaptationPatchUnitMeshReader();
 		foreach (var patchPath in patchTocPaths.Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase))
 		{
-			var entries = await tocScanner.ScanEntriesAsync(patchPath, cancellationToken).ConfigureAwait(false);
+			var fullPatchPath = Path.GetFullPath(patchPath);
+			var entries = preparedEntries is not null && preparedEntries.TryGetValue(fullPatchPath, out var cachedEntries)
+				? cachedEntries
+				: await tocScanner.ScanEntriesAsync(fullPatchPath, cancellationToken).ConfigureAwait(false);
 			foreach (var entry in entries.Where(entry => candidateKeys.Contains(ToCoreKey(entry.AssetKey))))
 			{
 				try

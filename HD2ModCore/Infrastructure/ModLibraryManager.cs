@@ -185,7 +185,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 		{
 			throw new InvalidOperationException($"Mod node does not exist: {nodeId.Value:N}");
 		}
-		EnsureNodeIsDeployable(snapshot.Nodes[nodeId]);
+		if (snapshot.Nodes[nodeId].Metadata.Kind == ModNodeKind.Decoration) return snapshot;
 
 		return await UpdateProfileEntriesAsync(
 			profileId,
@@ -215,14 +215,15 @@ public sealed class ModLibraryManager : IModLibraryManager
 		{
 			throw new InvalidOperationException($"Mod node does not exist: {missing.Value:N}");
 		}
-		foreach (var nodeId in distinctIds) EnsureNodeIsDeployable(snapshot.Nodes[nodeId]);
+		var deployableIds = distinctIds.Where(nodeId => snapshot.Nodes[nodeId].Metadata.Kind != ModNodeKind.Decoration).ToArray();
+		if (deployableIds.Length == 0) return snapshot;
 
 		return await UpdateProfileEntriesAsync(
 			profileId,
 			entries =>
 			{
 				var known = entries.Select(entry => entry.NodeId).ToHashSet();
-				foreach (var nodeId in distinctIds)
+				foreach (var nodeId in deployableIds)
 				{
 					if (known.Add(nodeId)) entries.Add(new ProfileEntry(nodeId, entries.Count));
 				}

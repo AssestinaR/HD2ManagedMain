@@ -83,4 +83,104 @@ public sealed class ModLibraryImporterTests
 		}
 	}
 
+	[Fact]
+	public async Task ImportFolderAsync_ImportsDecorationPackageAtLibraryRoot()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var source = Path.Combine(root, "decoration");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(source);
+		File.WriteAllText(Path.Combine(source, "decoration.json"), "{}");
+		File.WriteAllBytes(Path.Combine(source, "stocky.bin"), [1, 2, 3]);
+		try
+		{
+			var paths = new StoragePaths(appRoot);
+			var importer = new ModLibraryImporter(
+				paths,
+				new ObjectTreeImporter(new PatchFileNameParser()),
+				new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())),
+				new JsonModLibraryStore(paths));
+
+			var result = await importer.ImportFolderAsync(source);
+
+			var node = Assert.Single(result.Snapshot.Nodes.Values);
+			Assert.Equal(ModNodeKind.Decoration, node.Metadata.Kind);
+			Assert.Empty(node.PatchGroups);
+			Assert.Single(node.RelativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, node.RelativePath, "decoration.json")));
+			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, node.RelativePath, "stocky.bin")));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task ImportFolderAsync_RestoresExportedNodeGuid_ByRelativePath()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var source = Path.Combine(root, "source");
+		var expectedId = Guid.NewGuid();
+		Directory.CreateDirectory(Path.Combine(source, "option"));
+		File.WriteAllText(Path.Combine(source, "option", "9ba626afa44a3aa3.patch_0"), "patch");
+		File.WriteAllText(Path.Combine(source, "manifest.json"), $$"""
+		{
+		  "version": 1,
+		  "nodes": [
+		    { "relativePath": "option", "guid": "{{expectedId:D}}" }
+		  ]
+		}
+		""");
+
+		try
+		{
+			var paths = new StoragePaths(appRoot);
+			var importer = new ModLibraryImporter(paths, new ObjectTreeImporter(new PatchFileNameParser()), new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())), new JsonModLibraryStore(paths));
+
+			var result = await importer.ImportFolderAsync(source);
+
+			Assert.True(result.Snapshot.Nodes.ContainsKey(new ModNodeId(expectedId)));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task ImportFolderAsync_IgnoresCommunityRootGuid_WithoutNodeIds()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var source = Path.Combine(root, "source");
+		var communityGuid = Guid.NewGuid();
+		Directory.CreateDirectory(source);
+		File.WriteAllText(Path.Combine(source, "9ba626afa44a3aa3.patch_0"), "patch");
+		File.WriteAllText(Path.Combine(source, "manifest.json"), $$"""
+		{
+		  "version": 1,
+		  "guid": "{{communityGuid:D}}",
+		  "options": []
+		}
+		""");
+
+		try
+		{
+			var paths = new StoragePaths(appRoot);
+			var importer = new ModLibraryImporter(paths, new ObjectTreeImporter(new PatchFileNameParser()), new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())), new JsonModLibraryStore(paths));
+
+			var result = await importer.ImportFolderAsync(source);
+
+			Assert.False(result.Snapshot.Nodes.ContainsKey(new ModNodeId(communityGuid)));
+			Assert.Single(result.Snapshot.Nodes);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
 }

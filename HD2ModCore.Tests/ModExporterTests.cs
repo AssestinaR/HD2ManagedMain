@@ -53,8 +53,11 @@ public sealed class ModExporterTests
 
 			using var doc = JsonDocument.Parse(json);
 			Assert.True(doc.RootElement.TryGetProperty("nodes", out _));
+			var exportedNode = doc.RootElement.GetProperty("nodes")[0];
+			Assert.Equal(rootId.Value.ToString("D"), exportedNode.GetProperty("guid").GetString());
 			Assert.True(doc.RootElement.TryGetProperty("rootName", out var rn));
 			Assert.Equal("MyRoot", rn.GetString());
+			Assert.Equal(rootId.Value.ToString("D"), doc.RootElement.GetProperty("guid").GetString());
 			Assert.DoesNotContain("tags", json, StringComparison.OrdinalIgnoreCase);
 		}
 		finally

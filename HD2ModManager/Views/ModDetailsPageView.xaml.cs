@@ -40,5 +40,37 @@ namespace HD2ModManager.Views
             if (Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
                 shell.BeginBottomBarDescriptionEdit(details.ModId, details.Mod?.Description ?? string.Empty);
         }
+
+        private async void OnHostDecorationRowActionInvoked(object? sender, ModListRowActionEventArgs e)
+        {
+            if (DataContext is not ModDetailsPageViewModel details || e.Item is not ModCardViewModel card) return;
+            var shell = Application.Current?.MainWindow?.DataContext as ShellViewModel;
+            shell?.ClearTransientSelection();
+            switch (e.Action)
+            {
+                case ModListRowAction.Rename:
+                    shell?.BeginBottomBarNameEdit(card.Mod.Guid, card.Mod.Name);
+                    break;
+                case ModListRowAction.Details:
+                    shell?.OpenModDetails(card.Mod.Guid);
+                    break;
+                case ModListRowAction.ToggleDecoration:
+                    await details.ToggleDecorationForCurrentHostAsync(card);
+                    break;
+                case ModListRowAction.OpenFolder:
+                    details.OpenModFolder(card.Mod.Guid);
+                    break;
+                case ModListRowAction.DeleteFromLibrary:
+                    await details.DeleteDecorationAsync(card.Mod.Guid);
+                    break;
+            }
+        }
+
+        private void OnHostDecorationSelectionRequested(object? sender, ModListSelectionRequestEventArgs e)
+        {
+            if (DataContext is not ModDetailsPageViewModel details) return;
+            if (Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
+                shell.Selection.Replace($"DecorationHost:{details.ModId}", e.SelectedKeys);
+        }
     }
 }

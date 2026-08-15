@@ -46,6 +46,7 @@ namespace HD2ModManager.ViewModels
         public string ItemCountText => $"显示 {Items.Count} / {_library.All().Count()} 个 Mod";
         public string EmptyMessage => _hideSelectedProfileMembers && _profiles?.SelectedProfile is not null ? "所有 Mod 都已加入此配置。" : "模组库中没有可显示的 Mod。";
         private bool _showOnlyOutdated;
+        private bool _showDecorations;
         public bool ShowOnlyOutdated
         {
             get => _showOnlyOutdated;
@@ -57,11 +58,23 @@ namespace HD2ModManager.ViewModels
             }
         }
         public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
+        public bool ShowDecorations
+        {
+            get => _showDecorations;
+            set
+            {
+                if (!SetField(ref _showDecorations, value)) return;
+                OnPropertyChanged(nameof(DecorationFilterText));
+                Refresh(ListTransitionKind.Filter);
+            }
+        }
+        public string DecorationFilterText => ShowDecorations ? "隐藏装饰" : "显示装饰";
 
         public RelayCommand RemoveModCommand { get; }
         public RelayCommand ToggleSelectionCommand { get; }
         public RelayCommand AddToProfileCommand { get; }
         public RelayCommand OpenFolderCommand { get; }
+        public RelayCommand ToggleDecorationCommand { get; }
         public ICommand RenameCommand { get; }
         public ICommand EditDescriptionCommand { get; }
         public RelayCommand EditImageCommand { get; }
@@ -85,6 +98,7 @@ namespace HD2ModManager.ViewModels
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
             AddToProfileCommand = new RelayCommand(parameter => AddToProfile(parameter as ModCardViewModel));
             OpenFolderCommand = new RelayCommand(parameter => OpenFolder(parameter as ModCardViewModel));
+            ToggleDecorationCommand = new RelayCommand(async parameter => await ToggleDecorationAsync(parameter as ModCardViewModel));
             RenameCommand = new AsyncRelayCommand(parameter => RenameModAsync(parameter as ModCardViewModel, parameter is string name ? name : string.Empty));
             EditDescriptionCommand = new AsyncRelayCommand(parameter => UpdateDescriptionAsync(parameter as ModCardViewModel, parameter is string description ? description : string.Empty));
             EditImageCommand = new RelayCommand(parameter => _ = UpdateIconAsync(parameter as ModCardViewModel, parameter is string path ? path : string.Empty));
@@ -188,6 +202,7 @@ namespace HD2ModManager.ViewModels
         public void Refresh(ListTransitionKind transitionKind = ListTransitionKind.Automatic)
         {
             var all = _library.All().ToList();
+            if (!ShowDecorations) all = all.Where(mod => !mod.IsDecoration).ToList();
             if (_hideSelectedProfileMembers && _profiles?.SelectedProfile is not null)
             {
                 var selectedIds = _profiles!.SelectedProfile!.Entries.Select(entry => entry.NodeId.Value.ToString("N")).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -209,7 +224,8 @@ namespace HD2ModManager.ViewModels
                     var derived = _library.GetDerivedData(mod.Guid);
                     _userStatuses.TryGetValue(mod.Guid, out var status);
                     _thumbnailSources.TryGetValue(mod.Guid, out var thumbnailSource);
-                    return new ModCardViewModel(mod, IsSelected(mod.Guid), derived?.AssetSummary, derived?.UnitCompatibility, status, thumbnailSource);
+                    var decorationStatus = mod.IsDecoration ? _library.GetDecorationActivationSummary(mod.Guid).StatusText : null;
+                    return new ModCardViewModel(mod, IsSelected(mod.Guid), mod.IsDecoration ? null : derived?.AssetSummary, mod.IsDecoration ? null : derived?.UnitCompatibility, status, thumbnailSource, decorationStatus);
                 })
                 .ToList();
             Items.ReplaceWith(cards, transitionKind);
@@ -347,6 +363,14 @@ namespace HD2ModManager.ViewModels
             catch { }
         }
 
+        private async Task ToggleDecorationAsync(ModCardViewModel? card)
+        {
+            if (card?.Mod.IsDecoration != true) return;
+            var result = await _library.ToggleDecorationForAllAvailableHostsAsync(card.Mod.Guid).ConfigureAwait(true);
+            _notifications?.Show(result.StatusText, NotificationLevel.Info);
+            Refresh();
+        }
+
         private void ToggleSelection(object? parameter)
         {
             if (parameter is not ModCardViewModel card) return;
@@ -401,6 +425,7 @@ namespace HD2ModManager.ViewModels
         public ModAssetSummary? AssetSummary { get; }
         public string Name => Mod.Name;
         public string AssetSummaryText => ModAssetSummaryFormatter.Format(AssetSummary);
+        public bool ShowsPatchMetadata => Mod.Capabilities.ShowsPatchAssets;
         public string? ImagePath => ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
         public bool IsVisible => true;
         public bool ShowImage => true;
@@ -411,9 +436,10 @@ namespace HD2ModManager.ViewModels
         public ModUnitCompatibilityReport? UnitCompatibility { get; }
         public bool IsModelOutdated => UnitCompatibility?.IsOutdated == true;
         public string ModelCompatibilitySummary => UnitCompatibility?.Summary ?? "模型版本尚未检测。";
-        public string UserStatusTitle => UserStatus?.Title ?? "状态未知";
-        public string UserStatusSummary => UserStatus?.Summary ?? "正在读取状态。";
+        public string UserStatusTitle => Mod.IsDecoration ? "装饰 Mod" : UserStatus?.Title ?? "状态未知";
+        public string UserStatusSummary => Mod.IsDecoration ? DecorationStatus ?? "尚未启用。" : UserStatus?.Summary ?? "正在读取状态。";
         public bool HasUserStatus => UserStatus is not null;
+        public string? DecorationStatus { get; }
 
         public void SetThumbnailSource(string? sourcePath)
         {
@@ -427,13 +453,14 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ImagePath));
         }
 
-        public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null, string? thumbnailSourcePath = null)
+        public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null, string? thumbnailSourcePath = null, string? decorationStatus = null)
         {
             Mod = mod;
             _thumbnailSourcePath = thumbnailSourcePath ?? mod.Image;
             AssetSummary = assetSummary;
 			UnitCompatibility = unitCompatibility;
             UserStatus = userStatus;
+            DecorationStatus = decorationStatus;
             _isSelected = isSelected;
         }
 

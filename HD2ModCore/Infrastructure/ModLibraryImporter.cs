@@ -1,6 +1,7 @@
 ﻿using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -50,6 +51,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 
 		var sourceName = new DirectoryInfo(full).Name;
 		var tree = await _folderImporter.ImportFolderAsync(full, cancellationToken).ConfigureAwait(false);
+		tree = await RestoreExportedNodeIdsAsync(tree, full, cancellationToken).ConfigureAwait(false);
 		var (storedTree, snapshot) = await CommitImportAsync(tree, full, sourceName, preferHardLinks: false, cancellationToken).ConfigureAwait(false);
 		SetStoredTreeReadOnly(storedTree);
 
@@ -73,6 +75,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		{
 			await _archiveExtractor.ExtractAsync(full, extractRoot, cancellationToken).ConfigureAwait(false);
 			var tree = await _folderImporter.ImportFolderAsync(extractRoot, cancellationToken).ConfigureAwait(false);
+			tree = await RestoreExportedNodeIdsAsync(tree, extractRoot, cancellationToken).ConfigureAwait(false);
 			(storedTree, snapshot) = await CommitImportAsync(tree, extractRoot, sourceName, preferHardLinks: true, cancellationToken).ConfigureAwait(false);
 		}
 		finally
@@ -187,6 +190,69 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			Nodes: nodes,
 			Profiles: profiles,
 			ActiveProfileId: current?.ActiveProfileId);
+	}
+
+	// Only the manager's exported Nodes[].Guid format participates in identity restore.
+	// Community manifests with a root Guid and Options remain ordinary package metadata.
+	private static async ValueTask<ImportedObjectTree> RestoreExportedNodeIdsAsync(
+		ImportedObjectTree tree,
+		string sourceRoot,
+		CancellationToken cancellationToken)
+	{
+		var manifestPath = Path.Combine(sourceRoot, "manifest.json");
+		if (!File.Exists(manifestPath)) return tree;
+
+		NodeGuidManifest? manifest;
+		try
+		{
+			await using var stream = File.OpenRead(manifestPath);
+			manifest = await JsonSerializer.DeserializeAsync<NodeGuidManifest>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web)
+			{
+				PropertyNameCaseInsensitive = true,
+			}, cancellationToken).ConfigureAwait(false);
+		}
+		catch (JsonException)
+		{
+			return tree;
+		}
+
+		if (manifest?.Nodes is not { Count: > 0 }) return tree;
+		var idsByPath = new Dictionary<string, ModNodeId>(StringComparer.OrdinalIgnoreCase);
+		foreach (var entry in manifest.Nodes)
+		{
+			if (entry is null || !Guid.TryParse(entry.Guid, out var id)) continue;
+			if (!idsByPath.TryAdd(NormalizeRelativePath(entry.RelativePath), new ModNodeId(id))) return tree;
+		}
+		if (idsByPath.Count == 0) return tree;
+
+		var replacements = tree.Nodes.Values
+			.Where(node => idsByPath.TryGetValue(NormalizeRelativePath(node.RelativePath), out _))
+			.ToDictionary(node => node.Id, node => idsByPath[NormalizeRelativePath(node.RelativePath)]);
+		if (replacements.Values.Distinct().Count() != replacements.Count || replacements.Count == 0) return tree;
+
+		var nodes = new Dictionary<ModNodeId, ModNode>();
+		foreach (var node in tree.Nodes.Values)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var nodeId = replacements.GetValueOrDefault(node.Id, node.Id);
+			var children = node.Children.Select(child => replacements.GetValueOrDefault(child, child)).ToArray();
+			nodes.Add(nodeId, node with { Id = nodeId, Children = children });
+		}
+		return tree with { RootId = replacements.GetValueOrDefault(tree.RootId, tree.RootId), Nodes = nodes };
+	}
+
+	private static string NormalizeRelativePath(string? path)
+		=> string.IsNullOrWhiteSpace(path) || path == "." ? string.Empty : path.Replace('\\', '/').Trim('/');
+
+	private sealed class NodeGuidManifest
+	{
+		public List<NodeGuidManifestEntry>? Nodes { get; set; }
+	}
+
+	private sealed class NodeGuidManifestEntry
+	{
+		public string? RelativePath { get; set; }
+		public string? Guid { get; set; }
 	}
 
 	private void SetStoredTreeReadOnly(ImportedObjectTree storedTree)

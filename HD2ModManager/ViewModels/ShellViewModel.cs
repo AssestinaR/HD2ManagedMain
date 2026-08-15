@@ -107,6 +107,8 @@ namespace HD2ModManager.ViewModels
         public RelayCommand SelectionPrimaryCommand { get; }
         public RelayCommand SelectionDeleteCommand { get; }
         public RelayCommand SelectionDeleteFromLibraryCommand { get; }
+        public RelayCommand EnableSelectedDecorationsCommand { get; }
+        public RelayCommand DisableSelectedDecorationsCommand { get; }
         public RelayCommand ToggleMessagePanelCommand { get; }
         public RelayCommand CancelTaskCommand { get; }
         public RelayCommand RetryTaskCommand { get; }
@@ -218,6 +220,8 @@ namespace HD2ModManager.ViewModels
             SelectionPrimaryCommand = new RelayCommand(async _ => await ExecuteSelectionPrimaryAsync());
             SelectionDeleteCommand = new RelayCommand(async _ => await ExecuteSelectionDeleteAsync());
             SelectionDeleteFromLibraryCommand = new RelayCommand(async _ => await ExecuteSelectionDeleteFromLibraryAsync());
+            EnableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(true));
+            DisableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(false));
             ToggleMessagePanelCommand = new RelayCommand(ToggleMessagePanel);
             CancelTaskCommand = new RelayCommand(CancelTask, task => task is BackgroundTaskItem { CanCancel: true });
             RetryTaskCommand = new RelayCommand(async task => await RetryTaskAsync(task), task => task is BackgroundTaskItem { CanRetry: true });
@@ -1143,7 +1147,12 @@ namespace HD2ModManager.ViewModels
             if (!_selection.HasSelection) return;
             if (string.Equals(_selection.Scope, "Library", StringComparison.OrdinalIgnoreCase))
             {
-                var ids = _selection.SelectedIds.ToList();
+                var ids = _selection.SelectedIds.Where(id => _libraryService.Get(id)?.Capabilities.CanJoinProfile == true).ToList();
+                if (ids.Count == 0)
+                {
+                    _selection.Clear();
+                    return;
+                }
                 var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "加入配置", $"{ids.Count} 个 Mod");
                 task.MarkRunning("正在写入配置");
                 try
@@ -1283,6 +1292,54 @@ namespace HD2ModManager.ViewModels
             }
 
             _selection.Clear();
+        }
+
+        private async Task SetSelectedDecorationsEnabledAsync(bool enabled)
+        {
+            if (!_selection.HasSelection) return;
+            var decorations = _selection.SelectedIds
+                .Select(id => _libraryService.Get(id))
+                .Where(mod => mod?.IsDecoration == true)
+                .Cast<HD2ModManager.Models.ModEntity>()
+                .ToArray();
+            if (decorations.Length == 0) return;
+
+            var hostId = _selection.Scope?.StartsWith("DecorationHost:", StringComparison.Ordinal) == true
+                ? _selection.Scope["DecorationHost:".Length..]
+                : null;
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, enabled ? "启用装饰" : "禁用装饰", $"{decorations.Length} 个装饰 Mod");
+            task.MarkRunning(enabled ? "正在更新装饰启用状态" : "正在更新装饰禁用状态");
+            try
+            {
+                foreach (var decoration in decorations)
+                {
+                    if (hostId is null)
+                    {
+                        if (enabled)
+                        {
+                            var summary = _libraryService.GetDecorationActivationSummary(decoration.Guid);
+                            if (!summary.IsEnabledForAllAvailableHosts)
+                                await _libraryService.ToggleDecorationForAllAvailableHostsAsync(decoration.Guid, task.CancellationToken);
+                        }
+                        else
+                        {
+                            var summary = _libraryService.GetDecorationActivationSummary(decoration.Guid);
+                            if (summary.EnabledHostCount > 0)
+                                await _libraryService.ToggleDecorationForAllAvailableHostsAsync(decoration.Guid, task.CancellationToken);
+                        }
+                    }
+                    else
+                    {
+                        await _libraryService.SetDecorationEnabledForHostAsync(decoration.Guid, hostId, enabled, task.CancellationToken);
+                    }
+                }
+                task.MarkCompleted();
+                _notificationService.Show(enabled ? "已启用选中的装饰。" : "已禁用选中的装饰。");
+                _selection.Clear();
+                RefreshCurrentPage();
+            }
+            catch (OperationCanceledException) { task.MarkCanceled(); }
+            catch (Exception exception) { task.MarkFailed(exception.Message); }
         }
 
         private async Task ExecuteSelectionDeleteFromLibraryAsync()

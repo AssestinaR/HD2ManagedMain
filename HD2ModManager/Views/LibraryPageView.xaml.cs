@@ -56,6 +56,9 @@ namespace HD2ModManager.Views
                 case ModListRowAction.AddToProfile:
                     VM.AddToProfileCommand.Execute(card);
                     break;
+                case ModListRowAction.ToggleDecoration:
+                    VM.ToggleDecorationCommand.Execute(card);
+                    break;
                 case ModListRowAction.OpenFolder:
                     VM.OpenFolderCommand.Execute(card);
                     break;
@@ -103,6 +106,12 @@ namespace HD2ModManager.Views
         {
             EnsureVM();
             VM?.ApplySelection(e.SelectedKeys);
+        }
+
+        private void OnToggleDecorationFilterClick(object sender, RoutedEventArgs e)
+        {
+            EnsureVM();
+            if (VM is not null) VM.ShowDecorations = !VM.ShowDecorations;
         }
 
     }
