@@ -46,6 +46,7 @@ namespace HD2ModManager.Services
         private readonly SemaphoreSlim _derivedRefreshGate = new(1, 1);
         private readonly SemaphoreSlim _libraryMutationGate = new(1, 1);
         private readonly DecorationActivationStore _decorationActivations;
+        private readonly DecorationAttachmentService _decorationAttachments;
         private long _stateVersion;
 
         public ReadOnlyDictionary<string, ModEntity> ByGuid => new(_byGuid);
@@ -66,6 +67,12 @@ namespace HD2ModManager.Services
                 if (available.Count == 0) return new DecorationActivationSummary(0, 0, false, "无可用主体。");
                 var enable = !available.All(enabled.Contains);
                 await _decorationActivations.SetEnabledHostsAsync(decorationId, enable ? enabled.Concat(available) : Array.Empty<string>(), cancellationToken).ConfigureAwait(false);
+                try { await RebuildDecorationOverwritesAsync(available, cancellationToken).ConfigureAwait(false); }
+                catch
+                {
+                    await _decorationActivations.SetEnabledHostsAsync(decorationId, enabled, cancellationToken).ConfigureAwait(false);
+                    throw;
+                }
                 SnapshotChanged?.Invoke(this, EventArgs.Empty);
                 return new DecorationActivationSummary(enable ? available.Count : 0, available.Count, enable, enable ? $"为 {available.Count} 个 Mod 启用了。" : "已对全部主体禁用。");
             }
@@ -80,8 +87,15 @@ namespace HD2ModManager.Services
                 var available = GetAvailableDecorationHostIds(decorationId);
                 if (!available.Contains(hostId, StringComparer.OrdinalIgnoreCase)) return new DecorationActivationSummary(0, available.Count, false, "当前主体不支持该装饰。");
                 var hosts = _decorationActivations.GetEnabledHosts(decorationId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var previous = hosts.ToArray();
                 if (enabled) hosts.Add(hostId); else hosts.Remove(hostId);
                 await _decorationActivations.SetEnabledHostsAsync(decorationId, hosts, cancellationToken).ConfigureAwait(false);
+                try { await RebuildDecorationOverwritesAsync([hostId], cancellationToken).ConfigureAwait(false); }
+                catch
+                {
+                    await _decorationActivations.SetEnabledHostsAsync(decorationId, previous, cancellationToken).ConfigureAwait(false);
+                    throw;
+                }
                 SnapshotChanged?.Invoke(this, EventArgs.Empty);
                 var enabledCount = hosts.Count(id => available.Contains(id, StringComparer.OrdinalIgnoreCase));
                 return new DecorationActivationSummary(enabledCount, available.Count, enabled, enabled ? "已为当前主体启用。" : "已对当前主体禁用。");
@@ -112,6 +126,7 @@ namespace HD2ModManager.Services
             _synchronizer = CoreServices.CreateModLibrarySynchronizer();
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, _informationCenter);
             _decorationActivations = new DecorationActivationStore(Path.Combine(_paths.DataDirectory, "decoration-activations.json"));
+            _decorationAttachments = new DecorationAttachmentService(_paths);
             _snapshot = EmptySnapshot();
             _derivedData = EmptyDerivedData();
         }
@@ -375,7 +390,14 @@ namespace HD2ModManager.Services
             try
             {
             if (!TryParseNodeId(guid, out var nodeId)) return false;
+            var removedIsDecoration = _byGuid.TryGetValue(guid, out var entity) && entity.IsDecoration;
+            var affectedHosts = removedIsDecoration ? _decorationActivations.GetEnabledHosts(guid).ToArray() : Array.Empty<string>();
             _snapshot = _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true).AsTask().GetAwaiter().GetResult();
+            if (removedIsDecoration)
+            {
+                _decorationActivations.RemoveDecorationAsync(guid).GetAwaiter().GetResult();
+            }
+            else _decorationActivations.RemoveHostAsync(guid).GetAwaiter().GetResult();
             Interlocked.Increment(ref _stateVersion);
             _informationCenter.InvalidateNodeAsync(nodeId).AsTask().GetAwaiter().GetResult();
 			ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
@@ -383,6 +405,11 @@ namespace HD2ModManager.Services
             nodes.Remove(nodeId);
             _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray());
             RebuildIndex(buildDerivedData: false);
+            if (affectedHosts.Length != 0)
+            {
+                try { RebuildDecorationOverwritesAsync(affectedHosts, CancellationToken.None).GetAwaiter().GetResult(); }
+                catch (Exception exception) { LogService.Error($"删除装饰后清理 Overwrite 失败：{exception.Message}"); }
+            }
             ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(new[] { nodeId }, ModContentChangeKind.Removed));
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             return true;
@@ -397,6 +424,7 @@ namespace HD2ModManager.Services
             {
                 if (!TryParseNodeId(guid, out var nodeId)) return false;
                 var removedIsDecoration = _byGuid.TryGetValue(guid, out var entity) && entity.IsDecoration;
+                var affectedHosts = removedIsDecoration ? _decorationActivations.GetEnabledHosts(guid).ToArray() : Array.Empty<string>();
                 _snapshot = await _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true, cancellationToken).ConfigureAwait(false);
                 if (removedIsDecoration) await _decorationActivations.RemoveDecorationAsync(guid, cancellationToken).ConfigureAwait(false);
                 else await _decorationActivations.RemoveHostAsync(guid, cancellationToken).ConfigureAwait(false);
@@ -407,6 +435,11 @@ namespace HD2ModManager.Services
                 nodes.Remove(nodeId);
                 _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray());
                 RebuildIndex(buildDerivedData: false);
+                if (affectedHosts.Length != 0)
+                {
+                    try { await RebuildDecorationOverwritesAsync(affectedHosts, cancellationToken).ConfigureAwait(false); }
+                    catch (Exception exception) { LogService.Error($"删除装饰后清理 Overwrite 失败：{exception.Message}"); }
+                }
                 ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(new[] { nodeId }, ModContentChangeKind.Removed));
                 SnapshotChanged?.Invoke(this, EventArgs.Empty);
                 return true;
@@ -622,6 +655,25 @@ namespace HD2ModManager.Services
                 return targets.Where(standard.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase);
             }
             catch (JsonException) { return new HashSet<string>(StringComparer.OrdinalIgnoreCase); }
+        }
+
+        private async Task RebuildDecorationOverwritesAsync(IEnumerable<string> hostIds, CancellationToken cancellationToken)
+        {
+            foreach (var hostId in hostIds.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!TryParseNodeId(hostId, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var host)) continue;
+                var enabled = new List<(ModEntity Mod, DecorationPlanDocument Plan)>();
+                foreach (var decoration in All().Where(mod => mod.IsDecoration && _decorationActivations.GetEnabledHosts(mod.Guid).Contains(hostId, StringComparer.OrdinalIgnoreCase)))
+                {
+                    var path = Path.Combine(_paths.ModsDirectory, decoration.SourcePath ?? string.Empty, "decoration.json");
+                    if (!File.Exists(path)) continue;
+                    var plan = JsonSerializer.Deserialize<DecorationPlanDocument>(await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                    if (plan is not null) enabled.Add((decoration, plan));
+                }
+                await _decorationAttachments.RebuildHostAsync(host, enabled, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), cancellationToken).ConfigureAwait(false);
+                await _informationCenter.InvalidateNodeAsync(host.Id, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         public DerivedModNodeData? GetDerivedData(string guid)

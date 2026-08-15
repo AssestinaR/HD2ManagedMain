@@ -360,10 +360,15 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			var directory = Path.Combine(root, node.RelativePath);
 			builder.Append(node.Id.Value.ToString("N")).Append(':').Append(node.RelativePath).AppendLine();
 			if (!Directory.Exists(directory)) continue;
-			foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+			var paths = Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+				.Concat(Directory.Exists(Path.Combine(directory, "Overwrite"))
+					? Directory.EnumerateFiles(Path.Combine(directory, "Overwrite"), "*", SearchOption.TopDirectoryOnly)
+					: Array.Empty<string>());
+			foreach (var path in paths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
 			{
 				var info = new FileInfo(path);
-				builder.Append(Path.GetFileName(path).ToLowerInvariant()).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks).AppendLine();
+				var relative = Path.GetRelativePath(directory, path);
+				builder.Append(relative.ToLowerInvariant()).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks).AppendLine();
 			}
 		}
 		return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();

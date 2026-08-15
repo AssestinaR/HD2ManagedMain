@@ -38,7 +38,28 @@ public sealed class PatchFileIndexBuilder : IPatchFileIndexBuilder
 				continue;
 			}
 
-			var parsed = Directory.EnumerateFiles(nodeDir, "*", SearchOption.TopDirectoryOnly)
+			var rootFiles = Directory.EnumerateFiles(nodeDir, "*", SearchOption.TopDirectoryOnly).ToArray();
+			var selectedByName = rootFiles.ToDictionary(path => Path.GetFileName(path)!, StringComparer.OrdinalIgnoreCase);
+			var overwriteDir = Path.Combine(nodeDir, "Overwrite");
+			if (Directory.Exists(overwriteDir))
+			{
+				foreach (var overwriteBase in Directory.EnumerateFiles(overwriteDir, "*", SearchOption.TopDirectoryOnly)
+					.Where(path => TryParse(path)?.SidecarKind == PatchSidecarKind.Base && IsPatchToc(path)))
+				{
+					var name = Path.GetFileName(overwriteBase);
+					// An Overwrite patch is a replacement, never an additional deployment patch.
+					if (!selectedByName.ContainsKey(name)) continue;
+					selectedByName[name] = overwriteBase;
+					foreach (var suffix in new[] { ".stream", ".gpu_resources" })
+					{
+						var sidecarName = name + suffix;
+						var sidecar = Path.Combine(overwriteDir, sidecarName);
+						if (File.Exists(sidecar) && selectedByName.ContainsKey(sidecarName)) selectedByName[sidecarName] = sidecar;
+					}
+				}
+			}
+
+			var parsed = selectedByName.Values
 				.Select(path => (Path: path, Name: Path.GetFileName(path), Info: TryParse(path)))
 				.Where(x => x.Info is not null)
 				.Select(x => (x.Path, x.Name, Info: x.Info!))
@@ -90,4 +111,16 @@ public sealed class PatchFileIndexBuilder : IPatchFileIndexBuilder
 
 	private PatchFileNameInfo? TryParse(string path)
 		=> _parser.TryParse(Path.GetFileName(path), out var info) ? info : null;
+
+	private static bool IsPatchToc(string path)
+	{
+		try
+		{
+			using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+			Span<byte> header = stackalloc byte[sizeof(uint)];
+			return stream.Read(header) == header.Length && BitConverter.ToUInt32(header) == 4026531857;
+		}
+		catch (IOException) { return false; }
+		catch (UnauthorizedAccessException) { return false; }
+	}
 }

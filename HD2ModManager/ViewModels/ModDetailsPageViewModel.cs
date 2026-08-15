@@ -1005,10 +1005,18 @@ namespace HD2ModManager.ViewModels
         public async Task ToggleDecorationForCurrentHostAsync(ModCardViewModel? card)
         {
             if (card?.Mod.IsDecoration != true || Mod is null || IsDecoration) return;
-            var enabled = _library.IsDecorationEnabledForHost(card.Mod.Guid, Mod.Guid);
-            var result = await _library.SetDecorationEnabledForHostAsync(card.Mod.Guid, Mod.Guid, !enabled).ConfigureAwait(true);
-            _notifications?.Show(result.StatusText);
-            RefreshHostDecorations();
+            try
+            {
+                var enabled = _library.IsDecorationEnabledForHost(card.Mod.Guid, Mod.Guid);
+                var result = await _library.SetDecorationEnabledForHostAsync(card.Mod.Guid, Mod.Guid, !enabled).ConfigureAwait(true);
+                _notifications?.Show(result.StatusText);
+                RefreshHostDecorations();
+            }
+            catch (Exception exception)
+            {
+                LogService.Error($"主体详情启用装饰失败：主体={Mod.Guid}，装饰={card.Mod.Guid}，异常={exception}");
+                _notifications?.Show($"启用装饰失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
+            }
         }
 
         public void OpenModFolder(string modId)

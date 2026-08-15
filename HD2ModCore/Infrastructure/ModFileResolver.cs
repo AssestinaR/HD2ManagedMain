@@ -42,6 +42,39 @@ public sealed class ModFileResolver : IModFileResolver
 			}
 		}
 
+		// Generated decoration output is an in-place replacement for a host patch, not
+		// an extra patch layer. Only a same-named, structurally recognizable TOC may
+		// override the root file; unrelated files in Overwrite are never deployed.
+		var overwriteDirectory = Path.Combine(nodeDir, "Overwrite");
+		if (Directory.Exists(overwriteDirectory))
+		{
+			var overridden = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+			foreach (var filePath in Directory.EnumerateFiles(overwriteDirectory))
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				var name = Path.GetFileName(filePath);
+				if (_fileNameParser.TryParse(name, out var info) && info?.SidecarKind == PatchSidecarKind.Base && IsPatchToc(filePath))
+					overridden[name] = filePath;
+			}
+			for (var index = 0; index < files.Count; index++)
+			{
+				var name = Path.GetFileName(files[index]);
+				if (overridden.TryGetValue(name, out var replacement)) files[index] = replacement;
+			}
+		}
+
 		return ValueTask.FromResult<IReadOnlyList<string>>(files);
+	}
+
+	private static bool IsPatchToc(string path)
+	{
+		try
+		{
+			using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+			Span<byte> header = stackalloc byte[sizeof(uint)];
+			return stream.Read(header) == header.Length && BitConverter.ToUInt32(header) == 4026531857;
+		}
+		catch (IOException) { return false; }
+		catch (UnauthorizedAccessException) { return false; }
 	}
 }

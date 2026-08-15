@@ -366,9 +366,17 @@ namespace HD2ModManager.ViewModels
         private async Task ToggleDecorationAsync(ModCardViewModel? card)
         {
             if (card?.Mod.IsDecoration != true) return;
-            var result = await _library.ToggleDecorationForAllAvailableHostsAsync(card.Mod.Guid).ConfigureAwait(true);
-            _notifications?.Show(result.StatusText, NotificationLevel.Info);
-            Refresh();
+            try
+            {
+                var result = await _library.ToggleDecorationForAllAvailableHostsAsync(card.Mod.Guid).ConfigureAwait(true);
+                _notifications?.Show(result.StatusText, NotificationLevel.Info);
+                Refresh();
+            }
+            catch (Exception exception)
+            {
+                LogService.Error($"模组库启用装饰失败：装饰={card.Mod.Guid}，异常={exception}");
+                _notifications?.Show($"启用装饰失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
+            }
         }
 
         private void ToggleSelection(object? parameter)

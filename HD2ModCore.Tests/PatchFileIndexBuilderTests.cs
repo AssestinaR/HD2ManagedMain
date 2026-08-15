@@ -67,4 +67,30 @@ public sealed class PatchFileIndexBuilderTests
 			try { Directory.Delete(root, recursive: true); } catch { }
 		}
 	}
+
+	[Fact]
+	public async Task BuildAsync_PrefersValidSameNamedOverwritePatchAndSidecar()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var modsRoot = Path.Combine(root, "mods");
+		var modDir = Path.Combine(modsRoot, "mod");
+		var overwrite = Path.Combine(modDir, "Overwrite");
+		Directory.CreateDirectory(overwrite);
+		try
+		{
+			var name = "9ba626afa44a3aa3.patch_0";
+			File.WriteAllText(Path.Combine(modDir, name), "root");
+			File.WriteAllText(Path.Combine(modDir, name + ".gpu_resources"), "root gpu");
+			await File.WriteAllBytesAsync(Path.Combine(overwrite, name), BitConverter.GetBytes(4026531857u));
+			File.WriteAllText(Path.Combine(overwrite, name + ".gpu_resources"), "overwrite gpu");
+			var nodeId = ModNodeId.New();
+			var node = new ModNode(nodeId, "mod", new ModNodeMetadata("mod", null, DateTimeOffset.UtcNow, null), [], []);
+			var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, []);
+
+			var files = (await new PatchFileIndexBuilder(new PatchFileNameParser()).BuildAsync(snapshot, modsRoot)).FilesByNode[nodeId];
+
+			Assert.All(files, file => Assert.StartsWith(overwrite, file.FilePath, StringComparison.OrdinalIgnoreCase));
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
 }
