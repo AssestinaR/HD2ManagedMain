@@ -424,7 +424,9 @@ namespace HD2ModManager.ViewModels
         private string? _thumbnailSourcePath;
         public ModAssetSummary? AssetSummary { get; }
         public string Name => Mod.Name;
-        public string AssetSummaryText => ModAssetSummaryFormatter.Format(AssetSummary);
+        public string AssetSummaryText => Mod.IsDecoration
+            ? DecorationStatus ?? "尚未启用。"
+            : ModAssetSummaryFormatter.Format(AssetSummary);
         public bool ShowsPatchMetadata => Mod.Capabilities.ShowsPatchAssets;
         public string? ImagePath => ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
         public bool IsVisible => true;

@@ -101,7 +101,8 @@
             </Border>
 
             <local:ModListPanel ItemsSource="{Binding HostDecorations}"
-                                ShowHeader="False"
+                                HeaderTitle="装饰 Mod"
+                                HeaderSummary="已列出支持当前主体的装饰。"
                                 VerticalScrollBarVisibility="Disabled"
                                 RowActions="Rename, Details, ToggleDecoration, OpenFolder, DeleteFromLibrary"
                                 RowActionInvoked="OnHostDecorationRowActionInvoked"

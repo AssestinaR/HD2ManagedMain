@@ -123,14 +123,7 @@
                                         <TextBlock Grid.Column="2" Text="{Binding UserStatusTitle}" Foreground="{StaticResource Accent}" FontSize="12" Margin="0,0,5,0"/>
                                         <TextBlock Grid.Column="3" Text="·" Foreground="{StaticResource TextSecondary}" FontSize="12" Margin="0,0,5,0"/>
                                         <TextBlock Grid.Column="4" Text="{Binding AssetSummaryText}" Foreground="{StaticResource TextSecondary}" FontSize="12"
-                                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis">
-                                            <TextBlock.Style>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="Visibility" Value="Visible"/>
-                                                    <Style.Triggers><DataTrigger Binding="{Binding ShowsPatchMetadata}" Value="False"><Setter Property="Text" Value="{Binding UserStatusSummary}"/><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
-                                                </Style>
-                                            </TextBlock.Style>
-                                        </TextBlock>
+                                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                                     </Grid>
                                 </StackPanel>
                                 <Border x:Name="ActionPanel" Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center"
