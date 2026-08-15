@@ -89,24 +89,26 @@ public sealed class DecorationAttachmentService
             if (targetParts.Length == 0) continue;
             var matching = attachments.Where(attachment => targetParts.Any(part => Matches(attachment.Plan, attachment.Payload, part))).ToArray();
             if (matching.Length == 0) continue;
-            // Multiple fragments/attachments targeting one physical Unit need one combined palette.
-            // Refuse this case until the batch appender is introduced rather than serializing a
-            // second pass from an already generated Unit.
-            if (matching.Length != 1) throw new InvalidDataException($"Unit 0x{entry.AssetKey.FileId:x16} has multiple decoration attachments; batch append is not available yet.");
-            var attachment = matching[0];
-            var targetPart = targetParts.Single(part => Matches(attachment.Plan, attachment.Payload, part));
+            var matchedParts = targetParts.Where(part => matching.Any(attachment => Matches(attachment.Plan, attachment.Payload, part))).ToArray();
+            if (matchedParts.Length != 1)
+                throw new InvalidDataException($"Unit 0x{entry.AssetKey.FileId:x16} has {matchedParts.Length} matching target meshes; each decoration plan must resolve to one physical target mesh.");
+            var targetPart = matchedParts[0];
             var unit = await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
             var targetRaw = unit.Model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == targetPart.MeshInfoIndex)
                 ?? throw new InvalidDataException($"Target MeshInfo {targetPart.MeshInfoIndex} has no readable RawMesh.");
-            var fragments = attachment.Payload.Fragments.Where(item => item.RawMesh.LodIndex == targetRaw.LodIndex).ToArray();
-            if (fragments.Length != 1)
+            var inputs = new List<CanonicalDecorationAppendInput>();
+            foreach (var attachment in matching)
             {
-                var available = string.Join(",", attachment.Payload.Fragments.Select(item => item.RawMesh.LodIndex).Distinct().OrderBy(value => value));
-                throw new InvalidDataException($"装饰 payload 没有与目标 LOD {targetRaw.LodIndex} 一一对应的来源 Mesh（可用 LOD：{available}）。");
+                var fragments = attachment.Payload.Fragments.Where(item => item.RawMesh.LodIndex == targetRaw.LodIndex).ToArray();
+                if (fragments.Length == 0)
+                {
+                    var available = string.Join(",", attachment.Payload.Fragments.Select(item => item.RawMesh.LodIndex).Distinct().OrderBy(value => value));
+                    throw new InvalidDataException($"装饰 {attachment.Mod.Name} 没有与目标 LOD {targetRaw.LodIndex} 对应的来源 Mesh（可用 LOD：{available}）。");
+                }
+                inputs.AddRange(fragments.Select(fragment => new CanonicalDecorationAppendInput(ToCanonical(fragment), DecorationNamespace(attachment.Mod.Guid))));
             }
-            var fragment = fragments[0];
-            LogService.Info($"装饰合并 Unit：Patch={Path.GetFileName(patch)}，目标=0x{entry.AssetKey.FileId:x16}，Mesh={targetPart.MeshInfoIndex}，目标LOD={targetRaw.LodIndex}，部位={targetPart.PartKind}，身形={targetPart.BodyVariant}，来源装饰={attachment.Mod.Guid}，来源LOD={fragment.RawMesh.LodIndex}，来源顶点={fragment.RawMesh.Vertices.Count}，来源三角={fragment.RawMesh.Triangles.Count}");
-            var result = new CanonicalDecorationUnitAppender().TryAppend(unit, targetPart.MeshInfoIndex, ToCanonical(fragment), DecorationNamespace(attachment.Mod.Guid), avatar);
+            LogService.Info($"装饰合并 Unit：Patch={Path.GetFileName(patch)}，目标=0x{entry.AssetKey.FileId:x16}，Mesh={targetPart.MeshInfoIndex}，目标LOD={targetRaw.LodIndex}，部位={targetPart.PartKind}，身形={targetPart.BodyVariant}，来源数={inputs.Count}，来源顶点={inputs.Sum(input => input.Fragment.RawMesh.Vertices.Count)}，来源三角={inputs.Sum(input => input.Fragment.RawMesh.Triangles.Count)}");
+            var result = new CanonicalDecorationUnitAppender().TryAppendMany(unit, targetPart.MeshInfoIndex, inputs, avatar);
             if (!result.IsValid)
             {
                 var detail = string.Join("; ", result.Diagnostics.Select(item => $"{item.Code}: {item.Message}"));

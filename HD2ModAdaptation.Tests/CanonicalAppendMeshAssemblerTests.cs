@@ -31,6 +31,22 @@ public sealed class CanonicalAppendMeshAssemblerTests
         Assert.Equal(new[] { 5f, 0f, 0f }, position);
     }
 
+    [Fact]
+    public void Append_TwicePreservesTargetAndBothDecorationSections()
+    {
+        var assembler = new CanonicalAppendMeshAssembler();
+        var first = assembler.TryAppend(Mesh(0), Mesh(10), Matrix4x4.Identity);
+        var second = assembler.TryAppend(first.Mesh!, Mesh(20), Matrix4x4.Identity);
+
+        Assert.True(first.IsValid);
+        Assert.True(second.IsValid);
+        Assert.Equal(9, second.Mesh!.Vertices.Count);
+        Assert.Equal(3, second.Mesh.Sections.Count);
+        Assert.Equal(new UnitTriangleIndices(0, 1, 2), Assert.Single(second.Mesh.Sections[0].Triangles));
+        Assert.Equal(new UnitTriangleIndices(3, 4, 5), Assert.Single(second.Mesh.Sections[1].Triangles));
+        Assert.Equal(new UnitTriangleIndices(6, 7, 8), Assert.Single(second.Mesh.Sections[2].Triangles));
+    }
+
     private static UnitRawMeshData Mesh(uint material)
     {
         var vertices = new[]

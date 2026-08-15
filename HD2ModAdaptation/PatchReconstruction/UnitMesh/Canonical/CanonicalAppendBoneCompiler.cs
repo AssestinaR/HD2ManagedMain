@@ -1,42 +1,62 @@
-using System.Numerics;
-
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 
-// Rebuilds one target LOD palette after Blender-style topology append. A vertex is copied per
-// final material section when necessary because Stingray Type=6 values are section-remap local.
+// A final section keeps its original skinning owner. SourceIndex == -1 identifies target-shell geometry.
+public sealed record CanonicalAppendSource(UnitMeshModel Model, UnitRawMeshData RawMesh);
+public sealed record CanonicalAppendSectionOrigin(int FinalSectionIndex, int SourceIndex, int SourceSectionIndex);
+
 public sealed record CanonicalAppendBoneResult(UnitRawMeshData? Mesh, UnitBoneInfo? BoneInfo, IReadOnlyList<CanonicalPlanDiagnostic> Diagnostics)
 {
     public bool IsValid => Mesh is not null && BoneInfo is not null && Diagnostics.Count == 0;
 }
 
+// Rebuilds one shared target LOD palette after Blender-style topology append. Vertices are copied
+// per final section because Stingray Type=6 values are section-remap local.
 public sealed class CanonicalAppendBoneCompiler
 {
     public CanonicalAppendBoneResult TryCompile(
         UnitMeshModel targetModel, UnitRawMeshData targetRaw,
-        UnitMeshModel decorationModel, UnitRawMeshData decorationRaw,
-        UnitRawMeshData appended, IReadOnlyList<CanonicalAppendSectionProvenance> provenance)
+        IReadOnlyList<CanonicalAppendSource> sources,
+        UnitRawMeshData appended, IReadOnlyList<CanonicalAppendSectionOrigin> origins)
     {
+        ArgumentNullException.ThrowIfNull(sources);
         var errors = new List<CanonicalPlanDiagnostic>();
         if (targetRaw.LodIndex < 0 || targetRaw.LodIndex >= targetModel.BoneInfos.Count)
             errors.Add(new("AppendTargetBoneInfoMissing", "The target decoration LOD has no writable BoneInfo."));
-        if (decorationRaw.LodIndex < 0 || decorationRaw.LodIndex >= decorationModel.BoneInfos.Count)
-            errors.Add(new("AppendDecorationBoneInfoMissing", "The decoration LOD has no readable BoneInfo."));
-        if (appended.Sections.Count != provenance.Count)
+        if (sources.Count == 0) errors.Add(new("AppendSourcesMissing", "Decoration append requires at least one source mesh."));
+        foreach (var source in sources)
+            if (source.RawMesh.LodIndex < 0 || source.RawMesh.LodIndex >= source.Model.BoneInfos.Count)
+                errors.Add(new("AppendDecorationBoneInfoMissing", "A decoration LOD has no readable BoneInfo."));
+        if (appended.Sections.Count != origins.Count)
             errors.Add(new("AppendSectionProvenanceMismatch", "The appended mesh section provenance does not match final sections."));
         var layout = CanonicalFinalMaterialLayout.TryCreate(appended);
         errors.AddRange(layout.Diagnostics);
         if (errors.Count != 0) return new(null, null, errors);
 
-        var hashesBySection = new List<HashSet<uint>>(appended.Sections.Count);
-        for (var index = 0; index < appended.Sections.Count; index++)
+        (UnitMeshModel Model, UnitRawMeshData RawMesh, UnitRawMeshSectionData Section) Resolve(CanonicalAppendSectionOrigin origin)
         {
-            var origin = provenance[index];
-            var model = origin.IsTargetSection ? targetModel : decorationModel;
-            var raw = origin.IsTargetSection ? targetRaw : decorationRaw;
-            var sourceSection = raw.Sections[origin.SourceSectionIndex];
-            hashesBySection.Add(ResolveSectionHashes(model, raw, sourceSection, errors));
+            if (origin.SourceIndex == -1)
+                return (targetModel, targetRaw, targetRaw.Sections[origin.SourceSectionIndex]);
+            if (origin.SourceIndex < 0 || origin.SourceIndex >= sources.Count)
+                throw new InvalidDataException("A final decoration section has an invalid source owner.");
+            var source = sources[origin.SourceIndex];
+            return (source.Model, source.RawMesh, source.RawMesh.Sections[origin.SourceSectionIndex]);
+        }
+
+        var hashesBySection = new List<HashSet<uint>>(appended.Sections.Count);
+        try
+        {
+            foreach (var origin in origins.OrderBy(origin => origin.FinalSectionIndex))
+            {
+                var source = Resolve(origin);
+                hashesBySection.Add(ResolveSectionHashes(source.Model, source.RawMesh, source.Section, errors));
+            }
+        }
+        catch (Exception exception) when (exception is InvalidDataException or ArgumentOutOfRangeException)
+        {
+            errors.Add(new("AppendSectionOriginInvalid", exception.Message));
         }
         if (errors.Count != 0) return new(null, null, errors);
+
         var hashesByMaterial = new Dictionary<uint, HashSet<uint>>();
         for (var index = 0; index < hashesBySection.Count; index++)
         {
@@ -51,52 +71,55 @@ public sealed class CanonicalAppendBoneCompiler
             errors.Add(new("AppendTargetBoneMissing", "A decoration bone is absent from the target TransformInfo."));
             return new(null, null, errors);
         }
-        var remaps = new List<UnitBoneRemap>();
-        var remapOffset = checked((uint)(4 + hashesByMaterial.Count * 8));
-        foreach (var (material, hashes) in hashesByMaterial.OrderBy(item => item.Key))
-        {
-            var fake = hashes.OrderBy(hash => hash).Select(hash => checked((uint)Array.IndexOf(realIndices, IndexOf(targetModel.TransformNameHashes, hash)))).ToArray();
-            remaps.Add(new UnitBoneRemap(checked((int)material), remapOffset, fake));
-            remapOffset += checked((uint)(fake.Length * sizeof(uint)));
-        }
+        var remaps = BuildRemaps(hashesByMaterial, targetModel.TransformNameHashes, realIndices);
 
-        var targetCount = targetRaw.Vertices.Count;
         var vertices = new List<UnitRawVertexRecord>();
         var sections = new List<UnitRawMeshSectionData>();
         for (var finalIndex = 0; finalIndex < appended.Sections.Count; finalIndex++)
         {
-            var origin = provenance[finalIndex];
-            var raw = origin.IsTargetSection ? targetRaw : decorationRaw;
-            var model = origin.IsTargetSection ? targetModel : decorationModel;
-            var original = raw.Sections[origin.SourceSectionIndex];
+            var source = Resolve(origins[finalIndex]);
             var finalSection = appended.Sections[finalIndex];
             var remap = remaps.Single(item => item.MaterialIndex == finalSection.MaterialIndex);
             var map = new Dictionary<uint, uint>();
-            uint Encode(uint sourceIndex)
+            uint Encode(uint mergedIndex)
             {
-                if (map.TryGetValue(sourceIndex, out var existing)) return existing;
-                if (sourceIndex >= raw.Vertices.Count) { errors.Add(new("AppendBoneIndexOutOfRange", "A decoration triangle references a vertex outside its source mesh.")); return 0; }
-                var mergedIndex = origin.IsTargetSection ? sourceIndex : checked((uint)(targetCount + sourceIndex));
+                if (map.TryGetValue(mergedIndex, out var existing)) return existing;
+                if (mergedIndex >= appended.Vertices.Count) { errors.Add(new("AppendBoneIndexOutOfRange", "A final decoration triangle references a vertex outside its mesh.")); return 0; }
                 var vertex = appended.Vertices[(int)mergedIndex];
-                var rewritten = vertex with { Index = checked((uint)vertices.Count), Data = Array.Empty<byte>(), Components = RewriteIndices(vertex.Components, model, raw, original.MaterialIndex, targetModel.TransformNameHashes, realIndices, remap, errors) };
-                map.Add(sourceIndex, rewritten.Index); vertices.Add(rewritten); return rewritten.Index;
+                var rewritten = vertex with
+                {
+                    Index = checked((uint)vertices.Count), Data = Array.Empty<byte>(),
+                    Components = RewriteIndices(vertex.Components, source.Model, source.RawMesh, source.Section.MaterialIndex,
+                        targetModel.TransformNameHashes, realIndices, remap, errors)
+                };
+                map.Add(mergedIndex, rewritten.Index); vertices.Add(rewritten); return rewritten.Index;
             }
-            var triangles = original.Triangles.Select(triangle => new UnitTriangleIndices(Encode(triangle.A), Encode(triangle.B), Encode(triangle.C))).ToArray();
+            var triangles = finalSection.Triangles.Select(triangle => new UnitTriangleIndices(Encode(triangle.A), Encode(triangle.B), Encode(triangle.C))).ToArray();
             sections.Add(finalSection with { Triangles = triangles });
         }
         if (errors.Count != 0) return new(null, null, errors);
-        var mesh = appended with { Vertices = vertices, Sections = sections, Triangles = sections.SelectMany(section => section.Triangles).ToArray() };
+
         var targetMesh = targetModel.Meshes.SingleOrDefault(mesh => mesh.Index == targetRaw.MeshInfoIndex);
-        if (targetMesh is null)
-        {
-            errors.Add(new("AppendTargetMeshMissing", "The target decoration mesh is absent from its Unit model."));
-            return new(null, null, errors);
-        }
+        if (targetMesh is null) return new(null, null, [new("AppendTargetMeshMissing", "The target decoration mesh is absent from its Unit model.")]);
         var matrices = CanonicalInverseJointMatrixCompiler.Build(targetModel, targetMesh.TransformIndex, realIndices, errors);
         if (errors.Count != 0) return new(null, null, errors);
         var template = targetModel.BoneInfos[targetRaw.LodIndex];
         var palette = template with { NumBones = checked((uint)realIndices.Length), RealIndices = realIndices.Select(index => checked((uint)index)).ToArray(), Remaps = remaps, BoneMatrices = matrices };
+        var mesh = appended with { Vertices = vertices, Sections = sections, Triangles = sections.SelectMany(section => section.Triangles).ToArray() };
         return new(mesh, palette, []);
+    }
+
+    private static IReadOnlyList<UnitBoneRemap> BuildRemaps(IReadOnlyDictionary<uint, HashSet<uint>> hashesByMaterial, IReadOnlyList<uint> targetHashes, IReadOnlyList<int> realIndices)
+    {
+        var remaps = new List<UnitBoneRemap>();
+        var offset = checked((uint)(4 + hashesByMaterial.Count * 8));
+        foreach (var (material, hashes) in hashesByMaterial.OrderBy(item => item.Key))
+        {
+            var fake = hashes.OrderBy(hash => hash).Select(hash => checked((uint)Array.IndexOf(realIndices.ToArray(), IndexOf(targetHashes, hash)))).ToArray();
+            remaps.Add(new UnitBoneRemap(checked((int)material), offset, fake));
+            offset += checked((uint)(fake.Length * sizeof(uint)));
+        }
+        return remaps;
     }
 
     private static HashSet<uint> ResolveSectionHashes(UnitMeshModel model, UnitRawMeshData raw, UnitRawMeshSectionData section, List<CanonicalPlanDiagnostic> errors)
@@ -107,6 +130,7 @@ public sealed class CanonicalAppendBoneCompiler
         if (remap is null) { errors.Add(new("AppendSourceBoneRemapMissing", "A source mesh section has no BoneInfo remap.")); return result; }
         foreach (var vertexIndex in section.Triangles.SelectMany(triangle => new[] { triangle.A, triangle.B, triangle.C }).Distinct())
         {
+            if (vertexIndex >= raw.Vertices.Count) { errors.Add(new("AppendSourceVertexInvalid", "A source section references a vertex outside its mesh.")); continue; }
             foreach (var fake in raw.Vertices[(int)vertexIndex].Components.FirstOrDefault(component => component.Type == 6)?.UIntValues ?? [])
             {
                 if (fake >= remap.FakeIndices.Count || remap.FakeIndices[(int)fake] >= info.RealIndices.Count) { errors.Add(new("AppendSourceBoneIndexInvalid", "A source Type=6 index cannot be resolved.")); continue; }
@@ -122,11 +146,7 @@ public sealed class CanonicalAppendBoneCompiler
     {
         var info = model.BoneInfos[raw.LodIndex];
         var sourceRemap = info.Remaps.FirstOrDefault(item => item.MaterialIndex == sourceMaterial) ?? info.Remaps.FirstOrDefault();
-        return components.Select(component => component.Type != 6 ? component : component with
-        {
-            RawData = Array.Empty<byte>(),
-            UIntValues = component.UIntValues.Select(fake => Resolve(fake)).ToArray()
-        }).ToArray();
+        return components.Select(component => component.Type != 6 ? component : component with { RawData = Array.Empty<byte>(), UIntValues = component.UIntValues.Select(Resolve).ToArray() }).ToArray();
         uint Resolve(uint fake)
         {
             if (sourceRemap is null || fake >= sourceRemap.FakeIndices.Count || sourceRemap.FakeIndices[(int)fake] >= info.RealIndices.Count) { errors.Add(new("AppendSourceBoneIndexInvalid", "A source vertex has an invalid Type=6 index.")); return 0; }
