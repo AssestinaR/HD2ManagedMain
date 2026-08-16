@@ -10,7 +10,8 @@ public sealed record CanonicalMaterialSectionProvenance(
 	uint SourceSlotId,
 	uint PreferredTargetSlotId,
 	ulong MaterialId,
-	bool UsesTargetUnitMaterialSlotLookup = false);
+	bool UsesTargetUnitMaterialSlotLookup = false,
+	bool PreferMeshLocalSlotReuse = false);
 
 public sealed record CanonicalUnitMaterialLayoutCompilation(
 	IReadOnlyList<UnitRawMeshData> Meshes,
@@ -74,6 +75,7 @@ public sealed class CanonicalUnitMaterialLayoutCompiler
 		foreach (var mesh in meshes.OrderBy(mesh => mesh.MeshInfoIndex))
 		{
 			var sections = mesh.Sections.ToArray();
+			var localTargetSlotsByMaterial = BuildLocalTargetSlots(mesh, claims, targetBindings);
 			var expandedOccurrenceByMaterial = new Dictionary<ulong, int>();
 			for (var index = 0; index < sections.Length; index++)
 			{
@@ -88,7 +90,9 @@ public sealed class CanonicalUnitMaterialLayoutCompiler
 				var identity = new MaterialIdentity(target.NameHash, mesh.MeshInfoIndex, index, claim.MaterialId, occurrence, claim.PreferredTargetSlotId);
 				var sourceIdentity = new SourceMaterialIdentity(claim.SourceUnitFileId, claim.SourceSlotId, claim.MaterialId);
 				var requestedSlot = claim.UsesTargetUnitMaterialSlotLookup
-					? ResolveSdkTargetSlot(targetSlotsByMaterial, claim.MaterialId, occurrence, identity, occupiedSlots)
+					? ResolveSdkTargetSlot(
+						claim.PreferMeshLocalSlotReuse ? localTargetSlotsByMaterial : targetSlotsByMaterial,
+						claim.MaterialId, occurrence, identity, occupiedSlots)
 					: ordinarySlotsBySource.TryGetValue(sourceIdentity, out var establishedSlot)
 						? establishedSlot
 						: claim.PreferredTargetSlotId;
@@ -121,6 +125,17 @@ public sealed class CanonicalUnitMaterialLayoutCompiler
 		}
 		return new(rewritten, bindings, []);
 	}
+
+	private static IReadOnlyDictionary<ulong, uint[]> BuildLocalTargetSlots(
+		UnitRawMeshData mesh,
+		IReadOnlyDictionary<(int MeshInfoIndex, int SectionIndex), CanonicalMaterialSectionProvenance[]> claims,
+		IReadOnlyDictionary<uint, ulong[]> targetBindings)
+		=> mesh.Sections
+			.Select((section, index) => (section, index))
+			.Where(item => !claims.ContainsKey((mesh.MeshInfoIndex, item.index)))
+			.Where(item => targetBindings.TryGetValue(item.section.MaterialSlotId, out var materialIds) && materialIds.Length == 1)
+			.GroupBy(item => targetBindings[item.section.MaterialSlotId][0])
+			.ToDictionary(group => group.Key, group => group.Select(item => item.section.MaterialSlotId).Distinct().ToArray());
 
 	private static uint ResolveSdkTargetSlot(
 		IReadOnlyDictionary<ulong, uint[]> targetSlotsByMaterial,

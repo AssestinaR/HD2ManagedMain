@@ -101,6 +101,25 @@ public sealed class CanonicalUnitMaterialLayoutCompilerTests
 		Assert.Equal([new UnitMaterialBinding(900, 0x222UL)], result.Bindings);
 	}
 
+	[Fact]
+	public void Compile_DecorationPrefersMatchingSlotOnItsCurrentHostMesh()
+	{
+		var target = Model([new UnitMaterialBinding(100, 0x111UL), new UnitMaterialBinding(200, 0x222UL)]);
+		var host = new UnitRawMeshData(0, 1, 0, 0,
+			[new UnitRawMeshSectionData(0, 100, [new UnitTriangleIndices(0, 1, 2)]), new UnitRawMeshSectionData(1, 200, [new UnitTriangleIndices(3, 4, 5)])],
+			[], []);
+		var appended = host with { Sections = [.. host.Sections, new UnitRawMeshSectionData(2, 777, [new UnitTriangleIndices(6, 7, 8)])] };
+
+		var result = new CanonicalUnitMaterialLayoutCompiler().TryCompile(
+			target,
+			[appended],
+			[new CanonicalMaterialSectionProvenance(0, 2, 0xaaaUL, 777, 777, 0x222UL, true, true)]);
+
+		Assert.True(result.IsValid);
+		Assert.Equal(200u, result.Meshes.Single().Sections[2].MaterialSlotId);
+		Assert.Equal(2, CanonicalFinalMaterialLayout.TryCreate(result.Meshes.Single()).Slots.Count);
+	}
+
 	private static UnitRawMeshData Mesh(int index, uint slot, bool visible)
 		=> new(index, (uint)(index + 1), 0, 0,
 			[new UnitRawMeshSectionData(0, slot, visible ? [new UnitTriangleIndices(0, 1, 2)] : [])],

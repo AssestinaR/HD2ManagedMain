@@ -37,5 +37,6 @@ public sealed class DecorationSourceUnit
     public ulong FileId { get; set; }
     public int MeshInfoIndex { get; set; }
     public string BodyVariant { get; set; } = string.Empty;
+    public string Layer { get; set; } = string.Empty;
     public bool IsCulling { get; set; }
 }

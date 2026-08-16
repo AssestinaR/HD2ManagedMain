@@ -6,8 +6,10 @@ namespace HD2ModManager.Models;
 public sealed class DecorationPayloadDocument
 {
     public string Format { get; set; } = "HD2ModManager.DecorationPayload";
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
     public string BodyVariant { get; set; } = string.Empty;
+    // Source layers guide host selection. Empty means a legacy payload with no layer metadata.
+    public List<string> SourceLayers { get; set; } = new();
     public List<DecorationMeshFragment> Fragments { get; set; } = new();
 }
 

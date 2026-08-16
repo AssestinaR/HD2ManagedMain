@@ -66,6 +66,49 @@ public sealed class CanonicalStreamContractCompilerTests
 		Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "IncompleteStreamRawMeshCoverage");
 	}
 
+	[Fact]
+	public void Compile_PreservesExistingFloatUvStreamContract()
+	{
+		var target = Target() with
+		{
+			Streams = [Target().Streams[0] with
+			{
+				VertexStride = 56,
+				Components = [
+					new UnitStreamComponentInfo(5, "color", 4, "rgba_r8g8b8a8", 0, 0, 4),
+					new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+					new UnitStreamComponentInfo(1, "normal", 30, "unk_normal", 0, 0, 4),
+					new UnitStreamComponentInfo(4, "uv", 1, "vec2_float", 0, 0, 8),
+					new UnitStreamComponentInfo(4, "uv", 1, "vec2_float", 1, 0, 8),
+					new UnitStreamComponentInfo(4, "uv", 1, "vec2_float", 2, 0, 8),
+					new UnitStreamComponentInfo(7, "bone_weight", 35, "vec4_half", 0, 0, 8),
+					new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4)]
+			}]
+		};
+		var raw = Raw(0, 3) with
+		{
+			Vertices = Raw(0, 3).Vertices.Select(vertex => vertex with
+			{
+				Components = target.Streams[0].Components.Select(component => new UnitVertexComponentValue(
+					component.Type, component.TypeName, component.Format, component.FormatName, component.Index,
+					component.Type is 0 or 1 or 4 or 7 ? [0f, 0f, 0f, 0f] : [],
+					component.Type == 6 ? [0u, 0u, 0u, 0u] : [], [])).ToArray()
+			}).ToArray()
+		};
+
+		var result = new CanonicalStreamContractCompiler().TryCompile(target, [raw]);
+
+		Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(diagnostic => diagnostic.Message)));
+		var stream = Assert.Single(result.Streams);
+		Assert.Equal(56u, stream.VertexStride);
+		Assert.All(stream.Components.Where(component => component.Type == 4), component =>
+		{
+			Assert.Equal(1u, component.Format);
+			Assert.Equal("vec2_float", component.FormatName);
+			Assert.Equal(8u, component.Size);
+		});
+	}
+
 	private static UnitMeshModel Target(int meshCount = 1)
 	{
 		var stream = new UnitStreamInfo(0, 128, 99, 1, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0,

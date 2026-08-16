@@ -42,36 +42,35 @@ public sealed class CanonicalAppendBoneCompiler
             return (source.Model, source.RawMesh, source.RawMesh.Sections[origin.SourceSectionIndex]);
         }
 
-        var hashesBySection = new List<HashSet<uint>>(appended.Sections.Count);
-        try
+        // Blender object.join keeps the host object's vertex groups. SetRemap then emits every
+        // one of those groups for every final material slot, including groups without a visible
+        // influence in this particular mesh. Compressing this to active triangle bones changes
+        // the runtime palette ABI and causes animated geometry to detach in game.
+        var template = targetModel.BoneInfos[targetRaw.LodIndex];
+        var groupHashes = CollectBlenderVertexGroups(targetModel, targetRaw, errors).ToList();
+        foreach (var source in sources)
         {
-            foreach (var origin in origins.OrderBy(origin => origin.FinalSectionIndex))
+            foreach (var hash in CollectBlenderVertexGroups(source.Model, source.RawMesh, errors))
             {
-                var source = Resolve(origin);
-                hashesBySection.Add(ResolveSectionHashes(source.Model, source.RawMesh, source.Section, errors));
+                if (!groupHashes.Contains(hash)) groupHashes.Add(hash);
             }
-        }
-        catch (Exception exception) when (exception is InvalidDataException or ArgumentOutOfRangeException)
-        {
-            errors.Add(new("AppendSectionOriginInvalid", exception.Message));
         }
         if (errors.Count != 0) return new(null, null, errors);
 
-        var hashesByMaterial = new Dictionary<uint, HashSet<uint>>();
-        for (var index = 0; index < hashesBySection.Count; index++)
+        var realIndices = template.RealIndices.Select(index => checked((int)index)).ToList();
+        foreach (var hash in groupHashes)
         {
-            var material = layout.GetMaterialOrdinal(index);
-            if (!hashesByMaterial.TryGetValue(material, out var hashes)) hashesByMaterial[material] = hashes = [];
-            hashes.UnionWith(hashesBySection[index]);
+            var transformIndex = IndexOf(targetModel.TransformNameHashes, hash);
+            if (transformIndex < 0)
+            {
+                errors.Add(new("AppendTargetBoneMissing", "A decoration bone is absent from the target TransformInfo."));
+                continue;
+            }
+            if (!realIndices.Contains(transformIndex)) realIndices.Add(transformIndex);
         }
-        var realIndices = hashesByMaterial.Values.SelectMany(value => value).Distinct().OrderBy(value => value)
-            .Select(hash => IndexOf(targetModel.TransformNameHashes, hash)).ToArray();
-        if (realIndices.Any(index => index < 0))
-        {
-            errors.Add(new("AppendTargetBoneMissing", "A decoration bone is absent from the target TransformInfo."));
-            return new(null, null, errors);
-        }
-        var remaps = BuildRemaps(hashesByMaterial, targetModel.TransformNameHashes, realIndices);
+        if (errors.Count != 0) return new(null, null, errors);
+        var remaps = BuildRemaps(layout, groupHashes, targetModel.TransformNameHashes, realIndices, errors);
+        if (errors.Count != 0) return new(null, null, errors);
 
         var vertices = new List<UnitRawVertexRecord>();
         var sections = new List<UnitRawMeshSectionData>();
@@ -103,41 +102,77 @@ public sealed class CanonicalAppendBoneCompiler
         if (targetMesh is null) return new(null, null, [new("AppendTargetMeshMissing", "The target decoration mesh is absent from its Unit model.")]);
         var matrices = CanonicalInverseJointMatrixCompiler.Build(targetModel, targetMesh.TransformIndex, realIndices, errors);
         if (errors.Count != 0) return new(null, null, errors);
-        var template = targetModel.BoneInfos[targetRaw.LodIndex];
-        var palette = template with { NumBones = checked((uint)realIndices.Length), RealIndices = realIndices.Select(index => checked((uint)index)).ToArray(), Remaps = remaps, BoneMatrices = matrices };
+        var palette = template with { NumBones = checked((uint)realIndices.Count), RealIndices = realIndices.Select(index => checked((uint)index)).ToArray(), Remaps = remaps, BoneMatrices = matrices };
         var mesh = appended with { Vertices = vertices, Sections = sections, Triangles = sections.SelectMany(section => section.Triangles).ToArray() };
         return new(mesh, palette, []);
     }
 
-    private static IReadOnlyList<UnitBoneRemap> BuildRemaps(IReadOnlyDictionary<uint, HashSet<uint>> hashesByMaterial, IReadOnlyList<uint> targetHashes, IReadOnlyList<int> realIndices)
+    private static IReadOnlyList<UnitBoneRemap> BuildRemaps(
+        CanonicalFinalMaterialLayoutResult layout,
+        IReadOnlyList<uint> groupHashes,
+        IReadOnlyList<uint> targetHashes,
+        IReadOnlyList<int> realIndices,
+        List<CanonicalPlanDiagnostic> errors)
     {
         var remaps = new List<UnitBoneRemap>();
-        var offset = checked((uint)(4 + hashesByMaterial.Count * 8));
-        foreach (var (material, hashes) in hashesByMaterial.OrderBy(item => item.Key))
+        var offset = checked((uint)(4 + layout.Slots.Count * 8));
+        var fake = new List<uint>(groupHashes.Count);
+        foreach (var hash in groupHashes)
         {
-            var fake = hashes.OrderBy(hash => hash).Select(hash => checked((uint)Array.IndexOf(realIndices.ToArray(), IndexOf(targetHashes, hash)))).ToArray();
-            remaps.Add(new UnitBoneRemap(checked((int)material), offset, fake));
-            offset += checked((uint)(fake.Length * sizeof(uint)));
+            var transformIndex = IndexOf(targetHashes, hash);
+            var paletteIndex = IndexOf(realIndices, transformIndex);
+            if (transformIndex < 0 || paletteIndex < 0)
+            {
+                errors.Add(new("AppendTargetBoneRemapMissing", "A Blender vertex group is absent from the final target palette."));
+                continue;
+            }
+            fake.Add(checked((uint)paletteIndex));
+        }
+        foreach (var slot in layout.Slots)
+        {
+            remaps.Add(new UnitBoneRemap(checked((int)slot.MaterialOrdinal), offset, fake.ToArray()));
+            offset += checked((uint)(fake.Count * sizeof(uint)));
         }
         return remaps;
     }
 
-    private static HashSet<uint> ResolveSectionHashes(UnitMeshModel model, UnitRawMeshData raw, UnitRawMeshSectionData section, List<CanonicalPlanDiagnostic> errors)
+    private static IReadOnlyList<uint> CollectBlenderVertexGroups(UnitMeshModel model, UnitRawMeshData raw, List<CanonicalPlanDiagnostic> errors)
     {
-        var result = new HashSet<uint>();
-        var info = model.BoneInfos[raw.LodIndex];
-        var remap = info.Remaps.FirstOrDefault(item => item.MaterialIndex == section.MaterialIndex) ?? info.Remaps.FirstOrDefault();
-        if (remap is null) { errors.Add(new("AppendSourceBoneRemapMissing", "A source mesh section has no BoneInfo remap.")); return result; }
-        foreach (var vertexIndex in section.Triangles.SelectMany(triangle => new[] { triangle.A, triangle.B, triangle.C }).Distinct())
+        if (raw.LodIndex < 0 || raw.LodIndex >= model.BoneInfos.Count)
         {
-            if (vertexIndex >= raw.Vertices.Count) { errors.Add(new("AppendSourceVertexInvalid", "A source section references a vertex outside its mesh.")); continue; }
-            foreach (var fake in raw.Vertices[(int)vertexIndex].Components.FirstOrDefault(component => component.Type == 6)?.UIntValues ?? [])
+            errors.Add(new("AppendSourceBoneInfoMissing", "A Blender vertex-group source has no readable BoneInfo."));
+            return [];
+        }
+        var result = new List<uint>();
+        var info = model.BoneInfos[raw.LodIndex];
+        var materialByVertex = new uint[raw.Vertices.Count];
+        foreach (var section in raw.Sections)
+        {
+            foreach (var vertexIndex in section.Triangles.SelectMany(triangle => new[] { triangle.A, triangle.B, triangle.C }))
+            {
+                if (vertexIndex < materialByVertex.Length) materialByVertex[vertexIndex] = section.MaterialIndex;
+            }
+        }
+        for (var vertexIndex = 0; vertexIndex < raw.Vertices.Count; vertexIndex++)
+        {
+            var remap = info.Remaps.FirstOrDefault(item => item.MaterialIndex == materialByVertex[vertexIndex]) ?? info.Remaps.FirstOrDefault();
+            if (remap is null) { errors.Add(new("AppendSourceBoneRemapMissing", "A source mesh section has no BoneInfo remap.")); continue; }
+            foreach (var fake in raw.Vertices[vertexIndex].Components.FirstOrDefault(component => component.Type == 6)?.UIntValues ?? [])
             {
                 if (fake >= remap.FakeIndices.Count || remap.FakeIndices[(int)fake] >= info.RealIndices.Count) { errors.Add(new("AppendSourceBoneIndexInvalid", "A source Type=6 index cannot be resolved.")); continue; }
                 var transform = info.RealIndices[(int)remap.FakeIndices[(int)fake]];
                 if (transform >= model.TransformNameHashes.Count) { errors.Add(new("AppendSourceBoneMissing", "A source BoneInfo transform index is missing.")); continue; }
-                result.Add(model.TransformNameHashes[(int)transform]);
+                var hash = model.TransformNameHashes[(int)transform];
+                if (!result.Contains(hash)) result.Add(hash);
             }
+        }
+        // CreateModel appends every palette bone that was not encountered while importing
+        // weighted vertices. Preserve this final step exactly.
+        for (var transform = 0; transform < model.TransformNameHashes.Count; transform++)
+        {
+            if (!info.RealIndices.Contains((uint)transform)) continue;
+            var hash = model.TransformNameHashes[transform];
+            if (!result.Contains(hash)) result.Add(hash);
         }
         return result;
     }
@@ -160,4 +195,5 @@ public sealed class CanonicalAppendBoneCompiler
     }
 
     private static int IndexOf(IReadOnlyList<uint> values, uint value) { for (var i = 0; i < values.Count; i++) if (values[i] == value) return i; return -1; }
+    private static int IndexOf(IReadOnlyList<int> values, int value) { for (var i = 0; i < values.Count; i++) if (values[i] == value) return i; return -1; }
 }

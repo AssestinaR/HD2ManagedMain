@@ -80,35 +80,51 @@ public sealed class DecorationAttachmentService
         var keys = entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId)
             .Select(entry => new HD2ModCore.Domain.AssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId)).ToHashSet();
         var catalog = await _catalog.GetEntriesAsync(keys, cancellationToken).ConfigureAwait(false);
-        var parts = catalog.SelectMany(entry => entry.Parts).GroupBy(part => (part.UnitAssetKey, part.MeshInfoIndex)).ToDictionary(group => group.Key, group => group.First());
+        var candidates = catalog
+            .SelectMany(entry => entry.Parts.Select(part => new DecorationHostCandidate(entry.ArchiveId, part)))
+            .GroupBy(candidate => (candidate.ArchiveId, candidate.Part.UnitAssetKey, candidate.Part.MeshInfoIndex))
+            .Select(group => group.OrderByDescending(candidate => candidate.Part.StoredBytes).ThenByDescending(candidate => candidate.Part.Confidence).First())
+            .ToArray();
+        var targets = ResolveTargets(candidates, attachments);
+        var targetsByUnit = targets
+            .GroupBy(target => target.Part.UnitAssetKey)
+            .ToDictionary(group => group.Key, group => group.ToArray());
         var edits = new List<PatchUnitMeshEditResult>();
         var reader = new PatchUnitMeshReader();
         foreach (var entry in entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
         {
-            var targetParts = parts.Where(pair => pair.Key.UnitAssetKey.TypeId == entry.AssetKey.TypeId && pair.Key.UnitAssetKey.FileId == entry.AssetKey.FileId).Select(pair => pair.Value).ToArray();
-            if (targetParts.Length == 0) continue;
-            var matching = attachments.Where(attachment => targetParts.Any(part => Matches(attachment.Plan, attachment.Payload, part))).ToArray();
-            if (matching.Length == 0) continue;
-            var matchedParts = targetParts.Where(part => matching.Any(attachment => Matches(attachment.Plan, attachment.Payload, part))).ToArray();
-            if (matchedParts.Length != 1)
-                throw new InvalidDataException($"Unit 0x{entry.AssetKey.FileId:x16} has {matchedParts.Length} matching target meshes; each decoration plan must resolve to one physical target mesh.");
-            var targetPart = matchedParts[0];
+            var unitKey = new HD2ModCore.Domain.AssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId);
+            if (!targetsByUnit.TryGetValue(unitKey, out var matching)) continue;
+            var targetMeshes = matching.Select(target => target.Part.MeshInfoIndex).Distinct().ToArray();
+            if (targetMeshes.Length != 1)
+                throw new InvalidDataException($"Unit 0x{entry.AssetKey.FileId:x16} resolved to {targetMeshes.Length} decoration host meshes; choose separate target parts.");
+            var targetPart = matching[0].Part;
             var unit = await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
             var targetRaw = unit.Model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == targetPart.MeshInfoIndex)
                 ?? throw new InvalidDataException($"Target MeshInfo {targetPart.MeshInfoIndex} has no readable RawMesh.");
-            var inputs = new List<CanonicalDecorationAppendInput>();
-            foreach (var attachment in matching)
+            var targetMesh = unit.Model.Meshes.Single(mesh => mesh.Index == targetPart.MeshInfoIndex);
+            var selectedAttachments = matching
+                .GroupBy(target => (target.Attachment.Mod.Guid, target.Attachment.Payload.BodyVariant), StringTupleComparer.OrdinalIgnoreCase)
+                .Select(group => group.First().Attachment)
+                .ToArray();
+            var inputsByTargetMesh = new Dictionary<int, IReadOnlyList<CanonicalDecorationAppendInput>>();
+            foreach (var lodTarget in ResolveVisibleLodFamily(unit.Model, targetRaw, targetMesh))
             {
-                var fragments = attachment.Payload.Fragments.Where(item => item.RawMesh.LodIndex == targetRaw.LodIndex).ToArray();
-                if (fragments.Length == 0)
-                {
-                    var available = string.Join(",", attachment.Payload.Fragments.Select(item => item.RawMesh.LodIndex).Distinct().OrderBy(value => value));
-                    throw new InvalidDataException($"装饰 {attachment.Mod.Name} 没有与目标 LOD {targetRaw.LodIndex} 对应的来源 Mesh（可用 LOD：{available}）。");
-                }
-                inputs.AddRange(fragments.Select(fragment => new CanonicalDecorationAppendInput(ToCanonical(fragment), DecorationNamespace(attachment.Mod.Guid))));
+                var inputs = selectedAttachments
+                    .SelectMany(attachment => attachment.Payload.Fragments
+                        .Where(fragment => fragment.RawMesh.LodIndex == lodTarget.Raw.LodIndex)
+                        .Select(fragment => new CanonicalDecorationAppendInput(ToCanonical(fragment), DecorationNamespace(attachment.Mod.Guid))))
+                    .ToArray();
+                if (inputs.Length != 0) inputsByTargetMesh.Add(lodTarget.Mesh.Index, inputs);
             }
-            LogService.Info($"装饰合并 Unit：Patch={Path.GetFileName(patch)}，目标=0x{entry.AssetKey.FileId:x16}，Mesh={targetPart.MeshInfoIndex}，目标LOD={targetRaw.LodIndex}，部位={targetPart.PartKind}，身形={targetPart.BodyVariant}，来源数={inputs.Count}，来源顶点={inputs.Sum(input => input.Fragment.RawMesh.Vertices.Count)}，来源三角={inputs.Sum(input => input.Fragment.RawMesh.Triangles.Count)}");
-            var result = new CanonicalDecorationUnitAppender().TryAppendMany(unit, targetPart.MeshInfoIndex, inputs, avatar);
+            if (inputsByTargetMesh.Count == 0)
+            {
+                var available = string.Join(",", selectedAttachments.SelectMany(attachment => attachment.Payload.Fragments).Select(fragment => fragment.RawMesh.LodIndex).Distinct().OrderBy(value => value));
+                throw new InvalidDataException($"装饰没有与目标 LOD {targetRaw.LodIndex} 对应的来源 Mesh（可用 LOD：{available}）。");
+            }
+            var allInputs = inputsByTargetMesh.Values.SelectMany(inputs => inputs).ToArray();
+            LogService.Info($"装饰合并 Unit：Patch={Path.GetFileName(patch)}，目标=0x{entry.AssetKey.FileId:x16}，Mesh={targetPart.MeshInfoIndex}，目标LOD=[{string.Join(",", inputsByTargetMesh.Keys.Select(index => unit.Model.RawMeshData.Single(raw => raw.MeshInfoIndex == index).LodIndex).OrderBy(lod => lod))}]，部位={targetPart.PartKind}，身形={targetPart.BodyVariant}，来源数={allInputs.Length}，来源顶点={allInputs.Sum(input => input.Fragment.RawMesh.Vertices.Count)}，来源三角={allInputs.Sum(input => input.Fragment.RawMesh.Triangles.Count)}");
+            var result = new CanonicalDecorationUnitAppender().TryAppendLodFamily(unit, inputsByTargetMesh, avatar);
             if (!result.IsValid)
             {
                 var detail = string.Join("; ", result.Diagnostics.Select(item => $"{item.Code}: {item.Message}"));
@@ -125,14 +141,189 @@ public sealed class DecorationAttachmentService
         return edits.Count;
     }
 
-    private static bool Matches(DecorationAttachmentPlan plan, DecorationPayloadDocument payload, EquipmentUnitPart part)
+    private static IReadOnlyList<DecorationResolvedTarget> ResolveTargets(
+        IReadOnlyList<DecorationHostCandidate> candidates,
+        IReadOnlyList<(ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload)> attachments)
+    {
+        var resolved = new List<DecorationResolvedTarget>();
+        foreach (var attachmentGroup in attachments.GroupBy(attachment => attachment.Mod.Guid, StringComparer.OrdinalIgnoreCase))
+        {
+            var attachmentSet = attachmentGroup.ToArray();
+            var plan = attachmentSet[0].Plan;
+            foreach (var archiveGroup in candidates
+                .Where(candidate => IsRenderableHost(candidate.Part) && PartMatches(candidate.Part.PartKind, plan.TargetPart))
+                .GroupBy(candidate => candidate.ArchiveId, StringComparer.OrdinalIgnoreCase))
+            {
+                var archiveCandidates = archiveGroup.ToArray();
+                var sourceLayers = ReadSourceLayers(attachmentSet);
+                var selections = SelectHosts(archiveCandidates, attachmentSet, plan, sourceLayers);
+
+                if (selections.Count == 0) continue;
+                var sourceLayerText = sourceLayers.Count == 0 ? "legacy-fallback" : string.Join(",", sourceLayers);
+                LogService.Info($"装饰宿主选择：装饰={attachmentSet[0].Mod.Guid}，Archive={archiveGroup.Key}，部位={plan.TargetPart}，来源层=[{sourceLayerText}]，候选=[{string.Join(", ", archiveCandidates.Select(DescribeCandidate))}]，选中=[{string.Join(", ", selections.Select(selection => $"{DescribeCandidate(selection.Candidate)}<-{selection.Attachment.Payload.BodyVariant}"))}]");
+                resolved.AddRange(selections.Select(selection => new DecorationResolvedTarget(selection.Candidate.Part, selection.Attachment)));
+            }
+        }
+        return resolved;
+    }
+
+    // Mirrors the CrossArmor target policy: same-layer candidates first, a complete
+    // Slim+Stocky pair before a partial body, and Any as a single complete host.
+    private static IReadOnlyList<(DecorationHostCandidate Candidate, (ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload) Attachment)> SelectHosts(
+        IReadOnlyList<DecorationHostCandidate> candidates,
+        IReadOnlyList<(ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload)> attachments,
+        DecorationAttachmentPlan plan,
+        IReadOnlySet<UnitMeshPartLayer> sourceLayers)
+    {
+        var sameLayer = sourceLayers.Count == 0
+            ? candidates.ToArray()
+            : candidates.Where(candidate => sourceLayers.Contains(candidate.Part.Layer)).ToArray();
+        var ranked = sameLayer.Length != 0 ? sameLayer : candidates.ToArray();
+        var stockyPayload = FindPayload(attachments, "Stocky");
+        var slimPayload = FindPayload(attachments, "Slim");
+        var stocky = ChooseLargest(ranked, UnitMeshBodyVariant.Stocky);
+        var slim = ChooseLargest(ranked, UnitMeshBodyVariant.Slim);
+        var selections = new List<(DecorationHostCandidate Candidate, (ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload) Attachment)>();
+
+        if (stocky is not null && slim is not null)
+        {
+            AddIfAvailable(selections, stocky, stockyPayload);
+            AddIfAvailable(selections, slim, slimPayload);
+            if (selections.Count != 0) return selections;
+        }
+
+        var universalPayload = FindPayload(attachments, "Any")
+            ?? FindPayload(attachments, plan.TargetBodyVariant)
+            ?? stockyPayload
+            ?? slimPayload;
+        var any = ChooseLargest(ranked, UnitMeshBodyVariant.Any);
+        if (any is not null && universalPayload is not null)
+        {
+            selections.Clear();
+            AddIfAvailable(selections, any, universalPayload);
+            return selections;
+        }
+
+        // When the matching layer has only one concrete body, retain the CrossArmor
+        // completion behavior: look through the remaining layers for its counterpart
+        // before accepting a single-body host.
+        if (stocky is not null && slimPayload is not null)
+            slim = ChooseLargest(candidates.Where(candidate => candidate.Part.UnitAssetKey != stocky.Part.UnitAssetKey), UnitMeshBodyVariant.Slim);
+        if (slim is not null && stockyPayload is not null)
+            stocky = ChooseLargest(candidates.Where(candidate => candidate.Part.UnitAssetKey != slim.Part.UnitAssetKey), UnitMeshBodyVariant.Stocky);
+        if (stocky is not null && slim is not null)
+        {
+            selections.Clear();
+            AddIfAvailable(selections, stocky, stockyPayload);
+            AddIfAvailable(selections, slim, slimPayload);
+            if (selections.Count != 0) return selections;
+        }
+
+        var crossLayerAny = ChooseLargest(candidates, UnitMeshBodyVariant.Any);
+        if (crossLayerAny is not null && universalPayload is not null)
+        {
+            selections.Clear();
+            AddIfAvailable(selections, crossLayerAny, universalPayload);
+            return selections;
+        }
+
+        selections.Clear();
+        AddIfAvailable(selections, stocky, stockyPayload);
+        AddIfAvailable(selections, slim, slimPayload);
+        return selections;
+    }
+
+    private static void AddIfAvailable(
+        ICollection<(DecorationHostCandidate Candidate, (ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload) Attachment)> selections,
+        DecorationHostCandidate? candidate,
+        (ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload)? attachment)
+    {
+        if (candidate is not null && attachment is not null) selections.Add((candidate, attachment.Value));
+    }
+
+    private static DecorationHostCandidate? ChooseLargest(IEnumerable<DecorationHostCandidate> candidates, UnitMeshBodyVariant bodyVariant)
+        => candidates.Where(candidate => candidate.Part.BodyVariant == bodyVariant)
+            .OrderByDescending(candidate => candidate.Part.StoredBytes)
+            .ThenByDescending(candidate => candidate.Part.Confidence)
+            .ThenBy(candidate => candidate.Part.UnitAssetKey.FileId)
+            .ThenBy(candidate => candidate.Part.MeshInfoIndex)
+            .FirstOrDefault();
+
+    private static IReadOnlySet<UnitMeshPartLayer> ReadSourceLayers(
+        IEnumerable<(ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload)> attachments)
+    {
+        var layers = new HashSet<UnitMeshPartLayer>();
+        foreach (var layerText in attachments.SelectMany(attachment => attachment.Payload.SourceLayers ?? []))
+        {
+            if (Enum.TryParse<UnitMeshPartLayer>(layerText, ignoreCase: true, out var layer)
+                && layer is not UnitMeshPartLayer.Unknown and not UnitMeshPartLayer.Culling and not UnitMeshPartLayer.Static)
+                layers.Add(layer);
+        }
+        return layers;
+    }
+
+    private static (ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload)? FindPayload(
+        IEnumerable<(ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload)> attachments,
+        string bodyVariant)
+    {
+        foreach (var attachment in attachments)
+        {
+            if (string.Equals(attachment.Payload.BodyVariant, bodyVariant, StringComparison.OrdinalIgnoreCase))
+                return attachment;
+        }
+        return null;
+    }
+
+    private static string DescribeCandidate(DecorationHostCandidate candidate)
+        => $"0x{candidate.Part.UnitAssetKey.FileId:x16}/M{candidate.Part.MeshInfoIndex}/{candidate.Part.Layer}/{candidate.Part.BodyVariant}/{candidate.Part.StoredBytes}B";
+
+    private static bool IsRenderableHost(EquipmentUnitPart part)
         => !part.IsCullingMesh
-            && PartMatches(part.PartKind, plan.TargetPart)
-            && string.Equals(part.BodyVariant.ToString(), payload.BodyVariant, StringComparison.OrdinalIgnoreCase);
+            && part.Layer is not UnitMeshPartLayer.Culling and not UnitMeshPartLayer.Static;
+
+    private static IReadOnlyList<(UnitRawMeshData Raw, UnitMeshInfo Mesh)> ResolveVisibleLodFamily(
+        UnitMeshModel model, UnitRawMeshData anchorRaw, UnitMeshInfo anchorMesh)
+        => model.RawMeshData
+            .Select(raw => (Raw: raw, Mesh: model.Meshes.SingleOrDefault(mesh => mesh.Index == raw.MeshInfoIndex)))
+            .Where(item => item.Mesh is not null
+                && item.Raw.LodIndex >= 0
+                && item.Mesh!.SemanticInfo.IsVisualMesh
+                && SameLodFamily(anchorMesh.SemanticInfo, item.Mesh.SemanticInfo))
+            .OrderBy(item => item.Raw.LodIndex)
+            .ThenBy(item => item.Mesh!.Index)
+            .Select(item => (item.Raw, item.Mesh!))
+            .ToArray();
+
+    private static bool SameLodFamily(UnitMeshSemanticInfo anchor, UnitMeshSemanticInfo candidate)
+    {
+        if (!anchor.HasValue || !candidate.HasValue) return true;
+        return string.Equals(anchor.Slot, candidate.Slot, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(anchor.PieceType, candidate.PieceType, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(anchor.BodyType, candidate.BodyType, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(anchor.Weight, candidate.Weight, StringComparison.OrdinalIgnoreCase);
+    }
 
     private static bool PartMatches(UnitMeshPartKind part, string requested)
         => string.Equals(part.ToString(), requested, StringComparison.OrdinalIgnoreCase)
             || part == UnitMeshPartKind.Pelvis && string.Equals(requested, "Hips", StringComparison.OrdinalIgnoreCase);
+
+    private sealed record DecorationHostCandidate(string ArchiveId, EquipmentUnitPart Part);
+
+    private sealed record DecorationResolvedTarget(
+        EquipmentUnitPart Part,
+        (ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload) Attachment);
+
+    private sealed class StringTupleComparer : IEqualityComparer<(string ModGuid, string BodyVariant)>
+    {
+        public static StringTupleComparer OrdinalIgnoreCase { get; } = new();
+
+        public bool Equals((string ModGuid, string BodyVariant) x, (string ModGuid, string BodyVariant) y)
+            => string.Equals(x.ModGuid, y.ModGuid, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(x.BodyVariant, y.BodyVariant, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string ModGuid, string BodyVariant) value)
+            => HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(value.ModGuid), StringComparer.OrdinalIgnoreCase.GetHashCode(value.BodyVariant));
+    }
 
     private static CanonicalDecorationFragment ToCanonical(DecorationMeshFragment fragment)
         => new(fragment.Mesh, fragment.RawMesh, fragment.Stream, fragment.Materials, fragment.BoneInfos, fragment.TransformInfo, fragment.TransformNameHashes);

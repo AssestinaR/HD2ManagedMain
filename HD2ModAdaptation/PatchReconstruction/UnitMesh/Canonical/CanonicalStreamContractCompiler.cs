@@ -2,9 +2,9 @@ namespace HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 
 // Purpose: Compiles the final RawMesh stream contract used by both vertex encoding and TOC declaration writing.
 // SDK reference: SetupRawMeshComponents aggregates final RawMeshes by stream before SerializeGpuData.
-// It follows the community exporter profile exactly: optional color/normal, required position,
-// UV[n], one weight vector, and the maximum final bone-index group count. ComponentInfoId is
-// preserved because the SDK reuses the loaded StreamInfo identity when it rewrites components.
+// Existing game stream ABI is preserved whenever it can encode every final semantic. When an
+// expansion is necessary, the fallback follows the community exporter profile: optional
+// color/normal, required position, UV[n], one weight vector, and max bone-index groups.
 public sealed record CanonicalStreamContractCompilation(
 	IReadOnlyList<UnitStreamInfo> Streams,
 	IReadOnlyList<CanonicalPlanDiagnostic> Diagnostics)
@@ -42,19 +42,29 @@ public sealed class CanonicalStreamContractCompiler
 			}
 			var needs32Bit = rawMeshes.Any(raw => raw.Vertices.Count > ushort.MaxValue
 				|| raw.Sections.SelectMany(section => section.Triangles).Any(triangle => triangle.A > ushort.MaxValue || triangle.B > ushort.MaxValue || triangle.C > ushort.MaxValue));
-			streams.Add(BuildSdkProfile(target.Version, stream, rawMeshes, needs32Bit));
+			streams.Add(BuildContract(target.Version, stream, rawMeshes, needs32Bit));
 		}
 		return diagnostics.Count == 0
 			? new(streams, Array.Empty<CanonicalPlanDiagnostic>())
 			: new([], Array.AsReadOnly(diagnostics.ToArray()));
 	}
 
-	private static UnitStreamInfo BuildSdkProfile(uint unitVersion, UnitStreamInfo template, IReadOnlyList<UnitRawMeshData> meshes, bool needs32Bit)
+	private static UnitStreamInfo BuildContract(uint unitVersion, UnitStreamInfo template, IReadOnlyList<UnitRawMeshData> meshes, bool needs32Bit)
 	{
-		var formats = unitVersion == 10800437
-			? new SdkFormatProfile(4, 2, 26, 29, 24, 31)
-			: new SdkFormatProfile(4, 2, 30, 33, 28, 35);
 		var allComponents = meshes.SelectMany(mesh => mesh.Vertices).SelectMany(vertex => vertex.Components).ToArray();
+		// Appending geometry must not silently reinterpret an existing Unit's vertex bytes.
+		// Most game Units already have a valid stream ABI (for example float UVs at stride 56),
+		// so preserve its order, formats and stride whenever it covers the final semantics.
+		if (CoversAllFinalSemantics(template, allComponents))
+		{
+			return template with { IndexBufferType = needs32Bit ? 1u : template.IndexBufferType };
+		}
+
+		// The fallback mirrors the SDK writer's new-stream profile. In particular its
+		// SetupRawMeshComponents writes UVs as vec2_float (Format 1), not vec2_half.
+		var formats = unitVersion == 10800437
+			? new SdkFormatProfile(4, 2, 26, 1, 24, 31)
+			: new SdkFormatProfile(4, 2, 30, 1, 28, 35);
 		var uvIndices = allComponents.Where(component => component.Type == 4).Select(component => component.Index).ToArray();
 		var uvCount = uvIndices.Length == 0 ? 0u : uvIndices.Max() + 1;
 		var indexGroups = allComponents.Where(component => component.Type == 6).Select(component => component.Index).ToArray();
@@ -68,7 +78,7 @@ public sealed class CanonicalStreamContractCompiler
 		components.Add(Component(0, "position", formats.Position, "vec3_float", 0, 12));
 		if (allComponents.Any(component => component.Type == 1))
 			components.Add(Component(1, "normal", formats.Normal, "unk_normal", 0, 4));
-		for (var index = 0u; index < uvCount; index++) components.Add(Component(4, "uv", formats.Uv, "vec2_half", index, 4));
+		for (var index = 0u; index < uvCount; index++) components.Add(Component(4, "uv", formats.Uv, "vec2_float", index, 8));
 		if (isSkinned)
 		{
 			if (!allComponents.Any(component => component.Type == 7 && component.Index == 0))
@@ -85,6 +95,19 @@ public sealed class CanonicalStreamContractCompiler
 			IndexBufferType = needs32Bit ? 1u : 0u,
 			Components = components
 		};
+	}
+
+	private static bool CoversAllFinalSemantics(
+		UnitStreamInfo contract,
+		IReadOnlyList<UnitVertexComponentValue> finalComponents)
+	{
+		foreach (var component in finalComponents)
+		{
+			if (!contract.Components.Any(item => item.Type == component.Type && item.Index == component.Index))
+				return false;
+		}
+		return contract.Components.Count != 0
+			&& contract.Components.Sum(component => component.Size) == contract.VertexStride;
 	}
 
 	private static UnitStreamComponentInfo Component(uint type, string typeName, uint format, string formatName, uint index, uint size)

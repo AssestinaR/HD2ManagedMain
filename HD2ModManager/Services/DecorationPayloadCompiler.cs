@@ -33,7 +33,7 @@ public sealed class DecorationPayloadCompiler
             .GroupBy(item => (item.TypeId, item.FileId))
             .ToDictionary(group => group.Key, group => group.ToArray());
         var resolvedSelections = new HashSet<(ulong TypeId, ulong FileId, int MeshInfoIndex, bool IsCulling)>();
-        var fragments = new List<(string Variant, DecorationMeshFragment Fragment)>();
+        var fragments = new List<(string Variant, string Layer, DecorationMeshFragment Fragment)>();
         var reader = new PatchUnitMeshReader();
         var patchPaths = await fileResolver.ResolvePatchFilesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 
@@ -61,7 +61,7 @@ public sealed class DecorationPayloadCompiler
                     if (lods.Length == 0) throw new InvalidDataException("Selected decoration Unit has no visible LOD geometry.");
                     foreach (var lod in lods)
                     {
-                        fragments.Add((ToVariant(representative.BodyVariant), CreateFragment(unit, lod.Mesh!, lod.Raw)));
+                        fragments.Add((ToVariant(representative.BodyVariant), ToLayer(representative.Layer), CreateFragment(unit, lod.Mesh!, lod.Raw)));
                     }
                     foreach (var selection in visibleSelections)
                         resolvedSelections.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, false));
@@ -77,7 +77,7 @@ public sealed class DecorationPayloadCompiler
                     // unavailable in this local re-read. Its native LOD marker is an equivalent fallback.
                     if (!mesh.SemanticInfo.IsCullingBody && rawMesh.LodIndex >= 0)
                         throw new InvalidDataException("Selected decoration mesh is not a culling mesh.");
-                    fragments.Add((ToVariant(selection.BodyVariant), CreateFragment(unit, mesh, rawMesh)));
+                    fragments.Add((ToVariant(selection.BodyVariant), ToLayer(selection.Layer), CreateFragment(unit, mesh, rawMesh)));
                     resolvedSelections.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, true));
                 }
             }
@@ -96,21 +96,45 @@ public sealed class DecorationPayloadCompiler
         return output;
     }
 
-    private static IReadOnlyList<DecorationPayloadDocument> BuildPayloads(IReadOnlyList<(string Variant, DecorationMeshFragment Fragment)> fragments, DecorationAttachmentPlan plan)
+    private static IReadOnlyList<DecorationPayloadDocument> BuildPayloads(IReadOnlyList<(string Variant, string Layer, DecorationMeshFragment Fragment)> fragments, DecorationAttachmentPlan plan)
     {
         if (plan.TargetBodyVariant is "Stocky" or "Slim")
-            return [new DecorationPayloadDocument { BodyVariant = plan.TargetBodyVariant, Fragments = fragments.Select(item => item.Fragment).ToList() }];
+            return [CreatePayload(plan.TargetBodyVariant, fragments)];
         if (plan.DualVariantMode == "ApplyAllToBoth")
         {
-            var all = fragments.Select(item => item.Fragment).ToList();
-            return [new DecorationPayloadDocument { BodyVariant = "Stocky", Fragments = all }, new DecorationPayloadDocument { BodyVariant = "Slim", Fragments = all }];
+            return [CreatePayload("Stocky", fragments), CreatePayload("Slim", fragments)];
         }
-        if (!fragments.Any(item => item.Variant == "Stocky") || !fragments.Any(item => item.Variant == "Slim"))
-            throw new InvalidDataException("Dual automatic assignment requires at least one selected Stocky mesh and one selected Slim mesh.");
-        return fragments.GroupBy(item => item.Variant).Select(group => new DecorationPayloadDocument { BodyVariant = group.Key, Fragments = group.Select(item => item.Fragment).ToList() }).ToArray();
+        var stocky = fragments.Where(item => item.Variant is "Stocky" or "Any").ToArray();
+        var slim = fragments.Where(item => item.Variant is "Slim" or "Any").ToArray();
+        if (stocky.Length == 0 || slim.Length == 0)
+            throw new InvalidDataException("双身形自动分配需要 Slim 和 Stocky 来源；仅有单一身形时，请选择“来源全部附加到每一个身形”。");
+        return [
+            CreatePayload("Stocky", stocky),
+            CreatePayload("Slim", slim)
+        ];
     }
 
-    private static string ToVariant(string bodyVariant) => bodyVariant.Equals("Slim", StringComparison.OrdinalIgnoreCase) ? "Slim" : "Stocky";
+    private static DecorationPayloadDocument CreatePayload(string bodyVariant, IEnumerable<(string Variant, string Layer, DecorationMeshFragment Fragment)> fragments)
+    {
+        var items = fragments.ToArray();
+        return new DecorationPayloadDocument
+        {
+            BodyVariant = bodyVariant,
+            SourceLayers = items.Select(item => item.Layer).Where(layer => !string.IsNullOrWhiteSpace(layer)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+            Fragments = items.Select(item => item.Fragment).ToList()
+        };
+    }
+
+    private static string ToVariant(string bodyVariant)
+    {
+        if (bodyVariant.Equals("Slim", StringComparison.OrdinalIgnoreCase)) return "Slim";
+        if (bodyVariant.Equals("Stocky", StringComparison.OrdinalIgnoreCase)) return "Stocky";
+        if (bodyVariant.Equals("Any", StringComparison.OrdinalIgnoreCase)) return "Any";
+        throw new InvalidDataException("所选来源 Unit 的身形无法识别，请选择明确身形或 Any 的来源。");
+    }
+
+    private static string ToLayer(string layer)
+        => layer is "Armor" or "Undergarment" or "Accessory" ? layer : string.Empty;
 
     private static bool IsVisibleLod(UnitRawMeshData rawMesh, UnitMeshInfo mesh)
         => rawMesh.LodIndex >= 0

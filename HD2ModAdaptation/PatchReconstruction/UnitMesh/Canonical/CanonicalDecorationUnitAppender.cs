@@ -28,61 +28,101 @@ public sealed class CanonicalDecorationUnitAppender
     public CanonicalDecorationAppendResult TryAppendMany(
         PatchUnitMesh targetUnit, int targetMeshInfoIndex, IReadOnlyList<CanonicalDecorationAppendInput> inputs,
         UnitTransformInfo avatarTransformInfo)
+		=> TryAppendLodFamily(targetUnit,
+			new Dictionary<int, IReadOnlyList<CanonicalDecorationAppendInput>> { [targetMeshInfoIndex] = inputs },
+			avatarTransformInfo);
+
+	// A Unit has one serialized TransformInfo and material table shared by all of its LOD meshes.
+	// Rebuild the full selected LOD family in one transaction so the game cannot switch from an
+	// appended near LOD to an untouched far LOD.
+	public CanonicalDecorationAppendResult TryAppendLodFamily(
+		PatchUnitMesh targetUnit,
+		IReadOnlyDictionary<int, IReadOnlyList<CanonicalDecorationAppendInput>> inputsByTargetMesh,
+		UnitTransformInfo avatarTransformInfo)
     {
         ArgumentNullException.ThrowIfNull(targetUnit);
-        ArgumentNullException.ThrowIfNull(inputs);
+		ArgumentNullException.ThrowIfNull(inputsByTargetMesh);
         ArgumentNullException.ThrowIfNull(avatarTransformInfo);
-        if (inputs.Count == 0) return new(null, [new("DecorationSourcesMissing", "Decoration append requires at least one source mesh.")]);
+		if (inputsByTargetMesh.Count == 0 || inputsByTargetMesh.Values.All(inputs => inputs.Count == 0))
+			return new(null, [new("DecorationSourcesMissing", "Decoration append requires at least one source mesh.")]);
         var diagnostics = new List<CanonicalPlanDiagnostic>();
-        var targetRaw = targetUnit.Model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == targetMeshInfoIndex);
-        var targetMesh = targetUnit.Model.Meshes.SingleOrDefault(mesh => mesh.Index == targetMeshInfoIndex);
-        if (targetRaw is null || targetMesh is null) return new(null, [new("DecorationTargetMeshMissing", "The selected host Unit has no readable target mesh.")]);
         if (targetUnit.Model.CompositeRef != 0) return new(null, [new("DecorationCompositeUnitUnsupported", "Composite-backed host Units are not supported for decoration append.")]);
-        if (targetRaw.LodIndex < 0) return new(null, [new("DecorationNonVisualLod", "Decoration append only supports visible LOD meshes.")]);
-        if (inputs.Any(input => input.Fragment.RawMesh.LodIndex != targetRaw.LodIndex))
-            return new(null, [new("DecorationLodMismatch", "A decoration LOD does not match the selected host LOD.")]);
+		var groups = new List<(UnitRawMeshData TargetRaw, UnitMeshInfo TargetMesh, IReadOnlyList<CanonicalDecorationAppendInput> Inputs)>();
+		foreach (var (targetMeshInfoIndex, inputs) in inputsByTargetMesh.OrderBy(item => item.Key))
+		{
+			if (inputs.Count == 0) continue;
+			var targetRaw = targetUnit.Model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == targetMeshInfoIndex);
+			var targetMesh = targetUnit.Model.Meshes.SingleOrDefault(mesh => mesh.Index == targetMeshInfoIndex);
+			if (targetRaw is null || targetMesh is null) return new(null, [new("DecorationTargetMeshMissing", "The selected host Unit has no readable target mesh.")]);
+			if (targetRaw.LodIndex < 0) return new(null, [new("DecorationNonVisualLod", "Decoration append only supports visible LOD meshes.")]);
+			if (inputs.Any(input => input.Fragment.RawMesh.LodIndex != targetRaw.LodIndex))
+				return new(null, [new("DecorationLodMismatch", "A decoration LOD does not match the selected host LOD.")]);
+			groups.Add((targetRaw, targetMesh, inputs));
+		}
+		if (groups.Count == 0) return new(null, [new("DecorationSourcesMissing", "Decoration append requires at least one source mesh.")]);
+		if (groups.GroupBy(group => group.TargetRaw.LodIndex).Any(group => group.Count() > 1))
+			return new(null, [new("DecorationDuplicateTargetLod", "Decoration append cannot rebuild more than one host mesh for the same LOD.")]);
 
-        var sourceModels = inputs.Select(input => CreateSourceModel(input.Fragment)).ToArray();
+		var allInputs = groups.SelectMany(group => group.Inputs).ToArray();
+		var sourceModels = allInputs.Select(input => CreateSourceModel(input.Fragment)).ToArray();
         UnitMeshModel expanded;
         try
         {
             expanded = new CanonicalTransformInfoExpander().Expand(targetUnit.Model,
-                sourceModels.Select((model, index) => (model, inputs[index].Fragment.RawMesh)), avatarTransformInfo);
+                sourceModels.Select((model, index) => (model, allInputs[index].Fragment.RawMesh)), avatarTransformInfo);
         }
         catch (InvalidDataException exception) { return new(null, [new("DecorationTransformExpansionFailed", exception.Message)]); }
 
-        var merged = targetRaw;
-        var origins = targetRaw.Sections.Select((_, index) => new CanonicalAppendSectionOrigin(index, -1, index)).ToList();
         var materialProvenance = new List<CanonicalMaterialSectionProvenance>();
-        for (var sourceIndex = 0; sourceIndex < inputs.Count; sourceIndex++)
+		var mergedByMesh = new Dictionary<int, UnitRawMeshData>();
+		var originsByMesh = new Dictionary<int, IReadOnlyList<CanonicalAppendSectionOrigin>>();
+		var sourceOffset = 0;
+		foreach (var group in groups)
         {
-            var input = inputs[sourceIndex];
-            var source = sourceModels[sourceIndex];
-            var transform = new CanonicalTransformResolver().TryResolve(source, input.Fragment.RawMesh.MeshInfoIndex, expanded, targetMeshInfoIndex);
-            diagnostics.AddRange(transform.Diagnostics);
-            if (!transform.IsValid) return new(null, diagnostics);
-            var appended = new CanonicalAppendMeshAssembler().TryAppend(merged, input.Fragment.RawMesh, transform.SourceToTargetLocal!.Value);
-            diagnostics.AddRange(appended.Diagnostics);
-            if (!appended.IsValid) return new(null, diagnostics);
-            var start = merged.Sections.Count;
-            var sourceBindings = BuildMaterialProvenance(source, input.Fragment.RawMesh, targetRaw, start, targetMeshInfoIndex, input.MaterialNamespace, diagnostics);
-            if (diagnostics.Count != 0) return new(null, diagnostics);
-            materialProvenance.AddRange(sourceBindings);
-            origins.AddRange(input.Fragment.RawMesh.Sections.Select((_, section) => new CanonicalAppendSectionOrigin(start + section, sourceIndex, section)));
-            merged = appended.Mesh!;
+			var merged = group.TargetRaw;
+			var origins = group.TargetRaw.Sections.Select((_, index) => new CanonicalAppendSectionOrigin(index, -1, index)).ToList();
+			for (var sourceIndex = 0; sourceIndex < group.Inputs.Count; sourceIndex++)
+			{
+				var input = group.Inputs[sourceIndex];
+				var source = sourceModels[sourceOffset + sourceIndex];
+				var transform = new CanonicalTransformResolver().TryResolve(source, input.Fragment.RawMesh.MeshInfoIndex, expanded, group.TargetMesh.Index);
+				diagnostics.AddRange(transform.Diagnostics);
+				if (!transform.IsValid) return new(null, diagnostics);
+				var appended = new CanonicalAppendMeshAssembler().TryAppend(merged, input.Fragment.RawMesh, transform.SourceToTargetLocal!.Value);
+				diagnostics.AddRange(appended.Diagnostics);
+				if (!appended.IsValid) return new(null, diagnostics);
+				var start = merged.Sections.Count;
+				var sourceBindings = BuildMaterialProvenance(source, input.Fragment.RawMesh, group.TargetRaw, start, group.TargetMesh.Index, input.MaterialNamespace, diagnostics);
+				if (diagnostics.Count != 0) return new(null, diagnostics);
+				materialProvenance.AddRange(sourceBindings);
+				origins.AddRange(input.Fragment.RawMesh.Sections.Select((_, section) => new CanonicalAppendSectionOrigin(start + section, sourceIndex, section)));
+				merged = appended.Mesh!;
+			}
+			mergedByMesh.Add(group.TargetMesh.Index, merged);
+			originsByMesh.Add(group.TargetMesh.Index, origins);
+			sourceOffset += group.Inputs.Count;
         }
 
-        var provisional = expanded.RawMeshData.Select(raw => raw.MeshInfoIndex == targetMeshInfoIndex ? merged : raw).ToArray();
+		var provisional = expanded.RawMeshData.Select(raw => mergedByMesh.TryGetValue(raw.MeshInfoIndex, out var merged) ? merged : raw).ToArray();
         var material = new CanonicalUnitMaterialLayoutCompiler().TryCompile(expanded, provisional, materialProvenance);
         diagnostics.AddRange(material.Diagnostics);
         if (!material.IsValid) return new(null, diagnostics);
-        var finalMerged = material.Meshes.Single(raw => raw.MeshInfoIndex == targetMeshInfoIndex);
-        var sources = sourceModels.Select((model, index) => new CanonicalAppendSource(model, inputs[index].Fragment.RawMesh)).ToArray();
-        var bones = new CanonicalAppendBoneCompiler().TryCompile(expanded, targetRaw, sources, finalMerged, origins);
-        diagnostics.AddRange(bones.Diagnostics);
-        if (!bones.IsValid) return new(null, diagnostics);
+		var finalByMesh = material.Meshes.ToDictionary(raw => raw.MeshInfoIndex);
+		var rebuiltBonesByLod = new Dictionary<int, UnitBoneInfo>();
+		sourceOffset = 0;
+		foreach (var group in groups)
+		{
+			var finalMerged = finalByMesh[group.TargetMesh.Index];
+			var groupSources = group.Inputs.Select((input, index) => new CanonicalAppendSource(sourceModels[sourceOffset + index], input.Fragment.RawMesh)).ToArray();
+			var bones = new CanonicalAppendBoneCompiler().TryCompile(expanded, group.TargetRaw, groupSources, finalMerged, originsByMesh[group.TargetMesh.Index]);
+			diagnostics.AddRange(bones.Diagnostics);
+			if (!bones.IsValid) return new(null, diagnostics);
+			finalByMesh[group.TargetMesh.Index] = MergeSectionsByMaterialSlot(bones.Mesh!);
+			rebuiltBonesByLod.Add(group.TargetRaw.LodIndex, bones.BoneInfo!);
+			sourceOffset += group.Inputs.Count;
+		}
 
-        var finalRaw = material.Meshes.Select(raw => raw.MeshInfoIndex == targetMeshInfoIndex ? bones.Mesh! : raw).ToArray();
+		var finalRaw = material.Meshes.Select(raw => finalByMesh.TryGetValue(raw.MeshInfoIndex, out var final) ? final : raw).ToArray();
         var stream = new CanonicalStreamContractCompiler().TryCompile(expanded, finalRaw);
         diagnostics.AddRange(stream.Diagnostics);
         if (!stream.IsValid) return new(null, diagnostics);
@@ -95,7 +135,7 @@ public sealed class CanonicalDecorationUnitAppender
             if (result.Mesh is not null) prepared.Add(result.Mesh);
         }
         if (diagnostics.Count != 0 || prepared.Count != finalRaw.Length) return new(null, diagnostics);
-        var rebuiltBones = expanded.BoneInfos.Select((bone, index) => new CanonicalBoneInfoRebuild(index, index == targetRaw.LodIndex ? bones.BoneInfo! : bone)).ToArray();
+		var rebuiltBones = expanded.BoneInfos.Select((bone, index) => new CanonicalBoneInfoRebuild(index, rebuiltBonesByLod.GetValueOrDefault(index) ?? bone)).ToArray();
         var rebuilt = new CanonicalUnitRebuilder().TryRebuild(expanded, targetUnit.Payload.TocData, prepared, rebuiltBones, material.Bindings);
         diagnostics.AddRange(rebuilt.Diagnostics);
         if (!rebuilt.IsValid) return new(null, diagnostics);
@@ -122,10 +162,25 @@ public sealed class CanonicalDecorationUnitAppender
             }
             var binding = resolved.ResolvedSectionBindings[visible++];
             result.Add(new(targetMeshInfoIndex, finalSectionStart + sectionIndex, materialNamespace,
-                binding.SourceSlotId, binding.PreferredTargetSlotId, binding.MaterialId, binding.UsesTargetUnitMaterialSlotLookup));
+                binding.SourceSlotId, binding.PreferredTargetSlotId, binding.MaterialId,
+                binding.UsesTargetUnitMaterialSlotLookup, PreferMeshLocalSlotReuse: true));
         }
         return result;
     }
+
+	// SDK GetMeshData groups all Blender faces that share one material slot into one
+	// RawMaterial section. object.join may leave multiple source sections with the same
+	// slot; retaining them creates a non-SDK section table even though BoneInfo remaps
+	// are material-slot based.
+	private static UnitRawMeshData MergeSectionsByMaterialSlot(UnitRawMeshData mesh)
+	{
+		var sections = mesh.Sections
+			.GroupBy(section => (section.MaterialIndex, section.MaterialSlotId))
+			.Select(group => new UnitRawMeshSectionData(group.Key.MaterialIndex, group.Key.MaterialSlotId,
+				group.SelectMany(section => section.Triangles).ToArray()))
+			.ToArray();
+		return mesh with { Sections = sections, Triangles = sections.SelectMany(section => section.Triangles).ToArray() };
+	}
 
     private static UnitMeshModel CreateSourceModel(CanonicalDecorationFragment fragment)
         => new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UnitCustomizationInfo.Empty, fragment.BoneInfos, [fragment.Stream], [fragment.Mesh], fragment.Materials, [], [fragment.RawMesh])
