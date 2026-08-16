@@ -659,6 +659,7 @@ namespace HD2ModManager.Services
 
         private async Task RebuildDecorationOverwritesAsync(IEnumerable<string> hostIds, CancellationToken cancellationToken)
         {
+            var changedHosts = new List<ModNodeId>();
             foreach (var hostId in hostIds.Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -673,6 +674,17 @@ namespace HD2ModManager.Services
                 }
                 await _decorationAttachments.RebuildHostAsync(host, enabled, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), cancellationToken).ConfigureAwait(false);
                 await _informationCenter.InvalidateNodeAsync(host.Id, cancellationToken).ConfigureAwait(false);
+                changedHosts.Add(host.Id);
+            }
+
+            // A generated Overwrite replaces same-named root patches during deployment.
+            // Report host content changes after both its creation and removal so an active
+            // profile repoints existing game-data links to the effective patch source.
+            if (changedHosts.Count > 0)
+            {
+                ModContentFactsChanged?.Invoke(
+                    this,
+                    new ModContentFactsChangedEventArgs(changedHosts, ModContentChangeKind.Changed));
             }
         }
 
