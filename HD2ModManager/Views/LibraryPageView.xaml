@@ -25,7 +25,7 @@
             </StackPanel>
         </DataTemplate>
     </UserControl.Resources>
-    <local:ModListPanel ItemsSource="{Binding Items}"
+    <local:ModListPanel x:Name="LibraryModList" ItemsSource="{Binding Items}"
                         HeaderTitle="模组库"
                         HeaderSummary="{Binding ItemCountText}"
                         EmptyMessage="{Binding EmptyMessage}"
@@ -34,6 +34,11 @@
                         RowActions="Rename, Details, AddToProfile, ToggleDecoration, OpenFolder, DeleteFromLibrary"
                         RowActionInvoked="OnRowActionInvoked"
                         SelectionPolicy="Multiple"
+                        AllowExternalProfileDrag="{Binding CanDragToProfile}"
+                        AllowExternalProfileRemovalDrop="{Binding CanDragToProfile}"
+                        ExternalDropTitle="拖到这里释放以从配置移除"
+                        ExternalDropDetail="仅从当前配置移除，不会删除模组文件"
+                        ExternalProfileRemovalRequested="OnExternalProfileRemovalRequested"
                         SelectionRequested="OnSelectionRequested"
                         RowRightClicked="OnOpenDetailsOnRightClick"
                         BackgroundClicked="OnListBackgroundClick"/>

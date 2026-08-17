@@ -21,6 +21,7 @@ namespace HD2ModManager.ViewModels
         private readonly NotificationService? _notifications;
         private readonly SelectionCoordinator? _selection;
         private bool _hideSelectedProfileMembers;
+        private bool _canDragToProfile;
         private readonly ObservableCollection<string> _selectedGuids = new();
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string?> _thumbnailSources = new(StringComparer.OrdinalIgnoreCase);
@@ -122,6 +123,7 @@ namespace HD2ModManager.ViewModels
 
         public void SetProfileCompanionVisible(bool visible)
         {
+            if (SetField(ref _canDragToProfile, visible, nameof(CanDragToProfile))) { }
             if (_hideSelectedProfileMembers == visible) return;
             _hideSelectedProfileMembers = visible;
             Refresh();
@@ -134,6 +136,8 @@ namespace HD2ModManager.ViewModels
             _selection?.Replace(SelectionScope, selectedKeys);
             RefreshSelectionFlags();
         }
+
+        public bool CanDragToProfile => _canDragToProfile;
 
         public bool RenameMod(ModCardViewModel? card, string newName)
         {

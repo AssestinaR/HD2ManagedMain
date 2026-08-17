@@ -6,7 +6,12 @@ namespace HD2ModManager.Views;
 
 public partial class ProfilePageView : UserControl
 {
-    public ProfilePageView() => InitializeComponent();
+    public ProfilePageView()
+    {
+        InitializeComponent();
+        Loaded += (_, _) => ModListExternalProfileDropCoordinator.RegisterTarget(ProfileModList);
+        Unloaded += (_, _) => ModListExternalProfileDropCoordinator.UnregisterTarget(ProfileModList);
+    }
 
     private void OnSelectionRequested(object? sender, ModListSelectionRequestEventArgs e)
     {
@@ -18,6 +23,12 @@ public partial class ProfilePageView : UserControl
     {
         if (DataContext is ProfilePageViewModel vm)
             await vm.ReorderAsync(e.DraggedKeys, e.InsertionIndex);
+    }
+
+    private async void OnExternalProfileDropRequested(object? sender, ModListExternalProfileDropEventArgs e)
+    {
+        if (Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
+            await shell.AddModsToSelectedProfileAsync(e.SelectedKeys);
     }
 
     private void OnRowActionInvoked(object? sender, ModListRowActionEventArgs e)

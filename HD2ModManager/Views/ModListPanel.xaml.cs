@@ -32,6 +32,8 @@ public partial class ModListPanel : UserControl
     private int _dragAutoScrollDirection;
     private double _dragAutoScrollStep;
     private bool _isInternalDragActive;
+    private bool _isExternalProfileDragActive;
+    private bool _isExternalProfileRemovalTargetActive;
     private InternalDragPayload? _activeInternalDragPayload;
     private Cursor? _previousOverrideCursor;
     private DateTime _dragWheelCooldownUntilUtc;
@@ -51,6 +53,7 @@ public partial class ModListPanel : UserControl
         {
             _transitionTimer.Stop();
             EndInternalDrag();
+            EndExternalProfileDrag(commit: false);
             StopDragAutoScroll();
 			ConfigureInternalSmoothScroll(false);
             ItemsList.LayoutUpdated -= OnItemsListLayoutUpdated;
@@ -67,6 +70,12 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty ShowSelectionCheckboxProperty = DependencyProperty.Register(nameof(ShowSelectionCheckbox), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty SelectionPolicyProperty = DependencyProperty.Register(nameof(SelectionPolicy), typeof(ModListSelectionPolicy), typeof(ModListPanel), new PropertyMetadata(ModListSelectionPolicy.None));
     public static readonly DependencyProperty AllowInternalReorderProperty = DependencyProperty.Register(nameof(AllowInternalReorder), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
+    public static readonly DependencyProperty AllowExternalProfileDragProperty = DependencyProperty.Register(nameof(AllowExternalProfileDrag), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
+    public static readonly DependencyProperty AllowExternalProfileDropProperty = DependencyProperty.Register(nameof(AllowExternalProfileDrop), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
+    public static readonly DependencyProperty AllowExternalProfileRemovalDragProperty = DependencyProperty.Register(nameof(AllowExternalProfileRemovalDrag), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
+    public static readonly DependencyProperty AllowExternalProfileRemovalDropProperty = DependencyProperty.Register(nameof(AllowExternalProfileRemovalDrop), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
+    public static readonly DependencyProperty ExternalDropTitleProperty = DependencyProperty.Register(nameof(ExternalDropTitle), typeof(string), typeof(ModListPanel), new PropertyMetadata("拖到这里释放以加入配置"));
+    public static readonly DependencyProperty ExternalDropDetailProperty = DependencyProperty.Register(nameof(ExternalDropDetail), typeof(string), typeof(ModListPanel), new PropertyMetadata("不会改变当前配置中的排列顺序"));
     public static readonly DependencyProperty SearchTextProperty = DependencyProperty.Register(nameof(SearchText), typeof(string), typeof(ModListPanel), new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty = DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ModListPanel), new PropertyMetadata(ScrollBarVisibility.Auto));
 	public static readonly DependencyProperty UseInternalScrollProperty = DependencyProperty.Register(nameof(UseInternalScroll), typeof(bool), typeof(ModListPanel), new PropertyMetadata(true, OnUseInternalScrollChanged));
@@ -85,6 +94,12 @@ public partial class ModListPanel : UserControl
     public bool ShowSelectionCheckbox { get => (bool)GetValue(ShowSelectionCheckboxProperty); set => SetValue(ShowSelectionCheckboxProperty, value); }
     public ModListSelectionPolicy SelectionPolicy { get => (ModListSelectionPolicy)GetValue(SelectionPolicyProperty); set => SetValue(SelectionPolicyProperty, value); }
     public bool AllowInternalReorder { get => (bool)GetValue(AllowInternalReorderProperty); set => SetValue(AllowInternalReorderProperty, value); }
+    public bool AllowExternalProfileDrag { get => (bool)GetValue(AllowExternalProfileDragProperty); set => SetValue(AllowExternalProfileDragProperty, value); }
+    public bool AllowExternalProfileDrop { get => (bool)GetValue(AllowExternalProfileDropProperty); set => SetValue(AllowExternalProfileDropProperty, value); }
+    public bool AllowExternalProfileRemovalDrag { get => (bool)GetValue(AllowExternalProfileRemovalDragProperty); set => SetValue(AllowExternalProfileRemovalDragProperty, value); }
+    public bool AllowExternalProfileRemovalDrop { get => (bool)GetValue(AllowExternalProfileRemovalDropProperty); set => SetValue(AllowExternalProfileRemovalDropProperty, value); }
+    public string ExternalDropTitle { get => (string)GetValue(ExternalDropTitleProperty); set => SetValue(ExternalDropTitleProperty, value); }
+    public string ExternalDropDetail { get => (string)GetValue(ExternalDropDetailProperty); set => SetValue(ExternalDropDetailProperty, value); }
     public string SearchText { get => (string)GetValue(SearchTextProperty); set => SetValue(SearchTextProperty, value); }
     public ScrollBarVisibility VerticalScrollBarVisibility { get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty); set => SetValue(VerticalScrollBarVisibilityProperty, value); }
 	public bool UseInternalScroll { get => (bool)GetValue(UseInternalScrollProperty); set => SetValue(UseInternalScrollProperty, value); }
@@ -98,6 +113,8 @@ public partial class ModListPanel : UserControl
     public event EventHandler<ModListSelectionRequestEventArgs>? SelectionRequested;
     public event EventHandler<ModListRowActionEventArgs>? RowActionInvoked;
     public event EventHandler<ModListInternalReorderEventArgs>? InternalReorderRequested;
+    public event EventHandler<ModListExternalProfileDropEventArgs>? ExternalProfileDropRequested;
+    public event EventHandler<ModListExternalProfileDropEventArgs>? ExternalProfileRemovalRequested;
     public event EventHandler? BackgroundClicked;
 
     private void OnToggleSearchClick(object sender, RoutedEventArgs e)
@@ -208,7 +225,7 @@ public partial class ModListPanel : UserControl
         if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null || FindAncestor<CheckBox>(e.OriginalSource as DependencyObject) is not null) return;
         if (FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject) is not null)
         {
-            if (AllowInternalReorder
+            if ((AllowInternalReorder || AllowExternalProfileDrag)
                 && FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is IModListSelectable { IsSelected: true } selectable)
             {
                 var selectedKeys = ItemsList.Items.OfType<IModListSelectable>()
@@ -237,6 +254,13 @@ public partial class ModListPanel : UserControl
             return;
         }
 
+        if (_isExternalProfileDragActive)
+        {
+            EndExternalProfileDrag(commit: true, e.GetPosition(this));
+            e.Handled = true;
+            return;
+        }
+
         _dragCandidate = null;
     }
 
@@ -249,19 +273,26 @@ public partial class ModListPanel : UserControl
             return;
         }
 
+        if (_isExternalProfileDragActive) return;
+
         if (_dragCandidate is null || e.LeftButton != MouseButtonState.Pressed) return;
         if (Math.Abs(position.X - _dragStartPoint.X) < SystemParameters.MinimumHorizontalDragDistance
             && Math.Abs(position.Y - _dragStartPoint.Y) < SystemParameters.MinimumVerticalDragDistance) return;
 
         var candidate = _dragCandidate;
         _dragCandidate = null;
-        BeginInternalDrag(candidate, position);
+        if (AllowExternalProfileDrag)
+            BeginExternalProfileDrag(candidate);
+        else
+            BeginInternalDrag(candidate, position);
     }
 
     private void BeginInternalDrag(DragCandidate candidate, Point position)
     {
         _isInternalDragActive = true;
         _activeInternalDragPayload = new InternalDragPayload(candidate.SelectedKeys);
+        _isExternalProfileRemovalTargetActive = AllowExternalProfileRemovalDrag
+            && ModListExternalProfileRemovalCoordinator.TryBegin(this, candidate.SelectedKeys);
         _previousOverrideCursor = Mouse.OverrideCursor;
         Mouse.OverrideCursor = Cursors.SizeAll;
         Mouse.Capture(ItemsList, CaptureMode.Element);
@@ -271,8 +302,16 @@ public partial class ModListPanel : UserControl
     private void UpdateInternalDrag(Point position)
     {
         _dragPointerOnScreen = ItemsList.PointToScreen(position);
-        UpdateDropInsertionIndicator(position);
-        UpdateDragAutoScroll();
+        if (IsPointInsideItemsList(position))
+        {
+            UpdateDropInsertionIndicator(position);
+            UpdateDragAutoScroll();
+        }
+        else
+        {
+            HideDropInsertionIndicator();
+            StopDragAutoScroll();
+        }
     }
 
     private void EndInternalDrag(Point? dropPosition = null)
@@ -283,11 +322,17 @@ public partial class ModListPanel : UserControl
         _isInternalDragActive = false;
         try
         {
-            if (payload is not null && dropPosition is { } position)
-                InternalReorderRequested?.Invoke(this, new ModListInternalReorderEventArgs(payload.SelectedKeys, GetInsertionIndex(position)));
+            var position = dropPosition;
+            var removed = _isExternalProfileRemovalTargetActive
+                && position is { } screenCandidate
+                && ModListExternalProfileRemovalCoordinator.Complete(this, ItemsList.PointToScreen(screenCandidate));
+            if (!removed && payload is not null && position is { } listPosition && IsPointInsideItemsList(listPosition))
+                InternalReorderRequested?.Invoke(this, new ModListInternalReorderEventArgs(payload.SelectedKeys, GetInsertionIndex(listPosition)));
         }
         finally
         {
+            if (_isExternalProfileRemovalTargetActive) ModListExternalProfileRemovalCoordinator.Cancel(this);
+            _isExternalProfileRemovalTargetActive = false;
             if (Mouse.Captured == ItemsList) Mouse.Capture(null);
             Mouse.OverrideCursor = _previousOverrideCursor;
             _previousOverrideCursor = null;
@@ -296,10 +341,78 @@ public partial class ModListPanel : UserControl
         }
     }
 
+    private bool IsPointInsideItemsList(Point point)
+        => point.X >= 0 && point.Y >= 0 && point.X <= ItemsList.ActualWidth && point.Y <= ItemsList.ActualHeight;
+
     private void OnItemsListLostMouseCapture(object sender, MouseEventArgs e)
     {
         if (_isInternalDragActive) EndInternalDrag();
+        if (_isExternalProfileDragActive) EndExternalProfileDrag(commit: false);
     }
+
+    private void BeginExternalProfileDrag(DragCandidate candidate)
+    {
+        if (!ModListExternalProfileDropCoordinator.TryBegin(this, candidate.SelectedKeys)) return;
+        _isExternalProfileDragActive = true;
+        _previousOverrideCursor = Mouse.OverrideCursor;
+        Mouse.OverrideCursor = Cursors.SizeAll;
+        Mouse.Capture(ItemsList, CaptureMode.Element);
+    }
+
+    private void EndExternalProfileDrag(bool commit, Point? dropPosition = null)
+    {
+        if (!_isExternalProfileDragActive) return;
+        _isExternalProfileDragActive = false;
+        _dragCandidate = null;
+        try
+        {
+            if (commit && dropPosition is { } position)
+                ModListExternalProfileDropCoordinator.Complete(this, PointToScreen(position));
+            else
+                ModListExternalProfileDropCoordinator.Cancel(this);
+        }
+        finally
+        {
+            if (Mouse.Captured == ItemsList) Mouse.Capture(null);
+            Mouse.OverrideCursor = _previousOverrideCursor;
+            _previousOverrideCursor = null;
+        }
+    }
+
+    internal bool ContainsScreenPoint(Point point)
+    {
+        if (!IsLoaded || !AllowExternalProfileDrop || ItemsList.ActualWidth <= 0 || ItemsList.ActualHeight <= 0) return false;
+        var local = ItemsList.PointFromScreen(point);
+        return local.X >= 0 && local.Y >= 0 && local.X <= ItemsList.ActualWidth && local.Y <= ItemsList.ActualHeight;
+    }
+
+    internal bool ContainsScreenPointForRemoval(Point point)
+    {
+        if (!IsLoaded || !AllowExternalProfileRemovalDrop || ItemsList.ActualWidth <= 0 || ItemsList.ActualHeight <= 0) return false;
+        var local = ItemsList.PointFromScreen(point);
+        return local.X >= 0 && local.Y >= 0 && local.X <= ItemsList.ActualWidth && local.Y <= ItemsList.ActualHeight;
+    }
+
+    internal void SetExternalProfileDropOverlay(bool visible)
+    {
+        if (visible)
+        {
+            ExternalProfileDropOverlay.Visibility = Visibility.Visible;
+            ExternalProfileDropOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0.92, TimeSpan.FromMilliseconds(140)));
+            return;
+        }
+
+        if (ExternalProfileDropOverlay.Visibility != Visibility.Visible) return;
+        var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(120));
+        fadeOut.Completed += (_, _) => ExternalProfileDropOverlay.Visibility = Visibility.Collapsed;
+        ExternalProfileDropOverlay.BeginAnimation(OpacityProperty, fadeOut);
+    }
+
+    internal void RaiseExternalProfileDropRequested(IReadOnlyList<string> selectedKeys)
+        => ExternalProfileDropRequested?.Invoke(this, new ModListExternalProfileDropEventArgs(selectedKeys));
+
+    internal void RaiseExternalProfileRemovalRequested(IReadOnlyList<string> selectedKeys)
+        => ExternalProfileRemovalRequested?.Invoke(this, new ModListExternalProfileDropEventArgs(selectedKeys));
 
     private int GetInsertionIndex(Point position)
     {
@@ -781,6 +894,11 @@ public sealed class ModListInternalReorderEventArgs(IReadOnlyList<string> dragge
 {
     public IReadOnlyList<string> DraggedKeys { get; } = draggedKeys;
     public int InsertionIndex { get; } = insertionIndex;
+}
+
+public sealed class ModListExternalProfileDropEventArgs(IReadOnlyList<string> selectedKeys) : EventArgs
+{
+    public IReadOnlyList<string> SelectedKeys { get; } = selectedKeys;
 }
 
 public sealed class RowActionVisibilityConverter : System.Windows.Data.IValueConverter

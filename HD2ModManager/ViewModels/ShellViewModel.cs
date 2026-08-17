@@ -1379,6 +1379,57 @@ namespace HD2ModManager.ViewModels
             _selection.Clear();
         }
 
+        public async Task AddModsToSelectedProfileAsync(IReadOnlyList<string> modIds)
+        {
+            var eligible = modIds
+                .Where(id => _libraryService.Get(id)?.Capabilities.CanJoinProfile == true)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (eligible.Count == 0) return;
+
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "加入配置", $"{eligible.Count} 个 Mod");
+            task.MarkRunning("正在写入配置");
+            try
+            {
+                var added = await _profileService.AddModsToSelectedAsync(eligible, task.CancellationToken);
+                task.MarkCompleted();
+                _notificationService.Show($"已加入正在编辑的配置：{added} 个 Mod");
+                _selection.Clear();
+            }
+            catch (OperationCanceledException)
+            {
+                task.MarkCanceled();
+            }
+            catch (Exception exception)
+            {
+                task.MarkFailed(exception.Message);
+            }
+        }
+
+        public async Task RemoveModsFromSelectedProfileAsync(IReadOnlyList<string> modIds)
+        {
+            var ids = modIds.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (ids.Count == 0) return;
+
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "从配置移除", $"{ids.Count} 个 Mod");
+            task.MarkRunning("正在写入配置");
+            try
+            {
+                var removed = await _profileService.RemoveModsFromSelectedAsync(ids, task.CancellationToken);
+                task.MarkCompleted();
+                _notificationService.Show($"已从配置移除：{removed} 个 Mod");
+                _selection.Clear();
+            }
+            catch (OperationCanceledException)
+            {
+                task.MarkCanceled();
+            }
+            catch (Exception exception)
+            {
+                task.MarkFailed(exception.Message);
+            }
+        }
+
         private async Task SetSelectedDecorationsEnabledAsync(bool enabled)
         {
             if (!_selection.HasSelection) return;
@@ -1567,13 +1618,18 @@ namespace HD2ModManager.ViewModels
 
         private void UpdateLibraryCompanionContext()
         {
-            _bottomBar.SetLibraryProfileCompanionVisible(IsSplitView
+            var isLibraryProfilePair = IsSplitView
                 && ((LeftPageType == WorkspacePageType.Library && RightPageType == WorkspacePageType.Profile)
-                    || (RightPageType == WorkspacePageType.Library && LeftPageType == WorkspacePageType.Profile)));
+                    || (RightPageType == WorkspacePageType.Library && LeftPageType == WorkspacePageType.Profile));
+            _bottomBar.SetLibraryProfileCompanionVisible(isLibraryProfilePair);
             if (LeftPage is LibraryPageViewModel leftLibrary)
                 leftLibrary.SetProfileCompanionVisible(IsSplitView && RightPageType == WorkspacePageType.Profile);
             if (RightPage is LibraryPageViewModel rightLibrary)
                 rightLibrary.SetProfileCompanionVisible(IsSplitView && LeftPageType == WorkspacePageType.Profile);
+            if (LeftPage is ProfilePageViewModel leftProfile)
+                leftProfile.SetLibraryDropTargetAvailable(isLibraryProfilePair);
+            if (RightPage is ProfilePageViewModel rightProfile)
+                rightProfile.SetLibraryDropTargetAvailable(isLibraryProfilePair);
         }
 
         private void RaiseActionFlags()

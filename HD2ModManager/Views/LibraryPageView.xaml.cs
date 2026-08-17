@@ -14,6 +14,8 @@ namespace HD2ModManager.Views
         {
             InitializeComponent();
             Loaded += LibraryPageView_Loaded;
+            Loaded += (_, _) => ModListExternalProfileRemovalCoordinator.RegisterTarget(LibraryModList);
+            Unloaded += (_, _) => ModListExternalProfileRemovalCoordinator.UnregisterTarget(LibraryModList);
         }
 
         private void LibraryPageView_Loaded(object sender, RoutedEventArgs e)
@@ -106,6 +108,12 @@ namespace HD2ModManager.Views
         {
             EnsureVM();
             VM?.ApplySelection(e.SelectedKeys);
+        }
+
+        private async void OnExternalProfileRemovalRequested(object? sender, ModListExternalProfileDropEventArgs e)
+        {
+            if (Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
+                await shell.RemoveModsFromSelectedProfileAsync(e.SelectedKeys);
         }
 
         private void OnToggleDecorationFilterClick(object sender, RoutedEventArgs e)

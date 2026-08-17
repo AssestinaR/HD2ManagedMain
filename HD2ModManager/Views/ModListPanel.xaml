@@ -258,6 +258,14 @@
                 <Border x:Name="DropInsertionIndicator" Height="2" Background="{StaticResource Accent}"
                         Visibility="Collapsed" IsHitTestVisible="False"/>
             </Canvas>
+            <Border x:Name="ExternalProfileDropOverlay" Panel.ZIndex="30" Visibility="Collapsed"
+                    Background="#D9FFFFFF" BorderBrush="{StaticResource Accent}" BorderThickness="1" CornerRadius="{StaticResource RadiusCard}"
+                    IsHitTestVisible="False" Opacity="0">
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding ExternalDropTitle, ElementName=Root}" Foreground="{StaticResource TextPrimary}" FontWeight="SemiBold" FontSize="15" HorizontalAlignment="Center"/>
+                    <TextBlock Text="{Binding ExternalDropDetail, ElementName=Root}" Foreground="{StaticResource TextSecondary}" FontSize="12" Margin="0,5,0,0" HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Border>
             </Grid>
         </Border>
     </DockPanel>

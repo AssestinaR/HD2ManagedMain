@@ -448,6 +448,11 @@ namespace HD2ModManager.ViewModels
         }
         public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
         public bool CanReorder => string.IsNullOrWhiteSpace(Query) && !ShowOnlyOutdated;
+        private bool _canAcceptLibraryDrop;
+        public bool CanAcceptLibraryDrop => _canAcceptLibraryDrop;
+
+        public void SetLibraryDropTargetAvailable(bool available)
+            => SetField(ref _canAcceptLibraryDrop, available, nameof(CanAcceptLibraryDrop));
 
         private string? _selectedProfileKey;
         private string _renameText = string.Empty;

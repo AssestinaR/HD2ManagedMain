@@ -22,7 +22,7 @@
             <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
         </DataTemplate>
     </UserControl.Resources>
-    <local:ModListPanel ItemsSource="{Binding Items}"
+    <local:ModListPanel x:Name="ProfileModList" ItemsSource="{Binding Items}"
                         HeaderTitle="{Binding CurrentProfileTitle}"
                         HeaderSummary="{Binding HeaderSummary}"
                         EmptyMessage="{Binding EmptyMessage}"
@@ -31,6 +31,9 @@
                         RowActions="Details, MoveUp, MoveDown, RemoveFromProfile, DeleteFromLibrary"
                         RowActionInvoked="OnRowActionInvoked"
                         SelectionPolicy="Multiple"
+                        AllowExternalProfileDrop="{Binding CanAcceptLibraryDrop}"
+                        AllowExternalProfileRemovalDrag="{Binding CanAcceptLibraryDrop}"
+                        ExternalProfileDropRequested="OnExternalProfileDropRequested"
                         SelectionRequested="OnSelectionRequested"
                         AllowInternalReorder="{Binding CanReorder}"
                         InternalReorderRequested="OnInternalReorderRequested"
