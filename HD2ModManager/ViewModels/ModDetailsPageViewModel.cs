@@ -26,6 +26,7 @@ namespace HD2ModManager.ViewModels
         private readonly DerivedStateCoordinator _derivedState;
         private readonly NotificationService? _notifications;
         private readonly BackgroundTaskService? _backgroundTasks;
+        private readonly SelectionCoordinator? _selection;
         private readonly IMaterialPackagingApplicationService _materialPackaging;
         private readonly IMaterialDeliveryFactsService _materialDeliveryFacts;
         private readonly IEquipmentUnitCatalogService _equipmentUnitCatalog;
@@ -121,7 +122,7 @@ namespace HD2ModManager.ViewModels
 		public RelayCommand RunDependencyGraphTestCommand { get; }
         public RelayCommand CompareDependencyGraphCommand { get; }
 
-        public ModDetailsPageViewModel(ModLibraryService library, ProfileService profiles, DerivedStateCoordinator derivedState, string modId, NotificationService? notifications = null, BackgroundTaskService? backgroundTasks = null)
+        public ModDetailsPageViewModel(ModLibraryService library, ProfileService profiles, DerivedStateCoordinator derivedState, string modId, NotificationService? notifications = null, BackgroundTaskService? backgroundTasks = null, SelectionCoordinator? selection = null)
         {
             Title = "Mod 详情";
             _library = library;
@@ -129,6 +130,7 @@ namespace HD2ModManager.ViewModels
             _derivedState = derivedState;
             _notifications = notifications;
 			_backgroundTasks = backgroundTasks;
+            _selection = selection;
             _paths = SettingsService.CreateStoragePaths();
 			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService(_derivedState.InformationCenter);
             _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(_paths, _derivedState.InformationCenter);
@@ -161,6 +163,7 @@ namespace HD2ModManager.ViewModels
                 if (_advancedDetailsLoaded) _ = RefreshAdvancedDetailsAsync();
             });
             _derivedState.SnapshotChanged += _snapshotChangedHandler;
+            if (_selection is not null) _selection.SelectionChanged += OnSelectionChanged;
             Refresh();
             if (!IsDecoration) _ = RefreshInformationProductsAsync();
         }
@@ -1048,9 +1051,27 @@ namespace HD2ModManager.ViewModels
             var cards = _library.GetDecorationsForHost(Mod.Guid)
                 .Select(decoration => new ModCardViewModel(
                     decoration,
+                    isSelected: IsHostDecorationSelected(decoration.Guid),
                     decorationStatus: _library.IsDecorationEnabledForHost(decoration.Guid, Mod.Guid) ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。"))
                 .ToArray();
             HostDecorations.ReplaceWith(cards);
+        }
+
+        private void OnSelectionChanged(object? sender, EventArgs e)
+            => RunOnUiThread(RefreshHostDecorationSelection);
+
+        private bool IsHostDecorationSelected(string decorationId)
+        {
+            var selection = _selection;
+            return selection is not null
+                && string.Equals(selection.Scope, $"DecorationHost:{ModId}", StringComparison.OrdinalIgnoreCase)
+                && selection.SelectedIds.Contains(decorationId, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private void RefreshHostDecorationSelection()
+        {
+            foreach (var decoration in HostDecorations)
+                decoration.IsSelected = IsHostDecorationSelected(decoration.Mod.Guid);
         }
 
         private async Task<bool> HasCurrentGameDataIndexAsync()
@@ -1457,6 +1478,7 @@ namespace HD2ModManager.ViewModels
             if (_disposed) return;
             _disposed = true;
             _derivedState.SnapshotChanged -= _snapshotChangedHandler;
+            if (_selection is not null) _selection.SelectionChanged -= OnSelectionChanged;
             _advancedDetailsCancellation?.Cancel();
             _advancedDetailsCancellation?.Dispose();
             _advancedDetailsCancellation = null;

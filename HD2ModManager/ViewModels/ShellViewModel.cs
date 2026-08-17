@@ -1311,30 +1311,12 @@ namespace HD2ModManager.ViewModels
             task.MarkRunning(enabled ? "正在更新装饰启用状态" : "正在更新装饰禁用状态");
             try
             {
-                foreach (var decoration in decorations)
-                {
-                    if (hostId is null)
-                    {
-                        if (enabled)
-                        {
-                            var summary = _libraryService.GetDecorationActivationSummary(decoration.Guid);
-                            if (!summary.IsEnabledForAllAvailableHosts)
-                                await _libraryService.ToggleDecorationForAllAvailableHostsAsync(decoration.Guid, task.CancellationToken);
-                        }
-                        else
-                        {
-                            var summary = _libraryService.GetDecorationActivationSummary(decoration.Guid);
-                            if (summary.EnabledHostCount > 0)
-                                await _libraryService.ToggleDecorationForAllAvailableHostsAsync(decoration.Guid, task.CancellationToken);
-                        }
-                    }
-                    else
-                    {
-                        await _libraryService.SetDecorationEnabledForHostAsync(decoration.Guid, hostId, enabled, task.CancellationToken);
-                    }
-                }
+                var result = await _libraryService.ApplyDecorationActivationBatchAsync(
+                    decorations.Select(decoration => new DecorationActivationMutation(decoration.Guid, enabled, hostId)).ToArray(),
+                    task.CancellationToken);
                 task.MarkCompleted();
-                _notificationService.Show(enabled ? "已启用选中的装饰。" : "已禁用选中的装饰。");
+                var stateText = enabled ? "已启用选中的装饰。" : "已禁用选中的装饰。";
+                _notificationService.Show(result.ChangedDecorationCount == 0 ? "选中的装饰状态没有变化。" : stateText);
                 _selection.Clear();
                 RefreshCurrentPage();
             }
@@ -1402,7 +1384,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection, _bottomBar),
                 WorkspacePageType.Library => CreateLibraryPage(),
                 WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _backgroundTasks),
-                WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
+                WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks, _selection),
                 WorkspacePageType.AdvancedModDetails => new AdvancedModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
                 WorkspacePageType.GameDataBrowser => new GameDataBrowserPageViewModel(_libraryService, _profileService, _derivedState.InformationCenter),
                 WorkspacePageType.GameDataArchiveDetails => new GameDataArchiveDetailsHostPageViewModel(null),
