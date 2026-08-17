@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
@@ -67,6 +68,7 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 			await toc.WriteAsync(header, cancellationToken).ConfigureAwait(false);
 			toc.Position = payloadOffset;
 			var gpuOffsetsByPayload = new Dictionary<string, ulong>(StringComparer.Ordinal);
+			var gpuIdentitiesByReference = new Dictionary<byte[], string>(ByteArrayReferenceComparer.Instance);
 			foreach (var (entry, index) in entries.Select((entry, index) => (entry, index)))
 			{
 				cancellationToken.ThrowIfCancellationRequested();
@@ -82,7 +84,10 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 				var gpuOffset = 0UL;
 				if (gpuLengthForEntry != 0)
 				{
-					var gpuIdentity = await GetGpuPayloadIdentityAsync(gpuData, entry.GpuDataPath, entry.GpuDataSource, gpuLengthForEntry, cancellationToken).ConfigureAwait(false);
+					var gpuIdentity = gpuData is not null && gpuIdentitiesByReference.TryGetValue(gpuData, out var cachedIdentity)
+						? cachedIdentity
+						: await GetGpuPayloadIdentityAsync(gpuData, entry.GpuDataPath, entry.GpuDataSource, gpuLengthForEntry, cancellationToken).ConfigureAwait(false);
+					if (gpuData is not null) gpuIdentitiesByReference.TryAdd(gpuData, gpuIdentity);
 					if (!gpuOffsetsByPayload.TryGetValue(gpuIdentity, out gpuOffset))
 					{
 						gpuOffset = await WriteAlignedAsync(gpu, gpuData, entry.GpuDataPath, entry.GpuDataSource, cancellationToken).ConfigureAwait(false);
@@ -260,6 +265,12 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 		Write32(data, 56, entry.TocDataSize); Write32(data, 60, entry.StreamSize); Write32(data, 64, entry.GpuResourceSize); Write32(data, 68, entry.Unknown3); Write32(data, 72, entry.Unknown4); Write32(data, 76, entry.EntryIndex);
 	}
 	private static void EnsureWritable(string path, bool overwrite) { if (!overwrite && File.Exists(path)) throw new IOException($"Output file already exists: {path}"); }
+	private sealed class ByteArrayReferenceComparer : IEqualityComparer<byte[]>
+	{
+		public static readonly ByteArrayReferenceComparer Instance = new();
+		public bool Equals(byte[]? left, byte[]? right) => ReferenceEquals(left, right);
+		public int GetHashCode(byte[] value) => RuntimeHelpers.GetHashCode(value);
+	}
 	private static void Write32(byte[] data, int offset, uint value) => BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(offset, 4), value);
 	private static void Write64(byte[] data, int offset, ulong value) => BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(offset, 8), value);
 }

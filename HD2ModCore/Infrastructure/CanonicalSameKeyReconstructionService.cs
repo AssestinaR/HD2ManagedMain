@@ -103,6 +103,22 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         Directory.CreateDirectory(output);
 		using var artifacts = new CanonicalDiagnosticArtifacts(output, "SameKey");
 		artifacts.Log($"[START] SourcePatch={Path.GetFileName(patch)} Units={plan.Units.Count}");
+		if (plan.Units.Count != 0)
+		{
+			try
+			{
+				return await GenerateGroupedCandidateAsync(
+					source, patch, index, plan, resolver, targetReader, avatarTransforms, output, artifacts,
+					cancellationToken, progress, operationId).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is not OperationCanceledException)
+			{
+				var failure = Error("RecipePlanningFailed", exception.Message, source.Id);
+				artifacts.Log($"[ERROR] Same-key grouped reconstruction failed: {exception}");
+				await artifacts.WriteReportAsync("Failed", "配方分析或执行失败", [failure.Message], CancellationToken.None).ConfigureAwait(false);
+				return Failure([.. plan.Issues, failure]);
+			}
+		}
         using var operationWorkspace = operationWorkspaceFactory.Create(output, "same-key-reconstruction");
         var jobsBySequence = new PatchWorkspaceJobResult?[plan.Units.Count];
         var removed = index.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId || entry.AssetKey.TypeId == PatchUnitMeshReader.CompositeUnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
@@ -296,6 +312,206 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             replacementUnitCount, minifyOnlyUnitCount, replacementMeshCount, minifiedMeshCount, issues);
     }
 
+    private async ValueTask<SameKeyReconstructionOperationResult> GenerateGroupedCandidateAsync(
+        ModNode source,
+        string patch,
+        PatchWorkspaceIndex index,
+        SameKeyReconstructionPlan plan,
+        AdaptationGameDataPackageResolver resolver,
+        GameDataUnitMeshReader targetReader,
+        UnitTransformInfo avatarTransforms,
+        string output,
+        CanonicalDiagnosticArtifacts artifacts,
+        CancellationToken cancellationToken,
+        IProgress<OperationProgressEvent>? progress,
+        Guid? operationId)
+    {
+        var issues = plan.Issues.ToList();
+        var sourceEntries = index.Entries;
+        var sourcePayloadFingerprints = new UnitPayloadFingerprintCache();
+        var parsedSources = new ConcurrentDictionary<string, Lazy<Task<PatchUnitMesh>>>(StringComparer.Ordinal);
+        var hiddenClassifier = SourceHiddenUnitClassifier.Create(sourceEntries);
+        var recipes = new Dictionary<string, SameKeyExecutionRecipe>(StringComparer.Ordinal);
+        Report(progress, operationId, "BuildRecipePlan", "正在分析 Unit 复用配方", 0, plan.Units.Count);
+
+        foreach (var (unitPlan, sequence) in plan.Units.Select((value, index) => (value, index)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (unitPlan.TargetArchive is null)
+            {
+                issues.AddRange(unitPlan.Issues);
+                continue;
+            }
+            var sourceEntry = sourceEntries.Single(entry => entry.AssetKey == new AdaptationAssetKey(unitPlan.UnitAssetKey.TypeId, unitPlan.UnitAssetKey.FileId));
+            // Determine reuse strictly from this patch's own payload structure. GPU and
+            // stream ranges must be physically shared, while Unit TOC and local
+            // dependencies must be byte-identical. GameData target shells intentionally
+            // do not participate: direct-reuse patches map one source Unit to many keys.
+            var recipeKey = await sourcePayloadFingerprints.CreateReuseSignatureAsync(sourceEntry, sourceEntries, cancellationToken).ConfigureAwait(false);
+            if (!recipes.TryGetValue(recipeKey, out var recipe))
+            {
+                recipe = new SameKeyExecutionRecipe(recipeKey, unitPlan);
+                recipes.Add(recipeKey, recipe);
+            }
+            recipe.Members.Add(unitPlan);
+            Report(progress, operationId, "BuildRecipePlan", $"已分析 Unit {sequence + 1}/{plan.Units.Count}；复用配方 {recipes.Count}", sequence + 1, plan.Units.Count);
+        }
+
+        if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
+        artifacts.Log($"[RECIPE-PLAN] Units={plan.Units.Count}; Recipes={recipes.Count}; Reused={plan.Units.Count - recipes.Count}; Singletons={recipes.Values.Count(recipe => recipe.Members.Count == 1)}; HiddenCandidateGpuLimit={hiddenClassifier.CandidateGpuLimit}");
+        Report(progress, operationId, "ExecuteRecipes", $"正在执行 {recipes.Count} 个唯一重建配方", 0, recipes.Count);
+
+        var jobs = new List<PatchWorkspaceJobResult>(plan.Units.Count);
+        var replacementUnitCount = 0;
+        var minifyOnlyUnitCount = 0;
+        var replacementMeshCount = 0;
+        var minifiedMeshCount = 0;
+        var detectedHiddenSourceRecipeCount = 0;
+        var recipeIndex = 0;
+        foreach (var recipe in recipes.Values)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var representative = recipe.Representative;
+            var sourceEntry = sourceEntries.Single(entry => entry.AssetKey == new AdaptationAssetKey(representative.UnitAssetKey.TypeId, representative.UnitAssetKey.FileId));
+            var archiveId = representative.TargetArchive!.ArchiveId;
+            var targetUnit = await targetReader.ReadAsync(archiveId, sourceEntry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var sourceTemplate = await parsedSources.GetOrAdd(recipe.Key, _ => new Lazy<Task<PatchUnitMesh>>(
+                () => new PatchUnitMeshReader().ReadCanonicalSourceAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).AsTask(),
+                LazyThreadSafetyMode.ExecutionAndPublication)).Value.ConfigureAwait(false);
+            var sourceUnit = RebindSourceUnit(sourceTemplate, sourceEntry);
+            var hiddenSource = hiddenClassifier.Classify(sourceEntry, sourceUnit);
+            var mappings = hiddenSource.IsHidden
+                ? []
+                : BuildMappings(sourceEntry.AssetKey, sourceUnit.Model, targetUnit.Model, representative.IsSourceGeometryEligible).ToArray();
+            SameKeyCanonicalUnitRebuildResult result;
+            if (mappings.Length == 0)
+            {
+                var hidden = hiddenUnitBuilder.Build(targetUnit, avatarTransforms);
+                result = new SameKeyCanonicalUnitRebuildResult(PatchWorkspaceJobResult.Unit(hidden.Entry), 0, hidden.HiddenMeshCount, []);
+            }
+            else
+            {
+                result = new SameKeyCanonicalUnitRebuilder().Rebuild(new SameKeyCanonicalUnitRebuildRequest(sourceUnit, targetUnit, mappings)
+                {
+                    AvatarTransformInfo = avatarTransforms
+                });
+            }
+            if (!result.IsValid || result.Job is null || result.Job.Outputs.Count != 1)
+            {
+                issues.AddRange(result.Diagnostics.Select(diagnostic => Error(diagnostic.Code, $"Unit=0x{representative.UnitAssetKey.FileId:x16}; {diagnostic.Message}", source.Id)));
+                continue;
+            }
+            var template = result.Job.Outputs[0];
+            foreach (var member in recipe.Members)
+            {
+                var memberKey = new AdaptationAssetKey(member.UnitAssetKey.TypeId, member.UnitAssetKey.FileId);
+                jobs.Add(PatchWorkspaceJobResult.Unit(template with { Key = memberKey }, $"0x{member.UnitAssetKey.FileId:x16}"));
+            }
+            replacementMeshCount += result.ReplacedMeshCount * recipe.Members.Count;
+            minifiedMeshCount += result.HiddenMeshCount * recipe.Members.Count;
+            if (hiddenSource.IsHidden) detectedHiddenSourceRecipeCount++;
+            if (result.ReplacedMeshCount != 0) replacementUnitCount += recipe.Members.Count;
+            else minifyOnlyUnitCount += recipe.Members.Count;
+            artifacts.Log($"[RECIPE] Key={recipe.Key[..Math.Min(recipe.Key.Length, 48)]}; Members={recipe.Members.Count}; SourceHidden={hiddenSource.IsHidden}; HiddenReason={hiddenSource.Reason}; Hidden={mappings.Length == 0}; Replaced={result.ReplacedMeshCount}; Minified={result.HiddenMeshCount}");
+            recipeIndex++;
+            Report(progress, operationId, "ExecuteRecipes", $"已完成配方 {recipeIndex}/{recipes.Count}，覆盖 Unit {jobs.Count}/{plan.Units.Count}", recipeIndex, recipes.Count);
+        }
+
+        if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
+        Report(progress, operationId, "WriteCandidate", "正在打包 Canonical Patch", 0, 1);
+        var removed = index.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId || entry.AssetKey.TypeId == PatchUnitMeshReader.CompositeUnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
+        var write = await workspaceWriter.WriteAsync(index, jobs, removed, output, Path.GetFileName(patch),
+            headerTemplateTocData: (await resolver.GetPackageTocAsync(plan.Units.First().TargetArchive!.ArchiveId, cancellationToken).ConfigureAwait(false))?.Data,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        Report(progress, operationId, "WriteCandidate", "Canonical Patch 打包完成", 1, 1);
+        artifacts.Log($"[WRITE-DONE] Recipes={recipes.Count}; Units={jobs.Count}; Replacements={replacementMeshCount}; Hidden={minifiedMeshCount}; HiddenSourceRecipes={detectedHiddenSourceRecipeCount}");
+        await artifacts.WriteReportAsync("WrittenForGameTest", $"配方={recipes.Count}; Unit={jobs.Count}; 替换Mesh={replacementMeshCount}; 极小化Mesh={minifiedMeshCount}", issues.Select(issue => issue.Message).ToArray(), cancellationToken).ConfigureAwait(false);
+        return new SameKeyReconstructionOperationResult(true, output, null, artifacts.ReportPath, jobs.Count,
+            replacementUnitCount, minifyOnlyUnitCount, replacementMeshCount, minifiedMeshCount, issues);
+    }
+
+    private sealed class SameKeyExecutionRecipe(
+        string key,
+        SameKeyUnitReconstructionPlan representative)
+    {
+        public string Key { get; } = key;
+        public SameKeyUnitReconstructionPlan Representative { get; } = representative;
+        public List<SameKeyUnitReconstructionPlan> Members { get; } = [];
+    }
+
+    private sealed class SourceHiddenUnitClassifier
+    {
+        private const uint AbsoluteCandidateGpuLimit = 128 * 1024;
+        private const float MaximumPlaceholderExtent = 0.001f;
+
+        private SourceHiddenUnitClassifier(uint candidateGpuLimit) => CandidateGpuLimit = candidateGpuLimit;
+
+        public uint CandidateGpuLimit { get; }
+
+        public static SourceHiddenUnitClassifier Create(IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> entries)
+        {
+            var sizes = entries
+                .Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId && entry.GpuResourceSize != 0)
+                .Select(entry => entry.GpuResourceSize)
+                .OrderBy(size => size)
+                .ToArray();
+            var median = sizes.Length == 0 ? 0U : sizes[sizes.Length / 2];
+            var relativeLimit = Math.Min(uint.MaxValue, ((ulong)median * 3UL) / 100UL);
+            return new SourceHiddenUnitClassifier((uint)Math.Max(AbsoluteCandidateGpuLimit, relativeLimit));
+        }
+
+        public SourceHiddenUnitClassification Classify(
+            HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry,
+            PatchUnitMesh unit)
+        {
+            if (entry.GpuResourceSize > CandidateGpuLimit)
+                return new(false, "GpuPayloadAboveCandidateLimit");
+
+            var visibleMeshes = unit.Model.Meshes
+                .Where(mesh => mesh.LodIndex >= 0 && mesh.SemanticInfo.IsVisualMesh)
+                .Select(mesh => new
+                {
+                    Mesh = mesh,
+                    Raw = unit.Model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == mesh.Index)
+                })
+                .ToArray();
+            if (visibleMeshes.Length == 0 || visibleMeshes.Any(item => item.Raw is null))
+                return new(false, "NoReadableVisibleMeshes");
+            if (visibleMeshes.Any(item => item.Raw!.Vertices.Count > 3 || item.Raw.Triangles.Count > 1))
+                return new(false, "VisibleMeshHasRealGeometry");
+            if (visibleMeshes.Any(item => !HasPlaceholderBounds(item.Raw!)))
+                return new(false, "PlaceholderBoundsTooLargeOrUnreadable");
+            return new(true, "TinyPlaceholderGeometry");
+        }
+
+        private static bool HasPlaceholderBounds(UnitRawMeshData mesh)
+        {
+            if (mesh.Vertices.Count == 0) return false;
+            var positions = mesh.Vertices
+                .Select(vertex => vertex.Components.FirstOrDefault(component => component.Type == 0 && component.Index == 0))
+                .ToArray();
+            if (positions.Any(position => position is null || position.FloatValues.Length < 3)) return false;
+
+            var minX = float.PositiveInfinity;
+            var minY = float.PositiveInfinity;
+            var minZ = float.PositiveInfinity;
+            var maxX = float.NegativeInfinity;
+            var maxY = float.NegativeInfinity;
+            var maxZ = float.NegativeInfinity;
+            foreach (var position in positions)
+            {
+                var values = position!.FloatValues;
+                if (!float.IsFinite(values[0]) || !float.IsFinite(values[1]) || !float.IsFinite(values[2])) return false;
+                minX = Math.Min(minX, values[0]); maxX = Math.Max(maxX, values[0]);
+                minY = Math.Min(minY, values[1]); maxY = Math.Max(maxY, values[1]);
+                minZ = Math.Min(minZ, values[2]); maxZ = Math.Max(maxZ, values[2]);
+            }
+            return Math.Max(maxX - minX, Math.Max(maxY - minY, maxZ - minZ)) <= MaximumPlaceholderExtent;
+        }
+    }
+
+    private sealed record SourceHiddenUnitClassification(bool IsHidden, string Reason);
+
     private async ValueTask<SameKeyReconstructionPlan> PlanAsync(
         ModNode source,
         string modsRootDirectory,
@@ -468,6 +684,34 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             return string.Join(':', parts);
         }
 
+        public async Task<string> CreateReuseSignatureAsync(
+            HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry,
+            IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> entries,
+            CancellationToken cancellationToken)
+        {
+            // This signature intentionally uses the physical GPU/stream ranges rather
+            // than their contents. Equal ranges in the same patch sidecar are the same
+            // bytes, so planning never has to load large GPU payloads.
+            var toc = await ReadTocAsync(entry, cancellationToken).ConfigureAwait(false);
+            var parts = new List<string>
+            {
+                $"unit-toc={await HashPayloadAsync(entry.SourceFilePath, entry.TocDataOffset, entry.TocDataSize, cancellationToken).ConfigureAwait(false)}",
+                $"unit-stream={DescribeRange(entry.SourceFilePath + ".stream", entry.StreamOffset, entry.StreamSize)}",
+                $"unit-gpu={DescribeRange(entry.SourceFilePath + ".gpu_resources", entry.GpuResourceOffset, entry.GpuResourceSize)}",
+                $"unit-meta={entry.Unknown1:x16}:{entry.Unknown2:x16}:{entry.Unknown3:x8}:{entry.Unknown4:x8}"
+            };
+            foreach (var dependency in ResolveDependencies(toc, entries)
+                .OrderBy(value => value.AssetKey.TypeId).ThenBy(value => value.AssetKey.FileId))
+            {
+                parts.Add($"dependency={dependency.AssetKey.TypeId:x16}:{dependency.AssetKey.FileId:x16}"
+                    + $":{await HashPayloadAsync(dependency.SourceFilePath, dependency.TocDataOffset, dependency.TocDataSize, cancellationToken).ConfigureAwait(false)}"
+                    + $":{DescribeRange(dependency.SourceFilePath + ".stream", dependency.StreamOffset, dependency.StreamSize)}"
+                    + $":{DescribeRange(dependency.SourceFilePath + ".gpu_resources", dependency.GpuResourceOffset, dependency.GpuResourceSize)}"
+                    + $":{dependency.Unknown1:x16}:{dependency.Unknown2:x16}:{dependency.Unknown3:x8}:{dependency.Unknown4:x8}");
+            }
+            return string.Join('|', parts);
+        }
+
         private async Task<byte[]> ReadTocAsync(HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry, CancellationToken cancellationToken)
         {
             var key = new PayloadRange(entry.SourceFilePath, entry.TocDataOffset, entry.TocDataSize);
@@ -515,6 +759,9 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             }
             return Convert.ToHexString(hash.GetHashAndReset());
         }
+
+        private static string DescribeRange(string path, ulong offset, uint length)
+            => $"{path}:{offset:x16}:{length:x8}";
 
         private static async Task<byte[]> ReadRangeAsync(PayloadRange range, CancellationToken cancellationToken)
         {
