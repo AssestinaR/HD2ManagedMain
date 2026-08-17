@@ -1383,7 +1383,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.Home => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
                 WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection, _bottomBar),
                 WorkspacePageType.Library => CreateLibraryPage(),
-                WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _backgroundTasks),
+                WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _bottomBar, _backgroundTasks),
                 WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks, _selection),
                 WorkspacePageType.AdvancedModDetails => new AdvancedModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
                 WorkspacePageType.GameDataBrowser => new GameDataBrowserPageViewModel(_libraryService, _profileService, _derivedState.InformationCenter),

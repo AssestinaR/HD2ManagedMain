@@ -103,7 +103,7 @@ public sealed class JsonModLibraryStoreTests
 		try
 		{
 			var paths = new StoragePaths(root);
-			Directory.CreateDirectory(paths.DataDirectory);
+			Directory.CreateDirectory(paths.ModsDirectory);
 			var profileId = ProfileId.New();
 			await File.WriteAllTextAsync(paths.ProfilesPath, $$"""
 			[
@@ -140,13 +140,13 @@ public sealed class JsonModLibraryStoreTests
 		try
 		{
 			var paths = new StoragePaths(root);
-			Directory.CreateDirectory(paths.DataDirectory);
+			Directory.CreateDirectory(paths.ModsDirectory);
 			const string invalidJson = "{ invalid";
 			await File.WriteAllTextAsync(paths.ProfilesPath, invalidJson);
 			var store = new JsonProfileStore(paths);
 
 			var loaded = await store.TryLoadAsync();
-			var backups = Directory.EnumerateFiles(paths.DataDirectory, "profiles.json.invalid-*.bak").ToList();
+			var backups = Directory.EnumerateFiles(paths.ModsDirectory, "profiles.json.invalid-*.bak").ToList();
 
 			Assert.Empty(loaded.Profiles);
 			var backup = Assert.Single(backups);

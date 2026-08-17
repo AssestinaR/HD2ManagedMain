@@ -18,6 +18,13 @@
         <DataTemplate DataType="{x:Type viewModels:SameKeyRebuildBottomBarRowViewModel}">
             <local:SameKeyRebuildBottomBarContent/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type viewModels:ModLibrarySwitchBottomBarViewModel}">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="Mod 库目录已更改，保存后将重启应用。" VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}"/>
+                <Button Style="{StaticResource AppPrimaryButton}" Content="重启并切换" Command="{Binding RestartCommand}" Margin="12,0,0,0"/>
+                <Button Style="{StaticResource AppSecondaryButton}" Content="取消" Command="{Binding CancelCommand}" Margin="8,0,14,0"/>
+            </StackPanel>
+        </DataTemplate>
     </UserControl.Resources>
     <Grid ClipToBounds="True">
         <StackPanel x:Name="ActiveRows" VerticalAlignment="Bottom" HorizontalAlignment="Center"/>

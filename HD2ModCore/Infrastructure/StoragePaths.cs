@@ -9,7 +9,10 @@ public sealed record StoragePaths(string AppRootDirectory, string? ModsRootDirec
 	public string ImportTempDirectory => Path.Combine(Directory.GetParent(ModsDirectory)?.FullName ?? AppRootDirectory, "tmp");
 	public string ModsDirectory => string.IsNullOrWhiteSpace(ModsRootDirectory) ? Path.Combine(AppRootDirectory, "mods") : Path.GetFullPath(ModsRootDirectory);
 	public string LibraryPath => Path.Combine(ModsDirectory, "library.json");
-	public string ProfilesPath => Path.Combine(DataDirectory, "profiles.json");
+	// Profiles belong to a Mod library because their entries reference that library's node IDs.
+	public string ProfilesPath => Path.Combine(ModsDirectory, "profiles.json");
+	public string LegacyProfilesPath => Path.Combine(DataDirectory, "profiles.json");
+	public string LegacyProfileMigrationMarkerPath => Path.Combine(DataDirectory, "profiles-library-migration-v1.complete");
 	public string SettingsPath => Path.Combine(DataDirectory, "settings.json");
 	public string IndexDirectory => Path.Combine(DataDirectory, "indexes");
 	public string DbPath => Path.Combine(IndexDirectory, "asset-index.sqlite");

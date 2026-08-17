@@ -69,7 +69,7 @@ public sealed class ModInformationCenterArchitectureTests
 
 		Assert.True(start >= 0 && end > start, "Unable to isolate Same-key planning implementation.");
 		var planning = source[start..end];
-		Assert.Contains("analysis?.Entries", planning);
+		Assert.Contains("index?.Entries", planning);
 		Assert.DoesNotContain("sourceReader.ReadAsync", planning);
 		Assert.DoesNotContain("targetReader.ReadAsync", planning);
 	}

@@ -161,7 +161,8 @@ public sealed class CanonicalCrossArmorOrchestrator
 		if (!Directory.Exists(request.GameDataDirectory))
 			return Failure(issues, "CanonicalGameDataMissing", "Canonical 链路找不到 Game Data 目录。");
 		var indexStatus = await assetIndex.GetIndexStatusAsync(request.GameDataDirectory, await archiveHashes.GetArchiveHashesJsonAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
-		await hiddenUnitCache.InitializeAsync(indexStatus.CurrentSourceFingerprint, indexStatus.IsCurrent, cancellationToken).ConfigureAwait(false);
+		if (indexStatus.IsCurrent && !string.IsNullOrWhiteSpace(indexStatus.CurrentSourceFingerprint))
+			await hiddenUnitCache.InitializeAsync(indexStatus.CurrentSourceFingerprint, gameDataIndexIsCurrent: true, cancellationToken).ConfigureAwait(false);
 
 		try
 		{

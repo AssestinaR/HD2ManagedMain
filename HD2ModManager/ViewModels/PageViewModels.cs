@@ -845,7 +845,11 @@ namespace HD2ModManager.ViewModels
     {
 		private readonly ProfileService _profiles;
 		private readonly ModLibraryService _library;
-                private readonly BackgroundTaskService? _backgroundTasks;
+        private readonly BottomBarCoordinator _bottomBar;
+        private readonly BackgroundTaskService? _backgroundTasks;
+		private readonly ModLibrarySwitchBottomBarViewModel _modLibrarySwitchBar;
+        private string _modLibraryFolderCandidate;
+        private bool _hasPendingModLibrarySwitch;
         private readonly StoragePaths _paths = SettingsService.CreateStoragePaths();
         private CancellationTokenSource? _assetIndexStatusCancellation;
         private bool _isRefreshingAssetIndexStatus;
@@ -939,10 +943,11 @@ namespace HD2ModManager.ViewModels
 
         public string ModLibraryFolder
         {
-            get => SettingsService.GetModLibraryFolder();
+            get => _modLibraryFolderCandidate;
             set
             {
-                SettingsService.SetModLibraryFolder(value);
+                if (SetField(ref _modLibraryFolderCandidate, value ?? string.Empty))
+                    UpdateModLibrarySwitchPrompt();
                 OnPropertyChanged(nameof(ModLibraryFolder));
             }
         }
@@ -970,12 +975,15 @@ namespace HD2ModManager.ViewModels
         private bool _isLoadingGameDataIndex;
         public bool IsLoadingGameDataIndex { get => _isLoadingGameDataIndex; private set => SetField(ref _isLoadingGameDataIndex, value); }
 
-        public SettingsPageViewModel(ProfileService profiles, ModLibraryService library, BackgroundTaskService? backgroundTasks = null)
+        public SettingsPageViewModel(ProfileService profiles, ModLibraryService library, BottomBarCoordinator bottomBar, BackgroundTaskService? backgroundTasks = null)
         {
             Title = "设置";
 			_profiles = profiles;
 			_library = library;
+            _bottomBar = bottomBar ?? throw new ArgumentNullException(nameof(bottomBar));
             _backgroundTasks = backgroundTasks;
+			_modLibraryFolderCandidate = SettingsService.GetModLibraryFolder();
+			_modLibrarySwitchBar = new ModLibrarySwitchBottomBarViewModel(RestartAndSwitchModLibrary, CancelModLibrarySwitch);
             OpenModFolderCommand = new RelayCommand(() => OpenFolder(ModLibraryFolder));
             ResetModFolderCommand = new RelayCommand(() => ModLibraryFolder = SettingsService.GetDefaultModLibraryFolder());
             OpenGameDataFolderCommand = new RelayCommand(OpenGameDataFolder);
@@ -1003,6 +1011,75 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(GameDataFolder));
             _ = RefreshAssetIndexStatusAsync();
         }
+
+		private void UpdateModLibrarySwitchPrompt()
+		{
+			_hasPendingModLibrarySwitch = !PathsEqual(_modLibraryFolderCandidate, SettingsService.GetModLibraryFolder());
+			if (_hasPendingModLibrarySwitch)
+			{
+				_bottomBar.UpdateSurfaceSource(new BottomBarRegistrationRequest(
+					"mod-library-switch",
+					[new BottomBarRowDefinition("main", _modLibrarySwitchBar)]));
+			}
+			else
+			{
+				_bottomBar.RemoveSurfaceSource("mod-library-switch");
+			}
+		}
+
+		private void CancelModLibrarySwitch()
+		{
+			_modLibraryFolderCandidate = SettingsService.GetModLibraryFolder();
+			_hasPendingModLibrarySwitch = false;
+			OnPropertyChanged(nameof(ModLibraryFolder));
+			_bottomBar.RemoveSurfaceSource("mod-library-switch");
+		}
+
+		private void RestartAndSwitchModLibrary()
+		{
+			if (!_hasPendingModLibrarySwitch) return;
+			if (_backgroundTasks?.Tasks.Any(task => task.IsActive) == true)
+			{
+				System.Windows.MessageBox.Show("请等待后台任务完成后再切换 Mod 库。", "切换 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+				return;
+			}
+			try
+			{
+				var directory = ValidateModLibraryDirectory(_modLibraryFolderCandidate);
+				if (!SettingsService.SetModLibraryFolder(directory)) throw new IOException("无法保存 Mod 库目录设置。");
+				var executable = Environment.ProcessPath;
+				if (string.IsNullOrWhiteSpace(executable)) throw new InvalidOperationException("无法确定当前应用程序路径。");
+				System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = true });
+				System.Windows.Application.Current.Shutdown();
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+			{
+				System.Windows.MessageBox.Show($"无法切换 Mod 库：{exception.Message}", "切换 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+			}
+		}
+
+		private static string ValidateModLibraryDirectory(string candidate)
+		{
+			if (string.IsNullOrWhiteSpace(candidate)) throw new ArgumentException("Mod 库目录不能为空。", nameof(candidate));
+			var directory = Path.GetFullPath(candidate.Trim());
+			Directory.CreateDirectory(directory);
+			var probe = Path.Combine(directory, $".hd2-write-probe-{Guid.NewGuid():N}.tmp");
+			try
+			{
+				File.WriteAllText(probe, "probe");
+			}
+			finally
+			{
+				if (File.Exists(probe)) File.Delete(probe);
+			}
+			return directory;
+		}
+
+		private static bool PathsEqual(string? left, string? right)
+		{
+			try { return string.Equals(Path.GetFullPath(left ?? string.Empty), Path.GetFullPath(right ?? string.Empty), StringComparison.OrdinalIgnoreCase); }
+			catch (Exception) when (left is not null || right is not null) { return string.Equals(left?.Trim(), right?.Trim(), StringComparison.OrdinalIgnoreCase); }
+		}
 
         private async Task RefreshAssetIndexStatusAsync()
         {

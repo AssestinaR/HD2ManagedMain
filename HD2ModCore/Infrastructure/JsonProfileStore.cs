@@ -35,7 +35,8 @@ public sealed class JsonProfileStore
 	{
 		if (!File.Exists(_paths.ProfilesPath))
 		{
-			return (Array.Empty<Profile>(), null);
+			await TryMigrateLegacyProfilesOnceAsync(cancellationToken).ConfigureAwait(false);
+			if (!File.Exists(_paths.ProfilesPath)) return (Array.Empty<Profile>(), null);
 		}
 
 		try
@@ -68,13 +69,25 @@ public sealed class JsonProfileStore
 
 	public async ValueTask SaveAsync(IReadOnlyList<Profile> profiles, ProfileId? activeProfileId, CancellationToken cancellationToken = default)
 	{
-		Directory.CreateDirectory(_paths.DataDirectory);
+		Directory.CreateDirectory(_paths.ModsDirectory);
 		var snapshot = new ProfileFileSnapshot(CurrentVersion, activeProfileId, profiles ?? Array.Empty<Profile>());
 		var json = JsonSerializer.Serialize(snapshot, SerializerOptions);
 		var tmp = _paths.ProfilesPath + ".tmp";
 		await File.WriteAllTextAsync(tmp, json, cancellationToken).ConfigureAwait(false);
 		File.Copy(tmp, _paths.ProfilesPath, overwrite: true);
 		File.Delete(tmp);
+	}
+
+	private async ValueTask TryMigrateLegacyProfilesOnceAsync(CancellationToken cancellationToken)
+	{
+		if (File.Exists(_paths.LegacyProfileMigrationMarkerPath)
+			|| !File.Exists(_paths.LegacyProfilesPath)
+			|| File.Exists(_paths.ProfilesPath)) return;
+
+		Directory.CreateDirectory(_paths.ModsDirectory);
+		File.Copy(_paths.LegacyProfilesPath, _paths.ProfilesPath, overwrite: false);
+		Directory.CreateDirectory(_paths.DataDirectory);
+		await File.WriteAllTextAsync(_paths.LegacyProfileMigrationMarkerPath, "migrated", cancellationToken).ConfigureAwait(false);
 	}
 
 	private static bool TryDeserializeCurrent(string json, out ProfileFileSnapshot snapshot)
