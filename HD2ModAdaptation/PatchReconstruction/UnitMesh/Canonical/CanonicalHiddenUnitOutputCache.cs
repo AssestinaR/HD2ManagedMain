@@ -14,14 +14,15 @@ public sealed class CanonicalHiddenUnitBuilder
 {
 	private readonly SameKeyCanonicalUnitRebuilder rebuilder = new();
 
-	public CanonicalHiddenUnitOutput Build(GameDataUnitMesh target, UnitTransformInfo avatarTransforms)
+	public CanonicalHiddenUnitOutput Build(GameDataUnitMesh target, UnitTransformInfo avatarTransforms, bool minifyCullingMeshes = false)
 	{
 		ArgumentNullException.ThrowIfNull(target);
 		ArgumentNullException.ThrowIfNull(avatarTransforms);
 		var source = new PatchUnitMesh(target.Payload.Entry, target.Payload, target.Model, target.CompositePayload);
 		var result = rebuilder.Rebuild(new SameKeyCanonicalUnitRebuildRequest(source, target, [])
 		{
-			AvatarTransformInfo = avatarTransforms
+			AvatarTransformInfo = avatarTransforms,
+			MinifyUnmappedCullingMeshes = minifyCullingMeshes
 		});
 		if (!result.IsValid || result.Job is null || result.Job.Outputs.Count != 1)
 			throw new InvalidDataException($"Canonical full-hide build failed for Unit 0x{target.AssetKey.FileId:x16}: {string.Join(" | ", result.Diagnostics.Select(item => item.Message))}");

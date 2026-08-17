@@ -73,7 +73,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 
     public async ValueTask<SameKeyReconstructionOperationResult> GenerateCandidateAsync(
         ModNode source, string modsRootDirectory, string gameDataDirectory, string outputRootDirectory,
-        CancellationToken cancellationToken = default, IProgress<OperationProgressEvent>? progress = null, Guid? operationId = null)
+        CancellationToken cancellationToken = default, IProgress<OperationProgressEvent>? progress = null, Guid? operationId = null,
+        bool useSharedHiddenUnitTemplate = true)
     {
         ArgumentNullException.ThrowIfNull(source);
         Report(progress, operationId, "InspectEligibility", "正在检查同 ID Canonical 重建资格", 0, 1);
@@ -109,7 +110,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 			{
 				return await GenerateGroupedCandidateAsync(
 					source, patch, index, plan, resolver, targetReader, avatarTransforms, output, artifacts,
-					cancellationToken, progress, operationId).ConfigureAwait(false);
+					cancellationToken, progress, operationId, useSharedHiddenUnitTemplate).ConfigureAwait(false);
 			}
 			catch (Exception exception) when (exception is not OperationCanceledException)
 			{
@@ -324,13 +325,13 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         CanonicalDiagnosticArtifacts artifacts,
         CancellationToken cancellationToken,
         IProgress<OperationProgressEvent>? progress,
-        Guid? operationId)
+        Guid? operationId,
+        bool useSharedHiddenUnitTemplate)
     {
         var issues = plan.Issues.ToList();
         var sourceEntries = index.Entries;
         var sourcePayloadFingerprints = new UnitPayloadFingerprintCache();
         var parsedSources = new ConcurrentDictionary<string, Lazy<Task<PatchUnitMesh>>>(StringComparer.Ordinal);
-        var hiddenClassifier = SourceHiddenUnitClassifier.Create(sourceEntries);
         var recipes = new Dictionary<string, SameKeyExecutionRecipe>(StringComparer.Ordinal);
         Report(progress, operationId, "BuildRecipePlan", "正在分析 Unit 复用配方", 0, plan.Units.Count);
 
@@ -358,8 +359,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         }
 
         if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
-        artifacts.Log($"[RECIPE-PLAN] Units={plan.Units.Count}; Recipes={recipes.Count}; Reused={plan.Units.Count - recipes.Count}; Singletons={recipes.Values.Count(recipe => recipe.Members.Count == 1)}; HiddenCandidateGpuLimit={hiddenClassifier.CandidateGpuLimit}");
-        Report(progress, operationId, "ExecuteRecipes", $"正在执行 {recipes.Count} 个唯一重建配方", 0, recipes.Count);
+        artifacts.Log($"[RECIPE-PLAN] Units={plan.Units.Count}; Recipes={recipes.Count}; Reused={plan.Units.Count - recipes.Count}; Singletons={recipes.Values.Count(recipe => recipe.Members.Count == 1)}");
+        Report(progress, operationId, "ExecuteRecipes", "正在生成 Canonical Unit 输出", 0, recipes.Count);
 
         var jobs = new List<PatchWorkspaceJobResult>(plan.Units.Count);
         var replacementUnitCount = 0;
@@ -367,6 +368,10 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         var replacementMeshCount = 0;
         var minifiedMeshCount = 0;
         var detectedHiddenSourceRecipeCount = 0;
+        var visibleRebuildRecipeCount = 0;
+        CanonicalPatchSessionEntry? sharedHiddenTemplate = null;
+        var sharedHiddenMeshCount = 0;
+        var sharedHiddenReuseCount = 0;
         var recipeIndex = 0;
         foreach (var recipe in recipes.Values)
         {
@@ -374,20 +379,56 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             var representative = recipe.Representative;
             var sourceEntry = sourceEntries.Single(entry => entry.AssetKey == new AdaptationAssetKey(representative.UnitAssetKey.TypeId, representative.UnitAssetKey.FileId));
             var archiveId = representative.TargetArchive!.ArchiveId;
-            var targetUnit = await targetReader.ReadAsync(archiveId, sourceEntry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
             var sourceTemplate = await parsedSources.GetOrAdd(recipe.Key, _ => new Lazy<Task<PatchUnitMesh>>(
                 () => new PatchUnitMeshReader().ReadCanonicalSourceAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).AsTask(),
                 LazyThreadSafetyMode.ExecutionAndPublication)).Value.ConfigureAwait(false);
             var sourceUnit = RebindSourceUnit(sourceTemplate, sourceEntry);
-            var hiddenSource = hiddenClassifier.Classify(sourceEntry, sourceUnit);
+            var hiddenSource = UnitSourceVisibilityClassifier.Classify(sourceUnit);
+            if (useSharedHiddenUnitTemplate && hiddenSource.IsHidden && sharedHiddenTemplate is not null)
+            {
+                foreach (var member in recipe.Members)
+                {
+                    var memberKey = new AdaptationAssetKey(member.UnitAssetKey.TypeId, member.UnitAssetKey.FileId);
+                    jobs.Add(PatchWorkspaceJobResult.Unit(sharedHiddenTemplate with { Key = memberKey }, $"0x{member.UnitAssetKey.FileId:x16}"));
+                }
+                detectedHiddenSourceRecipeCount++;
+                minifiedMeshCount += sharedHiddenMeshCount * recipe.Members.Count;
+                minifyOnlyUnitCount += recipe.Members.Count;
+                sharedHiddenReuseCount += recipe.Members.Count;
+                artifacts.Log($"[HIDDEN-TEMPLATE-REUSE] Members={recipe.Members.Count}; Template=0x{sharedHiddenTemplate.Key.FileId:x16}; SourceHidden=True; Reason={hiddenSource.Reason}");
+                recipeIndex++;
+                Report(progress, operationId, "ExecuteRecipes", $"已完成配方 {recipeIndex}/{recipes.Count}，覆盖 Unit {jobs.Count}/{plan.Units.Count}", recipeIndex, recipes.Count);
+                continue;
+            }
+
+            var targetUnit = await targetReader.ReadAsync(archiveId, sourceEntry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
             var mappings = hiddenSource.IsHidden
                 ? []
                 : BuildMappings(sourceEntry.AssetKey, sourceUnit.Model, targetUnit.Model, representative.IsSourceGeometryEligible).ToArray();
             SameKeyCanonicalUnitRebuildResult result;
             if (mappings.Length == 0)
             {
-                var hidden = hiddenUnitBuilder.Build(targetUnit, avatarTransforms);
+                CanonicalHiddenUnitOutput hidden;
+                try
+                {
+                    hidden = hiddenUnitBuilder.Build(
+                        targetUnit,
+                        avatarTransforms,
+                        minifyCullingMeshes: useSharedHiddenUnitTemplate && hiddenSource.IsHidden);
+                }
+                catch (Exception exception) when (useSharedHiddenUnitTemplate && hiddenSource.IsHidden && exception is InvalidDataException or InvalidOperationException)
+                {
+                    // A shared template is an optimization; preserve the established per-target hide path when a target cannot form one.
+                    artifacts.Log($"[HIDDEN-TEMPLATE-FALLBACK] Unit=0x{sourceEntry.AssetKey.FileId:x16}; Reason={exception.Message}");
+                    hidden = hiddenUnitBuilder.Build(targetUnit, avatarTransforms);
+                }
                 result = new SameKeyCanonicalUnitRebuildResult(PatchWorkspaceJobResult.Unit(hidden.Entry), 0, hidden.HiddenMeshCount, []);
+                if (useSharedHiddenUnitTemplate && hiddenSource.IsHidden)
+                {
+                    sharedHiddenTemplate = hidden.Entry;
+                    sharedHiddenMeshCount = hidden.HiddenMeshCount;
+                    artifacts.Log($"[HIDDEN-TEMPLATE] Unit=0x{sourceEntry.AssetKey.FileId:x16}; HiddenMeshes={hidden.HiddenMeshCount}; Culling=Minified");
+                }
             }
             else
             {
@@ -410,6 +451,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             replacementMeshCount += result.ReplacedMeshCount * recipe.Members.Count;
             minifiedMeshCount += result.HiddenMeshCount * recipe.Members.Count;
             if (hiddenSource.IsHidden) detectedHiddenSourceRecipeCount++;
+            else visibleRebuildRecipeCount++;
             if (result.ReplacedMeshCount != 0) replacementUnitCount += recipe.Members.Count;
             else minifyOnlyUnitCount += recipe.Members.Count;
             artifacts.Log($"[RECIPE] Key={recipe.Key[..Math.Min(recipe.Key.Length, 48)]}; Members={recipe.Members.Count}; SourceHidden={hiddenSource.IsHidden}; HiddenReason={hiddenSource.Reason}; Hidden={mappings.Length == 0}; Replaced={result.ReplacedMeshCount}; Minified={result.HiddenMeshCount}");
@@ -424,8 +466,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             headerTemplateTocData: (await resolver.GetPackageTocAsync(plan.Units.First().TargetArchive!.ArchiveId, cancellationToken).ConfigureAwait(false))?.Data,
             cancellationToken: cancellationToken).ConfigureAwait(false);
         Report(progress, operationId, "WriteCandidate", "Canonical Patch 打包完成", 1, 1);
-        artifacts.Log($"[WRITE-DONE] Recipes={recipes.Count}; Units={jobs.Count}; Replacements={replacementMeshCount}; Hidden={minifiedMeshCount}; HiddenSourceRecipes={detectedHiddenSourceRecipeCount}");
-        await artifacts.WriteReportAsync("WrittenForGameTest", $"配方={recipes.Count}; Unit={jobs.Count}; 替换Mesh={replacementMeshCount}; 极小化Mesh={minifiedMeshCount}", issues.Select(issue => issue.Message).ToArray(), cancellationToken).ConfigureAwait(false);
+        artifacts.Log($"[WRITE-DONE] VisibleRebuildRecipes={visibleRebuildRecipeCount}; Units={jobs.Count}; Replacements={replacementMeshCount}; Hidden={minifiedMeshCount}; HiddenSourceRecipes={detectedHiddenSourceRecipeCount}; SharedHiddenTemplate={useSharedHiddenUnitTemplate}; SharedHiddenReuse={sharedHiddenReuseCount}");
+        await artifacts.WriteReportAsync("WrittenForGameTest", $"可见重建配方={visibleRebuildRecipeCount}; Unit={jobs.Count}; 替换Mesh={replacementMeshCount}；极小化Mesh={minifiedMeshCount}", issues.Select(issue => issue.Message).ToArray(), cancellationToken).ConfigureAwait(false);
         return new SameKeyReconstructionOperationResult(true, output, null, artifacts.ReportPath, jobs.Count,
             replacementUnitCount, minifyOnlyUnitCount, replacementMeshCount, minifiedMeshCount, issues);
     }
@@ -438,79 +480,6 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         public SameKeyUnitReconstructionPlan Representative { get; } = representative;
         public List<SameKeyUnitReconstructionPlan> Members { get; } = [];
     }
-
-    private sealed class SourceHiddenUnitClassifier
-    {
-        private const uint AbsoluteCandidateGpuLimit = 128 * 1024;
-        private const float MaximumPlaceholderExtent = 0.001f;
-
-        private SourceHiddenUnitClassifier(uint candidateGpuLimit) => CandidateGpuLimit = candidateGpuLimit;
-
-        public uint CandidateGpuLimit { get; }
-
-        public static SourceHiddenUnitClassifier Create(IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> entries)
-        {
-            var sizes = entries
-                .Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId && entry.GpuResourceSize != 0)
-                .Select(entry => entry.GpuResourceSize)
-                .OrderBy(size => size)
-                .ToArray();
-            var median = sizes.Length == 0 ? 0U : sizes[sizes.Length / 2];
-            var relativeLimit = Math.Min(uint.MaxValue, ((ulong)median * 3UL) / 100UL);
-            return new SourceHiddenUnitClassifier((uint)Math.Max(AbsoluteCandidateGpuLimit, relativeLimit));
-        }
-
-        public SourceHiddenUnitClassification Classify(
-            HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry,
-            PatchUnitMesh unit)
-        {
-            if (entry.GpuResourceSize > CandidateGpuLimit)
-                return new(false, "GpuPayloadAboveCandidateLimit");
-
-            var visibleMeshes = unit.Model.Meshes
-                .Where(mesh => mesh.LodIndex >= 0 && mesh.SemanticInfo.IsVisualMesh)
-                .Select(mesh => new
-                {
-                    Mesh = mesh,
-                    Raw = unit.Model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == mesh.Index)
-                })
-                .ToArray();
-            if (visibleMeshes.Length == 0 || visibleMeshes.Any(item => item.Raw is null))
-                return new(false, "NoReadableVisibleMeshes");
-            if (visibleMeshes.Any(item => item.Raw!.Vertices.Count > 3 || item.Raw.Triangles.Count > 1))
-                return new(false, "VisibleMeshHasRealGeometry");
-            if (visibleMeshes.Any(item => !HasPlaceholderBounds(item.Raw!)))
-                return new(false, "PlaceholderBoundsTooLargeOrUnreadable");
-            return new(true, "TinyPlaceholderGeometry");
-        }
-
-        private static bool HasPlaceholderBounds(UnitRawMeshData mesh)
-        {
-            if (mesh.Vertices.Count == 0) return false;
-            var positions = mesh.Vertices
-                .Select(vertex => vertex.Components.FirstOrDefault(component => component.Type == 0 && component.Index == 0))
-                .ToArray();
-            if (positions.Any(position => position is null || position.FloatValues.Length < 3)) return false;
-
-            var minX = float.PositiveInfinity;
-            var minY = float.PositiveInfinity;
-            var minZ = float.PositiveInfinity;
-            var maxX = float.NegativeInfinity;
-            var maxY = float.NegativeInfinity;
-            var maxZ = float.NegativeInfinity;
-            foreach (var position in positions)
-            {
-                var values = position!.FloatValues;
-                if (!float.IsFinite(values[0]) || !float.IsFinite(values[1]) || !float.IsFinite(values[2])) return false;
-                minX = Math.Min(minX, values[0]); maxX = Math.Max(maxX, values[0]);
-                minY = Math.Min(minY, values[1]); maxY = Math.Max(maxY, values[1]);
-                minZ = Math.Min(minZ, values[2]); maxZ = Math.Max(maxZ, values[2]);
-            }
-            return Math.Max(maxX - minX, Math.Max(maxY - minY, maxZ - minZ)) <= MaximumPlaceholderExtent;
-        }
-    }
-
-    private sealed record SourceHiddenUnitClassification(bool IsHidden, string Reason);
 
     private async ValueTask<SameKeyReconstructionPlan> PlanAsync(
         ModNode source,

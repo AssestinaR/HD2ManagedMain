@@ -103,7 +103,8 @@ public sealed record CrossArmorTransferCandidateRequest(
 	IProgress<CrossArmorTransferProgress>? Progress = null,
 	bool ExpandLodFamilyMappings = true,
 	bool AutoHideUnmappedTargetUnits = true,
-	bool DirectSourceUnitReuse = false);
+	bool DirectSourceUnitReuse = false,
+	bool UseSharedHiddenUnitTemplate = true);
 
 // Purpose: Provides stage timing and bounded-work progress during cross-armor candidate generation.
 public sealed record CrossArmorTransferProgress

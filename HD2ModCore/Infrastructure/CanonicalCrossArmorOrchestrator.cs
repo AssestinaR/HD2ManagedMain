@@ -306,6 +306,9 @@ public sealed class CanonicalCrossArmorOrchestrator
 			var outputUnitCount = 0;
 			var replacementCount = 0;
 			var minifiedCount = 0;
+			CanonicalPatchSessionEntry? sharedHiddenTemplate = null;
+			var sharedHiddenMeshCount = 0;
+			var sharedHiddenTemplateUnit = default(AdaptationAssetKey);
 			// Default mode emits every selected target Unit so unassigned shells are minified.
 			// Compact mode emits only real replacement mappings; omitted Units remain untouched
 			// in Game Data and are deliberately absent from the output Patch.
@@ -339,6 +342,57 @@ public sealed class CanonicalCrossArmorOrchestrator
 				if (archiveName is null)
 					return Failure(issues, "CanonicalTargetArchiveMissing", $"目标 Unit 0x{targetUnit.Key.FileId:x16} 没有明确的 Game Data archive。");
 				var hasPlannedReplacement = request.Plan.Mappings.Any(mapping => mapping.WillReplace && SameKey(mapping.PhysicalTarget.UnitAssetKey, targetUnit.Key));
+				if (!hasPlannedReplacement && request.UseSharedHiddenUnitTemplate && sharedHiddenTemplate is not null)
+				{
+					currentCanonicalPhase = "ReuseSharedHiddenTemplate";
+					var stagingStopwatch = System.Diagnostics.Stopwatch.StartNew();
+					var sharedOutputEntry = operationWorkspace.Stage(sharedHiddenTemplate with { Key = targetUnit.Key });
+					stagingElapsed += stagingStopwatch.Elapsed;
+					outputEntries.Add(sharedOutputEntry);
+					workspaceJobs.Add(PatchWorkspaceJobResult.Unit(sharedOutputEntry, $"0x{targetUnit.Key.FileId:x16}"));
+					outputUnitCount++;
+					minifiedCount += sharedHiddenMeshCount;
+					unitTelemetry.Add(CreateUnitJobTelemetryRow(
+						targetIndex + 1, targetUnit.Key, usedHiddenCache: false, hasPlannedReplacement,
+						meshCount: 0, vertexCount: 0, triangleCount: 0,
+						TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
+						TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, stagingStopwatch.Elapsed,
+						unitStopwatch.Elapsed, allocationBefore, gen0Before, gen1Before, gen2Before));
+					Log($"[UNIT-SHARED-HIDDEN] Unit=0x{targetUnit.Key.FileId:x16} Template=0x{sharedHiddenTemplateUnit.FileId:x16} HiddenMeshes={sharedHiddenMeshCount}");
+					ReportProgress(request, "ReuseSharedHiddenTemplate", $"Canonical：复用统一隐藏 Unit {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16}", targetIndex + 1, Math.Max(targetUnits.Length, 1), totalStopwatch);
+					continue;
+				}
+				if (!hasPlannedReplacement && request.UseSharedHiddenUnitTemplate)
+				{
+					try
+					{
+						currentCanonicalPhase = "BuildSharedHiddenTemplate";
+						var hiddenTargetReadStopwatch = System.Diagnostics.Stopwatch.StartNew();
+						var hiddenTarget = await targetReader.ReadAsync(archiveName, targetUnit.Key, allowGlobalDependencySearch: false, cancellationToken: cancellationToken).ConfigureAwait(false);
+						targetReadElapsed += hiddenTargetReadStopwatch.Elapsed;
+						var hidden = new CanonicalHiddenUnitBuilder().Build(hiddenTarget, canonicalAvatarTransforms, minifyCullingMeshes: true);
+						sharedHiddenTemplate = operationWorkspace.Stage(hidden.Entry);
+						sharedHiddenMeshCount = hidden.HiddenMeshCount;
+						sharedHiddenTemplateUnit = targetUnit.Key;
+						outputEntries.Add(sharedHiddenTemplate);
+						workspaceJobs.Add(PatchWorkspaceJobResult.Unit(sharedHiddenTemplate, $"0x{targetUnit.Key.FileId:x16}"));
+						outputUnitCount++;
+						minifiedCount += hidden.HiddenMeshCount;
+						unitTelemetry.Add(CreateUnitJobTelemetryRow(
+							targetIndex + 1, targetUnit.Key, usedHiddenCache: false, hasPlannedReplacement,
+							meshCount: 0, vertexCount: 0, triangleCount: 0,
+							hiddenTargetReadStopwatch.Elapsed, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
+							TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
+							unitStopwatch.Elapsed, allocationBefore, gen0Before, gen1Before, gen2Before));
+						Log($"[UNIT-SHARED-HIDDEN-TEMPLATE] Unit=0x{targetUnit.Key.FileId:x16} HiddenMeshes={hidden.HiddenMeshCount} Culling=Minified");
+						ReportProgress(request, "BuildSharedHiddenTemplate", $"Canonical：生成统一隐藏 Unit {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16}", targetIndex + 1, Math.Max(targetUnits.Length, 1), totalStopwatch);
+						continue;
+					}
+					catch (Exception exception) when (exception is InvalidDataException or InvalidOperationException)
+					{
+						Log($"[UNIT-SHARED-HIDDEN-FALLBACK] Unit=0x{targetUnit.Key.FileId:x16} Reason={exception.Message}");
+					}
+				}
 				if (!hasPlannedReplacement)
 				{
 					var cached = await hiddenUnitCache.TryReadAsync(archiveName, targetUnit.Key, cancellationToken).ConfigureAwait(false);

@@ -3,6 +3,7 @@ using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using Microsoft.Data.Sqlite;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using AdaptationPatchTocScanner = HD2ModAdaptation.PatchReconstruction.PatchTocScanner;
 using AdaptationPatchUnitMeshReader = HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader;
@@ -112,6 +113,10 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				try
 				{
 					var unit = await unitReader.ReadAsync(entry, entries, cancellationToken: cancellationToken).ConfigureAwait(false);
+					// A hidden source can retain a full-size LOD=-1 culling mesh. It must not
+					// become an ordinary replacement candidate merely because that culling mesh is large.
+					if (UnitSourceVisibilityClassifier.Classify(unit).IsHidden)
+						continue;
 					foreach (var mesh in unit.Model.RawMeshData.Where(HasTransferableGeometry))
 					{
 						var unitKey = ToCoreKey(entry.AssetKey);
@@ -230,11 +235,9 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 			.Where(part => selectedSourceBodyVariant is null or UnitMeshBodyVariant.Unknown or UnitMeshBodyVariant.Any || part.BodyVariant == selectedSourceBodyVariant || part.BodyVariant == UnitMeshBodyVariant.Any)
 			.OrderBy(part => part.PartKind).ThenBy(part => part.Layer).ThenBy(part => part.UnitAssetKey.FileId)
 			.ToArray();
-		var displaySourceParts = sourceParts.Where(part => !part.IsCullingMesh).ToArray();
-		// A source Patch with no display geometry can still be an intentional body-cutout
-		// component. Keep that route isolated from ordinary body-shape planning.
-		if (displaySourceParts.Length != 0)
-			sourceParts = displaySourceParts;
+		// Culling data belongs to a selected Unit's internal mesh mapping. It is not a
+		// standalone visible source part and cannot drive armor replacement by itself.
+		sourceParts = sourceParts.Where(part => !part.IsCullingMesh).ToArray();
 		plannerDebug.Add($"[SOURCE-FILTERED] Parts={sourceParts.Length}");
 		foreach (var part in sourceParts.OrderBy(part => part.PartKind).ThenBy(part => part.Layer).ThenBy(part => part.UnitAssetKey.FileId))
 			plannerDebug.Add($"[SOURCE-FILTERED] Unit=0x{part.UnitAssetKey.FileId:x16} Part={part.PartKind} Layer={part.Layer} Variant={part.BodyVariant} Bytes={part.StoredBytes} Semantic={part.SemanticName}");

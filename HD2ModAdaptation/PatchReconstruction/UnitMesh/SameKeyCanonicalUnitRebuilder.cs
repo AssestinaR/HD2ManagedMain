@@ -10,6 +10,7 @@ public sealed record SameKeyCanonicalUnitRebuildRequest(
     IReadOnlyList<TargetShellMeshMapping> MeshMappings)
 {
     public UnitTransformInfo? AvatarTransformInfo { get; init; }
+    public bool MinifyUnmappedCullingMeshes { get; init; }
 
     public void Validate()
     {
@@ -102,7 +103,7 @@ public sealed class SameKeyCanonicalUnitRebuilder
 
             if (!mappings.TryGetValue(targetMesh.Index, out var mapping))
             {
-				if (targetRaw.LodIndex == -1)
+                if (targetRaw.LodIndex == -1 && !request.MinifyUnmappedCullingMeshes)
 				{
 					// A culling mesh with no explicit source counterpart must retain the
 					// target cutout; it is not a visual mesh eligible for minification.

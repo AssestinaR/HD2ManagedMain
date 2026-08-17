@@ -20,5 +20,6 @@ public interface IModSameKeyReconstructionService
 		string outputRootDirectory,
 		CancellationToken cancellationToken = default,
 		IProgress<OperationProgressEvent>? progress = null,
-		Guid? operationId = null);
+		Guid? operationId = null,
+		bool useSharedHiddenUnitTemplate = true);
 }
