@@ -79,8 +79,9 @@ namespace HD2ModManager.ViewModels
             long sequence = 0;
 
             IsGenerating = true;
-            State = "正在按 Canonical 方法链重建目标 Unit 并写出验证候选。";
-            LogService.Info($"替换护甲生成开始：源Patch={_plan.SourcePatchTocPath}，输出={candidateDirectory}，目标数={plan.SelectedTargets.Count}，自动隐藏其余部件={_plan.AutoHideUnmappedTargetUnits}。");
+			var directReuse = _plan.DirectSourceUnitReuse;
+            State = directReuse ? "正在直接复用来源 Unit 并写出验证候选。" : "正在按 Canonical 方法链重建目标 Unit 并写出验证候选。";
+            LogService.Info($"替换护甲生成开始：源Patch={_plan.SourcePatchTocPath}，输出={candidateDirectory}，目标数={plan.SelectedTargets.Count}，自动隐藏其余部件={_plan.AutoHideUnmappedTargetUnits}，快速复用来源Unit={directReuse}。");
             _plan.CandidateGenerationRunning = true;
             try
             {
@@ -95,7 +96,8 @@ namespace HD2ModManager.ViewModels
                     CrossArmorMaterialBindingMode.PreserveSourceReferences,
                     _plan.PreparedSourceEntries,
                     progress,
-                    AutoHideUnmappedTargetUnits: _plan.AutoHideUnmappedTargetUnits);
+                    AutoHideUnmappedTargetUnits: _plan.AutoHideUnmappedTargetUnits,
+					DirectSourceUnitReuse: directReuse);
                 // Canonical 是当前唯一的跨护甲写出路线；计划只提供逻辑部件映射，
                 // Unit 内部的 LOD family 由替换器在读取真实 Unit 后解析。
                 var result = await Task.Run(() => CoreServices.CreateCanonicalCrossArmorOrchestrator()
@@ -118,7 +120,7 @@ namespace HD2ModManager.ViewModels
                 bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Completed, OperationState.Completed, message: presentation.StatusText, sequence: sequence++));
                 task.SetOutputArtifacts(result.OutputDirectory, result.ReportPath);
                 task.MarkCompleted();
-                var routeName = "Canonical 验证候选";
+				var routeName = directReuse ? "快速来源 Unit 验证候选" : "Canonical 验证候选";
                 State = result.HasWarnings
                     ? $"{routeName}已提交，但报告不完整/有告警：{candidateDirectory}。Unit {result.OutputUnitCount}；报告：{result.ReportPath ?? "未生成"}"
                     : $"{routeName}已生成到：{candidateDirectory}。Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。报告：{result.ReportPath}";

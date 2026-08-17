@@ -22,6 +22,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private CrossArmorLayerPreference layerPreference = CrossArmorLayerPreference.Armor;
 	private bool allowManualMappings;
 	private bool autoHideUnmappedTargetUnits = true;
+	private bool directSourceUnitReuse = true;
 	private CrossArmorTransferPlan? plan;
 	private readonly Dictionary<CrossArmorPhysicalTargetKey, CrossArmorManualMapping> manualMappings = new();
 	private readonly HashSet<CrossArmorPhysicalTargetKey> suppressedTargets = new();
@@ -118,6 +119,16 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		{
 			if (autoHideUnmappedTargetUnits == value) return;
 			autoHideUnmappedTargetUnits = value;
+			OnPropertyChanged();
+		}
+	}
+	public bool DirectSourceUnitReuse
+	{
+		get => directSourceUnitReuse;
+		set
+		{
+			if (directSourceUnitReuse == value) return;
+			directSourceUnitReuse = value;
 			OnPropertyChanged();
 		}
 	}

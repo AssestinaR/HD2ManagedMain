@@ -73,6 +73,23 @@ public sealed class CanonicalPatchWriterTests : IDisposable
 	}
 
 	[Fact]
+	public async Task Writer_DeduplicatesByteIdenticalGpuPayloads()
+	{
+		var session = new CanonicalPatchSession();
+		session.AddEntry(Entry(1, 2, [1], [7, 8, 9], []));
+		session.AddEntry(Entry(1, 3, [2], [7, 8, 9], []));
+		session.AddEntry(Entry(1, 4, [3], [7, 8, 10], []));
+		Assert.True(session.Finalize(CanonicalDependencyClosureValidation.Valid).IsValid);
+
+		var result = await new CanonicalPatchWriter().WriteAsync(session, directory).AsTask();
+		var entries = await new PatchTocScanner().ScanEntriesAsync(result.TocFilePath);
+
+		Assert.Equal(entries[0].GpuResourceOffset, entries[1].GpuResourceOffset);
+		Assert.NotEqual(entries[0].GpuResourceOffset, entries[2].GpuResourceOffset);
+		Assert.Equal(64 + 3, result.GpuResourceFileSize);
+	}
+
+	[Fact]
 	public async Task Writer_UsesSdk72ByteHeaderAndMinimumTocLength()
 	{
 		var session = new CanonicalPatchSession();

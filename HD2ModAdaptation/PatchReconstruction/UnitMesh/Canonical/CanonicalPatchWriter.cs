@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 
@@ -65,6 +66,7 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 		{
 			await toc.WriteAsync(header, cancellationToken).ConfigureAwait(false);
 			toc.Position = payloadOffset;
+			var gpuOffsetsByPayload = new Dictionary<string, ulong>(StringComparer.Ordinal);
 			foreach (var (entry, index) in entries.Select((entry, index) => (entry, index)))
 			{
 				cancellationToken.ThrowIfCancellationRequested();
@@ -77,7 +79,16 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 				var streamLengthForEntry = GetPayloadLength(streamData, entry.StreamDataPath, entry.StreamDataSource);
 				var streamOffset = await WriteAlignedAsync(stream, streamData, entry.StreamDataPath, entry.StreamDataSource, cancellationToken).ConfigureAwait(false);
 				var gpuLengthForEntry = GetPayloadLength(gpuData, entry.GpuDataPath, entry.GpuDataSource);
-				var gpuOffset = await WriteAlignedAsync(gpu, gpuData, entry.GpuDataPath, entry.GpuDataSource, cancellationToken).ConfigureAwait(false);
+				var gpuOffset = 0UL;
+				if (gpuLengthForEntry != 0)
+				{
+					var gpuIdentity = await GetGpuPayloadIdentityAsync(gpuData, entry.GpuDataPath, entry.GpuDataSource, gpuLengthForEntry, cancellationToken).ConfigureAwait(false);
+					if (!gpuOffsetsByPayload.TryGetValue(gpuIdentity, out gpuOffset))
+					{
+						gpuOffset = await WriteAlignedAsync(gpu, gpuData, entry.GpuDataPath, entry.GpuDataSource, cancellationToken).ConfigureAwait(false);
+						gpuOffsetsByPayload.Add(gpuIdentity, gpuOffset);
+					}
+				}
 				var serialized = new PatchTocEntry(entry.Key, tocPath, patchFileName, tocDataOffset, streamOffset, gpuOffset, entry.Unknown1, entry.Unknown2,
 					checked((uint)tocLengthForEntry), checked((uint)streamLengthForEntry), checked((uint)gpuLengthForEntry), entry.Unknown3, entry.Unknown4, checked((uint)index + 1));
 				written.Add(serialized);
@@ -192,6 +203,42 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 
 	private static int GetPayloadLength(byte[]? data, string? path, CanonicalPayloadSourceRange? sourceRange)
 		=> data?.Length ?? (path is not null ? checked((int)new FileInfo(path).Length) : checked((int)(sourceRange?.Length ?? 0)));
+
+	// A source range is immutable for the duration of one write and is the common fast-path
+	// for direct Unit reuse. Other payloads use a byte-content identity.
+	private static async ValueTask<string> GetGpuPayloadIdentityAsync(byte[]? data, string? path, CanonicalPayloadSourceRange? sourceRange, int length, CancellationToken cancellationToken)
+	{
+		if (sourceRange is not null)
+			return $"range:{Path.GetFullPath(sourceRange.FilePath)}:{sourceRange.Offset}:{sourceRange.Length}";
+		using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+		if (data is not null)
+		{
+			hash.AppendData(data);
+		}
+		else if (path is not null)
+		{
+			await using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.SequentialScan | FileOptions.Asynchronous);
+			await AppendHashAsync(source, hash, checked((uint)length), cancellationToken).ConfigureAwait(false);
+		}
+		else
+		{
+			throw new InvalidDataException("Canonical GPU payload has neither memory data, staged file, nor source range.");
+		}
+		return $"sha256:{length}:{Convert.ToHexString(hash.GetHashAndReset())}";
+	}
+
+	private static async ValueTask AppendHashAsync(Stream source, IncrementalHash hash, uint length, CancellationToken cancellationToken)
+	{
+		var buffer = new byte[65536];
+		var remaining = checked((int)length);
+		while (remaining > 0)
+		{
+			var read = await source.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining)), cancellationToken).ConfigureAwait(false);
+			if (read == 0) throw new EndOfStreamException("Canonical GPU payload ended before its declared length.");
+			hash.AppendData(buffer, 0, read);
+			remaining -= read;
+		}
+	}
 
 	private static async ValueTask CopyExactlyAsync(Stream source, Stream destination, uint length, CancellationToken cancellationToken)
 	{

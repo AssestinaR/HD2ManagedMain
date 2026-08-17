@@ -7,9 +7,11 @@ using HD2ModCore.Application;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using CoreAssetKey = HD2ModCore.Domain.AssetKey;
 using AdaptationPatchTocEntry = HD2ModAdaptation.PatchReconstruction.PatchTocEntry;
+using AdaptationPatchEntryPayload = HD2ModAdaptation.PatchReconstruction.PatchEntryPayload;
 using AdaptationGameDataPackageResolver = HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Buffers.Binary;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -167,7 +169,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 			artifacts = new CanonicalDiagnosticArtifacts(Path.GetFullPath(request.OutputDirectory), "CrossArmor");
 			reportPath = Path.Combine(Path.GetFullPath(request.OutputDirectory), "canonical-report.md");
 			unitTelemetryPath = artifacts.TelemetryPath;
-			Log($"[START] SourcePatch={Path.GetFileName(request.SourcePatchTocPath)} Output={request.OutputDirectory}");
+			Log($"[START] SourcePatch={Path.GetFileName(request.SourcePatchTocPath)} Output={request.OutputDirectory} DirectSourceUnitReuse={request.DirectSourceUnitReuse}");
 			await WriteMarkdownReportAsync(reportPath, request, reportState, [], [], new Dictionary<AdaptationAssetKey, CanonicalRebuildSummary>(), [], null, null, cancellationToken).ConfigureAwait(false);
 			ReportProgress(request, "CanonicalPreparing", "正在准备 Canonical 跨护甲重建。", 0, 1, totalStopwatch);
 			var replacementPlanMappings = request.Plan.Mappings
@@ -202,28 +204,104 @@ public sealed class CanonicalCrossArmorOrchestrator
 			var rebuildElapsed = TimeSpan.Zero;
 			var stagingElapsed = TimeSpan.Zero;
 			var rebuildTelemetry = new CanonicalUnitRebuildTelemetryAccumulator();
+			var sourceUnits = new Dictionary<AdaptationAssetKey, PatchUnitMesh>();
+			var directSourcePayloads = new Dictionary<AdaptationAssetKey, AdaptationPatchEntryPayload>();
 			var sourceReadJobs = sourceKeys.Select((key, index) => (Sequence: index, UnitKey: $"0x{key.FileId:x16}")).ToArray();
-			var sourceReadResults = await UnitJobExecutor.ExecuteAsync(
-				sourceReadJobs,
-				async (index, token) =>
-				{
-					var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-					var reader = new PatchUnitMeshReader();
-					var unit = await reader.ReadAsync(sourceByKey[sourceKeys[index]], sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, token).ConfigureAwait(false);
-					return (Unit: unit, Elapsed: stopwatch.Elapsed);
-				},
-				cancellationToken: cancellationToken).ConfigureAwait(false);
-			var sourceUnits = sourceKeys.Select((key, index) =>
+			if (request.DirectSourceUnitReuse && indexStatus.IsCurrent)
 			{
-				sourceReadElapsed += sourceReadResults[index].Elapsed;
-				return (key, Unit: sourceReadResults[index].Unit);
-			}).ToDictionary(item => item.key, item => item.Unit);
+				var directPayloads = await UnitJobExecutor.ExecuteAsync(
+					sourceReadJobs,
+					async (index, token) =>
+					{
+						var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+						var payload = await sourcePayloadReader.ReadPayloadAsync(sourceByKey[sourceKeys[index]], token).ConfigureAwait(false);
+						return (Payload: payload, Elapsed: stopwatch.Elapsed);
+					},
+					cancellationToken: cancellationToken).ConfigureAwait(false);
+				for (var index = 0; index < sourceKeys.Length; index++)
+				{
+					sourceReadElapsed += directPayloads[index].Elapsed;
+					directSourcePayloads.Add(sourceKeys[index], directPayloads[index].Payload);
+				}
+			}
+			else if (request.DirectSourceUnitReuse)
+			{
+				Log("[DIRECT-PREFLIGHT] GameDataIndex=stale Action=PreserveSource");
+			}
+			else
+			{
+				var sourceReadResults = await UnitJobExecutor.ExecuteAsync(
+					sourceReadJobs,
+					async (index, token) =>
+					{
+						var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+						var reader = new PatchUnitMeshReader();
+						var unit = await reader.ReadAsync(sourceByKey[sourceKeys[index]], sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, token).ConfigureAwait(false);
+						return (Unit: unit, Elapsed: stopwatch.Elapsed);
+					},
+					cancellationToken: cancellationToken).ConfigureAwait(false);
+				foreach (var (key, index) in sourceKeys.Select((key, index) => (key, index)))
+				{
+					sourceReadElapsed += sourceReadResults[index].Elapsed;
+					sourceUnits.Add(key, sourceReadResults[index].Unit);
+				}
+			}
 
 			var targetReader = targetReaderFactory(request.GameDataDirectory);
-			var canonicalAvatarTransforms = await new CanonicalAvatarRigReader(new AdaptationGameDataPackageResolver(request.GameDataDirectory)).ReadTransformInfoAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+			var canonicalAvatarTransforms = request.DirectSourceUnitReuse
+				? UnitTransformInfo.Empty
+				: await new CanonicalAvatarRigReader(new AdaptationGameDataPackageResolver(request.GameDataDirectory)).ReadTransformInfoAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 			var outputEntries = new List<CanonicalPatchSessionEntry>();
 			var workspaceJobs = new List<PatchWorkspaceJobResult>();
 			using var operationWorkspace = operationWorkspaceFactory.Create(request.OutputDirectory, "cross-armor-transfer");
+			var directSourceEntries = sourceKeys.ToDictionary(
+				key => key,
+				key => CreateDirectSourceReuseEntry(key, sourceByKey[key]));
+			if (request.DirectSourceUnitReuse)
+			{
+				var coreSourceKeys = sourceKeys.Select(key => new CoreAssetKey(key.TypeId, key.FileId)).ToHashSet();
+				var sourceArchives = await assetIndex.FindAssetArchivesAsync(coreSourceKeys, cancellationToken).ConfigureAwait(false);
+				var sourceArchiveByKey = sourceArchives.ToDictionary(match => new AdaptationAssetKey(match.AssetKey.TypeId, match.AssetKey.FileId));
+				UnitTransformInfo? sourceRepairAvatar = null;
+				foreach (var sourceKey in sourceKeys)
+				{
+					var sourcePayload = directSourcePayloads[sourceKey];
+					if (sourcePayload.TocData.Length < 0x30)
+						return Failure(issues, "DirectReuseSourceTocTooShort", $"快速复用来源 Unit 0x{sourceKey.FileId:x16} 的 TOC 过短，无法执行版本预检。");
+					if (!sourceArchiveByKey.TryGetValue(sourceKey, out var sourceMatch) || sourceMatch.Archives.Count == 0)
+					{
+						Log($"[DIRECT-PREFLIGHT] Source=0x{sourceKey.FileId:x16} SameKeyTarget=missing Action=PreserveSource");
+						continue;
+					}
+					var sourceVersion = BinaryPrimitives.ReadUInt32LittleEndian(sourcePayload.TocData.AsSpan(0x2c, 4));
+					var archive = sourceMatch.Archives.OrderBy(item => item.CategoryOrder).ThenBy(item => item.ArchiveOrder).First();
+					var currentTarget = await targetReader.ReadAsync(archive.ArchiveId, sourceKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+					if (sourceVersion == currentTarget.Model.Version)
+					{
+						Log($"[DIRECT-PREFLIGHT] Source=0x{sourceKey.FileId:x16} Version={sourceVersion} Action=PreserveSource");
+						continue;
+					}
+
+					var sourceUnit = await sourceReader.ReadAsync(sourceByKey[sourceKey], sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
+					var mappings = BuildSameKeyMappings(sourceKey, sourceUnit.Model, currentTarget.Model);
+					if (mappings.Count == 0)
+						return Failure(issues, "DirectReuseSourceRepairMappingMissing", $"来源 Unit 0x{sourceKey.FileId:x16} 已过时，但无法建立同 ID Canonical 重构映射。请关闭快速复用并使用全量 Canonical 重建。");
+					sourceRepairAvatar ??= await new CanonicalAvatarRigReader(new AdaptationGameDataPackageResolver(request.GameDataDirectory)).ReadTransformInfoAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+					var repaired = new SameKeyCanonicalUnitRebuilder().Rebuild(new SameKeyCanonicalUnitRebuildRequest(sourceUnit, currentTarget, mappings)
+					{
+						AvatarTransformInfo = sourceRepairAvatar
+					});
+					if (!repaired.IsValid || repaired.Job is null)
+						return Failure(issues, repaired.Diagnostics.Count == 0
+							? [new CanonicalPlanDiagnostic("DirectReuseSourceRepairFailed", $"来源 Unit 0x{sourceKey.FileId:x16} 的同 ID Canonical 重构失败。")]
+							: repaired.Diagnostics);
+					var repairedEntry = repaired.Job.Outputs.SingleOrDefault(output => output.Key == sourceKey);
+					if (repairedEntry is null)
+						return Failure(issues, "DirectReuseSourceRepairOutputMissing", $"来源 Unit 0x{sourceKey.FileId:x16} 的同 ID Canonical 重构未产生 Unit 输出。");
+					directSourceEntries[sourceKey] = operationWorkspace.Stage(repairedEntry);
+					Log($"[DIRECT-PREFLIGHT] Source=0x{sourceKey.FileId:x16} Version={sourceVersion}->{currentTarget.Model.Version} Action=SameKeyRebuilt");
+				}
+			}
 			var rebuiltTargets = new Dictionary<AdaptationAssetKey, CanonicalRebuildSummary>();
 			var outputUnitCount = 0;
 			var replacementCount = 0;
@@ -284,6 +362,40 @@ public sealed class CanonicalCrossArmorOrchestrator
 						ReportProgress(request, "RebuildTargetUnit", $"Canonical：复用隐藏 Unit 缓存 {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16}", targetIndex + 1, Math.Max(targetUnits.Length, 1), totalStopwatch);
 						continue;
 					}
+				}
+				if (hasPlannedReplacement && request.DirectSourceUnitReuse)
+				{
+					currentCanonicalPhase = "DirectSourceUnitReuse";
+					var directMappings = request.Plan.Mappings
+						.Where(mapping => mapping.WillReplace && SameKey(mapping.PhysicalTarget.UnitAssetKey, targetUnit.Key))
+						.ToArray();
+					var directSourceKeys = directMappings
+						.Select(mapping => new AdaptationAssetKey(mapping.Source!.UnitAssetKey.TypeId, mapping.Source.UnitAssetKey.FileId))
+						.Distinct()
+						.ToArray();
+					if (directSourceKeys.Length != 1)
+						return Failure(issues, "DirectReuseMultipleSourceUnits", $"快速复用要求目标 Unit 0x{targetUnit.Key.FileId:x16} 的所有命中 Mesh 来自同一个来源 Unit；当前为 {directSourceKeys.Length} 个来源。请关闭快速复用并使用 Canonical 重建。");
+
+					var directSourceKey = directSourceKeys[0];
+					var directSourceEntry = sourceByKey[directSourceKey];
+					var directSourcePayload = directSourcePayloads[directSourceKey];
+					if (HasPatchLocalAuxiliaryDependency(directSourcePayload.TocData, sourceByKey))
+						return Failure(issues, "DirectReuseLocalDependencyUnsupported", $"快速复用暂不支持来源 Unit 0x{directSourceKeys[0].FileId:x16} 的 patch 内 Composite/Bone 依赖。请关闭快速复用并使用 Canonical 重建。");
+
+					var directEntry = directSourceEntries[directSourceKey] with { Key = targetUnit.Key, Ownership = CanonicalPatchEntryOwnership.TargetOutput };
+					outputEntries.Add(directEntry);
+					workspaceJobs.Add(PatchWorkspaceJobResult.Unit(directEntry, $"0x{targetUnit.Key.FileId:x16}"));
+					replacementCount += directMappings.Length;
+					outputUnitCount++;
+					unitTelemetry.Add(CreateUnitJobTelemetryRow(
+						targetIndex + 1, targetUnit.Key, usedHiddenCache: false, hasPlannedReplacement,
+						meshCount: 0, vertexCount: 0, triangleCount: 0,
+						TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
+						TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
+						unitStopwatch.Elapsed, allocationBefore, gen0Before, gen1Before, gen2Before));
+					Log($"[UNIT-DIRECT-REUSE] Target=0x{targetUnit.Key.FileId:x16} Source=0x{directSourceKeys[0].FileId:x16} MeshMappings={directMappings.Length} GpuBytes={directSourceEntry.GpuResourceSize}");
+					ReportProgress(request, "DirectSourceUnitReuse", $"快速复用来源 Unit {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16}", targetIndex + 1, Math.Max(targetUnits.Length, 1), totalStopwatch);
+					continue;
 				}
 				var targetReadStopwatch = System.Diagnostics.Stopwatch.StartNew();
 				var target = await targetReader.ReadAsync(
@@ -582,7 +694,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 				header?.Data,
 				overwriteExisting: false,
 				cancellationToken: cancellationToken).ConfigureAwait(false);
-			var fileDiagnostics = ValidateWrittenFiles(written, outputEntries);
+			var fileDiagnostics = await ValidateWrittenFilesAsync(written, outputEntries, cancellationToken).ConfigureAwait(false);
 			issues.AddRange(fileDiagnostics.Select(diagnostic => new CoreIssue(CoreIssueSeverity.Error, diagnostic.Code, diagnostic.Message)));
 			reportState.Status = fileDiagnostics.Count == 0 ? "WrittenForGameTest" : "Failed";
 			Log($"[WRITE-DONE] Patch={Path.GetFileName(written.TocFilePath)} Units={outputUnitCount} FileDiagnostics={fileDiagnostics.Count}");
@@ -708,6 +820,74 @@ public sealed class CanonicalCrossArmorOrchestrator
 		=> plan.SelectedTargets.FirstOrDefault(target => target.Parts.Any(part => SameKey(part.UnitAssetKey, key)))?.ArchiveId
 			?? plan.SelectedTargets.SelectMany(target => target.Parts).FirstOrDefault(part => SameKey(part.UnitAssetKey, key))?.SharedArchiveIds.FirstOrDefault();
 
+	private static CanonicalPatchSessionEntry CreateDirectSourceReuseEntry(AdaptationAssetKey targetKey, AdaptationPatchTocEntry sourceEntry)
+	{
+		var sourceTocPath = sourceEntry.SourceFilePath;
+		var sourceGpuPath = sourceTocPath + ".gpu_resources";
+		var sourceStreamPath = sourceTocPath + ".stream";
+		return new CanonicalPatchSessionEntry(
+			targetKey,
+			CanonicalPatchEntryOwnership.TargetOutput,
+			sourceEntry.TocDataSize == 0 ? Array.Empty<byte>() : null,
+			sourceEntry.GpuResourceSize == 0 ? Array.Empty<byte>() : null,
+			sourceEntry.StreamSize == 0 ? Array.Empty<byte>() : null,
+			sourceEntry.Unknown1,
+			sourceEntry.Unknown2,
+			sourceEntry.Unknown3,
+			sourceEntry.Unknown4)
+		{
+			TocDataSource = sourceEntry.TocDataSize == 0 ? null : new CanonicalPayloadSourceRange(sourceTocPath, sourceEntry.TocDataOffset, sourceEntry.TocDataSize),
+			GpuDataSource = sourceEntry.GpuResourceSize == 0 ? null : new CanonicalPayloadSourceRange(sourceGpuPath, sourceEntry.GpuResourceOffset, sourceEntry.GpuResourceSize),
+			StreamDataSource = sourceEntry.StreamSize == 0 ? null : new CanonicalPayloadSourceRange(sourceStreamPath, sourceEntry.StreamOffset, sourceEntry.StreamSize)
+		};
+	}
+
+	private static bool HasPatchLocalAuxiliaryDependency(ReadOnlySpan<byte> unitTocData, IReadOnlyDictionary<AdaptationAssetKey, AdaptationPatchTocEntry> sourceByKey)
+	{
+		if (unitTocData.Length < 24) throw new InvalidDataException("快速复用来源 Unit TOC 过短，无法读取 Composite/Bone 引用。");
+		var boneReference = BinaryPrimitives.ReadUInt64LittleEndian(unitTocData.Slice(8, 8));
+		var compositeReference = BinaryPrimitives.ReadUInt64LittleEndian(unitTocData.Slice(16, 8));
+		return (boneReference != 0 && sourceByKey.ContainsKey(new AdaptationAssetKey(PatchUnitMeshReader.BoneTypeId, boneReference)))
+			|| (compositeReference != 0 && sourceByKey.ContainsKey(new AdaptationAssetKey(PatchUnitMeshReader.CompositeUnitTypeId, compositeReference)));
+	}
+
+	private static IReadOnlyList<TargetShellMeshMapping> BuildSameKeyMappings(AdaptationAssetKey sourceKey, UnitMeshModel source, UnitMeshModel target)
+	{
+		var sourceLod0 = source.RawMeshData
+			.Where(raw => raw.LodIndex == 0 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
+			.OrderByDescending(CountTriangles)
+			.ThenByDescending(raw => raw.Vertices.Count)
+			.FirstOrDefault();
+		var targetLod0 = target.RawMeshData
+			.Where(raw => raw.LodIndex == 0 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
+			.OrderByDescending(CountTriangles)
+			.ThenByDescending(raw => raw.Vertices.Count)
+			.FirstOrDefault();
+		if (sourceLod0 is null || targetLod0 is null)
+			return source.RawMeshData
+				.Where(raw => raw.LodIndex == -1 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
+				.Select(sourceCulling => (Source: sourceCulling, Target: target.RawMeshData.SingleOrDefault(targetCulling =>
+					targetCulling.LodIndex == -1 && targetCulling.MeshId == sourceCulling.MeshId && CountTriangles(targetCulling) > 1 && targetCulling.Vertices.Count > 3)))
+				.Where(pair => pair.Target is not null)
+				.Select(pair => new TargetShellMeshMapping(sourceKey, pair.Source.MeshInfoIndex, pair.Target!.MeshInfoIndex))
+				.ToArray();
+
+		var expanded = CanonicalAutoLodMappingExpander.Expand(
+			target,
+			new Dictionary<AdaptationAssetKey, UnitMeshModel> { [sourceKey] = source },
+			[new CanonicalReplacementMapping(
+				new CanonicalMeshKey(sourceKey, sourceLod0.MeshInfoIndex),
+				new CanonicalMeshKey(sourceKey, targetLod0.MeshInfoIndex),
+				SkinningMode: CanonicalSkinningMode.BindStaticToTargetMeshTransform,
+				BoneAnchor: CanonicalBoneAnchor.TargetMeshTransform)]);
+		return expanded
+			.Select(mapping => new TargetShellMeshMapping(sourceKey, mapping.Source.MeshInfoIndex, mapping.Target.MeshInfoIndex))
+			.ToArray();
+	}
+
+	private static int CountTriangles(UnitRawMeshData raw)
+		=> raw.Triangles.Count != 0 ? raw.Triangles.Count : raw.Sections.Sum(section => section.Triangles.Count);
+
 	private static int ResolvePlannedMeshInfoIndex(
 		UnitMeshModel model,
 		int plannedIndex,
@@ -776,20 +956,42 @@ public sealed class CanonicalCrossArmorOrchestrator
 		return fileName.ToLowerInvariant();
 	}
 
-	private static IReadOnlyList<CanonicalPlanDiagnostic> ValidateWrittenFiles(
+	private static async ValueTask<IReadOnlyList<CanonicalPlanDiagnostic>> ValidateWrittenFilesAsync(
 		PatchArchiveFileWriteResult written,
-		IReadOnlyList<CanonicalPatchSessionEntry> entries)
+		IReadOnlyList<CanonicalPatchSessionEntry> entries,
+		CancellationToken cancellationToken)
 	{
 		var diagnostics = new List<CanonicalPlanDiagnostic>();
 		if (!File.Exists(written.TocFilePath)) diagnostics.Add(new("CanonicalOutputPatchMissing", "写出后找不到 Patch 文件。"));
 		if (written.TocFileSize <= 0) diagnostics.Add(new("CanonicalOutputPatchEmpty", "输出 Patch 文件为空。"));
-		foreach (var entry in entries)
+		if (diagnostics.Count != 0) return diagnostics;
+		var actual = (await new PatchTocScanner().ScanEntriesAsync(written.TocFilePath, cancellationToken).ConfigureAwait(false))
+			.ToDictionary(entry => entry.AssetKey);
+		foreach (var expected in entries)
 		{
-			if (entry.TocData is null && !File.Exists(entry.TocDataPath)) diagnostics.Add(new("CanonicalOutputTocPayloadMissing", $"Entry 0x{entry.Key.FileId:x16} 的 TOC payload 不存在。"));
-			if (entry.GpuData is null && !File.Exists(entry.GpuDataPath)) diagnostics.Add(new("CanonicalOutputGpuPayloadMissing", $"Entry 0x{entry.Key.FileId:x16} 的 GPU payload 不存在。"));
-			if (entry.StreamData is null && !File.Exists(entry.StreamDataPath)) diagnostics.Add(new("CanonicalOutputStreamPayloadMissing", $"Entry 0x{entry.Key.FileId:x16} 的 Stream payload 不存在。"));
+			var expectedCoreKey = new CoreAssetKey(expected.Key.TypeId, expected.Key.FileId);
+			var expectedKey = new AdaptationAssetKey(expected.Key.TypeId, expected.Key.FileId);
+			if (!actual.TryGetValue(expectedCoreKey, out var entry))
+			{
+				diagnostics.Add(new("CanonicalOutputEntryMissing", $"输出 Patch 缺少 Entry 0x{expected.Key.FileId:x16}。"));
+				continue;
+			}
+			ValidateOutputPayloadRange(expectedKey, "TOC", entry.TocDataOffset, entry.TocDataSize, written.TocFileSize, ExpectedPayloadLength(expected.TocData, expected.TocDataPath, expected.TocDataSource), diagnostics);
+			ValidateOutputPayloadRange(expectedKey, "GPU", entry.GpuResourceOffset, entry.GpuResourceSize, written.GpuResourceFileSize, ExpectedPayloadLength(expected.GpuData, expected.GpuDataPath, expected.GpuDataSource), diagnostics);
+			ValidateOutputPayloadRange(expectedKey, "Stream", entry.StreamOffset, entry.StreamSize, written.StreamFileSize, ExpectedPayloadLength(expected.StreamData, expected.StreamDataPath, expected.StreamDataSource), diagnostics);
 		}
 		return diagnostics;
+	}
+
+	private static int ExpectedPayloadLength(byte[]? data, string? path, CanonicalPayloadSourceRange? sourceRange)
+		=> data?.Length ?? (path is not null ? checked((int)new FileInfo(path).Length) : checked((int)(sourceRange?.Length ?? 0)));
+
+	private static void ValidateOutputPayloadRange(AdaptationAssetKey key, string kind, ulong offset, uint size, long fileLength, int expectedSize, ICollection<CanonicalPlanDiagnostic> diagnostics)
+	{
+		if (size != expectedSize)
+			diagnostics.Add(new("CanonicalOutputPayloadSizeMismatch", $"Entry 0x{key.FileId:x16} 的 {kind} 大小为 {size}，预期 {expectedSize}。"));
+		if (size != 0 && (offset > (ulong)fileLength || size > (ulong)fileLength - offset))
+			diagnostics.Add(new("CanonicalOutputPayloadRangeInvalid", $"Entry 0x{key.FileId:x16} 的 {kind} range 超出输出文件范围。"));
 	}
 
 	private static CanonicalUnitJobTelemetryRow CreateUnitJobTelemetryRow(
