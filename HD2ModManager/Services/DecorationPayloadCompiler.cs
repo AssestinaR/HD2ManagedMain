@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text.Json;
 using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
@@ -35,6 +36,8 @@ public sealed class DecorationPayloadCompiler
         var resolvedSelections = new HashSet<(ulong TypeId, ulong FileId, int MeshInfoIndex, bool IsCulling)>();
         var fragments = new List<(string Variant, string Layer, DecorationMeshFragment Fragment)>();
         var reader = new PatchUnitMeshReader();
+        var compiledVisibleSources = new HashSet<DecorationSourcePayloadKey>();
+        var compiledCullingSources = new HashSet<DecorationSourcePayloadKey>();
         var patchPaths = await fileResolver.ResolvePatchFilesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 
         foreach (var patchPath in patchPaths.Distinct(StringComparer.OrdinalIgnoreCase))
@@ -45,10 +48,40 @@ public sealed class DecorationPayloadCompiler
                 : await new PatchTocScanner().ScanEntriesAsync(fullPatchPath, cancellationToken).ConfigureAwait(false);
             foreach (var entry in entries.Where(entry => requested.ContainsKey((entry.AssetKey.TypeId, entry.AssetKey.FileId))))
             {
-                var unit = await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
                 var selections = requested[(entry.AssetKey.TypeId, entry.AssetKey.FileId)];
                 var visibleSelections = selections.Where(selection => !selection.IsCulling).ToArray();
+                var unit = await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
+                var payloadIdentity = CreatePayloadIdentity(unit.Payload, unit.CompositePayload);
+                var shouldCompileVisible = false;
                 if (visibleSelections.Length != 0)
+                {
+                    var representative = visibleSelections[0];
+                    shouldCompileVisible = compiledVisibleSources.Add(new DecorationSourcePayloadKey(
+                        payloadIdentity,
+                        ToVariant(representative.BodyVariant),
+                        ToLayer(representative.Layer),
+                        MeshInfoIndex: -1));
+                }
+                var cullingSelections = selections
+                    .Where(selection => selection.IsCulling)
+                    .Where(selection => compiledCullingSources.Add(new DecorationSourcePayloadKey(
+                        payloadIdentity,
+                        ToVariant(selection.BodyVariant),
+                        ToLayer(selection.Layer),
+                        selection.MeshInfoIndex)))
+                    .ToArray();
+
+                // Different AssetKeys in a fast-reuse patch may be aliases of one complete
+                // Unit payload. Compile that exact source once per body/layer role; otherwise
+                // selecting aliases would append the same decoration geometry repeatedly.
+                if (!shouldCompileVisible && cullingSelections.Length == 0)
+                {
+                    foreach (var selection in selections)
+                        resolvedSelections.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, selection.IsCulling));
+                    continue;
+                }
+
+                if (shouldCompileVisible)
                 {
                     // The planning table exposes one representative mesh per user-facing Unit.
                     // Preserve every renderable LOD rather than treating that representative as the only mesh.
@@ -63,11 +96,12 @@ public sealed class DecorationPayloadCompiler
                     {
                         fragments.Add((ToVariant(representative.BodyVariant), ToLayer(representative.Layer), CreateFragment(unit, lod.Mesh!, lod.Raw)));
                     }
-                    foreach (var selection in visibleSelections)
-                        resolvedSelections.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, false));
                 }
 
-                foreach (var selection in selections.Where(selection => selection.IsCulling))
+                foreach (var selection in visibleSelections)
+                    resolvedSelections.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, false));
+
+                foreach (var selection in cullingSelections)
                 {
                     var mesh = unit.Model.Meshes.SingleOrDefault(item => item.Index == selection.MeshInfoIndex)
                         ?? throw new InvalidDataException("Selected decoration culling mesh is missing.");
@@ -95,6 +129,16 @@ public sealed class DecorationPayloadCompiler
         }
         return output;
     }
+
+    private static string CreatePayloadIdentity(
+        HD2ModAdaptation.PatchReconstruction.PatchEntryPayload payload,
+        HD2ModAdaptation.PatchReconstruction.PatchEntryPayload? compositePayload)
+        => $"{Hash(payload.TocData)}:{Hash(payload.StreamData)}:{Hash(payload.GpuResourceData)}"
+            + $":{Hash(compositePayload?.TocData ?? Array.Empty<byte>())}"
+            + $":{Hash(compositePayload?.StreamData ?? Array.Empty<byte>())}"
+            + $":{Hash(compositePayload?.GpuResourceData ?? Array.Empty<byte>())}";
+
+    private static string Hash(byte[] data) => Convert.ToHexString(SHA256.HashData(data));
 
     private static IReadOnlyList<DecorationPayloadDocument> BuildPayloads(IReadOnlyList<(string Variant, string Layer, DecorationMeshFragment Fragment)> fragments, DecorationAttachmentPlan plan)
     {
@@ -165,4 +209,6 @@ public sealed class DecorationPayloadCompiler
         await using var gzip = new GZipStream(file, CompressionLevel.Optimal);
         await JsonSerializer.SerializeAsync(gzip, document, new JsonSerializerOptions(JsonSerializerDefaults.Web), cancellationToken).ConfigureAwait(false);
     }
+
+    private readonly record struct DecorationSourcePayloadKey(string PayloadIdentity, string BodyVariant, string Layer, int MeshInfoIndex);
 }

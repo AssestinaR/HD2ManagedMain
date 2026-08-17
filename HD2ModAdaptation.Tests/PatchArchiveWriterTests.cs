@@ -104,6 +104,24 @@ public sealed class PatchArchiveWriterTests : IDisposable
 		Assert.Equal(new byte[] { 7, 9 }, payload.GpuResourceData);
 	}
 
+	[Fact]
+	public async Task WriteAsync_IdenticalGpuPayloads_SharesOneOutputRange()
+	{
+		var sourceDirectory = Path.Combine(root, "source-shared-gpu");
+		var outputDirectory = Path.Combine(root, "output-shared-gpu");
+		Directory.CreateDirectory(sourceDirectory);
+		var sourcePath = Path.Combine(sourceDirectory, "units.patch");
+		await File.WriteAllBytesAsync(sourcePath, CreateLegacyTocWithSharedGpu());
+		await File.WriteAllBytesAsync(sourcePath + ".gpu_resources", new byte[] { 5, 4, 3 });
+
+		var result = await new PatchArchiveWriter().WriteAsync(sourcePath, outputDirectory, Array.Empty<PatchUnitMeshEditResult>());
+
+		var entries = await new PatchTocScanner().ScanEntriesAsync(result.TocFilePath);
+		Assert.Equal(2, entries.Count);
+		Assert.Equal(entries[0].GpuResourceOffset, entries[1].GpuResourceOffset);
+		Assert.Equal(3, new FileInfo(result.GpuResourceFilePath).Length);
+	}
+
 	public void Dispose()
 	{
 		if (Directory.Exists(root)) Directory.Delete(root, true);
@@ -120,6 +138,24 @@ public sealed class PatchArchiveWriterTests : IDisposable
 		Write64(data, entryOffset, UnitFile); Write64(data, entryOffset + 8, UnitType); Write64(data, entryOffset + 16, payloadOffset);
 		Write32(data, entryOffset + 56, (uint)tocPayload.Length); Write32(data, entryOffset + 76, 1);
 		tocPayload.CopyTo(data, payloadOffset);
+		return data;
+	}
+
+	private static byte[] CreateLegacyTocWithSharedGpu()
+	{
+		const int typeOffset = 60;
+		const int entryOffset = typeOffset + 32;
+		const int entrySize = 80;
+		const int payloadOffset = entryOffset + entrySize * 2;
+		var data = new byte[payloadOffset + 2];
+		Write32(data, 0, 4026531857); Write32(data, 4, 1); Write32(data, 8, 2);
+		Write64(data, typeOffset + 8, UnitType); Write64(data, typeOffset + 16, 2);
+		Write64(data, entryOffset, UnitFile); Write64(data, entryOffset + 8, UnitType); Write64(data, entryOffset + 16, payloadOffset);
+		Write32(data, entryOffset + 56, 1); Write32(data, entryOffset + 64, 3); Write32(data, entryOffset + 76, 1);
+		var second = entryOffset + entrySize;
+		Write64(data, second, UnitFile + 1); Write64(data, second + 8, UnitType); Write64(data, second + 16, payloadOffset + 1);
+		Write32(data, second + 56, 1); Write32(data, second + 64, 3); Write32(data, second + 76, 2);
+		data[payloadOffset] = 1; data[payloadOffset + 1] = 2;
 		return data;
 	}
 

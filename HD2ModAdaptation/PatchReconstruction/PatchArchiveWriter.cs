@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 
 namespace HD2ModAdaptation.PatchReconstruction;
 
@@ -73,6 +74,7 @@ public sealed class PatchArchiveWriter
 				await originalStream.CopyToAsync(stream, 65536, cancellationToken).ConfigureAwait(false);
 			}
 			var written = new List<PatchTocEntry>(sources.Count);
+			var gpuOffsetsByPayload = new Dictionary<string, ulong>(StringComparer.Ordinal);
 			foreach (var item in sources)
 			{
 				cancellationToken.ThrowIfCancellationRequested();
@@ -96,7 +98,17 @@ public sealed class PatchArchiveWriter
 					await stream.WriteAsync(streamData, cancellationToken).ConfigureAwait(false);
 				}
 				var gpuOffset = 0UL;
-				if (gpuData.Length > 0) { Pad(gpu); gpuOffset = (ulong)gpu.Position; await gpu.WriteAsync(gpuData, cancellationToken).ConfigureAwait(false); }
+				if (gpuData.Length > 0)
+				{
+					var gpuIdentity = GetGpuPayloadIdentity(gpuData);
+					if (!gpuOffsetsByPayload.TryGetValue(gpuIdentity, out gpuOffset))
+					{
+						Pad(gpu);
+						gpuOffset = (ulong)gpu.Position;
+						await gpu.WriteAsync(gpuData, cancellationToken).ConfigureAwait(false);
+						gpuOffsetsByPayload.Add(gpuIdentity, gpuOffset);
+					}
+				}
 				var updated = entry with { TocDataOffset = (ulong)(tocAppendPosition - tocData.Length), StreamOffset = streamOffset, GpuResourceOffset = gpuOffset, TocDataSize = checked((uint)tocData.Length), StreamSize = checked((uint)streamData.Length), GpuResourceSize = checked((uint)gpuData.Length), EntryIndex = checked((uint)written.Count + 1) };
 				written.Add(updated);
 				var entryData = new byte[EntrySize];
@@ -178,6 +190,7 @@ public sealed class PatchArchiveWriter
 	private static void Pad(Stream stream) { var count = (Alignment - (int)(stream.Position % Alignment)) % Alignment; for (var i = 0; i < count; i++) stream.WriteByte(0); }
 	private static void WriteEntry(byte[] data, int offset, PatchTocEntry entry) { Write64(data, offset, entry.AssetKey.FileId); Write64(data, offset + 8, entry.AssetKey.TypeId); Write64(data, offset + 16, entry.TocDataOffset); Write64(data, offset + 24, entry.StreamOffset); Write64(data, offset + 32, entry.GpuResourceOffset); Write64(data, offset + 40, entry.Unknown1); Write64(data, offset + 48, entry.Unknown2); Write32(data, offset + 56, entry.TocDataSize); Write32(data, offset + 60, entry.StreamSize); Write32(data, offset + 64, entry.GpuResourceSize); Write32(data, offset + 68, entry.Unknown3); Write32(data, offset + 72, entry.Unknown4); Write32(data, offset + 76, entry.EntryIndex); }
 	private static uint Read32(ReadOnlySpan<byte> data, int offset) => BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(offset, 4));
+	private static string GetGpuPayloadIdentity(byte[] data) => $"{data.Length}:{Convert.ToHexString(SHA256.HashData(data))}";
 	private static ulong Read64(ReadOnlySpan<byte> data, int offset) => BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(offset, 8));
 	private static void Write32(byte[] data, int offset, uint value) => BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(offset, 4), value);
 	private static void Write64(byte[] data, int offset, ulong value) => BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(offset, 8), value);

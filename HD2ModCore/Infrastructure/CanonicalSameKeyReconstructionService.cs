@@ -8,6 +8,7 @@ using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using CoreAssetKey = HD2ModCore.Domain.AssetKey;
 using AdaptationGameDataPackageResolver = HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -106,6 +107,9 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         var jobsBySequence = new PatchWorkspaceJobResult?[plan.Units.Count];
         var removed = index.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId || entry.AssetKey.TypeId == PatchUnitMeshReader.CompositeUnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
         var sourceEntries = index.Entries;
+        var sourcePayloadFingerprints = new UnitPayloadFingerprintCache();
+        var parsedSources = new ConcurrentDictionary<string, Lazy<Task<PatchUnitMesh>>>(StringComparer.Ordinal);
+        var sourcePayloadGroups = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         Report(progress, operationId, "BuildCandidate", "正在执行 Canonical Unit 作业", 0, plan.Units.Count);
         var sourceReadElapsed = TimeSpan.Zero;
         var targetReadElapsed = TimeSpan.Zero;
@@ -163,8 +167,12 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 						checked(targetUnit.Model.RawMeshData.Sum(raw => raw.Vertices.Count)), checked(targetUnit.Model.RawMeshData.Sum(raw => raw.Triangles.Count)),
 						allocationBefore, gen0Before, gen1Before, gen2Before);
                 }
-                var localSourceReader = new PatchUnitMeshReader();
-				var sourceUnit = await localSourceReader.ReadCanonicalSourceAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, token).ConfigureAwait(false);
+                var sourceFingerprint = await sourcePayloadFingerprints.CreateAsync(sourceEntry, sourceEntries, token).ConfigureAwait(false);
+                var sourceTemplate = await parsedSources.GetOrAdd(sourceFingerprint, _ => new Lazy<Task<PatchUnitMesh>>(
+                    () => new PatchUnitMeshReader().ReadCanonicalSourceAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, token).AsTask(),
+                    LazyThreadSafetyMode.ExecutionAndPublication)).Value.ConfigureAwait(false);
+                sourcePayloadGroups.TryAdd(sourceFingerprint, 0);
+                var sourceUnit = RebindSourceUnit(sourceTemplate, sourceEntry);
                 var localSourceRead = unitStopwatch.Elapsed;
                 unitStopwatch.Restart();
                 var mappings = BuildMappings(sourceEntry.AssetKey, sourceUnit.Model, targetUnit.Model,
@@ -263,6 +271,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             Report(progress, operationId, "BuildCandidate", $"已完成 Unit {completedUnits}/{plan.Units.Count}", completedUnits, plan.Units.Count);
         }
         Report(progress, operationId, "BuildCandidateMetrics", $"Same-key Unit 作业耗时：来源读取={sourceReadElapsed.TotalMilliseconds:F0}ms，目标读取={targetReadElapsed.TotalMilliseconds:F0}ms，重建={rebuildElapsed.TotalMilliseconds:F0}ms，落盘={stagingElapsed.TotalMilliseconds:F0}ms", completedUnits, plan.Units.Count);
+		artifacts.Log($"[SOURCE-DEDUP] Units={plan.Units.Count}; UniquePayloads={sourcePayloadGroups.Count}; Reused={Math.Max(0, plan.Units.Count - sourcePayloadGroups.Count)}");
 		await CanonicalUnitJobTelemetry.WriteCsvAsync(artifacts.TelemetryPath, unitTelemetry, cancellationToken).ConfigureAwait(false);
 		await artifacts.WriteMappingsAsync(plan.Units.Select(unit => new CanonicalMappingDiagnosticRow(
 			"未分类", unit.IsGeometryEligible ? "命中" : "隐藏", $"0x{unit.UnitAssetKey.FileId:x16}", $"0x{unit.UnitAssetKey.FileId:x16}",
@@ -422,6 +431,105 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 
 	private static int CountTriangles(UnitRawMeshData raw)
 		=> raw.Triangles.Count != 0 ? raw.Triangles.Count : raw.Sections.Sum(section => section.Triangles.Count);
+
+    private static PatchUnitMesh RebindSourceUnit(PatchUnitMesh template, HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry)
+        => template with
+        {
+            Entry = entry,
+            Payload = new HD2ModAdaptation.PatchReconstruction.PatchEntryPayload(entry, Array.Empty<byte>(), Array.Empty<byte>(), Array.Empty<byte>())
+        };
+
+    // Content-addresses a complete source Unit without loading a shared GPU range more
+    // than once. Bone and composite payloads participate because they can alter the
+    // decoded mesh semantics even when the primary Unit GPU range is identical.
+    private sealed class UnitPayloadFingerprintCache
+    {
+        private readonly ConcurrentDictionary<PayloadRange, Lazy<Task<byte[]>>> tocRanges = new();
+        private readonly ConcurrentDictionary<PayloadRange, Lazy<Task<string>>> hashes = new();
+
+        public async Task<string> CreateAsync(
+            HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry,
+            IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> entries,
+            CancellationToken cancellationToken)
+        {
+            var toc = await ReadTocAsync(entry, cancellationToken).ConfigureAwait(false);
+            var parts = new List<string>
+            {
+                await HashPayloadAsync(entry.SourceFilePath, entry.TocDataOffset, entry.TocDataSize, cancellationToken).ConfigureAwait(false),
+                await HashPayloadAsync(entry.SourceFilePath + ".stream", entry.StreamOffset, entry.StreamSize, cancellationToken).ConfigureAwait(false),
+                await HashPayloadAsync(entry.SourceFilePath + ".gpu_resources", entry.GpuResourceOffset, entry.GpuResourceSize, cancellationToken).ConfigureAwait(false)
+            };
+            foreach (var dependency in ResolveDependencies(toc, entries))
+            {
+                parts.Add(await HashPayloadAsync(dependency.SourceFilePath, dependency.TocDataOffset, dependency.TocDataSize, cancellationToken).ConfigureAwait(false));
+                parts.Add(await HashPayloadAsync(dependency.SourceFilePath + ".stream", dependency.StreamOffset, dependency.StreamSize, cancellationToken).ConfigureAwait(false));
+                parts.Add(await HashPayloadAsync(dependency.SourceFilePath + ".gpu_resources", dependency.GpuResourceOffset, dependency.GpuResourceSize, cancellationToken).ConfigureAwait(false));
+            }
+            return string.Join(':', parts);
+        }
+
+        private async Task<byte[]> ReadTocAsync(HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry, CancellationToken cancellationToken)
+        {
+            var key = new PayloadRange(entry.SourceFilePath, entry.TocDataOffset, entry.TocDataSize);
+            return await tocRanges.GetOrAdd(key, range => new Lazy<Task<byte[]>>(
+                () => ReadRangeAsync(range, CancellationToken.None), LazyThreadSafetyMode.ExecutionAndPublication)).Value.ConfigureAwait(false);
+        }
+
+        private async Task<string> HashPayloadAsync(string path, ulong offset, uint length, CancellationToken cancellationToken)
+        {
+            if (length == 0) return "empty";
+            var key = new PayloadRange(path, offset, length);
+            return await hashes.GetOrAdd(key, range => new Lazy<Task<string>>(
+                () => HashRangeAsync(range, CancellationToken.None), LazyThreadSafetyMode.ExecutionAndPublication)).Value.ConfigureAwait(false);
+        }
+
+        private static IEnumerable<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> ResolveDependencies(
+            byte[] toc,
+            IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> entries)
+        {
+            foreach (var (offset, typeId) in new[] { (8, PatchUnitMeshReader.BoneTypeId), (16, PatchUnitMeshReader.CompositeUnitTypeId) })
+            {
+                if (toc.Length < offset + sizeof(ulong)) continue;
+                var reference = BitConverter.ToUInt64(toc.AsSpan(offset, sizeof(ulong)));
+                if (reference == 0) continue;
+                var dependency = entries.SingleOrDefault(candidate => candidate.AssetKey.TypeId == typeId && candidate.AssetKey.FileId == reference);
+                if (dependency is not null) yield return dependency;
+            }
+        }
+
+        private static async Task<string> HashRangeAsync(PayloadRange range, CancellationToken cancellationToken)
+        {
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            await using var stream = new FileStream(range.Path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.SequentialScan | FileOptions.Asynchronous);
+            if (range.Offset > (ulong)stream.Length || range.Offset + range.Length > (ulong)stream.Length)
+                throw new InvalidDataException($"Payload range is outside '{range.Path}'.");
+            stream.Position = checked((long)range.Offset);
+            var buffer = new byte[65536];
+            var remaining = checked((int)range.Length);
+            while (remaining > 0)
+            {
+                var read = await stream.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining)), cancellationToken).ConfigureAwait(false);
+                if (read == 0) throw new EndOfStreamException("Payload ended before its declared length.");
+                hash.AppendData(buffer, 0, read);
+                remaining -= read;
+            }
+            return Convert.ToHexString(hash.GetHashAndReset());
+        }
+
+        private static async Task<byte[]> ReadRangeAsync(PayloadRange range, CancellationToken cancellationToken)
+        {
+            if (range.Length == 0) return Array.Empty<byte>();
+            await using var stream = new FileStream(range.Path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.SequentialScan | FileOptions.Asynchronous);
+            if (range.Offset > (ulong)stream.Length || range.Offset + range.Length > (ulong)stream.Length)
+                throw new InvalidDataException($"Payload range is outside '{range.Path}'.");
+            stream.Position = checked((long)range.Offset);
+            var data = new byte[checked((int)range.Length)];
+            await stream.ReadExactlyAsync(data, cancellationToken).ConfigureAwait(false);
+            return data;
+        }
+
+        private readonly record struct PayloadRange(string Path, ulong Offset, uint Length);
+    }
 
     private IReadOnlyList<string> FindBasePatchPaths(ModNode node, string root)
         => Directory.Exists(Path.Combine(root, node.RelativePath))
