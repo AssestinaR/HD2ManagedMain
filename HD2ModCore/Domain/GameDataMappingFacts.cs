@@ -7,4 +7,5 @@ public sealed record GameDataMappingFacts(
 	string MetadataGeneration,
 	DateTimeOffset BuiltUtc,
 	IReadOnlyDictionary<AssetKey, GameDataMappedAssetFact> Assets,
-	IReadOnlyList<CoreIssue> Issues);
+	IReadOnlyList<CoreIssue> Issues,
+	AssetMetadataCatalog? Catalog = null);

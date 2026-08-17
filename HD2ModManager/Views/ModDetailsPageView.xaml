@@ -6,7 +6,7 @@
         <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
     </UserControl.Resources>
-    <ScrollViewer Background="Transparent">
+    <ScrollViewer Background="Transparent" local:SmoothScrollBehavior.IsEnabled="True">
         <StackPanel>
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
                 <Grid>
@@ -28,7 +28,7 @@
                 </Grid>
             </Border>
 
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding HasDescription, Converter={StaticResource BoolToVis}}">
                 <StackPanel>
                     <TextBlock Text="备注" Style="{StaticResource SectionTitle}"/>
                     <TextBlock Text="{Binding Description}" Foreground="#555" TextWrapping="Wrap" Margin="0,8,0,0"/>
@@ -67,7 +67,7 @@
                 </Grid>
             </Border>
 
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding IsStandardMod, Converter={StaticResource BoolToVis}}">
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding ShowUserStatusCard, Converter={StaticResource BoolToVis}}">
                 <StackPanel>
                     <TextBlock Text="当前状态" Style="{StaticResource SectionTitle}"/>
                     <TextBlock Text="{Binding UserStatusTitle}" Foreground="#1E63D6" FontWeight="SemiBold" FontSize="16" Margin="0,8,0,0"/>
@@ -83,7 +83,7 @@
                 </StackPanel>
             </Border>
 
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding IsStandardMod, Converter={StaticResource BoolToVis}}">
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding ShowOutdatedCompatibility, Converter={StaticResource BoolToVis}}">
                 <StackPanel>
                     <TextBlock Text="模型兼容性" Style="{StaticResource SectionTitle}"/>
                     <TextBlock Text="模型过时" Foreground="{StaticResource StatusDanger}" FontWeight="SemiBold" FontSize="16" Margin="0,8,0,0">
@@ -104,6 +104,7 @@
                                 HeaderTitle="装饰 Mod"
                                 HeaderSummary="已列出支持当前主体的装饰。"
                                 VerticalScrollBarVisibility="Disabled"
+								UseInternalScroll="False"
                                 RowActions="Rename, Details, ToggleDecoration, OpenFolder, DeleteFromLibrary"
                                 RowActionInvoked="OnHostDecorationRowActionInvoked"
                                 SelectionPolicy="Multiple"

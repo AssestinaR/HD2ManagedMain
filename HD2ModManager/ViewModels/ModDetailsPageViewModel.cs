@@ -55,11 +55,13 @@ namespace HD2ModManager.ViewModels
         private string _advancedAssetQuery = string.Empty;
         private bool _advancedOnlyIssues;
         private int _detailRequestGeneration;
+        private ModUserStatus? _userStatus;
 
         public string ModId { get; }
         public ModEntity? Mod { get; private set; }
         public string Name => Mod?.Name ?? "未找到 Mod";
-        public string Description => string.IsNullOrWhiteSpace(Mod?.Description) ? "暂无备注" : Mod!.Description!;
+        public string Description => Mod?.Description ?? string.Empty;
+        public bool HasDescription => !string.IsNullOrWhiteSpace(Description);
         public string SourcePath => Mod?.SourcePath ?? string.Empty;
         public string Image => Mod?.Image ?? string.Empty;
         public int FileGroupCount => Mod?.FileGroups?.Count ?? 0;
@@ -75,6 +77,8 @@ namespace HD2ModManager.ViewModels
         public string DataIndexSummary { get; private set; } = "跨 Mod 资产索引尚未读取。";
         public string UserStatusTitle { get; private set; } = "状态未知";
         public string UserStatusSummary { get; private set; } = "正在读取状态。";
+        public bool ShowUserStatusCard => IsStandardMod && _userStatus?.Kind == ModUserStatusKind.Overridden;
+        public bool ShowOutdatedCompatibility => IsStandardMod && IsModelOutdated;
         public string MaterialPackagingSummary { get; private set; } = "材质操作基于导入后的轻量引用图；无需执行高级分析。";
         public string MaterialDeliverySummary { get; private set; } = "导入后的轻量引用图完成后即可读取材质交付事实。";
         public string SameKeyReconstructionSummary { get; private set; } = "仅更新失效 Unit，并将结果直接写入 Manager 的 Output 文件夹；不会自动导入或部署。";
@@ -201,6 +205,7 @@ namespace HD2ModManager.ViewModels
                     }
                     OnPropertyChanged(nameof(UnitCompatibilitySummary));
                     OnPropertyChanged(nameof(IsModelOutdated));
+                    OnPropertyChanged(nameof(ShowOutdatedCompatibility));
                     RefreshAssetStatus();
                 });
             }
@@ -214,6 +219,7 @@ namespace HD2ModManager.ViewModels
                     IsModelOutdated = false;
                     OnPropertyChanged(nameof(UnitCompatibilitySummary));
                     OnPropertyChanged(nameof(IsModelOutdated));
+                    OnPropertyChanged(nameof(ShowOutdatedCompatibility));
                 });
             }
         }
@@ -699,6 +705,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(Mod));
             OnPropertyChanged(nameof(Name));
             OnPropertyChanged(nameof(Description));
+            OnPropertyChanged(nameof(HasDescription));
             OnPropertyChanged(nameof(SourcePath));
             OnPropertyChanged(nameof(Image));
             OnPropertyChanged(nameof(FileGroupCount));
@@ -713,10 +720,12 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(AssetOverrideSummary));
             OnPropertyChanged(nameof(UnitCompatibilitySummary));
             OnPropertyChanged(nameof(IsModelOutdated));
+            OnPropertyChanged(nameof(ShowOutdatedCompatibility));
             OnPropertyChanged(nameof(DataIndexSummary));
 			OnPropertyChanged(nameof(MaterialDiagnosticSummary));
             OnPropertyChanged(nameof(UserStatusTitle));
             OnPropertyChanged(nameof(UserStatusSummary));
+            OnPropertyChanged(nameof(ShowUserStatusCard));
             OnPropertyChanged(nameof(MaterialPackagingSummary));
 			OnPropertyChanged(nameof(MaterialDeliverySummary));
             OnPropertyChanged(nameof(SameKeyReconstructionSummary));
@@ -765,9 +774,17 @@ namespace HD2ModManager.ViewModels
             var statuses = _derivedState.ProjectStatuses(_profiles.SelectedProfileId);
             if (statuses.TryGetValue(nodeId, out var userStatus))
             {
+                _userStatus = userStatus;
                 UserStatusTitle = userStatus.Title;
                 UserStatusSummary = userStatus.Summary;
             }
+            else
+            {
+                _userStatus = null;
+                UserStatusTitle = "状态未知";
+                UserStatusSummary = "正在读取状态。";
+            }
+            OnPropertyChanged(nameof(ShowUserStatusCard));
             var derived = _library.GetDerivedData(Mod.Guid);
             var summary = derived?.AssetSummary;
             if (summary == null)

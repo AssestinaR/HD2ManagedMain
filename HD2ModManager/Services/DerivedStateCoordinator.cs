@@ -14,7 +14,6 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     private readonly IModInformationCenter _informationCenter;
     private readonly IProfileOverrideGraphService _profileGraph;
 	private readonly IProfileMaterialDiagnosticsService _profileMaterialDiagnostics;
-    private readonly IDeployedOverrideGraphService _deployedGraph;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _sync = new();
     private DerivedStateSnapshot _snapshot = DerivedStateSnapshot.Empty;
@@ -22,6 +21,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     private bool _expectedDirty = true;
     private bool _deployedDirty = true;
     private CancellationTokenSource? _refreshCancellation;
+    private bool _refreshRequested;
     private (ProfileId? Id, long Revision) _activeProfileSignature;
     private long _refreshVersion;
 
@@ -37,13 +37,13 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
         _informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
         _profileGraph = CoreServices.CreateProfileOverrideGraphService(_paths, _informationCenter);
         _profileMaterialDiagnostics = CoreServices.CreateProfileMaterialDiagnosticsService(_paths, _informationCenter);
-        _deployedGraph = CoreServices.CreateDeployedOverrideGraphService();
         _activeProfileSignature = GetActiveProfileSignature(_profiles.Snapshot);
         _profiles.Changed += OnProfilesChanged;
         _library.ModContentFactsChanged += OnContentChanged;
     }
 
-    public void MarkDeploymentDirty() => MarkDirty(content: false, expected: false, deployed: true);
+    // Player-facing status is profile-derived. Deployment validation is an explicit diagnostic, not a page-open scan.
+    public void MarkDeploymentDirty() { }
     public void MarkMappingDirty() => MarkDirty(content: false, expected: true, deployed: false);
     public void MarkContentDirty() => MarkDirty(content: true, expected: true, deployed: false);
 
@@ -51,6 +51,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     {
         lock (_sync)
         {
+            _refreshRequested = true;
             var version = ++_refreshVersion;
             _refreshCancellation?.Cancel();
             _refreshCancellation?.Dispose();
@@ -80,12 +81,10 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
             DeployedOverrideGraph? deployed = current.DeployedGraph;
             bool contentDirty;
             bool expectedDirty;
-            bool deployedDirty;
             lock (_sync)
             {
                 contentDirty = _contentDirty;
                 expectedDirty = _expectedDirty;
-                deployedDirty = _deployedDirty;
             }
 
             var active = profileSnapshot.ActiveProfileId is { } activeId ? profileSnapshot.Profiles.FirstOrDefault(profile => profile.Id == activeId) : null;
@@ -113,15 +112,8 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
 				materialDiagnostics = await _profileMaterialDiagnostics.BuildAsync(active, profileSnapshot, _library.ModsRootDirectory, cancellationToken).ConfigureAwait(false);
             }
 
-            var gameData = SettingsService.GetGameDataFolder();
-            if (active is null || string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
-            {
-                deployed = null;
-            }
-            else if (deployedDirty || !IsDeploymentCurrent(deployed, gameData))
-            {
-                deployed = await _deployedGraph.BuildAsync(gameData, cancellationToken).ConfigureAwait(false);
-            }
+            // Do not scan GameData while a profile page is opening. It cannot affect the four player states.
+            deployed = null;
 
             var next = new DerivedStateSnapshot(content, expected, materialDiagnostics, deployed, DateTimeOffset.UtcNow, null);
             lock (_sync)
@@ -154,7 +146,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
         }
     }
 
-    private async ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetAssetInventoryAsync(
+    private ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetAssetInventoryAsync(
         LibrarySnapshot snapshot,
         IReadOnlySet<ModNodeId> nodeIds,
         CancellationToken cancellationToken)
@@ -163,14 +155,11 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
         foreach (var nodeId in nodeIds)
         {
             if (!snapshot.Nodes.TryGetValue(nodeId, out var node)) continue;
-            var inventory = await _informationCenter.RequestAssetInventoryAsync(
-                node,
-                _library.ModsRootDirectory,
-                new ModInformationRequest(ModInformationKind.AssetInventory, "LibraryRefresh"),
-                cancellationToken).ConfigureAwait(false);
-            if (inventory.Data is not null) result[nodeId] = inventory.Data;
+            cancellationToken.ThrowIfCancellationRequested();
+            var facts = _library.GetDerivedData(nodeId.Value.ToString("N"))?.ContentFacts;
+            if (facts is not null) result[nodeId] = facts;
         }
-        return result;
+        return ValueTask.FromResult<IReadOnlyDictionary<ModNodeId, ModContentFacts>>(result);
     }
 
     private void OnProfilesChanged(object? sender, EventArgs e)
@@ -182,6 +171,8 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     }
     private void OnContentChanged(object? sender, ModContentFactsChangedEventArgs e)
     {
+        if (e.Kind == ModContentChangeKind.DerivedOnly) return;
+
         var active = _profiles.ActiveProfile;
         var affectsActiveProfile = active is not null && e.NodeIds.Any(nodeId => active.Entries.Any(entry => entry.NodeId == nodeId));
         if (affectsActiveProfile)
@@ -192,26 +183,24 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
 
     private void MarkDirty(bool content, bool expected, bool deployed)
     {
+        var refreshRequested = false;
         lock (_sync)
         {
             _contentDirty |= content;
             _expectedDirty |= expected;
             _deployedDirty |= deployed;
+            refreshRequested = _refreshRequested;
         }
-        _ = RefreshAsync();
+        // Startup receives profile and deployment events before any page needs derived
+        // diagnostics. Keep the dirty state, but do not materialize every active Mod yet.
+        if (refreshRequested) _ = RefreshAsync();
     }
 
     private static bool SameNodeSet(IEnumerable<ModNodeId> left, IEnumerable<ModNodeId> right)
         => left.OrderBy(id => id.Value).SequenceEqual(right.OrderBy(id => id.Value));
 
     private static bool IsExpectedCurrent(ProfileOverrideGraph? graph, Profile active, IReadOnlyDictionary<ModNodeId, ModContentFacts> content)
-    {
-        if (graph is null || graph.ProfileId != active.Id || graph.ProfileRevision != active.Revision) return false;
-        return graph.ContentGenerations.Count == content.Count && graph.ContentGenerations.All(pair => content.TryGetValue(pair.Key, out var facts) && string.Equals(pair.Value, facts.ContentGeneration, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static bool IsDeploymentCurrent(DeployedOverrideGraph? graph, string gameData)
-        => graph is not null && string.Equals(Path.GetFullPath(graph.GameDataDirectory), Path.GetFullPath(gameData), StringComparison.OrdinalIgnoreCase);
+        => graph is not null && graph.ProfileId == active.Id && graph.ProfileRevision == active.Revision;
 
     private static (ProfileId? Id, long Revision) GetActiveProfileSignature(LibrarySnapshot snapshot)
     {

@@ -4,7 +4,8 @@ namespace HD2ModCore.Domain;
 public sealed record DerivedLibraryData(
 	DateTimeOffset BuiltUtc,
 	IReadOnlyDictionary<ModNodeId, DerivedModNodeData> Nodes,
-	IReadOnlyList<CoreIssue> Issues)
+	IReadOnlyList<CoreIssue> Issues,
+	string? AssetSummaryGeneration = null)
 {
 	public DerivedModNodeData? Find(ModNodeId nodeId)
 		=> Nodes.TryGetValue(nodeId, out var data) ? data : null;

@@ -7,12 +7,12 @@ namespace HD2ModCore.Infrastructure;
 public sealed class ModAssetSummaryProjector
 {
 	private readonly IGameDataMappingFactsService mappingFactsService;
-	private readonly IAssetMetadataCatalogProvider metadataCatalogProvider;
+	private readonly IAssetMetadataCatalogProvider? fallbackCatalogProvider;
 
-	public ModAssetSummaryProjector(IGameDataMappingFactsService mappingFactsService, IAssetMetadataCatalogProvider metadataCatalogProvider)
+	public ModAssetSummaryProjector(IGameDataMappingFactsService mappingFactsService, IAssetMetadataCatalogProvider? fallbackCatalogProvider = null)
 	{
 		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
-		this.metadataCatalogProvider = metadataCatalogProvider ?? throw new ArgumentNullException(nameof(metadataCatalogProvider));
+		this.fallbackCatalogProvider = fallbackCatalogProvider;
 	}
 
 	public async ValueTask<ModAssetSummary> ProjectAsync(ModNode node, ModContentFacts facts, CancellationToken cancellationToken = default)
@@ -21,17 +21,28 @@ public sealed class ModAssetSummaryProjector
 		ArgumentNullException.ThrowIfNull(facts);
 		var sourceByKey = BuildSourceByKey(facts);
 		var mapping = await mappingFactsService.MapAsync(sourceByKey.Keys.ToHashSet(), cancellationToken).ConfigureAwait(false);
-		var catalog = await metadataCatalogProvider.LoadAsync(cancellationToken).ConfigureAwait(false);
-		return Project(node, sourceByKey, mapping, catalog);
+		return Project(node, sourceByKey, mapping, await ResolveCatalogAsync(mapping, cancellationToken).ConfigureAwait(false));
 	}
 
 	public async ValueTask<IReadOnlyDictionary<ModNodeId, ModAssetSummary>> ProjectManyAsync(IReadOnlyDictionary<ModNode, ModContentFacts> factsByNode, CancellationToken cancellationToken = default)
+		=> (await ProjectManyWithGenerationAsync(factsByNode, cancellationToken).ConfigureAwait(false)).Summaries;
+
+	public async ValueTask<ModAssetSummaryProjection> ProjectManyWithGenerationAsync(IReadOnlyDictionary<ModNode, ModContentFacts> factsByNode, CancellationToken cancellationToken = default)
 	{
 		var sourceByNode = factsByNode.ToDictionary(pair => pair.Key, pair => BuildSourceByKey(pair.Value));
 		var mapping = await mappingFactsService.MapAsync(sourceByNode.Values.SelectMany(value => value.Keys).ToHashSet(), cancellationToken).ConfigureAwait(false);
-		var catalog = await metadataCatalogProvider.LoadAsync(cancellationToken).ConfigureAwait(false);
-		return sourceByNode.ToDictionary(pair => pair.Key.Id, pair => Project(pair.Key, pair.Value, mapping, catalog));
+		var catalog = await ResolveCatalogAsync(mapping, cancellationToken).ConfigureAwait(false);
+		return new ModAssetSummaryProjection(mapping.MappingGeneration, sourceByNode.ToDictionary(pair => pair.Key.Id, pair => Project(pair.Key, pair.Value, mapping, catalog)));
 	}
+
+	public async ValueTask<string> GetMappingGenerationAsync(CancellationToken cancellationToken = default)
+		=> (await mappingFactsService.MapAsync(new HashSet<AssetKey>(), cancellationToken).ConfigureAwait(false)).MappingGeneration;
+
+	private async ValueTask<AssetMetadataCatalog> ResolveCatalogAsync(GameDataMappingFacts mapping, CancellationToken cancellationToken)
+		=> mapping.Catalog
+			?? (fallbackCatalogProvider is null
+				? AssetMetadataCatalog.Empty
+				: await fallbackCatalogProvider.LoadAsync(cancellationToken).ConfigureAwait(false));
 
 	private static Dictionary<AssetKey, SourceInfo> BuildSourceByKey(ModContentFacts facts)
 		=> facts.PatchGroups
@@ -93,3 +104,8 @@ public sealed class ModAssetSummaryProjector
 
 	private sealed record SourceInfo(string SourceArchiveHex, IReadOnlyList<string> FileNames);
 }
+
+// Purpose: Separates stable Mod content facts from the versioned Game Data label projection.
+public sealed record ModAssetSummaryProjection(
+	string MappingGeneration,
+	IReadOnlyDictionary<ModNodeId, ModAssetSummary> Summaries);

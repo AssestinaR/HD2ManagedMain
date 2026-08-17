@@ -27,7 +27,8 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 		var issues = new List<CoreIssue>(contentFacts.Values.SelectMany(facts => facts.Issues));
 		var selectedNodes = snapshot.Nodes.Values.Where(node => nodeIds is null || nodeIds.Contains(node.Id)).ToArray();
 		var factsByNode = selectedNodes.Where(node => contentFacts.ContainsKey(node.Id)).ToDictionary(node => node, node => contentFacts[node.Id]);
-		var summaries = await _assetSummaryProjector.ProjectManyAsync(factsByNode, cancellationToken).ConfigureAwait(false);
+		var summaryProjection = await _assetSummaryProjector.ProjectManyWithGenerationAsync(factsByNode, cancellationToken).ConfigureAwait(false);
+		var summaries = summaryProjection.Summaries;
 		var nodes = new Dictionary<ModNodeId, DerivedModNodeData>();
 
 		foreach (var node in selectedNodes)
@@ -62,7 +63,7 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 				Issues: nodeIssues);
 		}
 
-		return new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues);
+		return new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues, summaryProjection.MappingGeneration);
 	}
 
 	private async ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetAssetInventoryAsync(

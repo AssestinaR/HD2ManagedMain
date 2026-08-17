@@ -37,6 +37,9 @@ namespace HD2ModManager.ViewModels
 
         private PageViewModel? _leftPage;
         private PageViewModel? _rightPage;
+        // These two workspace pages own long-lived list and thumbnail state. Navigation only changes hosts.
+        private ProfilePageViewModel? _profileWorkspacePage;
+        private LibraryPageViewModel? _libraryWorkspacePage;
         private WorkspaceMode _currentMode;
         private WorkspacePageType _leftPageType;
         private WorkspacePageType _rightPageType;
@@ -47,6 +50,9 @@ namespace HD2ModManager.ViewModels
         private readonly IModInformationCenter _informationCenter;
         private readonly System.Collections.Generic.Dictionary<string, BackgroundTaskItem> _informationTasks = new(StringComparer.Ordinal);
         private readonly CancellationTokenSource _lifetimeCancellation = new();
+        private int _libraryProjectionRequested;
+        private int _activeProfileProjectionRequested;
+        private int _workspacePrewarmQueued;
         private int _disposed;
 
         public PageViewModel? CurrentPage => LeftPage;
@@ -61,7 +67,7 @@ namespace HD2ModManager.ViewModels
                 var previous = _leftPage;
                 if (SetField(ref _leftPage, value))
                 {
-                    if (!ReferenceEquals(previous, _rightPage)) (previous as IDisposable)?.Dispose();
+                    DisposePageIfTransient(previous, _rightPage);
                     OnPropertyChanged(nameof(CurrentPage));
                     RaiseActionFlags();
                 }
@@ -76,7 +82,7 @@ namespace HD2ModManager.ViewModels
                 var previous = _rightPage;
                 if (SetField(ref _rightPage, value))
                 {
-                    if (!ReferenceEquals(previous, _leftPage)) (previous as IDisposable)?.Dispose();
+                    DisposePageIfTransient(previous, _leftPage);
                     RaiseActionFlags();
                 }
             }
@@ -183,6 +189,12 @@ namespace HD2ModManager.ViewModels
             _profileService.ActiveProfileDeactivationRequired += (_, _) => _ = _deploymentCoordinator.DeactivateAsync();
             _libraryService.ModContentFactsChanged += (_, change) =>
             {
+                if (change.Kind == ModContentChangeKind.DerivedOnly)
+                {
+                    LogService.Info($"部署触发检查：派生投影已刷新，节点数={change.NodeIds.Count}；不触发部署。");
+                    return;
+                }
+
                 var active = _profileService.ActiveProfile;
                 var affectsActiveProfile = active is not null && change.NodeIds.Any(nodeId => active.Entries.Any(entry => entry.NodeId == nodeId));
                 LogService.Info($"部署触发检查：库内容{change.Kind}，节点数={change.NodeIds.Count}，影响活动配置={affectsActiveProfile}。");
@@ -192,7 +204,6 @@ namespace HD2ModManager.ViewModels
                 }
             };
             _libraryService.SnapshotChanged += (_, _) => QueueLibrarySnapshotChanged();
-            _derivedState.SnapshotChanged += (_, _) => QueueCurrentPageRefresh("派生状态变更");
             _backgroundTasks.Changed += (_, args) => RefreshOnUiThread(() =>
             {
                 if (!args.RequiresProjectionRefresh) return;
@@ -232,14 +243,35 @@ namespace HD2ModManager.ViewModels
             _selection.SelectionChanged += (_, _) => RaiseSelectionFlags();
 
             Navigate(WorkspaceMode.Home);
+            QueueWorkspacePagePrewarm();
             // 启动维护不得阻塞 ShellViewModel 构造；库元数据、同步、稳定投影按顺序在后台执行。
             // 启动检查在构造函数返回后才调度，避免 async 方法首个 await 前的同步工作阻塞 UI。
             _ = Task.Run(() => InitializeLibraryAndRunStartupChecksAsync(configDir, _lifetimeCancellation.Token));
             _ = Task.Run(() => CheckGameDataIndexOnStartupAsync(_lifetimeCancellation.Token));
         }
 
+        private void QueueWorkspacePagePrewarm()
+        {
+            if (Interlocked.Exchange(ref _workspacePrewarmQueued, 1) != 0) return;
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null) return;
+            _ = dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (Volatile.Read(ref _disposed) != 0) return;
+                // Build data-only list state after the home page has rendered; no workspace view is created here.
+                _profileWorkspacePage ??= new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection, _bottomBar);
+                if (_libraryWorkspacePage is null)
+                {
+                    _libraryWorkspacePage = new LibraryPageViewModel(_libraryService, _derivedState, _selection, _profileService, _notificationService);
+                    RegisterLibraryActions(_libraryWorkspacePage);
+                }
+                LogService.Info("工作区页面预热完成：配置页与模组库 VM 已缓存。");
+            }), System.Windows.Threading.DispatcherPriority.ContextIdle);
+        }
+
         private async Task InitializeLibraryAndRunStartupChecksAsync(string configDir, CancellationToken cancellationToken)
         {
+			var startupClock = Stopwatch.StartNew();
             try
             {
                 if (!SettingsService.IsGameDataFolderValid())
@@ -248,7 +280,9 @@ namespace HD2ModManager.ViewModels
                         _notificationService.Show("游戏目录不正确或尚未设置。请在设置页点击“重置”按钮，让程序自动查找游戏目录。", NotificationLevel.Warning, TimeSpan.FromSeconds(10)));
                 }
                 await _libraryService.LoadAsync(buildDerivedData: false, cancellationToken).ConfigureAwait(false);
+				LogStartupCheckpoint("库快照加载", startupClock);
                 await _profileService.ReloadFromLibraryAsync(cancellationToken).ConfigureAwait(false);
+				LogStartupCheckpoint("配置加载", startupClock);
                 if (_profileService.Profiles.Count == 0)
                 {
                     const string defaultProfileName = "配置文件（放在这边的mod才会启用）";
@@ -257,6 +291,7 @@ namespace HD2ModManager.ViewModels
                     LogService.Info($"首次启动已创建并启用默认配置：{defaultProfileName}。");
                 }
                 await RunStartupChecksAsync(configDir, cancellationToken).ConfigureAwait(false);
+				LogStartupCheckpoint("启动维护完成", startupClock);
             }
             catch (OperationCanceledException)
             {
@@ -360,8 +395,8 @@ namespace HD2ModManager.ViewModels
             _rightPage = nextRight;
             _currentMode = mode;
 
-            if (!ReferenceEquals(oldLeft, oldRight)) (oldLeft as IDisposable)?.Dispose();
-            if (!ReferenceEquals(oldRight, nextLeft)) (oldRight as IDisposable)?.Dispose();
+            DisposePageIfTransient(oldLeft, oldRight);
+            DisposePageIfTransient(oldRight, nextLeft);
 
             OnPropertyChanged(nameof(LeftPageType));
             OnPropertyChanged(nameof(RightPageType));
@@ -504,7 +539,23 @@ namespace HD2ModManager.ViewModels
                 RegisterMaterialPackagingRow("material-packaging-candidates", MaterialPackagingBottomBarRowKind.Candidates);
         }
 
-        public void OpenModListPanelTest() => OpenSinglePage(WorkspacePageType.ModListPanelTest);
+        private async Task DeployActiveProfileOnStartupAsync(CancellationToken cancellationToken)
+        {
+            if (_profileService.ActiveProfile is null) return;
+
+            try
+            {
+                LogService.Info("启动部署：活动配置已加载，立即部署并跳过变更缓冲等待。");
+                var status = await _deploymentCoordinator.FlushAsync(cancellationToken).ConfigureAwait(false);
+                if (status.Stage != ProfileDeploymentStage.Completed)
+                    LogService.Error($"启动部署未完成：{status.Message ?? status.Stage.ToString()}。");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+            catch (Exception exception)
+            {
+                LogService.Error($"启动部署失败：{exception}");
+            }
+        }
 
         public void OpenDecorationPlan(string sourceModId)
         {
@@ -680,16 +731,28 @@ namespace HD2ModManager.ViewModels
             var right = _rightPage;
             _leftPage = null;
             _rightPage = null;
-            if (left is IDisposable leftDisposable) leftDisposable.Dispose();
-            if (!ReferenceEquals(right, left) && right is IDisposable rightDisposable) rightDisposable.Dispose();
+            DisposePageIfTransient(left, null);
+            DisposePageIfTransient(right, left);
+            (_profileWorkspacePage as IDisposable)?.Dispose();
+            if (!ReferenceEquals(_libraryWorkspacePage, _profileWorkspacePage)) (_libraryWorkspacePage as IDisposable)?.Dispose();
+            _profileWorkspacePage = null;
+            _libraryWorkspacePage = null;
+        }
+
+        private void DisposePageIfTransient(PageViewModel? page, PageViewModel? retainedElsewhere)
+        {
+            if (page is null || ReferenceEquals(page, retainedElsewhere) || ReferenceEquals(page, _profileWorkspacePage) || ReferenceEquals(page, _libraryWorkspacePage)) return;
+            (page as IDisposable)?.Dispose();
         }
 
         private async Task RunStartupChecksAsync(string configDir, CancellationToken cancellationToken)
         {
+			var startupClock = Stopwatch.StartNew();
             try
             {
                 // SynchronizeAsync 包含同步目录扫描；整个调用必须在线程池执行。
                 await Task.Run(() => _libraryService.SynchronizeAsync(cancellationToken), cancellationToken).ConfigureAwait(false);
+				LogStartupCheckpoint("库目录同步", startupClock);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (string.IsNullOrWhiteSpace(SettingsService.GetGameDataFolder()))
                 {
@@ -700,13 +763,16 @@ namespace HD2ModManager.ViewModels
                     }
                 }
 
+                await DeployActiveProfileOnStartupAsync(cancellationToken).ConfigureAwait(false);
+
                 if (SettingsService.GetAutoUpdateAssetMetadata())
                 {
                     _ = UpdateAssetMetadataOnStartupAsync(cancellationToken);
                 }
 
-                await RestoreStableLibraryProjectionAsync(cancellationToken).ConfigureAwait(false);
-                await _derivedState.RefreshAsync(cancellationToken).ConfigureAwait(false);
+                // Full-library projection can retain very large asset inventories. It is only
+                // needed by the library page, so defer it until that page is actually opened.
+                LogStartupCheckpoint("启动维护就绪（全库派生已延后）", startupClock);
             }
             catch (OperationCanceledException)
             {
@@ -742,6 +808,7 @@ namespace HD2ModManager.ViewModels
                 if (result.Success)
                 {
                     SettingsService.SetLastAssetMetadataCheckUtc(DateTime.UtcNow);
+                    await _libraryService.RefreshAssetSummariesAsync(cancellationToken).ConfigureAwait(false);
                     task.MarkCompleted();
                     _ = System.Windows.Application.Current?.Dispatcher.InvokeAsync(() => _notificationService.Show("资产信息已自动更新", NotificationLevel.Info, TimeSpan.FromSeconds(4)));
                 }
@@ -776,6 +843,9 @@ namespace HD2ModManager.ViewModels
             _ = FlushActiveProfileDeploymentAsync();
             _notificationService.Show("已请求立即部署最新活动配置。", NotificationLevel.Info, TimeSpan.FromSeconds(4));
         }
+
+		private static void LogStartupCheckpoint(string stage, Stopwatch clock)
+			=> LogService.Info($"启动性能：阶段={stage}；耗时={clock.ElapsedMilliseconds}ms；托管堆={GC.GetTotalMemory(forceFullCollection: false) / 1024 / 1024}MB；工作集={Environment.WorkingSet / 1024 / 1024}MB。");
 
         private async Task FlushActiveProfileDeploymentAsync()
         {
@@ -944,8 +1014,7 @@ namespace HD2ModManager.ViewModels
                 {
                     if (Volatile.Read(ref _disposed) != 0) return;
                     CloseDeletedModDetails();
-                    // Profile/Library 页面各自订阅库与配置变化；这里只触发一次合并刷新，避免组合页重复重建两侧列表。
-                    QueueCurrentPageRefresh("模组库快照变更");
+                    RefreshNonListPagesAfterLibrarySnapshot();
                 });
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -963,6 +1032,22 @@ namespace HD2ModManager.ViewModels
         private static void CopyMessage(object? value)
         {
             if (value is MessageCenterItem item && !string.IsNullOrWhiteSpace(item.CopyText)) System.Windows.Clipboard.SetText(item.CopyText);
+        }
+
+        private void RefreshNonListPagesAfterLibrarySnapshot()
+        {
+            foreach (var page in new[] { LeftPage, RightPage }.Distinct())
+            {
+                switch (page)
+                {
+                    case HomePageViewModel home:
+                        home.Refresh();
+                        break;
+                    case ModDetailsPageViewModel details:
+                        details.Refresh();
+                        break;
+                }
+            }
         }
 
 		private async Task LaunchGameAsync()
@@ -1381,7 +1466,7 @@ namespace HD2ModManager.ViewModels
             PageViewModel page = pageType switch
             {
                 WorkspacePageType.Home => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
-                WorkspacePageType.Profile => new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection, _bottomBar),
+                WorkspacePageType.Profile => CreateProfilePage(),
                 WorkspacePageType.Library => CreateLibraryPage(),
                 WorkspacePageType.Settings => new SettingsPageViewModel(_profileService, _libraryService, _bottomBar, _backgroundTasks),
                 WorkspacePageType.ModDetails => new ModDetailsPageViewModel(_libraryService, _profileService, _derivedState, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks, _selection),
@@ -1391,7 +1476,6 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),
                 WorkspacePageType.MaterialPackaging => throw new InvalidOperationException("材质打包必须通过 Mod 详情创建。"),
                 WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty),
-                WorkspacePageType.ModListPanelTest => new ModListPanelTestPageViewModel(),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
             };
             return page;
@@ -1400,9 +1484,36 @@ namespace HD2ModManager.ViewModels
         private LibraryPageViewModel CreateLibraryPage()
         {
             var hideSelectedProfileMembers = LeftPageType == WorkspacePageType.Profile || RightPageType == WorkspacePageType.Profile;
-            var page = new LibraryPageViewModel(_libraryService, _derivedState, _selection, _profileService, _notificationService, hideSelectedProfileMembers);
-            RegisterLibraryActions(page);
-            return page;
+            if (_libraryWorkspacePage is null)
+            {
+                _libraryWorkspacePage = new LibraryPageViewModel(_libraryService, _derivedState, _selection, _profileService, _notificationService, hideSelectedProfileMembers);
+                RegisterLibraryActions(_libraryWorkspacePage);
+            }
+            else
+            {
+                _libraryWorkspacePage.SetProfileCompanionVisible(hideSelectedProfileMembers);
+            }
+            EnsureDeferredLibraryProjection();
+            return _libraryWorkspacePage;
+        }
+
+        private ProfilePageViewModel CreateProfilePage()
+        {
+            _profileWorkspacePage ??= new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection, _bottomBar);
+            EnsureDeferredActiveProfileProjection();
+            return _profileWorkspacePage;
+        }
+
+        private void EnsureDeferredLibraryProjection()
+        {
+            if (Interlocked.Exchange(ref _libraryProjectionRequested, 1) != 0) return;
+            _ = Task.Run(() => RestoreStableLibraryProjectionAsync(_lifetimeCancellation.Token));
+        }
+
+        private void EnsureDeferredActiveProfileProjection()
+        {
+            if (Interlocked.Exchange(ref _activeProfileProjectionRequested, 1) != 0) return;
+            _ = Task.Run(() => _derivedState.RefreshAsync(_lifetimeCancellation.Token));
         }
 
         private void RegisterLibraryActions(PageViewModel page)
@@ -1437,7 +1548,6 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.CrossArmorPlan => "跨护甲计划",
             WorkspacePageType.MaterialPackaging => "材质候选与输出",
             WorkspacePageType.DecorationPlan => "生成装饰 Mod",
-            WorkspacePageType.ModListPanelTest => "列表组件测试",
             _ => "页面",
         };
 

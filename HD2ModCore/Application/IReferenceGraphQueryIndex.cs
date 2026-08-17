@@ -6,6 +6,9 @@ namespace HD2ModCore.Application;
 // Purpose: Provides reverse consumer queries for ReferenceGraph without owning ordinary derived caches.
 public interface IReferenceGraphQueryIndex
 {
+	// Profile projection consumes these persisted rows instead of deserializing every Mod's full reference graph.
+	ValueTask<ProfileIndexedFacts> ReadProfileFactsAsync(IReadOnlyCollection<ModNodeId> nodeIds, CancellationToken cancellationToken = default)
+		=> ValueTask.FromResult(ProfileIndexedFacts.Empty);
 	ValueTask<IReadOnlyList<ModAssetConsumerFact>> FindConsumerFactsAsync(HD2ModAdaptation.PatchReconstruction.AssetKey targetAssetKey, CancellationToken cancellationToken = default);
 	ValueTask<IReadOnlyList<ModAssetProviderFact>> FindProviderFactsAsync(
 		IReadOnlyCollection<HD2ModAdaptation.PatchReconstruction.AssetKey> assetKeys,
@@ -25,6 +28,13 @@ public interface IReferenceGraphQueryIndex
 		}
 		return results;
 	}
+}
+
+public sealed record ProfileIndexedAsset(ModNodeId NodeId, AssetKey AssetKey);
+public sealed record ProfileIndexedReference(ModNodeId NodeId, AssetKey SourceAssetKey, AssetKey TargetAssetKey, int RelationKind);
+public sealed record ProfileIndexedFacts(IReadOnlyList<ProfileIndexedAsset> Assets, IReadOnlyList<ProfileIndexedReference> References)
+{
+	public static ProfileIndexedFacts Empty { get; } = new(Array.Empty<ProfileIndexedAsset>(), Array.Empty<ProfileIndexedReference>());
 }
 
 // 作用：原子替换和删除由信息中心生产的引用图索引，避免查询消费者依赖写入能力。

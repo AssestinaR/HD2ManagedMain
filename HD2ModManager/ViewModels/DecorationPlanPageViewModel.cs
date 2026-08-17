@@ -294,6 +294,7 @@ public sealed class DecorationTargetModItem : BaseViewModel, IModListSelectable
     }
     public string ModId { get; }
     public string SelectionKey => ModId;
+    public bool IsDecoration => false;
     public string Name { get; }
     public string? Description { get; }
     public string? Image { get; }

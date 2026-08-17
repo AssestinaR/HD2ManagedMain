@@ -46,7 +46,11 @@ public static class ModAssetSummaryFormatter
 			if (categories.Count > 0) return string.Join(" · ", categories);
 		}
 
-		return summary.Assets.Count == 0 ? "未发现可解析资产" : "资产目标未映射";
+		if (summary.Assets.Count == 0) return "未发现可解析资产";
+		// Target archives are optional GameData enrichment. Imported patch facts still carry
+		// stable semantic tags and must remain useful while no archive mapping is available.
+		var tags = summary.DerivedTags.Where(IsReadable).Take(maxItems).ToArray();
+		return tags.Length != 0 ? string.Join(" · ", tags) : "已解析资产";
 	}
 
 	private static bool IsReadable(string value)

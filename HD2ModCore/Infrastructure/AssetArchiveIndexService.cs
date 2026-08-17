@@ -378,6 +378,9 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		await SqliteSchema.SetMetaAsync(connection, "source_fingerprint", sourceFingerprint, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "parser_version", facts.ParserVersion, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "index_schema_version", facts.SchemaVersion, cancellationToken).ConfigureAwait(false);
+		// Readers use pooled shared-cache connections. Purge their pre-rebuild pages so
+		// in-process catalog queries observe the committed index without requiring restart.
+		SqliteConnection.ClearAllPools();
 
 		progress?.Report(new IndexBuildProgress(total, Math.Max(total, 1), "基础资产索引已完成；跨护甲高级数据按需建立。"));
 	}

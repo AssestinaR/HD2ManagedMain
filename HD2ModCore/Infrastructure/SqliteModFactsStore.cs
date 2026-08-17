@@ -134,6 +134,34 @@ public sealed class SqliteModFactsStore : IReferenceGraphQueryIndex, IReferenceG
 		return results;
 	}
 
+	public async ValueTask<ProfileIndexedFacts> ReadProfileFactsAsync(IReadOnlyCollection<ModNodeId> nodeIds, CancellationToken cancellationToken = default)
+	{
+		var ids = nodeIds.Distinct().Select(id => id.Value.ToString("N")).ToArray();
+		if (ids.Length == 0) return ProfileIndexedFacts.Empty;
+		await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+		var assets = new List<ProfileIndexedAsset>();
+		var references = new List<ProfileIndexedReference>();
+		foreach (var batch in ids.Chunk(400))
+		{
+			var placeholders = string.Join(",", batch.Select((_, index) => "$node" + index));
+			await using (var command = connection.CreateCommand())
+			{
+				command.CommandText = $"SELECT DISTINCT node_id,type_id,file_id FROM mod_assets WHERE node_id IN ({placeholders})";
+				for (var index = 0; index < batch.Length; index++) command.Parameters.AddWithValue("$node" + index, batch[index]);
+				await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+				while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) assets.Add(new ProfileIndexedAsset(new ModNodeId(Guid.ParseExact(reader.GetString(0), "N")), new AssetKey(ParseHex(reader.GetString(1)), ParseHex(reader.GetString(2)))));
+			}
+			await using (var command = connection.CreateCommand())
+			{
+				command.CommandText = $"SELECT DISTINCT node_id,source_type_id,source_file_id,target_type_id,target_file_id,relation_kind FROM asset_references WHERE node_id IN ({placeholders})";
+				for (var index = 0; index < batch.Length; index++) command.Parameters.AddWithValue("$node" + index, batch[index]);
+				await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+				while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) references.Add(new ProfileIndexedReference(new ModNodeId(Guid.ParseExact(reader.GetString(0), "N")), new AssetKey(ParseHex(reader.GetString(1)), ParseHex(reader.GetString(2))), new AssetKey(ParseHex(reader.GetString(3)), ParseHex(reader.GetString(4))), reader.GetInt32(5)));
+			}
+		}
+		return new ProfileIndexedFacts(assets, references);
+	}
+
 	private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
 	{
 		Directory.CreateDirectory(paths.IndexDirectory); var connection = new SqliteConnection($"Data Source={paths.ModFactsDbPath}"); await connection.OpenAsync(cancellationToken).ConfigureAwait(false);

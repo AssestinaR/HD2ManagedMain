@@ -54,6 +54,8 @@ public static class CoreServices
 		=> new FileSystemArchiveHashesProvider(paths);
 	public static IAssetMetadataCatalogProvider CreateAssetMetadataCatalogProvider(StoragePaths paths)
 		=> new FileSystemAssetMetadataCatalogProvider(paths);
+	public static ModAssetSummaryProjector CreateModAssetSummaryProjector(StoragePaths paths)
+		=> new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths));
 	public static IAssetMetadataSyncService CreateAssetMetadataSyncService(StoragePaths paths)
 		=> new GitHubAssetMetadataSyncService(new HttpClient(), paths);
 	public static IPatchGroupAnalysisProvider CreatePatchGroupAnalysisProvider(StoragePaths paths)
@@ -92,12 +94,12 @@ public static class CoreServices
 	public static IProfileOverrideGraphService CreateProfileOverrideGraphService(StoragePaths paths)
 		=> CreateProfileOverrideGraphService(paths, CreateModInformationCenter(paths));
 	public static IProfileOverrideGraphService CreateProfileOverrideGraphService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new ProfileOverrideGraphService(informationCenter, CreateGameDataMappingFactsService(paths));
+		=> new ProfileOverrideGraphService(informationCenter, CreateGameDataMappingFactsService(paths), CreateReferenceGraphQueryIndex(paths));
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IProfileMaterialDiagnosticsService CreateProfileMaterialDiagnosticsService(StoragePaths paths)
 		=> CreateProfileMaterialDiagnosticsService(paths, CreateModInformationCenter(paths));
 	public static IProfileMaterialDiagnosticsService CreateProfileMaterialDiagnosticsService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new ProfileMaterialDiagnosticsService(informationCenter, CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
+		=> new ProfileMaterialDiagnosticsService(informationCenter, CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths), CreateReferenceGraphQueryIndex(paths));
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IMaterialDeliveryFactsService CreateMaterialDeliveryFactsService(StoragePaths paths)
 		=> CreateMaterialDeliveryFactsService(paths, CreateModInformationCenter(paths));
@@ -123,7 +125,7 @@ public static class CoreServices
 		=> CreateLibraryDerivedDataService(paths, CreateModInformationCenter(paths));
 	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths, IModInformationCenter informationCenter)
 	{
-		return new LibraryDerivedDataService(informationCenter, new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths)));
+		return new LibraryDerivedDataService(informationCenter, CreateModAssetSummaryProjector(paths));
 	}
    public static IReplacementTargetDeriver CreateReplacementTargetDeriver(StoragePaths paths)
 		=> new ReplacementTargetDeriver(paths, CreateAssetArchiveIndexService(paths));

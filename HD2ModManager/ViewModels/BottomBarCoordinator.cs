@@ -72,7 +72,7 @@ namespace HD2ModManager.ViewModels
         public bool ShowRemove => IsProfileSelection;
         public bool ShowDeleteFromLibrary => IsProfileSelection;
         public bool ShowMove => IsProfileSelection;
-        public bool ShowInsert => IsLibrarySelection;
+        public bool ShowInsert => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
         public string SelectionSummary => _selection.Summary;
         public string EditLabel => _editMode is "Move" or "Insert" ? string.Empty
             : _editMode == "CreateProfile" ? "新建配置："
@@ -114,6 +114,7 @@ namespace HD2ModManager.ViewModels
             if (_isLibraryProfileCompanionVisible == visible) return;
             _isLibraryProfileCompanionVisible = visible;
             OnPropertyChanged(nameof(ShowAddToProfile));
+            OnPropertyChanged(nameof(ShowInsert));
         }
 
         public void SetSelectionActions(object content)

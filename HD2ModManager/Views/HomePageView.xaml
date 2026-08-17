@@ -1,8 +1,43 @@
 <UserControl x:Class="HD2ModManager.Views.HomePageView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:HD2ModManager.Views">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        <Style x:Key="HelpDocumentTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="26"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Margin" Value="0,0,0,18"/>
+        </Style>
+        <Style x:Key="HelpSectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="18"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Margin" Value="0,22,0,10"/>
+        </Style>
+        <Style x:Key="HelpSubsectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Margin" Value="0,14,0,6"/>
+        </Style>
+        <Style x:Key="HelpParagraph" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="LineHeight" Value="21"/>
+            <Setter Property="Margin" Value="0,3,0,0"/>
+        </Style>
+        <Style x:Key="HelpNote" TargetType="TextBlock" BasedOn="{StaticResource HelpParagraph}">
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Margin" Value="0,3,0,5"/>
+        </Style>
+        <Style x:Key="HelpWarning" TargetType="TextBlock" BasedOn="{StaticResource HelpParagraph}">
+            <Setter Property="Foreground" Value="#B45309"/>
+            <Setter Property="Margin" Value="0,4,0,0"/>
+        </Style>
     </UserControl.Resources>
     <Grid Background="Transparent">
         <Grid.ColumnDefinitions>
@@ -11,14 +46,68 @@
             <ColumnDefinition Width="0.54*" MinWidth="300"/>
         </Grid.ColumnDefinitions>
 
-        <!-- Reserved for the first-run guide and other onboarding content. -->
         <Border Grid.Column="0" Style="{StaticResource CardContainer}" Padding="22">
-            <StackPanel VerticalAlignment="Top">
-                <Button Style="{StaticResource AppSecondaryButton}"
-                        Content="列表组件测试"
-                        HorizontalAlignment="Left"
-                        Click="OnOpenModListPanelTestClick"/>
-            </StackPanel>
+            <ScrollViewer Background="Transparent"
+                          HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Auto"
+                          local:SmoothScrollBehavior.IsEnabled="True">
+                <StackPanel>
+                    <TextBlock Text="HD2ModManager 使用帮助" Style="{StaticResource HelpDocumentTitle}"/>
+
+                    <StackPanel Visibility="{Binding HasImportantNotices, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Text="注意！" Style="{StaticResource HelpSectionTitle}" Margin="0,0,0,8" Foreground="#B45309"/>
+                        <TextBlock Style="{StaticResource HelpWarning}"
+                                   Visibility="{Binding ShowDeploymentPermissionActions, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                   Text="你的 Mod 文件夹与游戏文件夹不在同一个磁盘，这导致管理器无法使用硬链接部署模组。请转移 Mod 文件夹、启用 Windows 开发者模式或以管理员身份启动应用。"/>
+                        <TextBlock Style="{StaticResource HelpWarning}"
+                                   Visibility="{Binding HasGameDataIndexNotice, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                   Text="{Binding GameDataIndexNotice}"/>
+                    </StackPanel>
+
+                    <TextBlock Text="第一次使用？" Style="{StaticResource HelpSectionTitle}"/>
+                    <TextBlock Text="如何导入 Mod？" Style="{StaticResource HelpSubsectionTitle}"/>
+                    <TextBlock Text="• 将 Mod 压缩包或包含 Mod 的文件夹直接拖入管理器。" Style="{StaticResource HelpParagraph}"/>
+                    <TextBlock Text="• 使用模组库右下角的汉堡菜单按钮中的“导入”按钮。" Style="{StaticResource HelpParagraph}"/>
+
+                    <TextBlock Text="如何启用 Mod？" Style="{StaticResource HelpSubsectionTitle}"/>
+                    <TextBlock Style="{StaticResource HelpNote}">
+                        <Run Text="本 Mod 管理器导入的 Mod 不会直接启用，你需要将其加入到一个"/>
+                        <Run Text="已激活" FontWeight="SemiBold"/>
+                        <Run Text="的配置文件。当你注意到时，配置页应当已经有了一个已激活的配置文件，他叫“配置文件（放在这边的 Mod 才会启用）”o'v'o"/>
+                    </TextBlock>
+                    <TextBlock Text="• 鼠标悬停在你需要的 Mod 上，点击右侧显示出来的几个按钮中的“+”按钮。" Style="{StaticResource HelpParagraph}"/>
+                    <TextBlock Text="• 选中你需要启用的 Mod（们）并点击窗口下方弹出的底栏中的“加入配置”按钮，或点击“插入”并输入想要插入的序号。" Style="{StaticResource HelpParagraph}"/>
+                    <TextBlock Text="• 选中你需要启用的 Mod（们）并将它们拖到配置页。" Style="{StaticResource HelpParagraph}"/>
+                    <TextBlock Text="该配置文件必须已经激活，否则不会部署到游戏。应用自带的“配置文件（放在这边的 Mod 才会启用）”配置文件已激活。" Style="{StaticResource HelpNote}"/>
+
+                    <TextBlock Text="如何为 Mod 排序？" Style="{StaticResource HelpSubsectionTitle}"/>
+                    <TextBlock Text="只有配置文件中的 Mod 才允许排序，Mod 库无法排序。" Style="{StaticResource HelpNote}"/>
+                    <TextBlock Text="• 鼠标悬停在你需要排序的 Mod 上，点击右侧显示出来的“↑”或“↓”按钮。" Style="{StaticResource HelpParagraph}"/>
+                    <TextBlock Text="• 选中你需要移动的 Mod（们）并点击窗口下方弹出的底栏中的“移动”按钮，再输入想要移动的序号。" Style="{StaticResource HelpParagraph}"/>
+                    <TextBlock Text="• 选中你需要移动的 Mod（们）并将它们拖到想要的位置。" Style="{StaticResource HelpParagraph}"/>
+                    <TextBlock Text="为什么要调整排序？因为较下方的 Mod 将会覆盖上方替换了同类物品的 Mod。如果你有两套替换了民主甲的 Mod，那么较下面的那个将会胜出并显示在游戏里，上面那个则会变成棍木。" Style="{StaticResource HelpNote}"/>
+
+                    <TextBlock Text="还有其他问题？" Style="{StaticResource HelpSectionTitle}"/>
+                    <TextBlock Text="我找不到 Mod 库和配置文件页在哪" Style="{StaticResource HelpSubsectionTitle}"/>
+                    <TextBlock Text="• 窗口顶部最中间那个按钮：点击文字部分会同时唤起配置文件页（左）和 Mod 库页（右）；仅点击左边的盒子图标则只唤起配置文件页，仅点击右侧的表格图标则只唤起 Mod 库页。" Style="{StaticResource HelpParagraph}"/>
+                    <TextBlock Text="我的 Mod 太 tm 多了，我找不到它" Style="{StaticResource HelpSubsectionTitle}"/>
+                    <TextBlock Text="• 点击 Mod 库或配置文件页标题最右侧的小放大镜按钮，这会唤起筛选框。在里面输入你的记忆碎片吧！" Style="{StaticResource HelpParagraph}"/>
+                    <TextBlock Text="这个文档太长了，我不想看" Style="{StaticResource HelpSubsectionTitle}"/>
+                    <TextBlock Style="{StaticResource HelpParagraph}">
+                        <Run Text="• 可以查看作者的 B 站主页，搜索 Assestina-R，或直接前往 "/>
+                        <Hyperlink NavigateUri="https://space.bilibili.com/392788182" RequestNavigate="OnHelpLinkRequestNavigate">https://space.bilibili.com/392788182</Hyperlink>
+                        <Run Text=" 看看有没有视频。"/>
+                    </TextBlock>
+
+                    <TextBlock Text="高级功能" Style="{StaticResource HelpSectionTitle}"/>
+                    <TextBlock Text="游戏更新后我的 Mod 全都坏掉了！" Style="{StaticResource HelpSubsectionTitle}"/>
+                    <TextBlock Text="• 点击主页启动游戏上面的“检测并修复过时 Mod”按钮。它会检测并尝试修好现在 Mod 库中存储的所有 Mod，虽然不一定能全部修好，但替换护甲的 Mod 大概率能修好，试试看吧，万一呢？" Style="{StaticResource HelpParagraph}"/>
+                    <TextBlock Text="• 找到你认为坏掉的 Mod，进入它的 Mod 详情：直接右键条目，或点击条目右侧的圆圈感叹号按钮。在详情按钮卡片中点击“重构 patch”，并在弹出的底栏中选择输出位置；或直接勾选“自动导入到 Mod 库并替换当前 Mod”，随后点击“生成”。" Style="{StaticResource HelpParagraph}"/>
+
+                    <TextBlock Text="我有一个特别好看的 Mod，但是它替换的是个重甲！重甲狗都不穿" Style="{StaticResource HelpSubsectionTitle}"/>
+                    <TextBlock Text="• 找到你喜欢的 Mod，进入它的 Mod 详情，在详情按钮卡片中点击“生成替换其他护甲的模组”，然后略微等待。随后在新的“替换护甲”页面左上角选择来源 Mod 中指定护甲的身体和头盔，并指定喜欢的身形（纤细 slim、健壮 stocky）；在中间护甲列表中选择喜欢使用的护甲，最后点击左上角“生成”按钮，再略微等待。成功后点击消息栏，成功消息后会出现“打开文件夹”按钮。点击它，新 Mod 就在那里等你：将它压缩一下，或找到它的上级文件夹并拖进 Mod 管理器即可。" Style="{StaticResource HelpParagraph}" Margin="0,3,0,8"/>
+                </StackPanel>
+            </ScrollViewer>
         </Border>
 
         <Grid Grid.Column="2">

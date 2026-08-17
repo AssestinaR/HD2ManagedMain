@@ -15,18 +15,22 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 	private readonly IModInformationCenter informationCenter;
 	private readonly IGameDataMappingFactsService mappingFactsService;
 	private readonly IAssetArchiveIndexService? indexService;
+	private readonly IReferenceGraphQueryIndex referenceIndex;
 
-	public ProfileMaterialDiagnosticsService(IModInformationCenter informationCenter, IGameDataMappingFactsService mappingFactsService, IAssetArchiveIndexService? indexService = null)
+	public ProfileMaterialDiagnosticsService(IModInformationCenter informationCenter, IGameDataMappingFactsService mappingFactsService, IAssetArchiveIndexService? indexService, IReferenceGraphQueryIndex referenceIndex)
 	{
 		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
 		this.indexService = indexService;
+		this.referenceIndex = referenceIndex ?? throw new ArgumentNullException(nameof(referenceIndex));
 	}
 
 	public async ValueTask<ProfileMaterialDiagnostics> BuildAsync(Profile profile, LibrarySnapshot snapshot, string modsRootDirectory, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(profile);
 		ArgumentNullException.ThrowIfNull(snapshot);
+		var indexed = await referenceIndex.ReadProfileFactsAsync(profile.Entries.Select(entry => entry.NodeId).ToArray(), cancellationToken).ConfigureAwait(false);
+		if (indexed.Assets.Count != 0) return await BuildFromIndexedFactsAsync(profile, snapshot, indexed, cancellationToken).ConfigureAwait(false);
 		var issues = new List<CoreIssue>();
 		var providers = new Dictionary<DomainAssetKey, List<Provider>>();
 		foreach (var entry in profile.Entries.OrderBy(entry => entry.LoadOrder).ThenBy(entry => entry.AddedUtc).ThenBy(entry => entry.NodeId.Value))
@@ -54,6 +58,8 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 		var fallbackResolver = indexService is null ? null : new CurrentGameMaterialFallbackResolver(indexService);
 		var reachableMaterials = new HashSet<DomainAssetKey>();
 		var reachableTextures = new HashSet<DomainAssetKey>();
+		var unitsWithMaterialBindings = new HashSet<DomainAssetKey>();
+		var unitsWithAvailableMaterial = new HashSet<DomainAssetKey>();
 		var referencedMaterials = winners.Where(pair => pair.Key.TypeId == UnitTypeId).SelectMany(pair => pair.Value.References.Where(reference => reference.Kind == PatchReferenceKind.UnitMaterial).Select(reference => ToDomain(reference.TargetAssetKey))).ToHashSet();
 		var referencedTextures = winners.Where(pair => pair.Key.TypeId == MaterialTypeId).SelectMany(pair => pair.Value.References.Where(reference => reference.Kind == PatchReferenceKind.MaterialTexture).Select(reference => ToDomain(reference.TargetAssetKey))).ToHashSet();
 		var unresolvedByProfile = referencedMaterials.Concat(referencedTextures).Where(key => !winners.ContainsKey(key)).ToHashSet();
@@ -65,6 +71,7 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 		{
 			foreach (var reference in unitProvider.References.Where(reference => reference.Kind == PatchReferenceKind.UnitMaterial))
 			{
+				unitsWithMaterialBindings.Add(unitKey);
 				var material = ToDomain(reference.TargetAssetKey);
 				if (!winners.TryGetValue(material, out var materialProvider))
 				{
@@ -83,9 +90,15 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 							unitKey));
 						if (accepted) continue;
 					}
-					if (!availableInGameData.Contains(material)) diagnostics.Add(new ProfileMaterialDiagnostic(unitProvider.NodeId, material, ProfileMaterialDiagnosticKind.MissingMaterial, "缺失材质", $"有效 Unit 0x{unitKey.FileId:x16} 引用了未由当前 Profile 或 Game Data 提供的 Material。", unitKey));
+					if (availableInGameData.Contains(material))
+					{
+						unitsWithAvailableMaterial.Add(unitKey);
+						continue;
+					}
+					diagnostics.Add(new ProfileMaterialDiagnostic(unitProvider.NodeId, material, ProfileMaterialDiagnosticKind.MissingMaterial, "缺失材质", $"有效 Unit 0x{unitKey.FileId:x16} 引用了未由当前 Profile 或 Game Data 提供的 Material。", unitKey));
 					continue;
 				}
+				unitsWithAvailableMaterial.Add(unitKey);
 				reachableMaterials.Add(material);
 				foreach (var textureReference in materialProvider.References.Where(item => item.Kind == PatchReferenceKind.MaterialTexture))
 				{
@@ -100,6 +113,12 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 			}
 		}
 
+		foreach (var unitKey in unitsWithMaterialBindings.Where(unit => !unitsWithAvailableMaterial.Contains(unit)))
+		{
+			var provider = winners[unitKey];
+			diagnostics.Add(new ProfileMaterialDiagnostic(provider.NodeId, unitKey, ProfileMaterialDiagnosticKind.MissingMaterial, "无可用材质", $"有效 Unit 0x{unitKey.FileId:x16} 的所有材质均无法由当前 Profile 或 Game Data 提供。", unitKey));
+		}
+
 		foreach (var (asset, provider) in winners.Where(pair => pair.Key.TypeId == MaterialTypeId && !reachableMaterials.Contains(pair.Key)))
 		{
 			diagnostics.Add(new ProfileMaterialDiagnostic(provider.NodeId, asset, ProfileMaterialDiagnosticKind.NoEffectiveUnitConsumer, "未发现有效 Unit 使用此材质", "当前 Profile 的最终有效 Unit 没有引用该 Material。"));
@@ -111,6 +130,34 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 
 		return new ProfileMaterialDiagnostics(profile.Id, profile.Revision, DateTimeOffset.UtcNow, diagnostics.Distinct().ToArray(), issues);
 
+	}
+
+	private async ValueTask<ProfileMaterialDiagnostics> BuildFromIndexedFactsAsync(Profile profile, LibrarySnapshot snapshot, ProfileIndexedFacts indexed, CancellationToken cancellationToken)
+	{
+		var order = profile.Entries.OrderBy(entry => entry.LoadOrder).ThenBy(entry => entry.AddedUtc).ThenBy(entry => entry.NodeId.Value).Select((entry, index) => (entry, index)).ToDictionary(item => item.entry.NodeId, item => item);
+		var winners = indexed.Assets.Where(asset => order.ContainsKey(asset.NodeId)).GroupBy(asset => asset.AssetKey).ToDictionary(group => group.Key, group => group.OrderBy(asset => order[asset.NodeId].entry.LoadOrder).ThenBy(asset => order[asset.NodeId].index).Last().NodeId);
+		var winnerRefs = indexed.References.Where(reference => winners.TryGetValue(reference.SourceAssetKey, out var nodeId) && nodeId == reference.NodeId).ToArray();
+		var unitMaterial = winnerRefs.Where(reference => reference.RelationKind == (int)PatchReferenceKind.UnitMaterial).ToArray();
+		var materialTexture = winnerRefs.Where(reference => reference.RelationKind == (int)PatchReferenceKind.MaterialTexture).ToArray();
+		var unresolved = unitMaterial.Select(reference => reference.TargetAssetKey).Concat(materialTexture.Select(reference => reference.TargetAssetKey)).Where(asset => !winners.ContainsKey(asset)).ToHashSet();
+		var mapped = await mappingFactsService.MapAsync(unresolved, cancellationToken).ConfigureAwait(false);
+		var availableGameData = mapped.Assets.Where(pair => pair.Value.TargetArchives.Count != 0).Select(pair => pair.Key).ToHashSet();
+		var textureTargets = materialTexture.GroupBy(reference => reference.SourceAssetKey).ToDictionary(group => group.Key, group => group.Select(reference => reference.TargetAssetKey).ToArray());
+		bool IsMaterialAvailable(AssetKey material)
+		{
+			if (!winners.ContainsKey(material)) return availableGameData.Contains(material);
+			if (!textureTargets.TryGetValue(material, out var textures) || textures.Length == 0) return true;
+			return textures.Any(texture => winners.ContainsKey(texture) || availableGameData.Contains(texture));
+		}
+		var diagnostics = new List<ProfileMaterialDiagnostic>();
+		foreach (var group in unitMaterial.GroupBy(reference => reference.SourceAssetKey))
+		{
+			if (group.Any(reference => IsMaterialAvailable(reference.TargetAssetKey))) continue;
+			var unit = group.Key;
+			var nodeId = winners[unit];
+			diagnostics.Add(new ProfileMaterialDiagnostic(nodeId, unit, ProfileMaterialDiagnosticKind.MissingMaterial, "无可用材质", $"有效 Unit 0x{unit.FileId:x16} 的所有材质均无法由当前 Profile 或 Game Data 提供。", unit));
+		}
+		return new ProfileMaterialDiagnostics(profile.Id, profile.Revision, DateTimeOffset.UtcNow, diagnostics, mapped.Issues);
 	}
 
 	private async ValueTask<IReadOnlyList<PatchGroupAnalysis>> GetAnalysesAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken)

@@ -10,11 +10,13 @@ public sealed class ProfileOverrideGraphService : IProfileOverrideGraphService
 {
 	private readonly IModInformationCenter _informationCenter;
 	private readonly IGameDataMappingFactsService _mappingFactsService;
+	private readonly IReferenceGraphQueryIndex _referenceIndex;
 
-	public ProfileOverrideGraphService(IModInformationCenter informationCenter, IGameDataMappingFactsService mappingFactsService)
+	public ProfileOverrideGraphService(IModInformationCenter informationCenter, IGameDataMappingFactsService mappingFactsService, IReferenceGraphQueryIndex referenceIndex)
 	{
 		_informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		_mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
+		_referenceIndex = referenceIndex ?? throw new ArgumentNullException(nameof(referenceIndex));
 	}
 
 	public async ValueTask<ProfileOverrideGraph> BuildAsync(Profile profile, LibrarySnapshot snapshot, string modsRootDirectory, CancellationToken cancellationToken = default)
@@ -22,6 +24,8 @@ public sealed class ProfileOverrideGraphService : IProfileOverrideGraphService
 		ArgumentNullException.ThrowIfNull(profile);
 		ArgumentNullException.ThrowIfNull(snapshot);
 		var orderedEntries = profile.Entries.OrderBy(entry => entry.LoadOrder).ThenBy(entry => entry.AddedUtc).ThenBy(entry => entry.NodeId.Value).ToList();
+		var indexed = await _referenceIndex.ReadProfileFactsAsync(orderedEntries.Select(entry => entry.NodeId).ToArray(), cancellationToken).ConfigureAwait(false);
+		if (indexed.Assets.Count != 0) return BuildFromIndexedFacts(profile, snapshot, orderedEntries, indexed);
 		var nodeIds = orderedEntries.Select(entry => entry.NodeId).ToHashSet();
 		var contentByNode = await GetAssetInventoryAsync(orderedEntries, snapshot, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 		var assetKeys = contentByNode.Values.SelectMany(facts => facts.PatchGroups).SelectMany(group => group.AssetKeys).ToHashSet();
@@ -90,6 +94,25 @@ public sealed class ProfileOverrideGraphService : IProfileOverrideGraphService
 		var contentGenerations = contentByNode.ToDictionary(pair => pair.Key, pair => pair.Value.ContentGeneration);
 		var graphGeneration = ComputeGraphGeneration(profile, contentGenerations, mapping.MappingGeneration);
 		return new ProfileOverrideGraph(profile.Id, profile.Revision, graphGeneration, mapping.MappingGeneration, DateTimeOffset.UtcNow, contentGenerations, chains, archiveOverlaps, coverages, issues);
+	}
+
+	private static ProfileOverrideGraph BuildFromIndexedFacts(Profile profile, LibrarySnapshot snapshot, IReadOnlyList<ProfileEntry> orderedEntries, ProfileIndexedFacts indexed)
+	{
+		var names = snapshot.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value.Metadata.Name);
+		var order = orderedEntries.Select((entry, index) => (entry, index)).ToDictionary(item => item.entry.NodeId, item => item);
+		var chains = indexed.Assets
+			.Where(asset => order.ContainsKey(asset.NodeId))
+			.GroupBy(asset => asset.AssetKey)
+			.Select(group => new ProfileAssetOverrideChain(group.Key, group.OrderBy(asset => order[asset.NodeId].entry.LoadOrder).ThenBy(asset => order[asset.NodeId].index).Select((asset, index) => new ProfileAssetOverrideEntry(asset.NodeId, names.GetValueOrDefault(asset.NodeId, asset.NodeId.ToString()), order[asset.NodeId].entry.LoadOrder, Array.Empty<ModPatchGroupId>(), CreatePrivateAssetMapping(asset.AssetKey), index == group.Count() - 1)).ToArray()))
+			.ToArray();
+		var coverages = orderedEntries.Where(entry => names.ContainsKey(entry.NodeId)).Select(entry =>
+		{
+			var related = chains.Where(chain => chain.Entries.Any(item => item.NodeId == entry.NodeId)).ToArray();
+			var won = related.Count(chain => chain.Winner.NodeId == entry.NodeId);
+			return new ProfileModCoverage(entry.NodeId, names[entry.NodeId], related.Length, won, related.Length - won);
+		}).ToArray();
+		var generations = orderedEntries.Where(entry => names.ContainsKey(entry.NodeId)).ToDictionary(entry => entry.NodeId, _ => "indexed");
+		return new ProfileOverrideGraph(profile.Id, profile.Revision, $"indexed:{profile.Id.Value:N}:{profile.Revision}", "indexed", DateTimeOffset.UtcNow, generations, chains, Array.Empty<ProfileArchiveOverlap>(), coverages, Array.Empty<CoreIssue>());
 	}
 
 	private async ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetAssetInventoryAsync(

@@ -35,9 +35,6 @@ public partial class ModListPanel : UserControl
     private InternalDragPayload? _activeInternalDragPayload;
     private Cursor? _previousOverrideCursor;
     private DateTime _dragWheelCooldownUntilUtc;
-    private ScrollViewer? _smoothScrollViewer;
-    private double _smoothScrollTarget;
-    private DateTime _smoothScrollLastFrameUtc;
 
     public ModListPanel()
     {
@@ -45,13 +42,17 @@ public partial class ModListPanel : UserControl
         _transitionTimer.Interval = TimeSpan.FromMilliseconds(230);
         _transitionTimer.Tick += OnTransitionTimerTick;
         _dragAutoScrollTimer.Tick += OnDragAutoScrollTick;
-        Loaded += (_, _) => ObserveItemsSource(ItemsSource);
+        Loaded += (_, _) =>
+        {
+            ObserveItemsSource(ItemsSource);
+            ConfigureInternalSmoothScroll(UseInternalScroll);
+        };
         Unloaded += (_, _) =>
         {
             _transitionTimer.Stop();
             EndInternalDrag();
             StopDragAutoScroll();
-            StopSmoothScroll();
+			ConfigureInternalSmoothScroll(false);
             ItemsList.LayoutUpdated -= OnItemsListLayoutUpdated;
             _transitionScheduled = false;
             ObserveItemsSource(null);
@@ -68,6 +69,7 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty AllowInternalReorderProperty = DependencyProperty.Register(nameof(AllowInternalReorder), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty SearchTextProperty = DependencyProperty.Register(nameof(SearchText), typeof(string), typeof(ModListPanel), new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty = DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ModListPanel), new PropertyMetadata(ScrollBarVisibility.Auto));
+	public static readonly DependencyProperty UseInternalScrollProperty = DependencyProperty.Register(nameof(UseInternalScroll), typeof(bool), typeof(ModListPanel), new PropertyMetadata(true, OnUseInternalScrollChanged));
     public static readonly DependencyProperty RowActionsProperty = DependencyProperty.Register(nameof(RowActions), typeof(ModListRowAction), typeof(ModListPanel), new PropertyMetadata(ModListRowAction.None, OnRowActionsChanged));
     public static readonly DependencyProperty SearchActionsTemplateProperty = DependencyProperty.Register(nameof(SearchActionsTemplate), typeof(DataTemplate), typeof(ModListPanel), new PropertyMetadata(null, OnSearchActionsTemplateChanged));
     private static readonly DependencyPropertyKey HasRowActionsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasRowActions), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
@@ -85,6 +87,7 @@ public partial class ModListPanel : UserControl
     public bool AllowInternalReorder { get => (bool)GetValue(AllowInternalReorderProperty); set => SetValue(AllowInternalReorderProperty, value); }
     public string SearchText { get => (string)GetValue(SearchTextProperty); set => SetValue(SearchTextProperty, value); }
     public ScrollBarVisibility VerticalScrollBarVisibility { get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty); set => SetValue(VerticalScrollBarVisibilityProperty, value); }
+	public bool UseInternalScroll { get => (bool)GetValue(UseInternalScrollProperty); set => SetValue(UseInternalScrollProperty, value); }
     public ModListRowAction RowActions { get => (ModListRowAction)GetValue(RowActionsProperty); set => SetValue(RowActionsProperty, value); }
     public DataTemplate? SearchActionsTemplate { get => (DataTemplate?)GetValue(SearchActionsTemplateProperty); set => SetValue(SearchActionsTemplateProperty, value); }
     public bool HasRowActions => (bool)GetValue(HasRowActionsProperty);
@@ -439,83 +442,21 @@ public partial class ModListPanel : UserControl
 
     private void OnItemsListPreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if (e.Handled || e.Delta == 0) return;
         if (_isInternalDragActive)
             _dragWheelCooldownUntilUtc = DateTime.UtcNow.AddMilliseconds(260);
-        HandleSmoothScrollWheel(e);
     }
 
-    private void HandleSmoothScrollWheel(MouseWheelEventArgs e)
-    {
-        if (e.Handled || e.Delta == 0) return;
-        if (TryQueueSmoothScroll(e.Delta)) e.Handled = true;
-    }
+	private static void OnUseInternalScrollChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
+	{
+		if (target is ModListPanel panel && panel.IsLoaded)
+			panel.ConfigureInternalSmoothScroll((bool)args.NewValue);
+	}
 
-    private bool TryQueueSmoothScroll(int wheelDelta)
-    {
-        var offsetDelta = -(wheelDelta / 120d) * 84;
-        var direction = Math.Sign(offsetDelta);
-        var scrollViewer = GetDragScrollViewers().FirstOrDefault(candidate => CanScroll(candidate, direction));
-        if (scrollViewer is null) return false;
-        QueueSmoothScroll(scrollViewer, offsetDelta);
-        return true;
-    }
-
-    private static bool CanScroll(ScrollViewer scrollViewer, int direction)
-        => scrollViewer.ScrollableHeight > 0
-            && (direction < 0
-                ? scrollViewer.VerticalOffset > 0.5
-                : scrollViewer.VerticalOffset < scrollViewer.ScrollableHeight - 0.5);
-
-    private void QueueSmoothScroll(ScrollViewer scrollViewer, double offsetDelta)
-    {
-        if (!ReferenceEquals(_smoothScrollViewer, scrollViewer))
-        {
-            StopSmoothScroll();
-            _smoothScrollViewer = scrollViewer;
-            _smoothScrollTarget = scrollViewer.VerticalOffset;
-        }
-
-        _smoothScrollTarget = Math.Clamp(_smoothScrollTarget + offsetDelta, 0, scrollViewer.ScrollableHeight);
-        if (_smoothScrollLastFrameUtc == default)
-        {
-            _smoothScrollLastFrameUtc = DateTime.UtcNow;
-            CompositionTarget.Rendering += OnSmoothScrollRendering;
-        }
-    }
-
-    private void OnSmoothScrollRendering(object? sender, EventArgs e)
-    {
-        if (_smoothScrollViewer is null)
-        {
-            StopSmoothScroll();
-            return;
-        }
-
-        var now = DateTime.UtcNow;
-        var elapsedMilliseconds = Math.Clamp((now - _smoothScrollLastFrameUtc).TotalMilliseconds, 1, 50);
-        _smoothScrollLastFrameUtc = now;
-        var current = _smoothScrollViewer.VerticalOffset;
-        var distance = _smoothScrollTarget - current;
-        if (Math.Abs(distance) < 0.2)
-        {
-            _smoothScrollViewer.ScrollToVerticalOffset(_smoothScrollTarget);
-            StopSmoothScroll();
-            return;
-        }
-
-        var factor = 1 - Math.Exp(-elapsedMilliseconds / 70d);
-        _smoothScrollViewer.ScrollToVerticalOffset(Math.Clamp(current + (distance * factor), 0, _smoothScrollViewer.ScrollableHeight));
-    }
-
-    private void StopSmoothScroll()
-    {
-        if (_smoothScrollLastFrameUtc != default)
-            CompositionTarget.Rendering -= OnSmoothScrollRendering;
-        _smoothScrollViewer = null;
-        _smoothScrollTarget = 0;
-        _smoothScrollLastFrameUtc = default;
-    }
+	private void ConfigureInternalSmoothScroll(bool enabled)
+	{
+		if (FindDescendant<ScrollViewer>(ItemsList) is { } viewer)
+			SmoothScrollBehavior.SetIsEnabled(viewer, enabled);
+	}
 
     private static void OnItemsSourceChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
     {

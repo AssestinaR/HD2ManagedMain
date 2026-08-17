@@ -4,13 +4,7 @@ namespace HD2ModCore.Domain;
 public enum ModUserStatusKind
 {
 	Stored,
-	CurrentProfile,
 	Enabled,
-	PartiallyOverridden,
-	FullyOverridden,
-	MissingDependency,
-	NoEffectiveConsumer,
-	Broken,
-	Outdated,
-	Unknown,
+	Overridden,
+	MissingMaterial,
 }

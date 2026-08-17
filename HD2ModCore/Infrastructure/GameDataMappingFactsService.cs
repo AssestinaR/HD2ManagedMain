@@ -26,7 +26,9 @@ public sealed class GameDataMappingFactsService : IGameDataMappingFactsService
 		var fingerprint = await _indexService.GetFingerprintAsync(cancellationToken).ConfigureAwait(false);
 		var indexGeneration = fingerprint?.SourceFingerprint ?? "missing";
 		var metadataGeneration = ComputeMetadataGeneration();
-		var catalog = await _catalogProvider.LoadAsync(cancellationToken).ConfigureAwait(false);
+		var catalog = assetKeys.Count == 0
+			? AssetMetadataCatalog.Empty
+			: await _catalogProvider.LoadAsync(cancellationToken).ConfigureAwait(false);
 		IReadOnlyList<AssetArchiveMatch> matches;
 		try
 		{
@@ -62,7 +64,7 @@ public sealed class GameDataMappingFactsService : IGameDataMappingFactsService
 		}
 
 		var mappingGeneration = Hash($"{indexGeneration}\n{metadataGeneration}");
-		return new GameDataMappingFacts(mappingGeneration, indexGeneration, metadataGeneration, DateTimeOffset.UtcNow, mapped, issues);
+		return new GameDataMappingFacts(mappingGeneration, indexGeneration, metadataGeneration, DateTimeOffset.UtcNow, mapped, issues, catalog);
 	}
 
 	private string ComputeMetadataGeneration()

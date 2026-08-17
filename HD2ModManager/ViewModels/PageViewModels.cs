@@ -43,6 +43,7 @@ namespace HD2ModManager.ViewModels
         private int? _lastDetectedOutdatedModCount;
         private int _lastUnreadableUnitVersionCount;
 		private string _gameDataHealth = "正在检查";
+		private string _gameDataIndexNotice = string.Empty;
         private DeploymentCapability _deploymentCapability = DeploymentCapability.Unavailable("尚未检测。");
 
         public string ActiveProfile => _profiles.ActiveKey ?? "未启用";
@@ -52,6 +53,8 @@ namespace HD2ModManager.ViewModels
         public string QueueSummary => $"总计 {_queue.Tasks.Count}，完成 {_queue.CountDone}，待处理 {_queue.CountQueued + _queue.CountRunning}";
         public string ApplySummary => _applyStatus.Summary;
 		public string GameDataHealth { get => _gameDataHealth; private set => SetField(ref _gameDataHealth, value); }
+		public string GameDataIndexNotice { get => _gameDataIndexNotice; private set => SetField(ref _gameDataIndexNotice, value); }
+		public bool HasGameDataIndexNotice => !string.IsNullOrWhiteSpace(GameDataIndexNotice);
         public string AssetMetadataHealth => BuildAssetMetadataHealth();
         public int EnabledModCount => _profiles.ActiveProfile?.Entries.Count ?? 0;
         public int OutdatedModCount => _lastDetectedOutdatedModCount ?? 0;
@@ -75,6 +78,7 @@ namespace HD2ModManager.ViewModels
 			? DeploymentCapability.Method == DeploymentMethod.HardLink ? "硬链接" : "软链接"
 			: DeploymentCapability.SymbolicLinkPermissionDenied ? "软链接（权限不足）" : "不可用";
 		public bool ShowDeploymentPermissionActions => !DeploymentCapability.IsAvailable && DeploymentCapability.SymbolicLinkPermissionDenied;
+		public bool HasImportantNotices => ShowDeploymentPermissionActions || HasGameDataIndexNotice;
         public string DeploymentCapabilityText => DeploymentCapability.IsAvailable
             ? $"当前部署方式：{(DeploymentCapability.Method == DeploymentMethod.HardLink ? "硬链接" : "符号链接")}。{DeploymentCapability.Summary}"
             : $"当前无法部署 Mod：{DeploymentCapability.Error}";
@@ -126,6 +130,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(IsDeploymentBlocked));
 			OnPropertyChanged(nameof(DeploymentMode));
 			OnPropertyChanged(nameof(ShowDeploymentPermissionActions));
+			OnPropertyChanged(nameof(HasImportantNotices));
             OnPropertyChanged(nameof(DeploymentCapabilityText));
         }
 
@@ -141,7 +146,7 @@ namespace HD2ModManager.ViewModels
 			var folder = SettingsService.GetGameDataFolder();
 			if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
 			{
-				GameDataHealth = "路径不可用";
+				SetGameDataHealth("路径不可用", "游戏目录不可用，请在设置页重新确认游戏目录并构建 GameData 索引。");
 				return;
 			}
 
@@ -152,25 +157,41 @@ namespace HD2ModManager.ViewModels
 				var status = await index.GetIndexStatusAsync(folder, archiveHashes);
 				if (!status.IsCurrent)
 				{
-					GameDataHealth = status.State switch
+					var health = status.State switch
 					{
 						GameDataIndexState.Missing => "未索引",
 						GameDataIndexState.Stale => "索引过时",
 						GameDataIndexState.Invalid => "索引无效",
 						_ => "索引不可用"
 					};
+					var notice = status.State switch
+					{
+						GameDataIndexState.Stale => "你的游戏已经更新，请前往设置页重新拉取在线索引并构建 GameData 索引。",
+						GameDataIndexState.Missing => "尚未构建 GameData 索引，请前往设置页拉取在线索引并构建 GameData 索引。",
+						_ => "GameData 索引不可用，请前往设置页重新拉取在线索引并构建 GameData 索引。"
+					};
+					SetGameDataHealth(health, notice);
 					return;
 				}
 
 				var checkedAt = SettingsService.GetLastGameDataIndexCheckUtc() ?? status.StoredFingerprint?.BuiltUtc;
-				GameDataHealth = checkedAt is null
+				SetGameDataHealth(checkedAt is null
 					? "索引有效"
-					: checkedAt.Value.ToLocalTime().ToString("yyyy-MM-dd");
+					: checkedAt.Value.ToLocalTime().ToString("yyyy-MM-dd"), string.Empty);
 			}
 			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
 			{
-				GameDataHealth = "索引不可用";
+				SetGameDataHealth("索引不可用", "GameData 索引不可用，请前往设置页重新拉取在线索引并构建 GameData 索引。");
 			}
+		}
+
+		private void SetGameDataHealth(string health, string notice)
+		{
+			GameDataHealth = health;
+			if (GameDataIndexNotice == notice) return;
+			GameDataIndexNotice = notice;
+			OnPropertyChanged(nameof(HasGameDataIndexNotice));
+			OnPropertyChanged(nameof(HasImportantNotices));
 		}
 
         private static string BuildAssetMetadataHealth()
@@ -222,6 +243,8 @@ namespace HD2ModManager.ViewModels
                 var indexStatus = await assetIndex.GetIndexStatusAsync(gameData, archiveHashes, task.CancellationToken);
                 if (!indexStatus.IsCurrent)
                     throw new InvalidOperationException("GameData 资产索引重建后仍不可用或已过时。");
+
+                await Task.Run(() => _library.RefreshAssetSummariesAsync(task.CancellationToken), task.CancellationToken);
 
                 task.UpdateStage("正在读取 Unit 版本并检测过时 Mod");
                 var nodes = new List<ModNode>();
@@ -387,6 +410,11 @@ namespace HD2ModManager.ViewModels
         private string _query = string.Empty;
         private CancellationTokenSource? _searchCancellation;
         private CancellationTokenSource? _thumbnailCancellation;
+        private readonly HashSet<string> _pendingProjectionGuids = new(StringComparer.OrdinalIgnoreCase);
+        private int _projectionRefreshQueued;
+        private bool _forceProjectionReconcile;
+        private bool _refreshAllPresentations;
+        private bool _thumbnailWarmupQueued;
         private bool _disposed;
 
         public BulkObservableCollection<ProfileListItemViewModel> Items { get; } = new(item => item.Guid);
@@ -467,6 +495,9 @@ namespace HD2ModManager.ViewModels
             _bottomBar = bottomBar;
             if (_selection != null) _selection.SelectionChanged += OnSelectionChanged;
             _profiles.Changed += OnProfileChanged;
+            _library.ModContentFactsChanged += OnLibraryContentFactsChanged;
+            _library.SnapshotChanged += OnLibrarySnapshotChanged;
+            _derivedState.SnapshotChanged += OnDerivedStateSnapshotChanged;
             CreateProfileCommand = new RelayCommand(async _ => await CreateProfileAsync());
             RemoveSelectedProfileCommand = new RelayCommand(async _ => await RemoveSelectedProfileAsync());
             RenameProfileCommand = new RelayCommand(async _ => await RenameProfileAsync());
@@ -485,7 +516,7 @@ namespace HD2ModManager.ViewModels
             PageActions.Add(new PageActionViewModel("🗑", "删除当前配置", RemoveSelectedProfileCommand, background: new SolidColorBrush(Color.FromRgb(179, 38, 30)), order: 30, kind: "RemoveProfile"));
             Refresh();
             QueueStatusRefresh();
-            QueueThumbnailRefresh();
+            QueueThumbnailWarmup();
         }
 
         public void AddMod(string guid)
@@ -664,6 +695,8 @@ namespace HD2ModManager.ViewModels
             var cancellationSource = new CancellationTokenSource();
             _thumbnailCancellation = cancellationSource;
             var cancellationToken = cancellationSource.Token;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var processed = 0;
             try
             {
                 var generated = false;
@@ -673,6 +706,7 @@ namespace HD2ModManager.ViewModels
                 foreach (var guid in entries)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    processed++;
                     var result = await Task.Run(() => _library.RequestThumbnailAsync(guid, "Profile", cancellationToken: CancellationToken.None).AsTask())
                         .WaitAsync(cancellationToken).ConfigureAwait(false);
                     if (result.Data is { } facts)
@@ -684,11 +718,15 @@ namespace HD2ModManager.ViewModels
                     // 中心生产不随页面取消；页面令牌只取消本页的等待和显示。
                     RunOnUiThread(() =>
                     {
-                        if (!_disposed && ReferenceEquals(_thumbnailCancellation, cancellationSource)) Refresh();
+                        if (!_disposed && ReferenceEquals(_thumbnailCancellation, cancellationSource)) RefreshVisibleThumbnails();
                     });
                 }
+                LogService.Info($"列表缩略图刷新完成：页面=配置，条目={processed}，耗时={clock.ElapsedMilliseconds}ms。");
             }
-            catch (OperationCanceledException) { }
+            catch (OperationCanceledException)
+            {
+                LogService.Info($"列表缩略图刷新取消：页面=配置，已处理={processed}，耗时={clock.ElapsedMilliseconds}ms。");
+            }
             finally
             {
                 if (ReferenceEquals(_thumbnailCancellation, cancellationSource))
@@ -726,8 +764,7 @@ namespace HD2ModManager.ViewModels
             // Status projection is part of the same list snapshot. A second Reset after
             // Task.Yield used to replace the containers while a list transition was playing.
             RefreshUserStatuses();
-            Refresh();
-            QueueThumbnailRefresh();
+            Refresh(ListTransitionKind.Refresh);
         }
 
         private static void RunOnUiThread(Action action)
@@ -739,7 +776,125 @@ namespace HD2ModManager.ViewModels
 
         private void OnSelectionChanged(object? sender, EventArgs e) => SyncSelectionFromCoordinator();
 
-        private void OnProfileChanged(object? sender, EventArgs e) => RunOnUiThread(QueueStatusRefresh);
+        private void OnProfileChanged(object? sender, EventArgs e)
+            => QueueProjectionRefresh(null, forceReconcile: false, refreshAllPresentations: true);
+
+        private void OnLibraryContentFactsChanged(object? sender, ModContentFactsChangedEventArgs e)
+            => QueueProjectionRefresh(e.NodeIds, e.Kind is ModContentChangeKind.Added or ModContentChangeKind.Removed);
+
+        private void OnLibrarySnapshotChanged(object? sender, EventArgs e)
+            => QueueProjectionRefresh(null, forceReconcile: true);
+
+        private void OnDerivedStateSnapshotChanged(object? sender, DerivedStateSnapshot e)
+            => QueueProjectionRefresh(null, forceReconcile: false, refreshAllPresentations: true);
+
+        private void QueueProjectionRefresh(IEnumerable<ModNodeId>? nodeIds, bool forceReconcile, bool refreshAllPresentations = false)
+        {
+            if (_disposed) return;
+            lock (_pendingProjectionGuids)
+            {
+                if (nodeIds is not null)
+                    foreach (var nodeId in nodeIds) _pendingProjectionGuids.Add(nodeId.Value.ToString("N"));
+                _forceProjectionReconcile |= forceReconcile;
+                _refreshAllPresentations |= refreshAllPresentations;
+            }
+            if (Interlocked.Exchange(ref _projectionRefreshQueued, 1) != 0) return;
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null) return;
+            _ = dispatcher.BeginInvoke(new Action(ApplyPendingProjectionRefresh), System.Windows.Threading.DispatcherPriority.Background);
+        }
+
+        private void ApplyPendingProjectionRefresh()
+        {
+            if (_disposed) return;
+            HashSet<string> guids;
+            bool reconcile;
+            bool refreshAllPresentations;
+            lock (_pendingProjectionGuids)
+            {
+                guids = new HashSet<string>(_pendingProjectionGuids, StringComparer.OrdinalIgnoreCase);
+                _pendingProjectionGuids.Clear();
+                reconcile = _forceProjectionReconcile;
+                _forceProjectionReconcile = false;
+                refreshAllPresentations = _refreshAllPresentations;
+                _refreshAllPresentations = false;
+            }
+            Interlocked.Exchange(ref _projectionRefreshQueued, 0);
+            RefreshUserStatuses();
+            var contentCanAffectFilter = guids.Count != 0 && (!string.IsNullOrWhiteSpace(Query) || ShowOnlyOutdated);
+            var didReconcile = reconcile || contentCanAffectFilter || HasProfileMembershipOrOrderChanged();
+            if (didReconcile)
+            {
+                Refresh(ListTransitionKind.Refresh);
+            }
+            else
+            {
+                RefreshProfileChrome();
+                var items = refreshAllPresentations
+                    ? Items
+                    : Items.Where(item => guids.Contains(item.Guid));
+                foreach (var item in items)
+                    item.UpdatePresentation(_library.Get(item.Guid), _library.GetDerivedData(item.Guid), _userStatuses.GetValueOrDefault(item.Guid));
+                OnPropertyChanged(nameof(ItemCountText));
+                OnPropertyChanged(nameof(HeaderSummary));
+            }
+            if (didReconcile || guids.Count != 0) QueueThumbnailRefresh();
+            else QueueThumbnailWarmup();
+        }
+
+        private bool HasProfileMembershipOrOrderChanged()
+        {
+            var profile = _profiles.SelectedProfile;
+            var current = Items.Select(item => item.Guid);
+            var expected = profile is null
+                ? Enumerable.Empty<string>()
+                : _profiles.GetSortedEntries(profile)
+                    .Select(entry => entry.NodeId.Value.ToString("N"))
+                    .Where(guid => IsVisibleInCurrentProfileFilter(guid));
+            return !current.SequenceEqual(expected, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private bool IsVisibleInCurrentProfileFilter(string guid)
+        {
+            var mod = _library.Get(guid);
+            var derived = _library.GetDerivedData(guid);
+            if (!ModSearchMatcher.IsMatch(mod?.Name, mod?.Description, derived?.AssetSummary, Query)) return false;
+            return !ShowOnlyOutdated || derived?.UnitCompatibility.IsOutdated == true;
+        }
+
+        private void RefreshProfileChrome()
+        {
+            var names = _profiles.All().Select(profile => profile.Name).ToArray();
+            if (!Profiles.SequenceEqual(names, StringComparer.Ordinal))
+            {
+                Profiles.Clear();
+                foreach (var name in names) Profiles.Add(name);
+            }
+            _selectedProfileKey = _profiles.SelectedKey;
+            _renameText = _selectedProfileKey ?? string.Empty;
+            OnPropertyChanged(nameof(SelectedProfileKey));
+            OnPropertyChanged(nameof(RenameText));
+            OnPropertyChanged(nameof(CurrentProfileTitle));
+            OnPropertyChanged(nameof(ActiveProfileText));
+            OnPropertyChanged(nameof(SelectedProfileState));
+            OnPropertyChanged(nameof(HeaderSummary));
+            _switchAction?.SyncFromPage();
+            _renameAction?.SyncFromPage();
+        }
+
+        private void RefreshVisibleThumbnails()
+        {
+            if (_disposed) return;
+            foreach (var item in Items)
+                item.RefreshThumbnail();
+        }
+
+        private void QueueThumbnailWarmup()
+        {
+            if (_thumbnailWarmupQueued || _profiles.SelectedProfile?.Entries.Count is not > 0) return;
+            _thumbnailWarmupQueued = true;
+            QueueThumbnailRefresh();
+        }
 
         private void ToggleSelection(object? parameter)
         {
@@ -786,6 +941,9 @@ namespace HD2ModManager.ViewModels
             _disposed = true;
             _selection?.SelectionChanged -= OnSelectionChanged;
             _profiles.Changed -= OnProfileChanged;
+            _library.ModContentFactsChanged -= OnLibraryContentFactsChanged;
+            _library.SnapshotChanged -= OnLibrarySnapshotChanged;
+            _derivedState.SnapshotChanged -= OnDerivedStateSnapshotChanged;
             _searchCancellation?.Cancel();
             _searchCancellation?.Dispose();
             _searchCancellation = null;
@@ -846,15 +1004,22 @@ namespace HD2ModManager.ViewModels
     {
         public string Guid { get; }
         public string SelectionKey => Guid;
-        public string Name { get; }
-        public string? Description { get; }
-        public string? ImagePath { get; }
-        public string AssetSummary { get; }
+        public bool IsDecoration => false;
+        private string _name;
+        private string? _description;
+        private string? _imagePath;
+        private string _assetSummary;
+        private ModUnitCompatibilityReport? _unitCompatibility;
+        private ModUserStatus? _userStatus;
+        public string Name => _name;
+        public string? Description => _description;
+        public string? ImagePath => _imagePath;
+        public string AssetSummary => _assetSummary;
         public string AssetSummaryText => SecondaryDetailText;
         public int LoadOrder { get; }
         public DateTimeOffset AddedUtc { get; }
-        public ModUserStatus? UserStatus { get; }
-        public ModUnitCompatibilityReport? UnitCompatibility { get; }
+        public ModUserStatus? UserStatus => _userStatus;
+        public ModUnitCompatibilityReport? UnitCompatibility => _unitCompatibility;
         public bool IsModelOutdated => UnitCompatibility?.IsOutdated == true;
         public string ModelCompatibilitySummary => UnitCompatibility?.Summary ?? "模型版本尚未检测。";
         public string StatusText => UserStatus is null ? $"配置成员 · 顺序 {LoadOrder}" : $"{UserStatus.Title} · 顺序 {LoadOrder}";
@@ -867,16 +1032,35 @@ namespace HD2ModManager.ViewModels
         public ProfileListItemViewModel(string guid, string name, string? description, string? imagePath, string assetSummary, int loadOrder, DateTimeOffset addedUtc, bool isSelected = false, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null)
         {
             Guid = guid;
-            Name = name;
-            Description = description;
-            ImagePath = ThumbnailService.GetExistingThumbnailPath(imagePath, 72);
-            AssetSummary = assetSummary;
+            _name = name;
+            _description = description;
+            _imagePath = ThumbnailService.GetExistingThumbnailPath(imagePath, 72);
+            _assetSummary = assetSummary;
             LoadOrder = loadOrder;
             AddedUtc = addedUtc;
             _isSelected = isSelected;
-			UnitCompatibility = unitCompatibility;
-            UserStatus = userStatus;
+			_unitCompatibility = unitCompatibility;
+            _userStatus = userStatus;
         }
+
+        public void UpdatePresentation(HD2ModManager.Models.ModEntity? mod, DerivedModNodeData? derived, ModUserStatus? userStatus)
+        {
+            if (mod is not null)
+            {
+                _name = mod.Name;
+                _description = mod.Description;
+                _imagePath = ThumbnailService.GetExistingThumbnailPath(mod.Image, 72);
+            }
+            _assetSummary = ModAssetSummaryFormatter.Format(derived?.AssetSummary);
+            _unitCompatibility = derived?.UnitCompatibility;
+            _userStatus = userStatus;
+            OnPropertyChanged(nameof(Name)); OnPropertyChanged(nameof(Description)); OnPropertyChanged(nameof(ImagePath));
+            OnPropertyChanged(nameof(AssetSummary)); OnPropertyChanged(nameof(AssetSummaryText)); OnPropertyChanged(nameof(SecondaryDetailText));
+            OnPropertyChanged(nameof(UnitCompatibility)); OnPropertyChanged(nameof(IsModelOutdated)); OnPropertyChanged(nameof(UserStatus));
+            OnPropertyChanged(nameof(StatusText)); OnPropertyChanged(nameof(UserStatusTitle));
+        }
+
+        public void RefreshThumbnail() => OnPropertyChanged(nameof(ImagePath));
     }
 
     public class SettingsPageViewModel : PageViewModel
@@ -1243,6 +1427,9 @@ namespace HD2ModManager.ViewModels
                 await Task.Run(() => index.BuildOrRebuildAsync(gameData, archiveHashes, progress, task?.CancellationToken ?? CancellationToken.None).AsTask());
                 task?.MarkCompleted();
                 AssetIndexHint = "基础资产索引已重建；Unit 部件部位事实需通过右侧专用按钮单独计算。";
+                await Task.Run(
+                    () => _library.RefreshAssetSummariesAsync(task?.CancellationToken ?? CancellationToken.None),
+                    task?.CancellationToken ?? CancellationToken.None);
                 await RefreshAssetIndexStatusAsync();
             }
             catch (OperationCanceledException)
@@ -1396,6 +1583,7 @@ namespace HD2ModManager.ViewModels
 
                 AssetMetadataStatus = $"更新成功：{result.UpdatedFiles.Count} 个文件，{result.UpdatedAtUtc?.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
                 SettingsService.SetLastAssetMetadataCheckUtc(DateTime.UtcNow);
+                await Task.Run(() => _library.RefreshAssetSummariesAsync());
                 task?.MarkCompleted();
                 OnPropertyChanged(nameof(AssetMetadataLastCheckText));
                 System.Windows.MessageBox.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);

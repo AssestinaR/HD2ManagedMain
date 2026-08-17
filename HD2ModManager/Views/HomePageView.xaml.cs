@@ -1,6 +1,6 @@
-using System.Windows;
+using System.Diagnostics;
 using System.Windows.Controls;
-using HD2ModManager.ViewModels;
+using System.Windows.Navigation;
 
 namespace HD2ModManager.Views
 {
@@ -11,10 +11,10 @@ namespace HD2ModManager.Views
             InitializeComponent();
         }
 
-        private void OnOpenModListPanelTestClick(object sender, RoutedEventArgs e)
+        private void OnHelpLinkRequestNavigate(object sender, RequestNavigateEventArgs e)
         {
-            if (Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
-                shell.OpenModListPanelTest();
+            Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+            e.Handled = true;
         }
     }
 }

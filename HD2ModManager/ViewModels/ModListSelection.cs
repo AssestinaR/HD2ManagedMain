@@ -14,6 +14,7 @@ public interface IModListSelectable
 {
     string SelectionKey { get; }
     bool IsSelected { get; set; }
+    bool IsDecoration { get; }
 }
 
 public sealed class ModListSelectionRequestEventArgs(object item, IReadOnlyList<string> selectedKeys, ModifierKeys modifiers) : EventArgs

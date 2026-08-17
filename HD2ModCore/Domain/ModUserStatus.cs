@@ -7,4 +7,5 @@ public sealed record ModUserStatus(
 	string Title,
 	string Summary,
 	bool IsInSelectedProfile,
-	bool IsInActiveProfile);
+	bool IsInActiveProfile,
+	IReadOnlyList<string>? CoveredByModNames = null);

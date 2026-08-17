@@ -45,11 +45,13 @@ namespace HD2ModManager.ViewModels
         {
             ArgumentNullException.ThrowIfNull(items);
             var replacement = items as IReadOnlyList<T> ?? items.ToList();
+            var resolvedKind = ResolveTransitionKind(replacement, kind);
             var batch = new ListTransitionBatch(
                 Interlocked.Increment(ref _transitionVersion),
-                ResolveTransitionKind(replacement, kind),
+                resolvedKind,
                 Count,
-                replacement.Count);
+                replacement.Count,
+                Animate: resolvedKind != ListTransitionKind.Refresh);
             TransitionStarting?.Invoke(this, batch);
             _suppressNotifications = true;
             try

@@ -18,6 +18,8 @@ namespace HD2ModManager.Services
         Added,
         Changed,
         Removed,
+        // Derived facts changed, but no Patch payload changed on disk.
+        DerivedOnly,
     }
 
     public sealed class ModContentFactsChangedEventArgs : EventArgs
@@ -38,6 +40,7 @@ namespace HD2ModManager.Services
         private readonly StoragePaths _paths;
         private readonly HD2ModCore.Application.IModLibraryManager _manager;
         private readonly HD2ModCore.Application.ILibraryDerivedDataService _derivedDataService;
+		private readonly ModAssetSummaryProjector _assetSummaryProjector;
         private readonly HD2ModCore.Application.IModInformationCenter _informationCenter;
         private readonly HD2ModCore.Application.IModLibrarySynchronizer _synchronizer;
         private LibrarySnapshot _snapshot;
@@ -123,6 +126,7 @@ namespace HD2ModManager.Services
             _informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
             _synchronizer = CoreServices.CreateModLibrarySynchronizer();
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, _informationCenter);
+		_assetSummaryProjector = CoreServices.CreateModAssetSummaryProjector(_paths);
             _decorationActivations = new DecorationActivationStore(Path.Combine(_paths.DataDirectory, "decoration-activations.json"));
             _decorationAttachments = new DecorationAttachmentService(_paths);
             _snapshot = EmptySnapshot();
@@ -164,7 +168,7 @@ namespace HD2ModManager.Services
         }
 
         public Task RefreshDerivedDataAsync(CancellationToken cancellationToken = default)
-            => RefreshDerivedDataAsync(guids: null, ModContentChangeKind.Changed, cancellationToken);
+            => RefreshDerivedDataAsync(guids: null, ModContentChangeKind.DerivedOnly, cancellationToken);
 
         // Content commits must not expose a new Patch payload before both lightweight facts
         // and its reference graph have replaced the corresponding stale cache entries.
@@ -227,7 +231,7 @@ namespace HD2ModManager.Services
         }
 
         public async Task RefreshDerivedDataAsync(IEnumerable<string>? guids, CancellationToken cancellationToken = default)
-            => await RefreshDerivedDataAsync(guids, ModContentChangeKind.Changed, cancellationToken).ConfigureAwait(false);
+            => await RefreshDerivedDataAsync(guids, ModContentChangeKind.DerivedOnly, cancellationToken).ConfigureAwait(false);
 
         public async Task RefreshDerivedDataAsync(
             IEnumerable<string>? guids,
@@ -269,7 +273,7 @@ namespace HD2ModManager.Services
                         var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
                         foreach (var pair in rebuilt.Nodes) nodes[pair.Key] = pair.Value;
 						var issues = _derivedData.Issues.Where(issue => issue.NodeId is null || !nodeIds!.Contains(issue.NodeId.Value)).Concat(rebuilt.Issues).ToList();
-                        _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues);
+						_derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues, rebuilt.AssetSummaryGeneration ?? _derivedData.AssetSummaryGeneration);
 					}
 					if (nodeIds is null) RebuildEntityIndex(); else UpdateEntityIndex(nodeIds);
                     IReadOnlyCollection<ModNodeId> changedNodeIds = nodeIds is null ? rebuilt.Nodes.Keys.ToArray() : nodeIds;
@@ -285,6 +289,47 @@ namespace HD2ModManager.Services
                 _derivedRefreshGate.Release();
             }
         }
+
+		// Asset labels depend on stable Patch facts plus Game Data / metadata generations.
+		// This path deliberately does not request AssetInventory again.
+		public async Task<bool> RefreshAssetSummariesAsync(CancellationToken cancellationToken = default)
+		{
+			var snapshot = _snapshot;
+			if (_derivedData.Nodes.Count != snapshot.Nodes.Count)
+			{
+				await RefreshDerivedDataAsync(cancellationToken).ConfigureAwait(false);
+				return true;
+			}
+
+			await _derivedRefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+			try
+			{
+				var generation = await _assetSummaryProjector.GetMappingGenerationAsync(cancellationToken).ConfigureAwait(false);
+				if (string.Equals(_derivedData.AssetSummaryGeneration, generation, StringComparison.Ordinal)
+					&& _derivedData.Nodes.Values.All(node => node.AssetSummary is not null))
+					return false;
+
+				var factsByNode = new Dictionary<ModNode, ModContentFacts>();
+				foreach (var pair in _derivedData.Nodes)
+				{
+					if (snapshot.Nodes.TryGetValue(pair.Key, out var node)) factsByNode[node] = pair.Value.ContentFacts;
+				}
+				var projection = await _assetSummaryProjector.ProjectManyWithGenerationAsync(factsByNode, cancellationToken).ConfigureAwait(false);
+				var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value with { AssetSummary = projection.Summaries.GetValueOrDefault(pair.Key) });
+				_derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, _derivedData.Issues, projection.MappingGeneration);
+				var changed = nodes.Keys.ToArray();
+				if (changed.Length != 0)
+				{
+					LogService.Info($"资产标签投影已更新：节点数={changed.Length}，映射版本={projection.MappingGeneration[..Math.Min(12, projection.MappingGeneration.Length)]}。");
+					ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(changed, ModContentChangeKind.DerivedOnly));
+				}
+				return true;
+			}
+			finally
+			{
+				_derivedRefreshGate.Release();
+			}
+		}
 
         private async Task<IReadOnlyList<CoreIssue>> RefreshReferenceGraphsAsync(
             LibrarySnapshot snapshot,
@@ -402,7 +447,7 @@ namespace HD2ModManager.Services
 			ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
             var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
             nodes.Remove(nodeId);
-            _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray());
+            _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray(), _derivedData.AssetSummaryGeneration);
             RebuildIndex(buildDerivedData: false);
             ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(new[] { nodeId }, ModContentChangeKind.Removed));
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
@@ -428,7 +473,7 @@ namespace HD2ModManager.Services
                 ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
                 var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
                 nodes.Remove(nodeId);
-                _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray());
+                _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray(), _derivedData.AssetSummaryGeneration);
                 RebuildIndex(buildDerivedData: false);
                 ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(new[] { nodeId }, ModContentChangeKind.Removed));
                 SnapshotChanged?.Invoke(this, EventArgs.Empty);
@@ -589,7 +634,7 @@ namespace HD2ModManager.Services
 
                 var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
                 foreach (var nodeId in nodeIds) nodes.Remove(nodeId);
-                _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray());
+                _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray(), _derivedData.AssetSummaryGeneration);
                 RebuildIndex(buildDerivedData: false);
                 ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(nodeIds, ModContentChangeKind.Removed));
                 SnapshotChanged?.Invoke(this, EventArgs.Empty);
