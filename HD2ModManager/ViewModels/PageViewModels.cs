@@ -42,6 +42,7 @@ namespace HD2ModManager.ViewModels
         private bool _isRepairingOutdatedMods;
         private int? _lastDetectedOutdatedModCount;
         private int _lastUnreadableUnitVersionCount;
+		private string _gameDataHealth = "正在检查";
         private DeploymentCapability _deploymentCapability = DeploymentCapability.Unavailable("尚未检测。");
 
         public string ActiveProfile => _profiles.ActiveKey ?? "未启用";
@@ -50,7 +51,7 @@ namespace HD2ModManager.ViewModels
         public string ActiveProfileModSummary => BuildActiveProfileModSummary(_profiles.ActiveProfile);
         public string QueueSummary => $"总计 {_queue.Tasks.Count}，完成 {_queue.CountDone}，待处理 {_queue.CountQueued + _queue.CountRunning}";
         public string ApplySummary => _applyStatus.Summary;
-        public string GameDataHealth => BuildGameDataHealth();
+		public string GameDataHealth { get => _gameDataHealth; private set => SetField(ref _gameDataHealth, value); }
         public string AssetMetadataHealth => BuildAssetMetadataHealth();
         public int EnabledModCount => _profiles.ActiveProfile?.Entries.Count ?? 0;
         public int OutdatedModCount => _lastDetectedOutdatedModCount ?? 0;
@@ -70,6 +71,10 @@ namespace HD2ModManager.ViewModels
             : "当前没有进行中的任务";
         public DeploymentCapability DeploymentCapability => _deploymentCapability;
         public bool IsDeploymentBlocked => !DeploymentCapability.IsAvailable;
+		public string DeploymentMode => DeploymentCapability.IsAvailable
+			? DeploymentCapability.Method == DeploymentMethod.HardLink ? "硬链接" : "软链接"
+			: DeploymentCapability.SymbolicLinkPermissionDenied ? "软链接（权限不足）" : "不可用";
+		public bool ShowDeploymentPermissionActions => !DeploymentCapability.IsAvailable && DeploymentCapability.SymbolicLinkPermissionDenied;
         public string DeploymentCapabilityText => DeploymentCapability.IsAvailable
             ? $"当前部署方式：{(DeploymentCapability.Method == DeploymentMethod.HardLink ? "硬链接" : "符号链接")}。{DeploymentCapability.Summary}"
             : $"当前无法部署 Mod：{DeploymentCapability.Error}";
@@ -97,6 +102,7 @@ namespace HD2ModManager.ViewModels
             OpenTaskHubCommand = new RelayCommand(OpenTaskHub);
             RepairOutdatedModsCommand = new RelayCommand(async _ => await RepairOutdatedModsAsync(), _ => CanRepairOutdatedMods);
             LaunchGameCommand = new RelayCommand(LaunchGame);
+			_ = RefreshGameDataHealthAsync();
         }
 
         public void Refresh()
@@ -107,7 +113,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ActiveProfileModSummary));
             OnPropertyChanged(nameof(QueueSummary));
             OnPropertyChanged(nameof(ApplySummary));
-            OnPropertyChanged(nameof(GameDataHealth));
+			_ = RefreshGameDataHealthAsync();
             OnPropertyChanged(nameof(AssetMetadataHealth));
             OnPropertyChanged(nameof(EnabledModCount));
             OnPropertyChanged(nameof(OutdatedModCount));
@@ -118,6 +124,8 @@ namespace HD2ModManager.ViewModels
             RefreshDeploymentCapability();
             OnPropertyChanged(nameof(DeploymentCapability));
             OnPropertyChanged(nameof(IsDeploymentBlocked));
+			OnPropertyChanged(nameof(DeploymentMode));
+			OnPropertyChanged(nameof(ShowDeploymentPermissionActions));
             OnPropertyChanged(nameof(DeploymentCapabilityText));
         }
 
@@ -127,13 +135,43 @@ namespace HD2ModManager.ViewModels
             return $"已启用 {profile.Entries.Count} 个 Mod";
         }
 
-        private static string BuildGameDataHealth()
-        {
-            var folder = SettingsService.GetGameDataFolder();
-            if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) return "未设置或路径不可用";
-            var lastCheck = SettingsService.GetLastGameDataIndexCheckUtc();
-            return lastCheck is null ? "已设置，尚未检查索引" : $"已设置，上次检查 {lastCheck.Value.ToLocalTime():yyyy-MM-dd HH:mm}";
-        }
+
+		private async Task RefreshGameDataHealthAsync()
+		{
+			var folder = SettingsService.GetGameDataFolder();
+			if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+			{
+				GameDataHealth = "路径不可用";
+				return;
+			}
+
+			try
+			{
+				var index = CoreServices.CreateAssetArchiveIndexService(_paths);
+				var archiveHashes = await CoreServices.CreateFileSystemArchiveHashesProvider(_paths).GetArchiveHashesJsonAsync();
+				var status = await index.GetIndexStatusAsync(folder, archiveHashes);
+				if (!status.IsCurrent)
+				{
+					GameDataHealth = status.State switch
+					{
+						GameDataIndexState.Missing => "未索引",
+						GameDataIndexState.Stale => "索引过时",
+						GameDataIndexState.Invalid => "索引无效",
+						_ => "索引不可用"
+					};
+					return;
+				}
+
+				var checkedAt = SettingsService.GetLastGameDataIndexCheckUtc() ?? status.StoredFingerprint?.BuiltUtc;
+				GameDataHealth = checkedAt is null
+					? "索引有效"
+					: checkedAt.Value.ToLocalTime().ToString("yyyy-MM-dd");
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+			{
+				GameDataHealth = "索引不可用";
+			}
+		}
 
         private static string BuildAssetMetadataHealth()
         {

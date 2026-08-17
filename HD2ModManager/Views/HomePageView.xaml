@@ -1,6 +1,9 @@
 <UserControl x:Class="HD2ModManager.Views.HomePageView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+    </UserControl.Resources>
     <Grid Background="Transparent">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="1*" MinWidth="480"/>
@@ -31,6 +34,39 @@
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="Mod 库" Style="{StaticResource AppSupportingText}" VerticalAlignment="Center"/>
                         <TextBlock Grid.Column="1" Text="{Binding ModCount}" Style="{StaticResource AppStatusValue}" VerticalAlignment="Center"/>
+                    </Grid>
+                    <Border Height="1" Margin="12,0" Background="{StaticResource StrokeSubtle}"/>
+                    <Grid Height="40">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="部署模式" Style="{StaticResource AppSupportingText}" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding DeploymentMode}"
+                                   Style="{StaticResource AppStatusValue}"
+                                   VerticalAlignment="Center"
+                                   MaxWidth="160"
+                                   TextAlignment="Right"
+                                   TextTrimming="CharacterEllipsis"/>
+                    </Grid>
+                    <Grid Height="40" Visibility="{Binding ShowDeploymentPermissionActions, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Style="{StaticResource AppSecondaryButton}"
+                                Content="启用开发者模式"
+                                Command="{Binding OpenDeveloperSettingsCommand}"
+                                Height="32"
+                                VerticalAlignment="Center"/>
+                        <Button Grid.Column="2"
+                                Style="{StaticResource AppSecondaryButton}"
+                                Content="以管理员身份启动"
+                                Command="{Binding RestartAsAdministratorCommand}"
+                                Height="32"
+                                VerticalAlignment="Center"/>
                     </Grid>
                     <Border Height="1" Margin="12,0" Background="{StaticResource StrokeSubtle}"/>
                     <Grid Height="40">

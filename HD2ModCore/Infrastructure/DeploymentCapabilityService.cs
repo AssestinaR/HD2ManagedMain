@@ -30,9 +30,9 @@ public sealed class DeploymentCapabilityService
 			if (AreOnSameVolume(source, target) && TryCreateHardLink(target, source, out hardLinkError))
 				return new DeploymentCapability(true, DeploymentMethod.HardLink, "Mod 库与游戏 Data 位于同一卷，硬链接测试通过。", null);
 			TryDelete(target);
-			if (TryCreateSymbolicLink(target, source, out var symbolicLinkError))
+			if (TryCreateSymbolicLink(target, source, out var symbolicLinkError, out var symbolicLinkPermissionDenied))
 				return new DeploymentCapability(true, DeploymentMethod.SymbolicLink, "符号链接测试通过。", null);
-			return DeploymentCapability.Unavailable($"硬链接不可用：{hardLinkError}; 符号链接不可用：{symbolicLinkError}");
+			return DeploymentCapability.Unavailable($"硬链接不可用：{hardLinkError}; 符号链接不可用：{symbolicLinkError}", symbolicLinkPermissionDenied);
 		}
 		catch (Exception exception)
 		{
@@ -48,10 +48,21 @@ public sealed class DeploymentCapabilityService
 	private static bool AreOnSameVolume(string first, string second)
 		=> string.Equals(Path.GetPathRoot(Path.GetFullPath(first)), Path.GetPathRoot(Path.GetFullPath(second)), StringComparison.OrdinalIgnoreCase);
 
-	private static bool TryCreateSymbolicLink(string linkPath, string targetPath, out string? error)
+	private static bool TryCreateSymbolicLink(string linkPath, string targetPath, out string? error, out bool permissionDenied)
 	{
-		try { File.CreateSymbolicLink(linkPath, targetPath); error = null; return true; }
-		catch (Exception exception) { error = exception.Message; return false; }
+		try
+		{
+			File.CreateSymbolicLink(linkPath, targetPath);
+			error = null;
+			permissionDenied = false;
+			return true;
+		}
+		catch (Exception exception)
+		{
+			error = exception.Message;
+			permissionDenied = exception is UnauthorizedAccessException || (exception.HResult & 0xffff) == 1314;
+			return false;
+		}
 	}
 
 	private static bool TryCreateHardLink(string linkPath, string targetPath, out string? error)
@@ -71,7 +82,8 @@ public sealed class DeploymentCapabilityService
 	private static extern bool CreateHardLinkW(string lpFileName, string lpExistingFileName, IntPtr lpSecurityAttributes);
 }
 
-public sealed record DeploymentCapability(bool IsAvailable, DeploymentMethod? Method, string Summary, string? Error)
+public sealed record DeploymentCapability(bool IsAvailable, DeploymentMethod? Method, string Summary, string? Error, bool SymbolicLinkPermissionDenied = false)
 {
-	public static DeploymentCapability Unavailable(string error) => new(false, null, "当前无法部署 Mod。", error);
+	public static DeploymentCapability Unavailable(string error, bool symbolicLinkPermissionDenied = false)
+		=> new(false, null, "当前无法部署 Mod。", error, symbolicLinkPermissionDenied);
 }
