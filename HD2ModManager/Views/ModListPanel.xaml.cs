@@ -37,6 +37,7 @@ public partial class ModListPanel : UserControl
         _transitionController = new ModListTransitionController(this, ItemsList, TransitionOverlay, _presentedItems);
         _transitionController.PresentedItems.CollectionChanged += OnPresentedItemsChanged;
         _transitionController.TransitionStateChanged += OnTransitionStateChanged;
+        ItemsList.Loaded += (_, _) => ConfigureInternalSmoothScroll(UseInternalScroll);
         _dragAutoScrollTimer.Tick += OnDragAutoScrollTick;
         Loaded += (_, _) =>
         {

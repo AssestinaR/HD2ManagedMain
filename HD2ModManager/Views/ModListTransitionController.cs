@@ -28,7 +28,7 @@ internal sealed class ModListTransitionController : IDisposable
     private IReadOnlyList<object>? _pendingDesired;
     private bool _transitionPending;
     private bool _layoutDirty;
-    private bool _isPlaying;
+    private TransitionPhase _phase;
     private bool _disposed;
 
     private static double AnimationSpeed => SettingsService.GetModListAnimationSpeedMultiplier();
@@ -45,7 +45,7 @@ internal sealed class ModListTransitionController : IDisposable
     }
 
     public BulkObservableCollection<object> PresentedItems { get; }
-    public bool IsPlaying => _isPlaying;
+    public bool IsPlaying => _phase == TransitionPhase.Playing;
     public event Action<bool>? TransitionStateChanged;
 
     public void Attach(IEnumerable? source)
@@ -89,7 +89,7 @@ internal sealed class ModListTransitionController : IDisposable
         var desired = _observedSource?.Cast<object>().ToArray() ?? Array.Empty<object>();
         _desired = desired;
 
-        if (_isPlaying)
+        if (_phase == TransitionPhase.Playing)
         {
             _queuedDesired = desired;
             return;
@@ -113,6 +113,7 @@ internal sealed class ModListTransitionController : IDisposable
         }
 
         _pendingDesired = desired;
+        SetPhase(TransitionPhase.AwaitingLayout);
         ReplacePresentedImmediately(desired);
         _layoutDirty = true;
         _itemsList.LayoutUpdated -= OnLayoutUpdated;
@@ -121,7 +122,7 @@ internal sealed class ModListTransitionController : IDisposable
 
     private void OnLayoutUpdated(object? sender, EventArgs e)
     {
-        if (!_layoutDirty || _disposed || _isPlaying) return;
+        if (!_layoutDirty || _disposed || _phase != TransitionPhase.AwaitingLayout) return;
         if (_itemsList.ItemContainerGenerator.Status != System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated)
             return;
 
@@ -158,7 +159,7 @@ internal sealed class ModListTransitionController : IDisposable
             return;
         }
 
-        SetPlaying(true);
+        SetPhase(TransitionPhase.Playing);
         _animationTimer.Stop();
         _animationTimer.Interval = Duration(230);
         _animationTimer.Start();
@@ -183,14 +184,16 @@ internal sealed class ModListTransitionController : IDisposable
             ReplacePresentedImmediately(next);
         }
 
-        SetPlaying(false);
+        SetPhase(TransitionPhase.Idle);
     }
 
-    private void SetPlaying(bool value)
+    private void SetPhase(TransitionPhase value)
     {
-        if (_isPlaying == value) return;
-        _isPlaying = value;
-        TransitionStateChanged?.Invoke(value);
+        if (_phase == value) return;
+        var wasLocked = _phase != TransitionPhase.Idle;
+        _phase = value;
+        var isLocked = _phase != TransitionPhase.Idle;
+        if (wasLocked != isLocked) TransitionStateChanged?.Invoke(isLocked);
     }
 
     private void ReplacePresentedImmediately(IEnumerable<object> items)
@@ -206,7 +209,7 @@ internal sealed class ModListTransitionController : IDisposable
         _pendingDesired = null;
         _transitionPending = false;
         _layoutDirty = false;
-        SetPlaying(false);
+        SetPhase(TransitionPhase.Idle);
         ResetVisibleContainers();
     }
 
@@ -305,4 +308,11 @@ internal sealed class ModListTransitionController : IDisposable
     }
 
     private sealed record RowSnapshot(string Key, object Item, FrameworkElement Container, Point Position, Size Size);
+
+    private enum TransitionPhase
+    {
+        Idle,
+        AwaitingLayout,
+        Playing,
+    }
 }

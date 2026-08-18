@@ -237,21 +237,25 @@
                     </DataTemplate>
                 </ListBox.ItemTemplate>
                 <ListBox.Style>
-                    <Style TargetType="ListBox" BasedOn="{StaticResource ModListBox}">
+                    <Style TargetType="ListBox" BasedOn="{StaticResource ModListBox}"/>
+                </ListBox.Style>
+            </ListBox>
+            <TextBlock Text="{Binding EmptyMessage, ElementName=Root}"
+                       Foreground="#888"
+                       Margin="16"
+                       Panel.ZIndex="5"
+                       IsHitTestVisible="False">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Visibility" Value="Collapsed"/>
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding HasPresentedItems, ElementName=Root}" Value="False">
-                                <Setter Property="Template">
-                                    <Setter.Value>
-                                        <ControlTemplate TargetType="ListBox">
-                                            <TextBlock Text="{Binding EmptyMessage, ElementName=Root}" Foreground="#888" Margin="16"/>
-                                        </ControlTemplate>
-                                    </Setter.Value>
-                                </Setter>
+                                <Setter Property="Visibility" Value="Visible"/>
                             </DataTrigger>
                         </Style.Triggers>
                     </Style>
-                </ListBox.Style>
-            </ListBox>
+                </TextBlock.Style>
+            </TextBlock>
             <Canvas x:Name="TransitionOverlay" IsHitTestVisible="False" Panel.ZIndex="10"/>
             <Canvas x:Name="DropOverlay" IsHitTestVisible="False" Panel.ZIndex="20">
                 <Border x:Name="DropInsertionIndicator" Height="2" Background="{StaticResource Accent}"

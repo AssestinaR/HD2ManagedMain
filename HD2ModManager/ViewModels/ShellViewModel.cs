@@ -579,8 +579,6 @@ namespace HD2ModManager.ViewModels
             RegisterSameKeyRebuildRow("same-key-rebuild-options", SameKeyRebuildBottomBarRowKind.Options);
         }
 
-        public void OpenExportPackage() => OpenSinglePage(WorkspacePageType.ExportPackage);
-
         public void DismissToolBottomBars()
         {
             ClearMaterialPackagingBottomBar();
@@ -1531,7 +1529,6 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),
                 WorkspacePageType.MaterialPackaging => throw new InvalidOperationException("材质打包必须通过 Mod 详情创建。"),
                 WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty),
-                WorkspacePageType.ExportPackage => new ExportPackagePageViewModel(_libraryService, _notificationService),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
             };
             return page;
@@ -1575,7 +1572,6 @@ namespace HD2ModManager.ViewModels
         private void RegisterLibraryActions(PageViewModel page)
         {
             page.PageActions.Add(new PageActionViewModel("＋", "导入 Mod", ImportCommand, order: 20, kind: "Import"));
-            page.PageActions.Add(new PageActionViewModel("⇧", "导出 Mod", new RelayCommand(_ => OpenExportPackage()), order: 25, kind: "Export"));
             page.PageActions.Add(new PageActionViewModel("▶", "立即重新部署", ApplyChangesCommand, background: new SolidColorBrush(Color.FromRgb(46, 125, 50)), order: 30, kind: "ScheduleDeployment"));
         }
 
@@ -1605,7 +1601,6 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.CrossArmorPlan => "跨护甲计划",
             WorkspacePageType.MaterialPackaging => "材质候选与输出",
             WorkspacePageType.DecorationPlan => "生成装饰 Mod",
-            WorkspacePageType.ExportPackage => "导出 Mod",
             _ => "页面",
         };
 

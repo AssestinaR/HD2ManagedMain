@@ -53,9 +53,6 @@
         <DataTemplate DataType="{x:Type localVM:DecorationPlanPageViewModel}">
             <views:DecorationPlanPageView/>
         </DataTemplate>
-        <DataTemplate DataType="{x:Type localVM:ExportPackagePageViewModel}">
-            <views:ExportPackagePageView/>
-        </DataTemplate>
         <Style x:Key="TopNavButton" TargetType="Button">
             <Setter Property="Height" Value="32"/>
             <Setter Property="Padding" Value="16,0"/>
