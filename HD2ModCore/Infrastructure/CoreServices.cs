@@ -156,19 +156,21 @@ public static class CoreServices
 		=> new GameDataArchiveBrowserService(CreateAssetArchiveIndexService(paths), informationCenter, CreateGameDataMappingFactsService(paths), CreateDeployedOverrideGraphService());
 	public static IApplyExecutor CreateApplyExecutor()
 		=> new ApplyExecutor(CreatePatchStateScanner(), CreatePatchFileNameParser(), CreateActivationStateStore());
+	public static OptionActivationStore CreateOptionActivationStore(StoragePaths paths)
+		=> new(Path.Combine(paths.ModsDirectory, "option-activations.json"));
 	public static DeploymentCapabilityService CreateDeploymentCapabilityService() => new();
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths)
 		=> CreateProfileApplyService(paths, CreateModInformationCenter(paths));
-	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new ProfileApplyService(informationCenter, CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService(), paths);
+	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths, IModInformationCenter informationCenter, OptionActivationStore? optionActivations = null)
+		=> new ProfileApplyService(informationCenter, CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService(), paths, optionActivations);
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IProfileDeploymentCoordinator CreateProfileDeploymentCoordinator(StoragePaths paths, Func<string?> gameDataDirectoryProvider, IDeploymentDelay? delay = null, TimeSpan? bufferDuration = null)
 		=> CreateProfileDeploymentCoordinator(paths, gameDataDirectoryProvider, CreateModInformationCenter(paths), delay, bufferDuration);
-	public static IProfileDeploymentCoordinator CreateProfileDeploymentCoordinator(StoragePaths paths, Func<string?> gameDataDirectoryProvider, IModInformationCenter informationCenter, IDeploymentDelay? delay = null, TimeSpan? bufferDuration = null)
+	public static IProfileDeploymentCoordinator CreateProfileDeploymentCoordinator(StoragePaths paths, Func<string?> gameDataDirectoryProvider, IModInformationCenter informationCenter, IDeploymentDelay? delay = null, TimeSpan? bufferDuration = null, OptionActivationStore? optionActivations = null)
 		=> new ProfileDeploymentCoordinator(
 			CreateModLibraryManager(paths),
-			CreateProfileApplyService(paths, informationCenter),
+			CreateProfileApplyService(paths, informationCenter, optionActivations),
 			CreateApplyExecutor(),
 			paths,
 			gameDataDirectoryProvider,

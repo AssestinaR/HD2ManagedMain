@@ -1098,16 +1098,6 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        public double ModListAnimationSpeedMultiplier
-        {
-            get => SettingsService.GetModListAnimationSpeedMultiplier();
-            set
-            {
-                SettingsService.SetModListAnimationSpeedMultiplier(value);
-                OnPropertyChanged(nameof(ModListAnimationSpeedMultiplier));
-            }
-        }
-
         public bool AutoImportToActiveProfile
         {
             get => SettingsService.GetAutoImportToActiveProfile();
@@ -1248,7 +1238,6 @@ namespace HD2ModManager.ViewModels
         public void Refresh()
         {
             OnPropertyChanged(nameof(Language));
-            OnPropertyChanged(nameof(ModListAnimationSpeedMultiplier));
             OnPropertyChanged(nameof(AutoImportToActiveProfile));
             OnPropertyChanged(nameof(AutoUpdateAssetMetadata));
             OnPropertyChanged(nameof(AssetMetadataCheckIntervalHours));

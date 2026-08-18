@@ -24,6 +24,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     private string _outputDirectory;
     private bool _autoImport = true;
     private bool _showPotentialCulling;
+    private bool _showOptions = true;
     private string _targetQuery = string.Empty;
     private IReadOnlyList<DecorationSourceUnitItem> _allSourceUnits = Array.Empty<DecorationSourceUnitItem>();
     private IReadOnlyList<DecorationTargetModItem> _allTargetMods = Array.Empty<DecorationTargetModItem>();
@@ -80,6 +81,17 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
         }
     }
     public bool ShowTargetSearch { get; private set; }
+    public bool ShowOptions
+    {
+        get => _showOptions;
+        set
+        {
+            if (!SetField(ref _showOptions, value)) return;
+            OnPropertyChanged(nameof(OptionFilterText));
+            RefreshTargetVisibility();
+        }
+    }
+    public string OptionFilterText => ShowOptions ? "隐藏选项" : "显示选项";
     public string TargetQuery
     {
         get => _targetQuery;
@@ -125,9 +137,9 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
                 RefreshSourceUnits();
             }
             _allTargetMods = _library.All()
-                .Where(mod => !mod.IsDecoration && !mod.IsOption && !string.Equals(mod.Guid, SourceModId, StringComparison.OrdinalIgnoreCase))
+                .Where(mod => !mod.IsDecoration && !string.Equals(mod.Guid, SourceModId, StringComparison.OrdinalIgnoreCase))
                 .OrderBy(mod => mod.Name)
-                .Select(mod => new DecorationTargetModItem(mod.Guid, mod.Name, mod.Description, mod.Image, OnSelectionChanged))
+                .Select(mod => new DecorationTargetModItem(mod.Guid, mod.Name, mod.Description, mod.Image, mod.IsOption, OnSelectionChanged))
                 .ToArray();
             RefreshTargetVisibility();
             State = SourceUnits.Count == 0 ? "来源中没有可识别的 Unit。" : $"已读取 {SourceUnits.Count} 个 Unit；选择后将写入装饰计划。";
@@ -149,9 +161,10 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     {
         var query = TargetQuery.Trim();
         var visible = _allTargetMods.Where(item =>
-            query.Length == 0
-            || item.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
-            || (item.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) == true));
+            (ShowOptions || !item.IsOption)
+            && (query.Length == 0
+                || item.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || (item.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) == true)));
         TargetMods.ReplaceWith(visible, ListTransitionKind.Filter);
     }
 
@@ -289,17 +302,19 @@ public sealed class DecorationTargetModItem : BaseViewModel, IModListSelectable
     private readonly Action _changed;
     private bool _isSelected;
     private bool _isVisible = true;
-    public DecorationTargetModItem(string modId, string name, string? description, string? image, Action changed)
+    public DecorationTargetModItem(string modId, string name, string? description, string? image, bool isOption, Action changed)
     {
         ModId = modId;
         Name = name;
         Description = description;
         Image = image;
+        IsOption = isOption;
         _changed = changed;
     }
     public string ModId { get; }
     public string SelectionKey => ModId;
     public bool IsDecoration => false;
+    public bool IsOption { get; }
     public string Name { get; }
     public string? Description { get; }
     public string? Image { get; }

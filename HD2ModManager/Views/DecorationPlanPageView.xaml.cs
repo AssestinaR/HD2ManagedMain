@@ -1,3 +1,4 @@
+using System.Windows;
 using System.Windows.Controls;
 using HD2ModManager.ViewModels;
 
@@ -11,5 +12,11 @@ public partial class DecorationPlanPageView : UserControl
     {
         if (DataContext is DecorationPlanPageViewModel vm)
             vm.ApplyTargetSelection(e.SelectedKeys);
+    }
+
+    private void OnToggleOptionFilterClick(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is DecorationPlanPageViewModel vm)
+            vm.ShowOptions = !vm.ShowOptions;
     }
 }

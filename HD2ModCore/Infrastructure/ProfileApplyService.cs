@@ -13,13 +13,13 @@ public sealed class ProfileApplyService : IProfileApplyService
 	private readonly DeploymentCapabilityService _capabilityService;
 	private readonly OptionActivationStore _optionActivations;
 
-	public ProfileApplyService(IModInformationCenter informationCenter, IApplyPlanner planner, IApplyExecutor executor, DeploymentCapabilityService? capabilityService = null, StoragePaths? paths = null)
+	public ProfileApplyService(IModInformationCenter informationCenter, IApplyPlanner planner, IApplyExecutor executor, DeploymentCapabilityService? capabilityService = null, StoragePaths? paths = null, OptionActivationStore? optionActivations = null)
 	{
 		_informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		_planner = planner ?? throw new ArgumentNullException(nameof(planner));
 		_executor = executor ?? throw new ArgumentNullException(nameof(executor));
 		_capabilityService = capabilityService ?? new DeploymentCapabilityService();
-		_optionActivations = new OptionActivationStore(Path.Combine((paths ?? new StoragePaths(AppContext.BaseDirectory)).ModsDirectory, "option-activations.json"));
+		_optionActivations = optionActivations ?? new OptionActivationStore(Path.Combine((paths ?? new StoragePaths(AppContext.BaseDirectory)).ModsDirectory, "option-activations.json"));
 	}
 
 	public async ValueTask<ApplyResult> ApplyAsync(
@@ -42,16 +42,8 @@ public sealed class ProfileApplyService : IProfileApplyService
 		if (fileFactsResult.Data is null)
 			return new ApplyResult(false, [], null, fileFactsResult.Issues);
 		var allFacts = fileFactsResult.Data;
-		var activeNodeIds = profile.Entries.Select(entry => entry.NodeId).ToHashSet();
-		var optionEntries = snapshot.Nodes.Values
-			.Where(node => node.Metadata.Kind == ModNodeKind.Option)
-			.Where(node => node.Metadata.HostModGuids?.Any(host => snapshot.Nodes.Values.Any(candidate => activeNodeIds.Contains(candidate.Id) && SameGuid(host, candidate.Id.Value.ToString("N")))) == true)
-			.Where(node => _optionActivations.GetEnabledHosts(node.Id.Value.ToString("N")).Any(host => activeNodeIds.Any(id => SameGuid(host, id.Value.ToString("N")))))
-			.OrderBy(node => node.Metadata.Name, StringComparer.OrdinalIgnoreCase)
-			.Select((node, index) => new ProfileEntry(node.Id, profile.Entries.Count + index))
-			.ToArray();
-		var effectiveProfile = optionEntries.Length == 0 ? profile : profile with { Entries = profile.Entries.Concat(optionEntries).ToArray() };
-		activeNodeIds.UnionWith(optionEntries.Select(entry => entry.NodeId));
+		var effectiveProfile = ResolveEffectiveProfile(profile, snapshot, _optionActivations.CreateSnapshot());
+		var activeNodeIds = effectiveProfile.Entries.Select(entry => entry.NodeId).ToHashSet();
 		var index = new PatchFileIndex(
 			allFacts.BuiltUtc,
 			allFacts.FilesByNode.Where(pair => activeNodeIds.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value),
@@ -59,6 +51,42 @@ public sealed class ProfileApplyService : IProfileApplyService
 		var plan = await _planner.BuildPlanAsync(effectiveProfile, snapshot, index, gameDataDirectory, cancellationToken).ConfigureAwait(false);
 		plan = plan with { DeploymentMethod = capability.Method.Value };
 		return await _executor.ExecuteAsync(plan, cancellationToken).ConfigureAwait(false);
+	}
+
+	private static Profile ResolveEffectiveProfile(Profile profile, LibrarySnapshot snapshot, OptionActivationSnapshot optionStates)
+	{
+		var sourceEntries = profile.Entries
+			.OrderBy(entry => entry.LoadOrder)
+			.ThenBy(entry => entry.AddedUtc)
+			.ThenBy(entry => entry.NodeId.Value)
+			.ToArray();
+		var resolved = new List<ProfileEntry>();
+		var includedOptions = new HashSet<ModNodeId>();
+		var nextLoadOrder = 0;
+		foreach (var hostEntry in sourceEntries)
+		{
+			resolved.Add(hostEntry with { LoadOrder = nextLoadOrder++ });
+			if (!snapshot.Nodes.TryGetValue(hostEntry.NodeId, out var host)
+				|| host.Metadata.Kind != ModNodeKind.Standard)
+				continue;
+
+			var hostId = host.Id.Value.ToString("N");
+			var enabledOptions = snapshot.Nodes.Values
+				.Where(node => node.Metadata.Kind == ModNodeKind.Option)
+				.Where(node => node.Metadata.HostModGuids?.Any(candidate => SameGuid(candidate, hostId)) == true)
+				.Where(node => optionStates.IsEnabled(node.Id.Value.ToString("N"), hostId))
+				.OrderBy(node => optionStates.GetEffectiveOrder(node.Id.Value.ToString("N"), hostId) ?? int.MaxValue)
+				.ThenBy(node => node.Metadata.OptionOrder ?? int.MaxValue)
+				.ThenBy(node => node.Id.Value)
+				.ToArray();
+			foreach (var option in enabledOptions)
+			{
+				// A shared option is physical patch content and must only appear once.
+				if (!includedOptions.Add(option.Id)) continue;
+				resolved.Add(new ProfileEntry(option.Id, nextLoadOrder++));
+			}
+		}
+		return profile with { Entries = resolved };
 	}
 
 	private static bool SameGuid(string? left, string? right)

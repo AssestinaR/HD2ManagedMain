@@ -171,9 +171,11 @@ namespace HD2ModManager.ViewModels
 
             _profileService = new ProfileService(configDir);
 
-            var informationCenter = CoreServices.CreateModInformationCenter(SettingsService.CreateStoragePaths());
+            var storagePaths = SettingsService.CreateStoragePaths();
+            var informationCenter = CoreServices.CreateModInformationCenter(storagePaths);
             _informationCenter = informationCenter;
-            _libraryService = new ModLibraryService(System.IO.Path.Combine(configDir, "library.json"), informationCenter);
+            var optionActivations = CoreServices.CreateOptionActivationStore(storagePaths);
+            _libraryService = new ModLibraryService(System.IO.Path.Combine(configDir, "library.json"), informationCenter, optionActivations);
             _derivedState = new DerivedStateCoordinator(_libraryService, _profileService, informationCenter);
             _importQueue = new ImportQueueService();
             _backgroundTasks = new BackgroundTaskService();
@@ -184,9 +186,10 @@ namespace HD2ModManager.ViewModels
             _informationCenter.DiagnosticRecorded += OnInformationDiagnosticRecorded;
             _bottomBar = new BottomBarCoordinator(_selection, _libraryService, _profileService, _notificationService, RefreshCurrentPage);
             _deploymentCoordinator = CoreServices.CreateProfileDeploymentCoordinator(
-                SettingsService.CreateStoragePaths(),
+                storagePaths,
                 SettingsService.GetGameDataFolder,
-                informationCenter);
+                informationCenter,
+                optionActivations: optionActivations);
             _deploymentCoordinator.StatusChanged += OnDeploymentStatusChanged;
             _profileService.ActiveProfileDeploymentRequired += (_, _) => _deploymentCoordinator.NotifyActiveProfileChanged();
             _profileService.ActiveProfileDeactivationRequired += (_, _) => _ = _deploymentCoordinator.DeactivateAsync();

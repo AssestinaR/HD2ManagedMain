@@ -40,6 +40,7 @@ public sealed class ApplyPlanner : IApplyPlanner
 
 		var gameData = Path.GetFullPath(gameDataDirectory);
 		var ops = new List<ApplyOperation>();
+		var mappings = new List<DeploymentPatchMapping>();
 		var issues = new List<CoreIssue>(patchIndex.Issues);
 
 		foreach (var existing in EnumerateExistingPatchFiles(gameData))
@@ -94,15 +95,24 @@ public sealed class ApplyPlanner : IApplyPlanner
 					{
 						var targetPatchIndex = targetBaseIndex + sourceBaseIndex;
 						var targetName = BuildFileName(file.ArchiveHex16, targetPatchIndex, file.SidecarKind);
-						ops.Add(new ApplyOperation(
-							ApplyOperationKind.DeployPatch,
-							TargetPath: Path.Combine(gameData, targetName),
-							SourcePath: file.FilePath,
-							ArchiveHex16: file.ArchiveHex16,
-							SourcePatchIndex: file.SourcePatchIndex,
-							TargetPatchIndex: targetPatchIndex,
-							SidecarKind: file.SidecarKind,
-							NodeId: file.NodeId));
+					var mapping = new DeploymentPatchMapping(
+						file.NodeId,
+						file.FilePath,
+						Path.Combine(gameData, targetName),
+						file.ArchiveHex16,
+						file.SourcePatchIndex,
+						targetPatchIndex,
+						file.SidecarKind);
+					mappings.Add(mapping);
+					ops.Add(new ApplyOperation(
+						ApplyOperationKind.DeployPatch,
+						TargetPath: mapping.TargetPath,
+						SourcePath: mapping.SourcePath,
+						ArchiveHex16: mapping.ArchiveHex16,
+						SourcePatchIndex: mapping.SourcePatchIndex,
+						TargetPatchIndex: mapping.TargetPatchIndex,
+						SidecarKind: mapping.SidecarKind,
+						NodeId: mapping.NodeId));
 					}
 				}
 
@@ -110,7 +120,10 @@ public sealed class ApplyPlanner : IApplyPlanner
 			}
 		}
 
-		return ValueTask.FromResult(new ApplyPlan(gameData, profile.Id, profile.Revision, DateTimeOffset.UtcNow, ops, issues));
+		return ValueTask.FromResult(new ApplyPlan(gameData, profile.Id, profile.Revision, DateTimeOffset.UtcNow, ops, issues)
+		{
+			PatchMappings = mappings
+		});
 	}
 
 	private IEnumerable<string> EnumerateExistingPatchFiles(string gameData)

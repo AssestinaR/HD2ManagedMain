@@ -246,7 +246,7 @@ namespace HD2ModManager.Services
             return enabled ? $"为 {available.Count} 个 Mod 启用了。" : "已对全部主体禁用。";
         }
 
-        public ModLibraryService(string libraryPath, HD2ModCore.Application.IModInformationCenter informationCenter)
+        public ModLibraryService(string libraryPath, HD2ModCore.Application.IModInformationCenter informationCenter, OptionActivationStore? optionActivations = null)
         {
             _paths = SettingsService.CreateStoragePaths();
             _manager = CoreServices.CreateModLibraryManager(_paths);
@@ -255,7 +255,7 @@ namespace HD2ModManager.Services
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, _informationCenter);
 		_assetSummaryProjector = CoreServices.CreateModAssetSummaryProjector(_paths);
             _decorationActivations = new DecorationActivationStore(Path.Combine(_paths.ModsDirectory, "decoration-activations.json"));
-            _optionActivations = new OptionActivationStore(Path.Combine(_paths.ModsDirectory, "option-activations.json"));
+            _optionActivations = optionActivations ?? new OptionActivationStore(Path.Combine(_paths.ModsDirectory, "option-activations.json"));
             _decorationAttachments = new DecorationAttachmentService(_paths);
             _snapshot = EmptySnapshot();
             _derivedData = EmptyDerivedData();
@@ -751,8 +751,9 @@ namespace HD2ModManager.Services
                     .Where(nodeId => _snapshot.Nodes.TryGetValue(nodeId, out var node) && node.Metadata.Kind == ModNodeKind.Option)
                     .Select(nodeId => nodeId.Value.ToString("N"))
                     .ToArray();
-                var deletedHosts = nodeIds
-                    .Where(nodeId => _snapshot.Nodes.TryGetValue(nodeId, out var node) && node.Metadata.Kind == ModNodeKind.Standard)
+                var deletedDecorationHosts = nodeIds
+                    .Where(nodeId => _snapshot.Nodes.TryGetValue(nodeId, out var node)
+                        && (node.Metadata.Kind == ModNodeKind.Standard || node.Metadata.Kind == ModNodeKind.Option))
                     .Select(nodeId => nodeId.Value.ToString("N"))
                     .ToArray();
                 if (deletedDecorations.Length > 0)
@@ -768,9 +769,12 @@ namespace HD2ModManager.Services
                 _snapshot = await _manager.DeleteNodesAsync(nodeIds, deleteStoredFiles: true, cancellationToken).ConfigureAwait(false);
                 if (deletedDecorations.Length > 0)
                     await _decorationActivations.RemoveDecorationsAsync(deletedDecorations, cancellationToken).ConfigureAwait(false);
-                foreach (var hostId in deletedHosts)
+                foreach (var hostId in deletedDecorationHosts)
                 {
                     await _decorationActivations.RemoveHostAsync(hostId, cancellationToken).ConfigureAwait(false);
+                }
+                foreach (var hostId in deletedDecorationHosts.Except(deletedOptions, StringComparer.OrdinalIgnoreCase))
+                {
                     await _optionActivations.RemoveHostAsync(hostId, cancellationToken).ConfigureAwait(false);
                 }
                 foreach (var optionId in deletedOptions)
@@ -848,8 +852,12 @@ namespace HD2ModManager.Services
                 if (!File.Exists(path)) return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var plan = JsonSerializer.Deserialize<DecorationPlanDocument>(File.ReadAllText(path), new JsonSerializerOptions(JsonSerializerDefaults.Web));
                 var targets = plan?.Plan?.TargetModGuids ?? [];
-                var standard = _snapshot.Nodes.Values.Where(node => node.Metadata.Kind == ModNodeKind.Standard).Select(node => node.Id.Value.ToString("N")).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                return targets.Where(standard.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var availableHosts = _snapshot.Nodes.Values
+                    .Where(node => node.Metadata.Kind == ModNodeKind.Standard
+                        || (node.Metadata.Kind == ModNodeKind.Option && node.PatchGroups.Count > 0))
+                    .Select(node => node.Id.Value.ToString("N"))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                return targets.Where(availableHosts.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase);
             }
             catch (JsonException) { return new HashSet<string>(StringComparer.OrdinalIgnoreCase); }
         }

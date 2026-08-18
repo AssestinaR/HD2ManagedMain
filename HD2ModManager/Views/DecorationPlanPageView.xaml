@@ -4,6 +4,11 @@
              xmlns:local="clr-namespace:HD2ModManager.Views">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <DataTemplate x:Key="DecorationTargetSearchActions">
+            <Button Style="{StaticResource AppHeaderTextButton}"
+                    Content="{Binding OptionFilterText}"
+                    Click="OnToggleOptionFilterClick"/>
+        </DataTemplate>
     </UserControl.Resources>
     <Grid>
         <Grid.ColumnDefinitions>
@@ -105,10 +110,11 @@
 
         <local:ModListPanel Grid.Column="2"
                             HeaderTitle="选择目标 Mod"
-                            HeaderSummary="仅普通 Mod 可作为目标；不提供详情、右键和底栏操作。"
+                            HeaderSummary="普通 Mod 与选项 Mod 均可作为目标；不提供详情、右键和底栏操作。"
                             EmptyMessage="没有可作为目标的 Mod。"
                             ItemsSource="{Binding TargetMods}"
                             SearchText="{Binding TargetQuery, UpdateSourceTrigger=PropertyChanged}"
+                            SearchActionsTemplate="{StaticResource DecorationTargetSearchActions}"
                             SelectionPolicy="Multiple"
                             SelectionRequested="OnSelectionRequested"/>
     </Grid>

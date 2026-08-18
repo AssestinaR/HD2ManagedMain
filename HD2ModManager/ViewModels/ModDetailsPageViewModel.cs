@@ -106,7 +106,10 @@ namespace HD2ModManager.ViewModels
         public bool IsDecoration => Mod?.IsDecoration == true;
         public bool CanPlanDecoration => !_disposed && CanShowDecorationPlan && TryGetCurrentNode(out _);
         public BulkObservableCollection<ModCardViewModel> HostDecorations { get; } = new();
-        public bool HasHostDecorations => IsStandardMod && HostDecorations.Count > 0;
+        // Empty standard hosts still own their option list; an option becomes a
+        // decoration host only when it owns patch content that can be rebuilt.
+        public bool CanHostAttachments => !IsDecoration && (IsStandardMod || (IsOption && HasPatchContent));
+        public bool HasHostDecorations => CanHostAttachments && HostDecorations.Count > 0;
         private bool HasPatchGroups => Mod?.FileGroups?.Count > 0;
         public BulkObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
@@ -744,6 +747,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(IsOption));
             OnPropertyChanged(nameof(IsStandardMod));
             OnPropertyChanged(nameof(HasPatchContent));
+            OnPropertyChanged(nameof(CanHostAttachments));
             OnPropertyChanged(nameof(CanUsePatchTools));
             OnPropertyChanged(nameof(CanShowDecorationPlan));
             OnPropertyChanged(nameof(HasHostDecorations));
@@ -1034,7 +1038,7 @@ namespace HD2ModManager.ViewModels
 
         public async Task ToggleDecorationForCurrentHostAsync(ModCardViewModel? card)
         {
-            if (card is null || Mod is null || !IsStandardMod || (!card.Mod.IsDecoration && !card.Mod.IsOption)) return;
+            if (card is null || Mod is null || !CanHostAttachments || (!card.Mod.IsDecoration && !card.Mod.IsOption)) return;
             if (card.Mod.IsOption)
             {
                 var optionMessage = await _library.ToggleOptionForHostAsync(card.Mod.Guid, Mod.Guid).ConfigureAwait(true);
@@ -1076,7 +1080,7 @@ namespace HD2ModManager.ViewModels
 
         private void RefreshHostDecorations()
         {
-            if (Mod is null || !IsStandardMod)
+            if (Mod is null || !CanHostAttachments)
             {
                 HostDecorations.ReplaceWith(Array.Empty<ModCardViewModel>());
                 return;

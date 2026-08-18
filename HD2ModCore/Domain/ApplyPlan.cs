@@ -11,6 +11,7 @@ public sealed record ApplyPlan(
 	IReadOnlyList<CoreIssue> Issues,
 	DeploymentMethod DeploymentMethod = DeploymentMethod.HardLink)
 {
+	public IReadOnlyList<DeploymentPatchMapping> PatchMappings { get; init; } = Array.Empty<DeploymentPatchMapping>();
 	public ApplyPlan(string gameDataDirectory, IReadOnlyList<ApplyOperation> operations)
 		: this(gameDataDirectory, null, 0, DateTimeOffset.UtcNow, operations, Array.Empty<CoreIssue>())
 	{

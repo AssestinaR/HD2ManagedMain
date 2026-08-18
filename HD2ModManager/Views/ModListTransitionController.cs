@@ -6,7 +6,6 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
-using HD2ModManager.Services;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views;
@@ -31,9 +30,8 @@ internal sealed class ModListTransitionController : IDisposable
     private TransitionPhase _phase;
     private bool _disposed;
 
-    private static double AnimationSpeed => SettingsService.GetModListAnimationSpeedMultiplier();
     private static TimeSpan Duration(double milliseconds)
-        => TimeSpan.FromMilliseconds(milliseconds / AnimationSpeed);
+        => TimeSpan.FromMilliseconds(milliseconds);
 
     public ModListTransitionController(FrameworkElement owner, ItemsControl itemsList, Canvas overlay, BulkObservableCollection<object> presentedItems)
     {

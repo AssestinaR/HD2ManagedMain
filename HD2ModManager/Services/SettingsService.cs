@@ -29,7 +29,6 @@ namespace HD2ModManager.Services
             public bool AutoCheckGameDataIndex { get; set; } = true;
             public DateTime? LastGameDataIndexCheckUtc { get; set; }
             public int GameDataIndexCheckIntervalHours { get; set; } = 24;
-            public double ModListAnimationSpeedMultiplier { get; set; } = 1.0;
             public bool AutoImportToActiveProfile { get; set; } = true;
         }
 
@@ -129,19 +128,6 @@ namespace HD2ModManager.Services
             catch { return false; }
         }
 
-        public static double GetModListAnimationSpeedMultiplier()
-            => NormalizeAnimationSpeed(LoadAll()?.ModListAnimationSpeedMultiplier);
-
-        public static bool SetModListAnimationSpeedMultiplier(double value)
-        {
-            try
-            {
-                Update(model => model.ModListAnimationSpeedMultiplier = NormalizeAnimationSpeed(value));
-                return true;
-            }
-            catch { return false; }
-        }
-
         public static bool GetAutoImportToActiveProfile() => LoadAll()?.AutoImportToActiveProfile ?? true;
 
         public static bool SetAutoImportToActiveProfile(bool enabled)
@@ -222,12 +208,6 @@ namespace HD2ModManager.Services
         {
             var interval = value ?? 24;
             return interval is 0 or 6 or 24 or 168 ? interval : 24;
-        }
-
-        private static double NormalizeAnimationSpeed(double? value)
-        {
-            var speed = value ?? 1.0;
-            return double.IsFinite(speed) ? Math.Clamp(speed, 0.5, 2.0) : 1.0;
         }
 
         private static void Save(SettingsModel model)
