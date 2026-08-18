@@ -185,7 +185,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 		{
 			throw new InvalidOperationException($"Mod node does not exist: {nodeId.Value:N}");
 		}
-		if (snapshot.Nodes[nodeId].Metadata.Kind == ModNodeKind.Decoration) return snapshot;
+		if (snapshot.Nodes[nodeId].Metadata.Kind != ModNodeKind.Standard) return snapshot;
 
 		return await UpdateProfileEntriesAsync(
 			profileId,
@@ -215,7 +215,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 		{
 			throw new InvalidOperationException($"Mod node does not exist: {missing.Value:N}");
 		}
-		var deployableIds = distinctIds.Where(nodeId => snapshot.Nodes[nodeId].Metadata.Kind != ModNodeKind.Decoration).ToArray();
+		var deployableIds = distinctIds.Where(nodeId => snapshot.Nodes[nodeId].Metadata.Kind == ModNodeKind.Standard).ToArray();
 		if (deployableIds.Length == 0) return snapshot;
 
 		return await UpdateProfileEntriesAsync(
@@ -344,8 +344,8 @@ public sealed class ModLibraryManager : IModLibraryManager
 
 	private static void EnsureNodeIsDeployable(ModNode node)
 	{
-		if (node.Metadata.Kind == ModNodeKind.Decoration)
-			throw new InvalidOperationException($"Decoration Mod cannot be added to a profile: {node.Metadata.Name}");
+		if (node.Metadata.Kind != ModNodeKind.Standard)
+			throw new InvalidOperationException($"{node.Metadata.Kind} Mod cannot be added to a profile: {node.Metadata.Name}");
 	}
 
 	private void TryDeleteStoredRoot(string nodeRelativePath)

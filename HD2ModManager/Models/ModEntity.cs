@@ -17,6 +17,12 @@ namespace HD2ModManager.Models
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
         public string? SourcePath { get; set; }
         public bool IsDecoration { get; set; }
-        public ModCapabilities Capabilities => ModCapabilities.For(IsDecoration);
+        public bool IsOption { get; set; }
+        public string[] HostModGuids { get; set; } = Array.Empty<string>();
+        // This is a lightweight structural fact projected from ModNode.PatchGroups.
+        // It must not depend on FileGroups, which may intentionally be omitted
+        // during the fast library load.
+        public bool HasPatchContent { get; set; }
+        public ModCapabilities Capabilities => ModCapabilities.For(IsDecoration, IsOption, HasPatchContent);
     }
 }

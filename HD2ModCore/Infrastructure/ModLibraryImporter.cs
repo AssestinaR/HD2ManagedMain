@@ -1,6 +1,8 @@
 ﻿using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace HD2ModCore.Infrastructure;
@@ -10,6 +12,7 @@ namespace HD2ModCore.Infrastructure;
 public sealed class ModLibraryImporter : IModLibraryImporter
 {
 	private const int SnapshotVersion = 1;
+	private static readonly HashSet<string> ArchiveExtensions = new(StringComparer.OrdinalIgnoreCase) { ".zip", ".rar", ".7z" };
 
 	private readonly StoragePaths _paths;
 	private readonly IObjectTreeImporter _folderImporter;
@@ -49,15 +52,10 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			throw new DirectoryNotFoundException(full);
 		}
 
-		var sourceName = new DirectoryInfo(full).Name;
-		var manifest = StandardModManifest.TryLoad(full);
-		var tree = await _folderImporter.ImportFolderAsync(full, cancellationToken).ConfigureAwait(false);
-		tree = ApplyStandardManifest(tree, full, manifest);
-		tree = await RestoreExportedNodeIdsAsync(tree, full, cancellationToken).ConfigureAwait(false);
-		var (storedTree, snapshot) = await CommitImportAsync(tree, full, sourceName, preferHardLinks: false, cancellationToken, manifest).ConfigureAwait(false);
-		SetStoredTreeReadOnly(storedTree);
-
-		return new ImportResult(snapshot, storedTree.RootId, sourceName);
+		var units = await DiscoverFolderUnitsAsync(full, cancellationToken).ConfigureAwait(false);
+		if (units.Count == 0)
+			throw new InvalidDataException("No patch or decoration package was found in the selected folder.");
+		return await ImportUnitsAsync(units, cancellationToken).ConfigureAwait(false);
 	}
 
 	public async ValueTask<ImportResult> ImportArchiveAsync(string archiveFilePath, CancellationToken cancellationToken = default)
@@ -68,27 +66,131 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			throw new FileNotFoundException("Archive file not found.", full);
 		}
 
-		var sourceName = Path.GetFileNameWithoutExtension(full);
 		var extractRoot = _temporaryDirectories.Create();
-
-		ImportedObjectTree storedTree;
-		LibrarySnapshot snapshot;
 		try
 		{
 			await _archiveExtractor.ExtractAsync(full, extractRoot, cancellationToken).ConfigureAwait(false);
-			var manifest = StandardModManifest.TryLoad(extractRoot);
-			var tree = await _folderImporter.ImportFolderAsync(extractRoot, cancellationToken).ConfigureAwait(false);
-			tree = ApplyStandardManifest(tree, extractRoot, manifest);
-			tree = await RestoreExportedNodeIdsAsync(tree, extractRoot, cancellationToken).ConfigureAwait(false);
-			(storedTree, snapshot) = await CommitImportAsync(tree, extractRoot, sourceName, preferHardLinks: true, cancellationToken, manifest).ConfigureAwait(false);
+			var root = ResolvePackageRoot(extractRoot);
+			var unit = new ImportSourceUnit(
+				SourceRoot: root.Directory,
+				SourceDisplayName: Path.GetFileNameWithoutExtension(full),
+				PreferHardLinks: true,
+				Manifest: root.Manifest);
+			return await ImportUnitsAsync([unit], cancellationToken).ConfigureAwait(false);
 		}
 		finally
 		{
 			try { _temporaryDirectories.Delete(extractRoot); } catch { }
 		}
-		SetStoredTreeReadOnly(storedTree);
+	}
 
-		return new ImportResult(snapshot, storedTree.RootId, sourceName);
+	private async ValueTask<ImportResult> ImportUnitsAsync(IReadOnlyList<ImportSourceUnit> units, CancellationToken cancellationToken)
+	{
+		ImportedObjectTree? firstStoredTree = null;
+		LibrarySnapshot? latestSnapshot = null;
+		foreach (var unit in units)
+		{
+			try
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				var rawTree = await _folderImporter.ImportFolderAsync(unit.SourceRoot, cancellationToken).ConfigureAwait(false);
+				var plannedTree = unit.Manifest is null
+					? PlanHeuristicImport(rawTree)
+					: PlanManifestImport(rawTree, unit.Manifest);
+				if (plannedTree.Nodes.Count == 0) continue;
+
+				plannedTree = await RestoreExportedNodeIdsAsync(plannedTree, unit.SourceRoot, cancellationToken).ConfigureAwait(false);
+				var (storedTree, snapshot) = await CommitImportAsync(
+					plannedTree,
+					unit.SourceRoot,
+					unit.SourceDisplayName,
+					unit.PreferHardLinks,
+					cancellationToken,
+					unit.Manifest).ConfigureAwait(false);
+				SetStoredTreeReadOnly(storedTree);
+				firstStoredTree ??= storedTree;
+				latestSnapshot = snapshot;
+			}
+			finally
+			{
+				if (unit.TemporaryRoot is not null)
+				{
+					try { _temporaryDirectories.Delete(unit.TemporaryRoot); } catch { }
+				}
+			}
+		}
+
+		if (firstStoredTree is null || latestSnapshot is null)
+			throw new InvalidDataException("No importable patch or decoration package was found.");
+		return new ImportResult(latestSnapshot, firstStoredTree.RootId, firstStoredTree.SourceDisplayName);
+	}
+
+	private static bool ContainsImportablePayload(ImportedObjectTree tree)
+		=> tree.Nodes.Values.Any(node => node.PatchGroups.Count > 0 || node.Metadata.Kind == ModNodeKind.Decoration);
+
+	private static PackageRoot ResolvePackageRoot(string directory)
+	{
+		var manifest = StandardModManifest.TryLoad(directory);
+		if (manifest is not null) return new PackageRoot(directory, manifest);
+
+		try
+		{
+			var directories = Directory.EnumerateDirectories(directory).ToArray();
+			var files = Directory.EnumerateFiles(directory).ToArray();
+			if (directories.Length == 1 && files.Length == 0)
+			{
+				var wrapped = directories[0];
+				manifest = StandardModManifest.TryLoad(wrapped);
+				if (manifest is not null) return new PackageRoot(wrapped, manifest);
+			}
+		}
+		catch (IOException) { }
+		catch (UnauthorizedAccessException) { }
+
+		return new PackageRoot(directory, null);
+	}
+
+	private async ValueTask<IReadOnlyList<ImportSourceUnit>> DiscoverFolderUnitsAsync(string root, CancellationToken cancellationToken)
+	{
+		var packageRoot = ResolvePackageRoot(root);
+		// A manifest owns its complete package tree. Nested archives are then just
+		// package files, not separate user-selected imports.
+		if (packageRoot.Manifest is not null)
+		{
+			return [new ImportSourceUnit(packageRoot.Directory, new DirectoryInfo(root).Name, false, packageRoot.Manifest)];
+		}
+
+		var units = new List<ImportSourceUnit>();
+		var directTree = await _folderImporter.ImportFolderAsync(root, cancellationToken).ConfigureAwait(false);
+		if (ContainsImportablePayload(directTree))
+		{
+			units.Add(new ImportSourceUnit(root, new DirectoryInfo(root).Name, false, null));
+		}
+
+		foreach (var archive in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+			.Where(path => ArchiveExtensions.Contains(Path.GetExtension(path))))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var extracted = _temporaryDirectories.Create();
+			try
+			{
+				await _archiveExtractor.ExtractAsync(archive, extracted, cancellationToken).ConfigureAwait(false);
+				var archiveRoot = ResolvePackageRoot(extracted);
+				var archiveTree = await _folderImporter.ImportFolderAsync(archiveRoot.Directory, cancellationToken).ConfigureAwait(false);
+				if (!ContainsImportablePayload(archiveTree))
+				{
+					_temporaryDirectories.Delete(extracted);
+					continue;
+				}
+				units.Add(new ImportSourceUnit(archiveRoot.Directory, Path.GetFileNameWithoutExtension(archive), true, archiveRoot.Manifest, extracted));
+			}
+			catch
+			{
+				try { _temporaryDirectories.Delete(extracted); } catch { }
+				throw;
+			}
+		}
+		return units;
 	}
 
 	private async ValueTask<(ImportedObjectTree Tree, LibrarySnapshot Snapshot)> CommitImportAsync(ImportedObjectTree tree, string sourceRoot, string sourceName, bool preferHardLinks, CancellationToken cancellationToken, StandardModManifest? manifest = null)
@@ -157,6 +259,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			var destDir = Path.Combine(_paths.ModsDirectory, flatDirName);
 			CopyTopLevelFiles(sourceNodeDir, destDir, preferHardLinks, cancellationToken);
 			CopyResolvedIcon(sourceRoot, destDir, node.RelativePath, manifest, cancellationToken);
+			WriteRelationMetadata(destDir, node.Metadata, cancellationToken);
 			NormalizePatchDirectories(destDir, cancellationToken);
 
 			nodes[kvp.Key] = node with
@@ -246,36 +349,181 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		return tree with { RootId = replacements.GetValueOrDefault(tree.RootId, tree.RootId), Nodes = nodes };
 	}
 
-	private static ImportedObjectTree ApplyStandardManifest(ImportedObjectTree tree, string sourceRoot, StandardModManifest? manifest)
+	private static ImportedObjectTree PlanManifestImport(ImportedObjectTree tree, StandardModManifest manifest)
 	{
-		if (manifest is null) return tree;
 		var entries = BuildManifestEntries(manifest);
-		if (entries.Count == 0) return tree;
+		var rootCandidate = tree.Nodes.Values.FirstOrDefault(node => string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath)));
+		var rootId = rootCandidate?.Id
+			?? (Guid.TryParse(manifest.Guid, out var parsedGuid)
+				? new ModNodeId(parsedGuid)
+				: ModNodeId.New());
+		var hostGuid = rootId.Value.ToString("N");
 		var nodes = new Dictionary<ModNodeId, ModNode>();
+		if (rootCandidate is not null)
+		{
+			var rootEntry = entries.FirstOrDefault(entry => string.IsNullOrEmpty(entry.Path));
+			var rootGuid = rootEntry?.Guid is not null && Guid.TryParse(rootEntry.Guid, out var explicitRoot)
+				? new ModNodeId(explicitRoot)
+				: rootId;
+			nodes[rootGuid] = rootCandidate with
+			{
+				Id = rootGuid,
+				Metadata = rootCandidate.Metadata with
+				{
+					Name = string.IsNullOrWhiteSpace(rootEntry?.Name) ? rootCandidate.Metadata.Name : rootEntry.Name!,
+					Notes = rootEntry?.Notes ?? manifest.Description,
+					Kind = ModNodeKind.Standard,
+					HostModGuids = null,
+					SourcePackageGuid = manifest.Guid,
+					SourcePackagePath = null,
+				},
+			};
+			rootId = rootGuid;
+			hostGuid = rootId.Value.ToString("N");
+		}
+		else
+		{
+			var rootEntry = entries.FirstOrDefault(entry => string.IsNullOrEmpty(entry.Path));
+			nodes[rootId] = new ModNode(
+				rootId,
+				string.Empty,
+				new ModNodeMetadata(
+					string.IsNullOrWhiteSpace(rootEntry?.Name) ? tree.SourceDisplayName : rootEntry.Name!,
+					rootEntry?.Notes ?? manifest.Description,
+					DateTimeOffset.UtcNow,
+					null,
+					ModNodeKind.Standard,
+					null,
+					manifest.Guid),
+				Array.Empty<PatchGroupKey>(),
+				Array.Empty<ModNodeId>());
+		}
+
 		foreach (var node in tree.Nodes.Values)
 		{
 			var path = NormalizeRelativePath(node.RelativePath);
-			var entry = entries
-				.Where(candidate => string.Equals(candidate.Path, path, StringComparison.OrdinalIgnoreCase))
-				.OrderByDescending(candidate => candidate.Path.Length)
-				.FirstOrDefault();
-			if (entry is null)
+			if (string.IsNullOrEmpty(path)) continue;
+			if (node.Metadata.Kind == ModNodeKind.Decoration)
 			{
 				nodes[node.Id] = node;
 				continue;
 			}
 
-			var id = node.Id;
-			if (Guid.TryParse(entry.Guid, out var restored)) id = new ModNodeId(restored);
-			var name = string.IsNullOrWhiteSpace(entry.Name) ? node.Metadata.Name : entry.Name!;
+			var entry = FindManifestEntry(entries, path);
+			if (entry?.Kind != ModNodeKind.Option) continue;
+			var id = Guid.TryParse(entry.Guid, out var restored)
+				? new ModNodeId(restored)
+				: CreateStableNodeGuid(manifest.Guid ?? hostGuid, path) is var generated
+					? new ModNodeId(generated)
+					: node.Id;
 			nodes[id] = node with
 			{
 				Id = id,
-				Metadata = node.Metadata with { Name = name, Notes = entry.Notes },
+				Metadata = node.Metadata with
+				{
+					Name = string.IsNullOrWhiteSpace(entry.Name) ? node.Metadata.Name : entry.Name!,
+					Notes = entry.Notes,
+					Kind = ModNodeKind.Option,
+					HostModGuids = [hostGuid],
+					SourcePackageGuid = manifest.Guid,
+					SourcePackagePath = path,
+				},
 			};
 		}
-		if (nodes.Count != nodes.Keys.Distinct().Count()) return tree;
-		var rootId = nodes.ContainsKey(tree.RootId) ? tree.RootId : nodes.Keys.FirstOrDefault();
+
+		return tree with { RootId = rootId, Nodes = nodes };
+	}
+
+	private static ManifestEntry? FindManifestEntry(IReadOnlyList<ManifestEntry> entries, string path)
+	{
+		// Prefer the exact path. This is the normal community-manifest layout.
+		var exact = entries.FirstOrDefault(candidate =>
+			string.Equals(candidate.Path, path, StringComparison.OrdinalIgnoreCase));
+		if (exact is not null) return exact;
+
+		if (string.IsNullOrEmpty(path)) return entries.FirstOrDefault(candidate => string.IsNullOrEmpty(candidate.Path));
+
+		// Archives are often wrapped in one extra directory even though the
+		// manifest paths are relative to the package root. Match a manifest path
+		// against a suffix only when it is a complete path segment.
+		var suffixMatches = entries
+			.Where(candidate => !string.IsNullOrEmpty(candidate.Path)
+				&& path.EndsWith('/' + candidate.Path, StringComparison.OrdinalIgnoreCase))
+			.OrderByDescending(candidate => candidate.Path.Length)
+			.ToArray();
+		if (suffixMatches.Length > 0) return suffixMatches[0];
+
+		// Some manifests include an option directory while the actual patch is
+		// stored in one of its child directories. In that case the child remains
+		// part of the same option branch and must not silently become a normal Mod.
+		return entries
+			.Where(candidate => candidate.Kind == ModNodeKind.Option
+				&& !string.IsNullOrEmpty(candidate.Path)
+				&& (path.StartsWith(candidate.Path + '/', StringComparison.OrdinalIgnoreCase)
+					|| path.Contains('/' + candidate.Path + '/', StringComparison.OrdinalIgnoreCase)
+					|| path.EndsWith('/' + candidate.Path, StringComparison.OrdinalIgnoreCase)))
+			.OrderByDescending(candidate => candidate.Path.Length)
+			.FirstOrDefault();
+	}
+
+	private static ImportedObjectTree PlanHeuristicImport(ImportedObjectTree tree)
+	{
+		var payloadNodes = tree.Nodes.Values
+			.Where(node => node.PatchGroups.Count > 0 || node.Metadata.Kind == ModNodeKind.Decoration)
+			.OrderBy(node => NormalizeRelativePath(node.RelativePath), StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+		if (payloadNodes.Length == 0) return tree with { Nodes = new Dictionary<ModNodeId, ModNode>() };
+		if (payloadNodes.Length == 1)
+		{
+			var only = payloadNodes[0];
+			return tree with { RootId = only.Id, Nodes = new Dictionary<ModNodeId, ModNode> { [only.Id] = only with { Metadata = only.Metadata with { Kind = only.Metadata.Kind == ModNodeKind.Decoration ? ModNodeKind.Decoration : ModNodeKind.Standard } } } };
+		}
+
+		var existingRoot = payloadNodes.FirstOrDefault(node => string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath)));
+		var rootId = existingRoot?.Id ?? ModNodeId.New();
+		var hostGuid = rootId.Value.ToString("N");
+		var nodes = new Dictionary<ModNodeId, ModNode>();
+		if (existingRoot is not null)
+		{
+			nodes[rootId] = existingRoot with
+			{
+				Metadata = existingRoot.Metadata with
+				{
+					Kind = existingRoot.Metadata.Kind == ModNodeKind.Decoration ? ModNodeKind.Decoration : ModNodeKind.Standard,
+					HostModGuids = null,
+					SourcePackagePath = null,
+				},
+			};
+		}
+		else
+		{
+			nodes[rootId] = new ModNode(
+				rootId,
+				string.Empty,
+				new ModNodeMetadata(tree.SourceDisplayName, null, DateTimeOffset.UtcNow, null, ModNodeKind.Standard),
+				Array.Empty<PatchGroupKey>(),
+				Array.Empty<ModNodeId>());
+		}
+
+		foreach (var node in payloadNodes)
+		{
+			var path = NormalizeRelativePath(node.RelativePath);
+			if (string.IsNullOrEmpty(path)) continue;
+			if (node.Metadata.Kind == ModNodeKind.Decoration)
+			{
+				nodes[node.Id] = node;
+				continue;
+			}
+			nodes[node.Id] = node with
+			{
+				Metadata = node.Metadata with
+				{
+					Kind = ModNodeKind.Option,
+					HostModGuids = [hostGuid],
+					SourcePackagePath = path,
+				},
+			};
+		}
 		return tree with { RootId = rootId, Nodes = nodes };
 	}
 
@@ -283,23 +531,35 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	{
 		var result = new List<ManifestEntry>
 		{
-			new(string.Empty, manifest.Name, manifest.Description, manifest.IconPath, manifest.Guid),
+			new(string.Empty, manifest.Name, manifest.Description, manifest.IconPath, manifest.Guid, ModNodeKind.Standard, null),
 		};
 		foreach (var option in manifest.Options)
 		{
 			foreach (var include in option.Include ?? [])
 			{
 				var path = NormalizeRelativePath(include);
-				if (!string.IsNullOrEmpty(path)) result.Add(new(path, option.Name, option.Description, option.Image, FindNodeGuid(manifest, path)));
+				if (!string.IsNullOrEmpty(path))
+					result.Add(CreateOptionEntry(manifest, path, option.Name, option.Description, option.Image));
 			}
 			foreach (var sub in option.SubOptions ?? [])
 			foreach (var include in sub.Include ?? [])
 			{
 				var path = NormalizeRelativePath(include);
-				if (!string.IsNullOrEmpty(path)) result.Add(new(path, sub.Name, sub.Description, sub.Image, FindNodeGuid(manifest, path)));
+				if (!string.IsNullOrEmpty(path))
+					result.Add(CreateOptionEntry(manifest, path, sub.Name, sub.Description, sub.Image));
 			}
 		}
 		return result;
+	}
+
+	private static ManifestEntry CreateOptionEntry(StandardModManifest manifest, string path, string? name, string? notes, string? image)
+	{
+		var explicitGuid = FindNodeGuid(manifest, path);
+		var stableGuid = Guid.TryParse(explicitGuid, out _)
+			? explicitGuid
+			: CreateStableNodeGuid(manifest.Guid, path).ToString("D");
+		var hostGuid = Guid.TryParse(manifest.Guid, out var parsedHost) ? new[] { parsedHost.ToString("N") } : Array.Empty<string>();
+		return new(path, name, notes, image, stableGuid, ModNodeKind.Option, hostGuid);
 	}
 
 	private static string? FindNodeGuid(StandardModManifest manifest, string path)
@@ -326,7 +586,51 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		File.Copy(source, Path.Combine(destinationDirectory, "icon" + extension), overwrite: true);
 	}
 
-	private sealed record ManifestEntry(string Path, string? Name, string? Notes, string? Image, string? Guid);
+	private sealed record ManifestEntry(
+		string Path,
+		string? Name,
+		string? Notes,
+		string? Image,
+		string? Guid,
+		ModNodeKind Kind,
+		IReadOnlyList<string>? HostModGuids);
+
+	private sealed record PackageRoot(string Directory, StandardModManifest? Manifest);
+
+	private sealed record ImportSourceUnit(
+		string SourceRoot,
+		string SourceDisplayName,
+		bool PreferHardLinks,
+		StandardModManifest? Manifest,
+		string? TemporaryRoot = null);
+
+	private static Guid CreateStableNodeGuid(string? packageGuid, string path)
+	{
+		var input = $"HD2ModManager:manifest-node:{packageGuid ?? "unknown"}:{NormalizeRelativePath(path).ToLowerInvariant()}";
+		var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+		var guidBytes = bytes[..16];
+		guidBytes[6] = (byte)((guidBytes[6] & 0x0F) | 0x50);
+		guidBytes[8] = (byte)((guidBytes[8] & 0x3F) | 0x80);
+		return new Guid(guidBytes);
+	}
+
+	private static void WriteRelationMetadata(string destinationDirectory, ModNodeMetadata metadata, CancellationToken cancellationToken)
+	{
+		if (metadata.Kind != ModNodeKind.Option || metadata.HostModGuids is not { Count: > 0 }) return;
+		cancellationToken.ThrowIfCancellationRequested();
+		var relation = new OptionRelationDocument
+		{
+			Version = 1,
+			Kind = "Option",
+			HostModGuids = metadata.HostModGuids.ToList(),
+			SourcePackageGuid = metadata.SourcePackageGuid,
+			SourcePath = metadata.SourcePackagePath,
+		};
+		File.WriteAllText(
+			Path.Combine(destinationDirectory, "option.json"),
+			JsonSerializer.Serialize(relation, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
+	}
+
 
 	private static string NormalizeRelativePath(string? path)
 		=> string.IsNullOrWhiteSpace(path) || path == "." ? string.Empty : path.Replace('\\', '/').Trim('/');

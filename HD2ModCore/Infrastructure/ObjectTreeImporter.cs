@@ -1,5 +1,6 @@
 ﻿using HD2ModCore.Application;
 using HD2ModCore.Domain;
+using System.Text.Json;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -32,8 +33,9 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var patchGroups = CollectPatchGroups(dir);
-			var isDecoration = patchGroups.Count == 0 && IsDecorationPackageDirectory(dir);
-			if (patchGroups.Count == 0 && !isDecoration)
+			var isDecoration = IsDecorationPackageDirectory(dir);
+			var option = !isDecoration ? TryReadOptionRelation(dir) : null;
+			if (patchGroups.Count == 0 && !isDecoration && option is null)
 			{
 				continue;
 			}
@@ -50,7 +52,10 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 				Notes: null,
 				CreatedUtc: DateTimeOffset.UtcNow,
 				ModifiedUtc: null,
-				Kind: isDecoration ? ModNodeKind.Decoration : ModNodeKind.Standard);
+				Kind: isDecoration ? ModNodeKind.Decoration : option is not null ? ModNodeKind.Option : ModNodeKind.Standard,
+				HostModGuids: option?.HostModGuids,
+				SourcePackageGuid: option?.SourcePackageGuid,
+				SourcePackagePath: option?.SourcePath);
 
 			nodes[id] = new ModNode(
 				Id: id,
@@ -74,6 +79,24 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 		=> File.Exists(Path.Combine(dir.FullName, "decoration.json"))
 			&& (File.Exists(Path.Combine(dir.FullName, "stocky.bin"))
 				|| File.Exists(Path.Combine(dir.FullName, "slim.bin")));
+
+	private static OptionRelationDocument? TryReadOptionRelation(DirectoryInfo dir)
+	{
+		var path = Path.Combine(dir.FullName, "option.json");
+		if (!File.Exists(path)) return null;
+		try
+		{
+			var relation = JsonSerializer.Deserialize<OptionRelationDocument>(File.ReadAllText(path), new JsonSerializerOptions(JsonSerializerDefaults.Web)
+			{
+				PropertyNameCaseInsensitive = true,
+			});
+			return relation is { HostModGuids.Count: > 0 } && string.Equals(relation.Kind, "Option", StringComparison.OrdinalIgnoreCase)
+				? relation
+				: null;
+		}
+		catch (JsonException) { return null; }
+		catch (IOException) { return null; }
+	}
 
 	private List<PatchGroupKey> CollectPatchGroups(DirectoryInfo dir)
 	{

@@ -122,5 +122,11 @@ namespace HD2ModManager.Views
             if (VM is not null) VM.ShowDecorations = !VM.ShowDecorations;
         }
 
+        private void OnToggleOptionFilterClick(object sender, RoutedEventArgs e)
+        {
+            EnsureVM();
+            if (VM is not null) VM.ShowOptions = !VM.ShowOptions;
+        }
+
     }
 }

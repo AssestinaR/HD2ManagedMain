@@ -10,7 +10,14 @@ public sealed record ModCapabilities(
     bool SupportsDecorationPlan,
     bool SupportsDecorationAttachments)
 {
-    public static ModCapabilities For(bool isDecoration) => isDecoration
-        ? new(false, false, false, false, false, true, false)
-        : new(true, true, true, true, true, false, true);
+    public static ModCapabilities For(bool isDecoration, bool isOption = false, bool hasPatch = true)
+        => isDecoration
+            ? new(false, false, false, false, false, true, false)
+            : isOption
+                ? new(false, false, false, false, false, false, false)
+                : hasPatch
+                    ? new(true, true, true, true, true, false, true)
+                    // An empty host remains selectable so its attached options
+                    // can participate in deployment, but exposes no patch tools.
+                    : new(true, false, false, false, false, false, false);
 }

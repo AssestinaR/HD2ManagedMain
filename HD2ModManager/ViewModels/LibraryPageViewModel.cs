@@ -54,6 +54,7 @@ namespace HD2ModManager.ViewModels
         public string EmptyMessage => _hideSelectedProfileMembers && _profiles?.SelectedProfile is not null ? "所有 Mod 都已加入此配置。" : "模组库中没有可显示的 Mod。";
         private bool _showOnlyOutdated;
         private bool _showDecorations;
+        private bool _showOptions;
         public bool ShowOnlyOutdated
         {
             get => _showOnlyOutdated;
@@ -76,6 +77,17 @@ namespace HD2ModManager.ViewModels
             }
         }
         public string DecorationFilterText => ShowDecorations ? "隐藏装饰" : "显示装饰";
+        public bool ShowOptions
+        {
+            get => _showOptions;
+            set
+            {
+                if (!SetField(ref _showOptions, value)) return;
+                OnPropertyChanged(nameof(OptionFilterText));
+                Refresh(ListTransitionKind.Filter);
+            }
+        }
+        public string OptionFilterText => ShowOptions ? "隐藏选项" : "显示选项";
 
         public RelayCommand RemoveModCommand { get; }
         public RelayCommand ToggleSelectionCommand { get; }
@@ -215,6 +227,7 @@ namespace HD2ModManager.ViewModels
         {
             var all = _library.All().ToList();
             if (!ShowDecorations) all = all.Where(mod => !mod.IsDecoration).ToList();
+            if (!ShowOptions) all = all.Where(mod => !mod.IsOption).ToList();
             if (_hideSelectedProfileMembers && _profiles?.SelectedProfile is not null)
             {
                 var selectedIds = _profiles!.SelectedProfile!.Entries.Select(entry => entry.NodeId.Value.ToString("N")).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -236,8 +249,8 @@ namespace HD2ModManager.ViewModels
                     var derived = _library.GetDerivedData(mod.Guid);
                     _userStatuses.TryGetValue(mod.Guid, out var status);
                     _thumbnailSources.TryGetValue(mod.Guid, out var thumbnailSource);
-                    var decorationStatus = mod.IsDecoration ? _library.GetDecorationActivationSummary(mod.Guid).StatusText : null;
-                    return new ModCardViewModel(mod, IsSelected(mod.Guid), mod.IsDecoration ? null : derived?.AssetSummary, mod.IsDecoration ? null : derived?.UnitCompatibility, status, thumbnailSource, decorationStatus);
+                    var decorationStatus = mod.IsDecoration ? _library.GetDecorationActivationSummary(mod.Guid).StatusText : mod.IsOption ? _library.GetOptionActivationStatus(mod.Guid) : null;
+                    return new ModCardViewModel(mod, IsSelected(mod.Guid), mod.IsDecoration || mod.IsOption ? null : derived?.AssetSummary, mod.IsDecoration || mod.IsOption ? null : derived?.UnitCompatibility, status, thumbnailSource, decorationStatus);
                 })
                 .ToList();
             Items.ReplaceWith(cards, transitionKind);
@@ -377,7 +390,7 @@ namespace HD2ModManager.ViewModels
                     ? Items
                     : Items.Where(item => guids.Contains(item.Mod.Guid));
                 foreach (var card in cards)
-                    card.UpdatePresentation(_library.Get(card.Mod.Guid), _library.GetDerivedData(card.Mod.Guid), _userStatuses.GetValueOrDefault(card.Mod.Guid), _thumbnailSources.GetValueOrDefault(card.Mod.Guid), card.Mod.IsDecoration ? _library.GetDecorationActivationSummary(card.Mod.Guid).StatusText : null);
+                    card.UpdatePresentation(_library.Get(card.Mod.Guid), card.Mod.IsDecoration || card.Mod.IsOption ? null : _library.GetDerivedData(card.Mod.Guid), _userStatuses.GetValueOrDefault(card.Mod.Guid), _thumbnailSources.GetValueOrDefault(card.Mod.Guid), card.Mod.IsDecoration ? _library.GetDecorationActivationSummary(card.Mod.Guid).StatusText : card.Mod.IsOption ? _library.GetOptionActivationStatus(card.Mod.Guid) : null);
                 OnPropertyChanged(nameof(ItemCountText));
                 OnPropertyChanged(nameof(EmptyMessage));
             }
@@ -430,9 +443,11 @@ namespace HD2ModManager.ViewModels
         private void AddToProfile(ModCardViewModel? card)
         {
             if (card == null || _profiles == null) return;
-            if (card.Mod.IsDecoration)
+            if (card.Mod.IsDecoration || card.Mod.IsOption)
             {
-                _notifications?.Show("装饰 Mod 不能加入配置；合并器接入后将在目标主 Mod 中启用。", NotificationLevel.Info);
+                _notifications?.Show(card.Mod.IsDecoration
+                    ? "装饰 Mod 不能加入配置；请在主体 Mod 中启用。"
+                    : "选项 Mod 不能加入配置；请在主体 Mod 中启用。", NotificationLevel.Info);
                 return;
             }
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
@@ -527,10 +542,13 @@ namespace HD2ModManager.ViewModels
         public HD2ModManager.Models.ModEntity Mod => _mod;
         public string SelectionKey => Mod.Guid;
         public bool IsDecoration => Mod.IsDecoration;
+        public bool IsOption => Mod.IsOption;
+        public bool IsAttachable => Mod.IsDecoration || Mod.IsOption;
+        public bool CanJoinProfile => Mod.Capabilities.CanJoinProfile;
         private string? _thumbnailSourcePath;
         public ModAssetSummary? AssetSummary => _assetSummary;
         public string Name => Mod.Name;
-        public string AssetSummaryText => Mod.IsDecoration
+        public string AssetSummaryText => Mod.IsDecoration || Mod.IsOption
             ? DecorationStatus ?? "尚未启用。"
             : ModAssetSummaryFormatter.Format(AssetSummary);
         public bool ShowsPatchMetadata => Mod.Capabilities.ShowsPatchAssets;
@@ -544,8 +562,8 @@ namespace HD2ModManager.ViewModels
         public ModUnitCompatibilityReport? UnitCompatibility => _unitCompatibility;
         public bool IsModelOutdated => UnitCompatibility?.IsOutdated == true;
         public string ModelCompatibilitySummary => UnitCompatibility?.Summary ?? "模型版本尚未检测。";
-        public string UserStatusTitle => Mod.IsDecoration ? "装饰 Mod" : UserStatus?.Title ?? "状态未知";
-        public string UserStatusSummary => Mod.IsDecoration ? DecorationStatus ?? "尚未启用。" : UserStatus?.Summary ?? "正在读取状态。";
+        public string UserStatusTitle => Mod.IsDecoration ? "装饰 Mod" : Mod.IsOption ? "选项 Mod" : UserStatus?.Title ?? "状态未知";
+        public string UserStatusSummary => Mod.IsDecoration || Mod.IsOption ? DecorationStatus ?? "尚未启用。" : UserStatus?.Summary ?? "正在读取状态。";
         public bool HasUserStatus => UserStatus is not null;
         public string? DecorationStatus => _decorationStatus;
 
@@ -580,7 +598,7 @@ namespace HD2ModManager.ViewModels
             _userStatus = userStatus;
             _decorationStatus = decorationStatus;
             if (!string.IsNullOrWhiteSpace(thumbnailSourcePath)) _thumbnailSourcePath = thumbnailSourcePath;
-            OnPropertyChanged(nameof(Mod)); OnPropertyChanged(nameof(Name)); OnPropertyChanged(nameof(IsDecoration));
+            OnPropertyChanged(nameof(Mod)); OnPropertyChanged(nameof(Name)); OnPropertyChanged(nameof(IsDecoration)); OnPropertyChanged(nameof(IsOption)); OnPropertyChanged(nameof(IsAttachable)); OnPropertyChanged(nameof(CanJoinProfile));
             OnPropertyChanged(nameof(AssetSummary)); OnPropertyChanged(nameof(AssetSummaryText)); OnPropertyChanged(nameof(UnitCompatibility));
             OnPropertyChanged(nameof(IsModelOutdated)); OnPropertyChanged(nameof(UserStatus)); OnPropertyChanged(nameof(UserStatusTitle));
             OnPropertyChanged(nameof(UserStatusSummary)); OnPropertyChanged(nameof(DecorationStatus)); OnPropertyChanged(nameof(ImagePath));

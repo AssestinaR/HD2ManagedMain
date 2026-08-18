@@ -161,7 +161,7 @@ public static class CoreServices
 	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths)
 		=> CreateProfileApplyService(paths, CreateModInformationCenter(paths));
 	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new ProfileApplyService(informationCenter, CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService());
+		=> new ProfileApplyService(informationCenter, CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService(), paths);
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IProfileDeploymentCoordinator CreateProfileDeploymentCoordinator(StoragePaths paths, Func<string?> gameDataDirectoryProvider, IDeploymentDelay? delay = null, TimeSpan? bufferDuration = null)
 		=> CreateProfileDeploymentCoordinator(paths, gameDataDirectoryProvider, CreateModInformationCenter(paths), delay, bufferDuration);

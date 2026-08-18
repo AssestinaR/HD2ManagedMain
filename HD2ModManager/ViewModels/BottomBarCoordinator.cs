@@ -64,10 +64,11 @@ namespace HD2ModManager.ViewModels
         public bool IsProfileSelection => HasSelection && string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase);
         public bool IsDecorationHostSelection => HasSelection && _selection.Scope?.StartsWith("DecorationHost:", StringComparison.Ordinal) == true;
         private bool HasSelectedDecorations => _selection.SelectedIds.Any(id => _library.Get(id)?.IsDecoration == true);
-        private bool HasSelectedStandardMods => _selection.SelectedIds.Any(id => _library.Get(id)?.IsDecoration != true);
+        private bool HasSelectedOptions => _selection.SelectedIds.Any(id => _library.Get(id)?.IsOption == true);
+        private bool HasSelectedStandardMods => _selection.SelectedIds.Any(id => _library.Get(id)?.Capabilities.CanJoinProfile == true);
         public bool ShowAddToProfile => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
-        public bool ShowEnableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && HasSelectedDecorations;
-        public bool ShowDisableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && HasSelectedDecorations;
+        public bool ShowEnableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && (HasSelectedDecorations || HasSelectedOptions);
+        public bool ShowDisableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && (HasSelectedDecorations || HasSelectedOptions);
         public bool ShowDelete => IsLibrarySelection;
         public bool ShowRemove => IsProfileSelection;
         public bool ShowDeleteFromLibrary => IsProfileSelection;

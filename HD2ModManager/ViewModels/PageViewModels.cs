@@ -1108,6 +1108,16 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        public bool AutoImportToActiveProfile
+        {
+            get => SettingsService.GetAutoImportToActiveProfile();
+            set
+            {
+                SettingsService.SetAutoImportToActiveProfile(value);
+                OnPropertyChanged(nameof(AutoImportToActiveProfile));
+            }
+        }
+
         public bool AutoUpdateAssetMetadata
         {
             get => SettingsService.GetAutoUpdateAssetMetadata();
@@ -1239,6 +1249,7 @@ namespace HD2ModManager.ViewModels
         {
             OnPropertyChanged(nameof(Language));
             OnPropertyChanged(nameof(ModListAnimationSpeedMultiplier));
+            OnPropertyChanged(nameof(AutoImportToActiveProfile));
             OnPropertyChanged(nameof(AutoUpdateAssetMetadata));
             OnPropertyChanged(nameof(AssetMetadataCheckIntervalHours));
             OnPropertyChanged(nameof(AssetMetadataLastCheckText));

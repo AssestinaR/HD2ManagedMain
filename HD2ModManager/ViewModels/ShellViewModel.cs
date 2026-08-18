@@ -204,6 +204,7 @@ namespace HD2ModManager.ViewModels
                 }
             };
             _libraryService.SnapshotChanged += (_, _) => QueueLibrarySnapshotChanged();
+            _libraryService.OptionActivationChanged += (_, _) => _deploymentCoordinator.NotifyActiveProfileChanged();
             _backgroundTasks.Changed += (_, args) => RefreshOnUiThread(() =>
             {
                 if (!args.RequiresProjectionRefresh) return;
@@ -699,6 +700,22 @@ namespace HD2ModManager.ViewModels
                 {
                     await _libraryService.SynchronizeAsync().ConfigureAwait(false);
                     _libraryService.NotifyImportCompleted();
+                    if (SettingsService.GetAutoImportToActiveProfile() && importedModIds.Count > 0 && _profileService.ActiveProfile is not null)
+                    {
+                        await _profileService.ReloadFromLibraryAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
+                        var deployable = importedModIds
+                            .Where(id => _libraryService.Get(id)?.Capabilities.CanJoinProfile == true)
+                            .ToArray();
+                        if (deployable.Length > 0)
+                        {
+                            var added = await _profileService.AddModsToActiveAsync(deployable, _lifetimeCancellation.Token).ConfigureAwait(false);
+                            if (added > 0)
+                            {
+                                LogService.Info($"导入后自动加入活动配置：新增={added}，选项/装饰未加入配置。即将统一部署一次。");
+                                await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
+                            }
+                        }
+                    }
                     QueueCurrentPageRefresh("导入后库同步完成");
                 }
             }
@@ -1440,7 +1457,12 @@ namespace HD2ModManager.ViewModels
                 .Where(mod => mod?.IsDecoration == true)
                 .Cast<HD2ModManager.Models.ModEntity>()
                 .ToArray();
-            if (decorations.Length == 0) return;
+            var options = _selection.SelectedIds
+                .Select(id => _libraryService.Get(id))
+                .Where(mod => mod?.IsOption == true)
+                .Cast<HD2ModManager.Models.ModEntity>()
+                .ToArray();
+            if (decorations.Length == 0 && options.Length == 0) return;
 
             var hostId = _selection.Scope?.StartsWith("DecorationHost:", StringComparison.Ordinal) == true
                 ? _selection.Scope["DecorationHost:".Length..]
@@ -1452,6 +1474,13 @@ namespace HD2ModManager.ViewModels
                 var result = await _libraryService.ApplyDecorationActivationBatchAsync(
                     decorations.Select(decoration => new DecorationActivationMutation(decoration.Guid, enabled, hostId)).ToArray(),
                     task.CancellationToken);
+                var optionMessages = new List<string>();
+                foreach (var option in options)
+                {
+                    optionMessages.Add(hostId is null
+                        ? await _libraryService.SetOptionEnabledForAllAvailableHostsAsync(option.Guid, enabled, task.CancellationToken)
+                        : await SetOptionEnabledForHostAsync(option.Guid, hostId, enabled, task.CancellationToken));
+                }
                 task.MarkCompleted();
                 var stateText = enabled ? "已启用选中的装饰。" : "已禁用选中的装饰。";
                 _notificationService.Show(result.ChangedDecorationCount == 0 ? "选中的装饰状态没有变化。" : stateText);
@@ -1460,6 +1489,13 @@ namespace HD2ModManager.ViewModels
             }
             catch (OperationCanceledException) { task.MarkCanceled(); }
             catch (Exception exception) { task.MarkFailed(exception.Message); }
+        }
+
+        private async Task<string> SetOptionEnabledForHostAsync(string optionId, string hostId, bool enabled, CancellationToken cancellationToken)
+        {
+            var current = _libraryService.IsOptionEnabledForHost(optionId, hostId);
+            if (current == enabled) return "选项状态没有变化。";
+            return await _libraryService.ToggleOptionForHostAsync(optionId, hostId, cancellationToken).ConfigureAwait(false);
         }
 
         private async Task ExecuteSelectionDeleteFromLibraryAsync()

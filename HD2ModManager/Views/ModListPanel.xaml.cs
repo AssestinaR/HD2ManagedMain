@@ -770,11 +770,11 @@ public sealed class DecorationRowActionVisibilityConverter : System.Windows.Data
     {
         if (values.Length < 2 || values[0] is not ModListRowAction available || parameter is not ModListRowAction requested || !available.HasFlag(requested))
             return Visibility.Collapsed;
-        var isDecoration = values[1] is true;
+        var isAllowed = values[1] is true;
         return requested switch
         {
-            ModListRowAction.AddToProfile when isDecoration => Visibility.Collapsed,
-            ModListRowAction.ToggleDecoration when !isDecoration => Visibility.Collapsed,
+            ModListRowAction.AddToProfile when !isAllowed => Visibility.Collapsed,
+            ModListRowAction.ToggleDecoration when !isAllowed => Visibility.Collapsed,
             _ => Visibility.Visible
         };
     }

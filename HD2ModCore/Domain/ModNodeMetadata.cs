@@ -7,4 +7,7 @@ public sealed record ModNodeMetadata(
 	string? Notes,
 	DateTimeOffset CreatedUtc,
 	DateTimeOffset? ModifiedUtc,
-	ModNodeKind Kind = ModNodeKind.Standard);
+	ModNodeKind Kind = ModNodeKind.Standard,
+	IReadOnlyList<string>? HostModGuids = null,
+	string? SourcePackageGuid = null,
+	string? SourcePackagePath = null);

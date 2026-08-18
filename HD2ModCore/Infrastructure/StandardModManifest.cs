@@ -57,3 +57,14 @@ internal sealed class StandardModManifestNode
     public string? Name { get; init; }
     public string? Notes { get; init; }
 }
+
+// Stored beside an imported option node so the relationship remains recoverable
+// even if the library snapshot or the original package manifest is lost.
+internal sealed class OptionRelationDocument
+{
+    public int Version { get; init; }
+    public string? Kind { get; init; }
+    public List<string> HostModGuids { get; init; } = [];
+    public string? SourcePackageGuid { get; init; }
+    public string? SourcePath { get; init; }
+}

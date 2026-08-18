@@ -47,7 +47,7 @@
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <Button Grid.Column="0" Style="{StaticResource AppSecondaryButton}" Content="详情表格" ToolTip="查看 Patch、AssetKey 与诊断信息" Command="{Binding OpenAdvancedDetailsCommand}" Padding="14,6" Visibility="{Binding IsStandardMod, Converter={StaticResource BoolToVis}}"/>
+                        <Button Grid.Column="0" Style="{StaticResource AppSecondaryButton}" Content="详情表格" ToolTip="查看 Patch、AssetKey 与诊断信息" Command="{Binding OpenAdvancedDetailsCommand}" Padding="14,6" Visibility="{Binding CanUsePatchTools, Converter={StaticResource BoolToVis}}"/>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                             <Button Style="{StaticResource AppSecondaryButton}" Content="打开文件夹" Command="{Binding OpenFolderCommand}" Padding="14,6"/>
                             <Button Style="{StaticResource AppSecondaryButton}" Content="修改图像" Click="OnSelectImageClick" Padding="14,6" Margin="8,0,0,0"/>
@@ -55,13 +55,13 @@
                             <Button Style="{StaticResource AppSecondaryButton}" Content="修改备注" Click="OnEditDescriptionClick" Padding="14,6" Margin="8,0,0,0"/>
                         </StackPanel>
                     </Grid>
-                    <WrapPanel Grid.Row="1" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding IsStandardMod, Converter={StaticResource BoolToVis}}">
+                    <WrapPanel Grid.Row="1" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding CanUsePatchTools, Converter={StaticResource BoolToVis}}">
                         <Button Style="{StaticResource AppSecondaryButton}" Content="修复 patch" Command="{Binding RebuildSameKeyCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="生成替换其他护甲的模组" Command="{Binding PlanCrossArmorTransferCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="拆分内嵌材质" Command="{Binding SplitEmbeddedMaterialsCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="集成外部材质" Command="{Binding EmbedExternalMaterialsCommand}"/>
                     </WrapPanel>
-                    <WrapPanel Grid.Row="2" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding IsStandardMod, Converter={StaticResource BoolToVis}}">
+                    <WrapPanel Grid.Row="2" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding CanUsePatchTools, Converter={StaticResource BoolToVis}}">
                         <Button Style="{StaticResource AppSecondaryButton}" Content="生成装饰 Mod" Command="{Binding PlanDecorationCommand}"/>
                     </WrapPanel>
                 </Grid>
@@ -75,7 +75,7 @@
                 </StackPanel>
             </Border>
 
-            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding IsStandardMod, Converter={StaticResource BoolToVis}}">
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding CanUsePatchTools, Converter={StaticResource BoolToVis}}">
                 <StackPanel>
                     <TextBlock Text="资产标签" Style="{StaticResource SectionTitle}"/>
                     <TextBlock Text="{Binding AssetTagsString}" FontFamily="Consolas" Foreground="#444" TextWrapping="Wrap" Margin="0,8,0,0"/>
@@ -101,8 +101,8 @@
             </Border>
 
             <local:ModListPanel ItemsSource="{Binding HostDecorations}"
-                                HeaderTitle="装饰 Mod"
-                                HeaderSummary="已列出支持当前主体的装饰。"
+                                HeaderTitle="可为该 Mod 启用的附加选项"
+                                HeaderSummary="已列出支持当前主体的装饰与选项。"
                                 VerticalScrollBarVisibility="Disabled"
 								UseInternalScroll="False"
                                 RowActions="Rename, Details, ToggleDecoration, OpenFolder, DeleteFromLibrary"

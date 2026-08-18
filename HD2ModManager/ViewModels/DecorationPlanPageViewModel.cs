@@ -125,7 +125,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
                 RefreshSourceUnits();
             }
             _allTargetMods = _library.All()
-                .Where(mod => !mod.IsDecoration && !string.Equals(mod.Guid, SourceModId, StringComparison.OrdinalIgnoreCase))
+                .Where(mod => !mod.IsDecoration && !mod.IsOption && !string.Equals(mod.Guid, SourceModId, StringComparison.OrdinalIgnoreCase))
                 .OrderBy(mod => mod.Name)
                 .Select(mod => new DecorationTargetModItem(mod.Guid, mod.Name, mod.Description, mod.Image, OnSelectionChanged))
                 .ToArray();

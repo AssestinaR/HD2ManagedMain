@@ -77,8 +77,8 @@ namespace HD2ModManager.ViewModels
         public string DataIndexSummary { get; private set; } = "跨 Mod 资产索引尚未读取。";
         public string UserStatusTitle { get; private set; } = "状态未知";
         public string UserStatusSummary { get; private set; } = "正在读取状态。";
-        public bool ShowUserStatusCard => IsStandardMod && _userStatus?.Kind == ModUserStatusKind.Overridden;
-        public bool ShowOutdatedCompatibility => IsStandardMod && IsModelOutdated;
+        public bool ShowUserStatusCard => CanUsePatchTools && _userStatus?.Kind == ModUserStatusKind.Overridden;
+        public bool ShowOutdatedCompatibility => CanUsePatchTools && IsModelOutdated;
         public string MaterialPackagingSummary { get; private set; } = "材质操作基于导入后的轻量引用图；无需执行高级分析。";
         public string MaterialDeliverySummary { get; private set; } = "导入后的轻量引用图完成后即可读取材质交付事实。";
         public string SameKeyReconstructionSummary { get; private set; } = "仅更新失效 Unit，并将结果直接写入 Manager 的 Output 文件夹；不会自动导入或部署。";
@@ -89,18 +89,21 @@ namespace HD2ModManager.ViewModels
 		public bool CanRunDependencyGraphTest => !_disposed && !_dependencyGraphTestRunning && TryGetCurrentNode(out _);
         public bool CanCompareDependencyGraph => !_disposed && !_dependencyGraphComparisonRunning && TryGetCurrentNode(out _);
         // 内嵌材质是否存在属于轻量 ReferenceGraph 事实；包装检查只负责写出前的最终安全复核。
-        public bool IsStandardMod => !IsDecoration;
-        public bool CanSplitEmbeddedMaterials => !_disposed && !IsDecoration
+        public bool IsOption => Mod?.IsOption == true;
+        public bool IsStandardMod => !IsDecoration && !IsOption;
+        public bool HasPatchContent => Mod?.HasPatchContent == true;
+        public bool CanUsePatchTools => IsStandardMod && HasPatchContent;
+        public bool CanSplitEmbeddedMaterials => !_disposed && CanUsePatchTools
             && ((_materialState?.HasEmbeddedMaterials == true) || (_cachedMaterialDeliveryFacts?.EmbeddedMaterialCount > 0))
             && TryGetCurrentNode(out _);
-        public bool CanReplaceEmbeddedMaterials => !_disposed && !IsDecoration && TryGetCurrentNode(out _);
-        public bool CanEmbedExternalMaterials => !_disposed && !IsDecoration && TryGetCurrentNode(out _);
-        public bool CanRebuildSameKey => !_disposed && !IsDecoration && !_sameKeyReconstructionRunning && TryGetCurrentNode(out _);
-        public bool CanPlanCrossArmorTransfer => !_disposed && !IsDecoration && TryGetCurrentNode(out _);
+        public bool CanReplaceEmbeddedMaterials => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
+        public bool CanEmbedExternalMaterials => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
+        public bool CanRebuildSameKey => !_disposed && CanUsePatchTools && !_sameKeyReconstructionRunning && TryGetCurrentNode(out _);
+        public bool CanPlanCrossArmorTransfer => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
         public bool IsDecoration => Mod?.IsDecoration == true;
-        public bool CanPlanDecoration => !_disposed && !IsDecoration && TryGetCurrentNode(out _);
+        public bool CanPlanDecoration => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
         public BulkObservableCollection<ModCardViewModel> HostDecorations { get; } = new();
-        public bool HasHostDecorations => !IsDecoration && HostDecorations.Count > 0;
+        public bool HasHostDecorations => IsStandardMod && HostDecorations.Count > 0;
         private bool HasPatchGroups => Mod?.FileGroups?.Count > 0;
         public BulkObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
@@ -163,13 +166,13 @@ namespace HD2ModManager.ViewModels
             {
                 if (_disposed) return;
                 Refresh();
-                if (!IsDecoration) _ = RefreshInformationProductsAsync();
+                if (CanUsePatchTools) _ = RefreshInformationProductsAsync();
                 if (_advancedDetailsLoaded) _ = RefreshAdvancedDetailsAsync();
             });
             _derivedState.SnapshotChanged += _snapshotChangedHandler;
             if (_selection is not null) _selection.SelectionChanged += OnSelectionChanged;
             Refresh();
-            if (!IsDecoration) _ = RefreshInformationProductsAsync();
+            if (CanUsePatchTools) _ = RefreshInformationProductsAsync();
         }
 
         private async Task RefreshInformationProductsAsync()
@@ -735,7 +738,10 @@ namespace HD2ModManager.ViewModels
 			OnPropertyChanged(nameof(CanPlanCrossArmorTransfer));
 			OnPropertyChanged(nameof(CanPlanDecoration));
 			OnPropertyChanged(nameof(IsDecoration));
-			OnPropertyChanged(nameof(IsStandardMod));
+            OnPropertyChanged(nameof(IsOption));
+            OnPropertyChanged(nameof(IsStandardMod));
+            OnPropertyChanged(nameof(HasPatchContent));
+            OnPropertyChanged(nameof(CanUsePatchTools));
             OnPropertyChanged(nameof(HasHostDecorations));
             RaiseMaterialCommandStates();
             RaiseSameKeyReconstructionCommandState();
@@ -1024,7 +1030,14 @@ namespace HD2ModManager.ViewModels
 
         public async Task ToggleDecorationForCurrentHostAsync(ModCardViewModel? card)
         {
-            if (card?.Mod.IsDecoration != true || Mod is null || IsDecoration) return;
+            if (card is null || Mod is null || !IsStandardMod || (!card.Mod.IsDecoration && !card.Mod.IsOption)) return;
+            if (card.Mod.IsOption)
+            {
+                var optionMessage = await _library.ToggleOptionForHostAsync(card.Mod.Guid, Mod.Guid).ConfigureAwait(true);
+                _notifications?.Show(optionMessage);
+                RefreshHostDecorations();
+                return;
+            }
             try
             {
                 var enabled = _library.IsDecorationEnabledForHost(card.Mod.Guid, Mod.Guid);
@@ -1059,17 +1072,19 @@ namespace HD2ModManager.ViewModels
 
         private void RefreshHostDecorations()
         {
-            if (Mod is null || IsDecoration)
+            if (Mod is null || !IsStandardMod)
             {
                 HostDecorations.ReplaceWith(Array.Empty<ModCardViewModel>());
                 return;
             }
 
-            var cards = _library.GetDecorationsForHost(Mod.Guid)
+            var cards = _library.GetAttachmentsForHost(Mod.Guid)
                 .Select(decoration => new ModCardViewModel(
                     decoration,
                     isSelected: IsHostDecorationSelected(decoration.Guid),
-                    decorationStatus: _library.IsDecorationEnabledForHost(decoration.Guid, Mod.Guid) ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。"))
+                    decorationStatus: decoration.IsDecoration
+                        ? (_library.IsDecorationEnabledForHost(decoration.Guid, Mod.Guid) ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。")
+                        : (_library.IsOptionEnabledForHost(decoration.Guid, Mod.Guid) ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。")))
                 .ToArray();
             HostDecorations.ReplaceWith(cards);
         }
@@ -1382,9 +1397,9 @@ namespace HD2ModManager.ViewModels
         private void AddToProfile()
         {
             if (Mod == null) return;
-            if (Mod.IsDecoration)
+            if (!IsStandardMod)
             {
-                _notifications?.Show("装饰 Mod 不能加入配置；请在目标主 Mod 中启用它。", NotificationLevel.Info);
+                _notifications?.Show(Mod.IsDecoration ? "装饰 Mod 不能加入配置；请在目标主 Mod 中启用它。" : "选项 Mod 不能加入配置；请在目标主 Mod 中启用它。", NotificationLevel.Info);
                 return;
             }
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
@@ -1395,7 +1410,7 @@ namespace HD2ModManager.ViewModels
 
         private void OpenDecorationPlan()
         {
-            if (Mod is null || Mod.IsDecoration) return;
+            if (Mod is null || !IsStandardMod) return;
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
                 shell.OpenDecorationPlan(Mod.Guid);
         }

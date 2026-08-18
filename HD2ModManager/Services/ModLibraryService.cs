@@ -49,6 +49,7 @@ namespace HD2ModManager.Services
         private readonly SemaphoreSlim _derivedRefreshGate = new(1, 1);
         private readonly SemaphoreSlim _libraryMutationGate = new(1, 1);
         private readonly DecorationActivationStore _decorationActivations;
+        private readonly OptionActivationStore _optionActivations;
         private readonly DecorationAttachmentService _decorationAttachments;
         private long _stateVersion;
 
@@ -59,6 +60,7 @@ namespace HD2ModManager.Services
         public HD2ModCore.Application.IModInformationCenter InformationCenter => _informationCenter;
         public event EventHandler<ModContentFactsChangedEventArgs>? ModContentFactsChanged;
         public event EventHandler? SnapshotChanged;
+        public event EventHandler? OptionActivationChanged;
 
         public async Task<DecorationActivationSummary> ToggleDecorationForAllAvailableHostsAsync(string decorationId, CancellationToken cancellationToken = default)
         {
@@ -119,6 +121,65 @@ namespace HD2ModManager.Services
         public IReadOnlyList<ModEntity> GetDecorationsForHost(string hostId)
             => All().Where(mod => mod.IsDecoration && GetAvailableDecorationHostIds(mod.Guid).Contains(hostId, StringComparer.OrdinalIgnoreCase)).ToArray();
 
+        public IReadOnlyList<ModEntity> GetOptionsForHost(string hostId)
+            => All().Where(mod => mod.IsOption && mod.HostModGuids.Any(host => SameModGuid(host, hostId))).ToArray();
+
+        public IReadOnlyList<ModEntity> GetAttachmentsForHost(string hostId)
+            => GetDecorationsForHost(hostId).Concat(GetOptionsForHost(hostId)).ToArray();
+
+        public bool IsOptionEnabledForHost(string optionId, string hostId)
+            => _optionActivations.GetEnabledHosts(optionId).Any(host => SameModGuid(host, hostId));
+
+        public string GetOptionActivationStatus(string optionId)
+        {
+            var option = Get(optionId);
+            if (option?.IsOption != true) return "尚未启用。";
+            var count = _optionActivations.GetEnabledHosts(optionId).Count;
+            return count == 0 ? "尚未启用。" : $"为 {count} 个 Mod 启用了。";
+        }
+
+        public async Task<string> ToggleOptionForHostAsync(string optionId, string hostId, CancellationToken cancellationToken = default)
+        {
+            var option = Get(optionId);
+            if (option?.IsOption != true || !option.HostModGuids.Any(host => SameModGuid(host, hostId))) return "当前主体不支持该选项。";
+            var hosts = _optionActivations.GetEnabledHosts(optionId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var storedHost = hosts.FirstOrDefault(host => SameModGuid(host, hostId));
+            var enabled = storedHost is null;
+            if (enabled) hosts.Add(hostId); else hosts.Remove(storedHost!);
+            await _optionActivations.SetEnabledHostsAsync(optionId, hosts, cancellationToken).ConfigureAwait(false);
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            OptionActivationChanged?.Invoke(this, EventArgs.Empty);
+            return enabled ? "已为当前主体启用选项。" : "已为当前主体禁用选项。";
+        }
+
+        public async Task<string> ToggleOptionForAllAvailableHostsAsync(string optionId, CancellationToken cancellationToken = default)
+        {
+            var option = Get(optionId);
+            if (option?.IsOption != true) return "当前不是选项 Mod。";
+            var available = option.HostModGuids
+                .Where(host => All().Any(mod => mod.Capabilities.CanJoinProfile && SameModGuid(mod.Guid, host)))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (available.Count == 0) return "无可用主体。";
+            var enabled = _optionActivations.GetEnabledHosts(optionId);
+            var enable = !available.All(enabled.Contains);
+            await _optionActivations.SetEnabledHostsAsync(optionId, enable ? available : Array.Empty<string>(), cancellationToken).ConfigureAwait(false);
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            OptionActivationChanged?.Invoke(this, EventArgs.Empty);
+            return enable ? $"为 {available.Count} 个 Mod 启用了。" : "已对全部主体禁用。";
+        }
+
+        public async Task<string> SetOptionEnabledForAllAvailableHostsAsync(string optionId, bool enabled, CancellationToken cancellationToken = default)
+        {
+            var option = Get(optionId);
+            if (option?.IsOption != true) return "当前不是选项 Mod。";
+            var available = option.HostModGuids.Where(host => All().Any(mod => mod.Capabilities.CanJoinProfile && SameModGuid(mod.Guid, host))).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (available.Count == 0) return "无可用主体。";
+            await _optionActivations.SetEnabledHostsAsync(optionId, enabled ? available : Array.Empty<string>(), cancellationToken).ConfigureAwait(false);
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            OptionActivationChanged?.Invoke(this, EventArgs.Empty);
+            return enabled ? $"为 {available.Count} 个 Mod 启用了。" : "已对全部主体禁用。";
+        }
+
         public ModLibraryService(string libraryPath, HD2ModCore.Application.IModInformationCenter informationCenter)
         {
             _paths = SettingsService.CreateStoragePaths();
@@ -128,6 +189,7 @@ namespace HD2ModManager.Services
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, _informationCenter);
 		_assetSummaryProjector = CoreServices.CreateModAssetSummaryProjector(_paths);
             _decorationActivations = new DecorationActivationStore(Path.Combine(_paths.DataDirectory, "decoration-activations.json"));
+            _optionActivations = new OptionActivationStore(Path.Combine(_paths.DataDirectory, "option-activations.json"));
             _decorationAttachments = new DecorationAttachmentService(_paths);
             _snapshot = EmptySnapshot();
             _derivedData = EmptyDerivedData();
@@ -434,6 +496,7 @@ namespace HD2ModManager.Services
             {
             if (!TryParseNodeId(guid, out var nodeId)) return false;
             var removedIsDecoration = _byGuid.TryGetValue(guid, out var entity) && entity.IsDecoration;
+            var removedIsOption = entity?.IsOption == true;
             if (removedIsDecoration)
                 ApplyDecorationActivationBatchCoreAsync([new DecorationActivationMutation(guid, false)], CancellationToken.None).GetAwaiter().GetResult();
             _snapshot = _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true).AsTask().GetAwaiter().GetResult();
@@ -442,6 +505,7 @@ namespace HD2ModManager.Services
                 _decorationActivations.RemoveDecorationAsync(guid).GetAwaiter().GetResult();
             }
             else _decorationActivations.RemoveHostAsync(guid).GetAwaiter().GetResult();
+            if (removedIsOption) _optionActivations.RemoveAsync(guid).GetAwaiter().GetResult();
             Interlocked.Increment(ref _stateVersion);
             _informationCenter.InvalidateNodeAsync(nodeId).AsTask().GetAwaiter().GetResult();
 			ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
@@ -463,11 +527,13 @@ namespace HD2ModManager.Services
             {
                 if (!TryParseNodeId(guid, out var nodeId)) return false;
                 var removedIsDecoration = _byGuid.TryGetValue(guid, out var entity) && entity.IsDecoration;
+                var removedIsOption = entity?.IsOption == true;
                 if (removedIsDecoration)
                     await ApplyDecorationActivationBatchCoreAsync([new DecorationActivationMutation(guid, false)], cancellationToken).ConfigureAwait(false);
                 _snapshot = await _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true, cancellationToken).ConfigureAwait(false);
                 if (removedIsDecoration) await _decorationActivations.RemoveDecorationAsync(guid, cancellationToken).ConfigureAwait(false);
                 else await _decorationActivations.RemoveHostAsync(guid, cancellationToken).ConfigureAwait(false);
+                if (removedIsOption) await _optionActivations.RemoveAsync(guid, cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref _stateVersion);
                 await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
                 ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
@@ -898,6 +964,9 @@ namespace HD2ModManager.Services
                 Image = derived?.IconPath ?? ModIconLocator.TryResolve(ResolveAbsolutePath(node.RelativePath)),
                 SourcePath = node.RelativePath,
                 IsDecoration = node.Metadata.Kind == ModNodeKind.Decoration,
+                IsOption = node.Metadata.Kind == ModNodeKind.Option,
+                HostModGuids = node.Metadata.HostModGuids?.ToArray() ?? Array.Empty<string>(),
+                HasPatchContent = node.PatchGroups.Count > 0,
                 CreatedAt = node.Metadata.CreatedUtc.UtcDateTime,
                 UpdatedAt = (node.Metadata.ModifiedUtc ?? node.Metadata.CreatedUtc).UtcDateTime,
                 FileGroups = (includePatchFiles ? GetPatchFiles(node, derived) : Array.Empty<IndexedPatchFile>())
@@ -959,6 +1028,11 @@ namespace HD2ModManager.Services
                 File.Copy(sourcePath, destinationPath, overwrite: true);
             }
         }
+
+        private static bool SameModGuid(string? left, string? right)
+            => Guid.TryParse(left, out var leftGuid) && Guid.TryParse(right, out var rightGuid)
+                ? leftGuid == rightGuid
+                : string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 
         private static IEnumerable<string> EnumeratePatchFiles(string directory)
         {

@@ -35,6 +35,7 @@
                                    VerticalAlignment="Center"
                                    Margin="12,0,0,0"/>
                     </Grid>
+                    <CheckBox Style="{StaticResource AppToggleSwitch}" Content="导入 Mod 后自动加入活动配置并部署" IsChecked="{Binding AutoImportToActiveProfile, Mode=TwoWay}" Margin="0,12,0,0"/>
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
                         <TextBlock Text="Language" Width="150" VerticalAlignment="Center"/>
                         <ComboBox Style="{StaticResource AppComboBox}" Width="180" SelectedValue="{Binding Language, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag">

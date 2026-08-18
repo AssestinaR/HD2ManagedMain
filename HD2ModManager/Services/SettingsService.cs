@@ -30,6 +30,7 @@ namespace HD2ModManager.Services
             public DateTime? LastGameDataIndexCheckUtc { get; set; }
             public int GameDataIndexCheckIntervalHours { get; set; } = 24;
             public double ModListAnimationSpeedMultiplier { get; set; } = 1.0;
+            public bool AutoImportToActiveProfile { get; set; } = true;
         }
 
         public const string DefaultAssetMetadataRepository = "https://raw.githubusercontent.com/Boxofbiscuits97/HD2SDK-CommunityEdition/main";
@@ -138,6 +139,14 @@ namespace HD2ModManager.Services
                 Update(model => model.ModListAnimationSpeedMultiplier = NormalizeAnimationSpeed(value));
                 return true;
             }
+            catch { return false; }
+        }
+
+        public static bool GetAutoImportToActiveProfile() => LoadAll()?.AutoImportToActiveProfile ?? true;
+
+        public static bool SetAutoImportToActiveProfile(bool enabled)
+        {
+            try { Update(model => model.AutoImportToActiveProfile = enabled); return true; }
             catch { return false; }
         }
 
