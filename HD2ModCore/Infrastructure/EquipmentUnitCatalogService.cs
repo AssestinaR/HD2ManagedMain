@@ -319,14 +319,17 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				var provisionalBodyTargets = new List<(SourceBodyProfile Profile, TargetUnitGroup Target)>();
 				foreach (var profile in sourceProfiles.Where(profile => profile.PartKind != UnitMeshPartKind.Head))
 				{
-					var coverage = ReadArchiveTargetCoverage(allArchiveTargets, archive, profile.PartKind, assignments);
+					var coverage = ReadArchiveTargetCoverage(allArchiveTargets, archive, profile, assignments);
 					if (coverage.IsComplete)
 					{
 						plannerDebug.Add($"[COVERED] Archive={archive} Part={profile.PartKind} Coverage={coverage}");
 						continue;
 					}
 
-					var candidates = archiveTargets.Where(target => target.Representative.Part.PartKind == profile.PartKind).ToArray();
+					var candidates = archiveTargets
+						.Where(target => target.Representative.Part.PartKind == profile.PartKind)
+						.Where(target => SemanticFamilyKey(target.Representative.Part) == profile.SemanticFamily)
+						.ToArray();
 					if (coverage.MissingConcreteVariant is { } missingVariant)
 					{
 						var completion = SelectMissingBodyTarget(profile, candidates, missingVariant);
@@ -362,7 +365,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 					// A shared Unit selected by an earlier archive is still coverage for this
 					// archive. Do not let the fallback path reintroduce an Armor/Any Unit
 					// after that shared coverage already supplies an Any or Slim+Stocky pair.
-					var coverage = ReadArchiveTargetCoverage(allArchiveTargets, archive, profile.PartKind, assignments);
+					var coverage = ReadArchiveTargetCoverage(allArchiveTargets, archive, profile, assignments);
 					if (coverage.IsComplete)
 					{
 						plannerDebug.Add($"[FALLBACK-SKIP-COVERED] Archive={archive} Part={profile.PartKind} Coverage={coverage}");
@@ -374,11 +377,13 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 					// another fallback hit; otherwise two source torso Units expand into
 					// four target torso replacements (armor + undergarment).
 					if (provisionalBodyTargets.Any(item => item.Profile.PartKind == profile.PartKind
+						&& item.Profile.SemanticFamily == profile.SemanticFamily
 						&& assignments.ContainsKey(item.Target.UnitAssetKey))) continue;
 
 					var unresolved = archiveTargets
 						.Where(target => !assignments.ContainsKey(target.UnitAssetKey))
 						.Where(target => target.Representative.Part.PartKind == profile.PartKind)
+						.Where(target => SemanticFamilyKey(target.Representative.Part) == profile.SemanticFamily)
 						.OrderByDescending(target => target.Representative.Part.StoredBytes)
 						.ThenBy(target => target.UnitAssetKey.FileId)
 						.ToArray();
@@ -469,27 +474,65 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		IReadOnlyList<EquipmentUnitPart> sourceParts,
 		IReadOnlyDictionary<AssetKey, string> sourceCategoryByUnit)
 	{
-		return sourceParts
+		var sourceUnitCountByPart = sourceParts
 			.GroupBy(part => part.PartKind)
-		.Select(group => new SourceBodyProfile(
-			group.Key,
-			group.Select(part => sourceCategoryByUnit.GetValueOrDefault(part.UnitAssetKey) ?? string.Empty)
-				.Where(category => category.Length != 0)
-				.Distinct(StringComparer.OrdinalIgnoreCase)
-				.ToArray(),
-			group.OrderByDescending(part => part.StoredBytes).ThenBy(part => part.UnitAssetKey.FileId).ToArray()))
+			.ToDictionary(group => group.Key, group => group.Select(part => part.UnitAssetKey).Distinct().Count());
+		return sourceParts
+			.GroupBy(part => (part.PartKind, SemanticFamily: SemanticFamilyKey(part)))
+		.Select(group =>
+		{
+			var parts = group.OrderByDescending(part => part.StoredBytes).ThenBy(part => part.UnitAssetKey.FileId).ToArray();
+			var concreteVariants = parts
+				.Select(part => part.BodyVariant)
+				.Where(variant => variant is UnitMeshBodyVariant.Slim or UnitMeshBodyVariant.Stocky)
+				.Distinct()
+				.ToArray();
+			var canActAsEffectiveAny = !parts.Any(part => part.BodyVariant == UnitMeshBodyVariant.Any)
+				&& concreteVariants.Length == 1
+				&& sourceUnitCountByPart.GetValueOrDefault(group.Key.PartKind) == 1;
+			return new SourceBodyProfile(
+				group.Key.PartKind,
+				group.Key.SemanticFamily,
+				canActAsEffectiveAny,
+				parts.Select(part => sourceCategoryByUnit.GetValueOrDefault(part.UnitAssetKey) ?? string.Empty)
+					.Where(category => category.Length != 0)
+					.Distinct(StringComparer.OrdinalIgnoreCase)
+					.ToArray(),
+				parts);
+		})
 		.ToArray();
 	}
+
+	private static SourceBodyProfile? FindSourceProfile(
+		IReadOnlyList<SourceBodyProfile> sourceProfiles,
+		EquipmentUnitPart targetPart)
+	{
+		var samePartProfiles = sourceProfiles.Where(profile => profile.PartKind == targetPart.PartKind).ToArray();
+		var exact = samePartProfiles.FirstOrDefault(profile => profile.SemanticFamily == SemanticFamilyKey(targetPart));
+		if (exact is not null) return exact;
+
+		// Keep the former part-only behavior only for an unambiguous legacy source:
+		// once a source exposes several semantic families, guessing across them is more
+		// dangerous than leaving the target hidden for the user to map manually.
+		return samePartProfiles.Length == 1 ? samePartProfiles[0] : null;
+	}
+
+	private static string SemanticFamilyKey(EquipmentUnitPart part)
+		=> SemanticFamily(part.SemanticName) ?? string.Empty;
+
+	private static string DisplaySemanticFamily(string semanticFamily)
+		=> string.IsNullOrEmpty(semanticFamily) ? "Unknown" : semanticFamily;
 
 	private static ArchiveTargetCoverage ReadArchiveTargetCoverage(
 		IReadOnlyList<TargetUnitGroup> allArchiveTargets,
 		string archiveId,
-		UnitMeshPartKind partKind,
+		SourceBodyProfile profile,
 		IReadOnlyDictionary<AssetKey, (EquipmentUnitPart? Source, bool IsManual, bool IsSuppressed, int HitCount)> assignments)
 	{
 		var variants = allArchiveTargets
 			.Where(target => target.Uses.Any(use => string.Equals(use.Entry.ArchiveId, archiveId, StringComparison.OrdinalIgnoreCase)))
-			.Where(target => target.Representative.Part.PartKind == partKind)
+			.Where(target => target.Representative.Part.PartKind == profile.PartKind)
+			.Where(target => SemanticFamilyKey(target.Representative.Part) == profile.SemanticFamily)
 			.Where(target => assignments.TryGetValue(target.UnitAssetKey, out var assignment) && assignment.Source is not null)
 			.Select(target => target.Representative.Part.BodyVariant)
 			.ToHashSet();
@@ -528,13 +571,17 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 			.OrderByDescending(target => target.Representative.Part.StoredBytes).ThenBy(target => target.UnitAssetKey.FileId).FirstOrDefault();
 		var stocky = ranked.Where(target => target.Representative.Part.BodyVariant == UnitMeshBodyVariant.Stocky)
 			.OrderByDescending(target => target.Representative.Part.StoredBytes).ThenBy(target => target.UnitAssetKey.FileId).FirstOrDefault();
-		if (slim is not null && stocky is not null) return [slim, stocky];
 
 		var any = ranked
 			.Where(target => target.Representative.Part.BodyVariant == UnitMeshBodyVariant.Any)
 			.OrderByDescending(target => target.Representative.Part.StoredBytes)
 			.ThenBy(target => target.UnitAssetKey.FileId)
 			.FirstOrDefault();
+		// A real Any source is a universal mesh, not a spare concrete body shape.
+		// In a composite source package it must reserve the matching semantic Any
+		// target before the concrete-pair rule can consume a neighbouring accessory.
+		if (profile.Parts.Any(part => part.BodyVariant == UnitMeshBodyVariant.Any) && any is not null) return [any];
+		if (slim is not null && stocky is not null) return [slim, stocky];
 		if (any is not null) return [any];
 
 		// A same-layer hit is only a priority, not proof that the body region is
@@ -663,7 +710,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				UnitMeshBodyVariant.Stocky => UnitMeshBodyVariant.Slim,
 				_ => PreferredBodyVariant(preference)
 			};
-			var profile = sourceProfiles.FirstOrDefault(profile => profile.PartKind == target.Representative.Part.PartKind);
+			var profile = FindSourceProfile(sourceProfiles, target.Representative.Part);
 			if (profile is null) continue;
 			var source = SelectSourceForTarget(profile, target, new HashSet<AssetKey>(), preference, selectedSourceBodyVariant, forcedSourceVariant: forcedVariant);
 			if (source is null) continue;
@@ -739,7 +786,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				continue;
 			}
 
-			var profile = sourceProfiles.FirstOrDefault(profile => profile.PartKind == target.Representative.Part.PartKind);
+			var profile = FindSourceProfile(sourceProfiles, target.Representative.Part);
 			if (profile is null)
 			{
 				plannerDebug.Add($"[FIXED-VARIANT-SKIP] Archive={archiveLabel} Target=0x{target.UnitAssetKey.FileId:x16} Reason=NoSourceProfile");
@@ -829,14 +876,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 	}
 
 	private static bool IsEffectiveAny(SourceBodyProfile profile)
-	{
-		var concreteVariants = profile.Parts
-			.Select(part => part.BodyVariant)
-			.Where(variant => variant is UnitMeshBodyVariant.Slim or UnitMeshBodyVariant.Stocky)
-			.Distinct()
-			.ToArray();
-		return !profile.Parts.Any(part => part.BodyVariant == UnitMeshBodyVariant.Any) && concreteVariants.Length == 1;
-	}
+		=> profile.CanActAsEffectiveAny;
 
 	private static UnitMeshPartLayer ToPartLayer(CrossArmorLayerPreference preference)
 		=> preference switch
@@ -1028,7 +1068,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 	private sealed record TargetUse(EquipmentUnitCatalogEntry Entry, EquipmentUnitPart Part);
 	private sealed record TargetUnitGroup(AssetKey UnitAssetKey, TargetUse Representative, IReadOnlyList<TargetUse> Uses);
 	private sealed record SourceTargetCandidate(TargetUnitGroup Target, EquipmentUnitPart Source);
-	private sealed record SourceBodyProfile(UnitMeshPartKind PartKind, IReadOnlyList<string> Categories, IReadOnlyList<EquipmentUnitPart> Parts);
+	private sealed record SourceBodyProfile(UnitMeshPartKind PartKind, string SemanticFamily, bool CanActAsEffectiveAny, IReadOnlyList<string> Categories, IReadOnlyList<EquipmentUnitPart> Parts);
 	private sealed record SourceSelection(AssetKey UnitAssetKey, EquipmentUnitPart Part);
 	private readonly record struct ArchiveTargetCoverage(bool HasAny, bool HasSlim, bool HasStocky)
 	{
