@@ -50,9 +50,11 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 
 		var sourceName = new DirectoryInfo(full).Name;
+		var manifest = StandardModManifest.TryLoad(full);
 		var tree = await _folderImporter.ImportFolderAsync(full, cancellationToken).ConfigureAwait(false);
+		tree = ApplyStandardManifest(tree, full, manifest);
 		tree = await RestoreExportedNodeIdsAsync(tree, full, cancellationToken).ConfigureAwait(false);
-		var (storedTree, snapshot) = await CommitImportAsync(tree, full, sourceName, preferHardLinks: false, cancellationToken).ConfigureAwait(false);
+		var (storedTree, snapshot) = await CommitImportAsync(tree, full, sourceName, preferHardLinks: false, cancellationToken, manifest).ConfigureAwait(false);
 		SetStoredTreeReadOnly(storedTree);
 
 		return new ImportResult(snapshot, storedTree.RootId, sourceName);
@@ -74,9 +76,11 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		try
 		{
 			await _archiveExtractor.ExtractAsync(full, extractRoot, cancellationToken).ConfigureAwait(false);
+			var manifest = StandardModManifest.TryLoad(extractRoot);
 			var tree = await _folderImporter.ImportFolderAsync(extractRoot, cancellationToken).ConfigureAwait(false);
+			tree = ApplyStandardManifest(tree, extractRoot, manifest);
 			tree = await RestoreExportedNodeIdsAsync(tree, extractRoot, cancellationToken).ConfigureAwait(false);
-			(storedTree, snapshot) = await CommitImportAsync(tree, extractRoot, sourceName, preferHardLinks: true, cancellationToken).ConfigureAwait(false);
+			(storedTree, snapshot) = await CommitImportAsync(tree, extractRoot, sourceName, preferHardLinks: true, cancellationToken, manifest).ConfigureAwait(false);
 		}
 		finally
 		{
@@ -87,12 +91,12 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		return new ImportResult(snapshot, storedTree.RootId, sourceName);
 	}
 
-	private async ValueTask<(ImportedObjectTree Tree, LibrarySnapshot Snapshot)> CommitImportAsync(ImportedObjectTree tree, string sourceRoot, string sourceName, bool preferHardLinks, CancellationToken cancellationToken)
+	private async ValueTask<(ImportedObjectTree Tree, LibrarySnapshot Snapshot)> CommitImportAsync(ImportedObjectTree tree, string sourceRoot, string sourceName, bool preferHardLinks, CancellationToken cancellationToken, StandardModManifest? manifest = null)
 	{
 		ImportedObjectTree? storedTree = null;
 		try
 		{
-			storedTree = PersistFlattenedTree(tree, sourceRoot, sourceName, preferHardLinks, cancellationToken);
+			storedTree = PersistFlattenedTree(tree, sourceRoot, sourceName, preferHardLinks, cancellationToken, manifest);
 			var snapshot = await MergeIntoSnapshotAsync(storedTree, cancellationToken).ConfigureAwait(false);
 			await _store.SaveAsync(snapshot, cancellationToken).ConfigureAwait(false);
 			return (storedTree, snapshot);
@@ -134,7 +138,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 	}
 
-	private ImportedObjectTree PersistFlattenedTree(ImportedObjectTree imported, string sourceRoot, string sourceDisplayName, bool preferHardLinks, CancellationToken cancellationToken)
+	private ImportedObjectTree PersistFlattenedTree(ImportedObjectTree imported, string sourceRoot, string sourceDisplayName, bool preferHardLinks, CancellationToken cancellationToken, StandardModManifest? manifest)
 	{
 		Directory.CreateDirectory(_paths.ModsDirectory);
 		var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -152,6 +156,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			var flatDirName = CreateUniqueDirectoryName(_paths.ModsDirectory, displayName, usedNames);
 			var destDir = Path.Combine(_paths.ModsDirectory, flatDirName);
 			CopyTopLevelFiles(sourceNodeDir, destDir, preferHardLinks, cancellationToken);
+			CopyResolvedIcon(sourceRoot, destDir, node.RelativePath, manifest, cancellationToken);
 			NormalizePatchDirectories(destDir, cancellationToken);
 
 			nodes[kvp.Key] = node with
@@ -240,6 +245,88 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 		return tree with { RootId = replacements.GetValueOrDefault(tree.RootId, tree.RootId), Nodes = nodes };
 	}
+
+	private static ImportedObjectTree ApplyStandardManifest(ImportedObjectTree tree, string sourceRoot, StandardModManifest? manifest)
+	{
+		if (manifest is null) return tree;
+		var entries = BuildManifestEntries(manifest);
+		if (entries.Count == 0) return tree;
+		var nodes = new Dictionary<ModNodeId, ModNode>();
+		foreach (var node in tree.Nodes.Values)
+		{
+			var path = NormalizeRelativePath(node.RelativePath);
+			var entry = entries
+				.Where(candidate => string.Equals(candidate.Path, path, StringComparison.OrdinalIgnoreCase))
+				.OrderByDescending(candidate => candidate.Path.Length)
+				.FirstOrDefault();
+			if (entry is null)
+			{
+				nodes[node.Id] = node;
+				continue;
+			}
+
+			var id = node.Id;
+			if (Guid.TryParse(entry.Guid, out var restored)) id = new ModNodeId(restored);
+			var name = string.IsNullOrWhiteSpace(entry.Name) ? node.Metadata.Name : entry.Name!;
+			nodes[id] = node with
+			{
+				Id = id,
+				Metadata = node.Metadata with { Name = name, Notes = entry.Notes },
+			};
+		}
+		if (nodes.Count != nodes.Keys.Distinct().Count()) return tree;
+		var rootId = nodes.ContainsKey(tree.RootId) ? tree.RootId : nodes.Keys.FirstOrDefault();
+		return tree with { RootId = rootId, Nodes = nodes };
+	}
+
+	private static List<ManifestEntry> BuildManifestEntries(StandardModManifest manifest)
+	{
+		var result = new List<ManifestEntry>
+		{
+			new(string.Empty, manifest.Name, manifest.Description, manifest.IconPath, manifest.Guid),
+		};
+		foreach (var option in manifest.Options)
+		{
+			foreach (var include in option.Include ?? [])
+			{
+				var path = NormalizeRelativePath(include);
+				if (!string.IsNullOrEmpty(path)) result.Add(new(path, option.Name, option.Description, option.Image, FindNodeGuid(manifest, path)));
+			}
+			foreach (var sub in option.SubOptions ?? [])
+			foreach (var include in sub.Include ?? [])
+			{
+				var path = NormalizeRelativePath(include);
+				if (!string.IsNullOrEmpty(path)) result.Add(new(path, sub.Name, sub.Description, sub.Image, FindNodeGuid(manifest, path)));
+			}
+		}
+		return result;
+	}
+
+	private static string? FindNodeGuid(StandardModManifest manifest, string path)
+		=> manifest.Nodes?.FirstOrDefault(item => string.Equals(NormalizeRelativePath(item.RelativePath), path, StringComparison.OrdinalIgnoreCase))?.Guid;
+
+	private static void CopyResolvedIcon(string sourceRoot, string destinationDirectory, string relativePath, StandardModManifest? manifest, CancellationToken cancellationToken)
+	{
+		if (manifest is null) return;
+		var entries = BuildManifestEntries(manifest);
+		var path = NormalizeRelativePath(relativePath);
+		var entry = entries.FirstOrDefault(candidate => string.Equals(candidate.Path, path, StringComparison.OrdinalIgnoreCase));
+		var image = entry?.Image ?? manifest.IconPath;
+		if (string.IsNullOrWhiteSpace(image)) return;
+		var source = Path.GetFullPath(Path.Combine(sourceRoot, image.Replace('/', Path.DirectorySeparatorChar)));
+		if (!source.StartsWith(Path.GetFullPath(sourceRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !File.Exists(source)) return;
+		cancellationToken.ThrowIfCancellationRequested();
+		var extension = Path.GetExtension(source).ToLowerInvariant();
+		if (extension is not ".png" and not ".jpg" and not ".jpeg" and not ".bmp" and not ".webp") return;
+		// Archive imports may already have copied this file as a hard link. Replacing
+		// it would target the same underlying file and can fail while the source
+		// archive stream or thumbnail reader still has it open.
+		var destination = Path.Combine(destinationDirectory, "icon" + extension);
+		if (File.Exists(destination)) return;
+		File.Copy(source, Path.Combine(destinationDirectory, "icon" + extension), overwrite: true);
+	}
+
+	private sealed record ManifestEntry(string Path, string? Name, string? Notes, string? Image, string? Guid);
 
 	private static string NormalizeRelativePath(string? path)
 		=> string.IsNullOrWhiteSpace(path) || path == "." ? string.Empty : path.Replace('\\', '/').Trim('/');

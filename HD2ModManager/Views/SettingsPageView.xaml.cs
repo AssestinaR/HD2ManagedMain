@@ -48,10 +48,25 @@ namespace HD2ModManager.Views
 
             if (!string.IsNullOrWhiteSpace(currentPath) && System.IO.Directory.Exists(currentPath))
             {
-                dialog.InitialDirectory = currentPath;
+                try { dialog.InitialDirectory = System.IO.Path.GetFullPath(currentPath); }
+                catch (ArgumentException) { }
+                catch (NotSupportedException) { }
             }
 
-            return dialog.ShowDialog() == true ? dialog.FolderName : null;
+            try
+            {
+                return dialog.ShowDialog() == true ? dialog.FolderName : null;
+            }
+            catch (ArgumentException)
+            {
+                var fallback = new Microsoft.Win32.OpenFolderDialog { Title = title, Multiselect = false };
+                return fallback.ShowDialog() == true ? fallback.FolderName : null;
+            }
+            catch (System.Runtime.InteropServices.COMException)
+            {
+                var fallback = new Microsoft.Win32.OpenFolderDialog { Title = title, Multiselect = false };
+                return fallback.ShowDialog() == true ? fallback.FolderName : null;
+            }
         }
     }
 }

@@ -1096,6 +1096,16 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        public double ModListAnimationSpeedMultiplier
+        {
+            get => SettingsService.GetModListAnimationSpeedMultiplier();
+            set
+            {
+                SettingsService.SetModListAnimationSpeedMultiplier(value);
+                OnPropertyChanged(nameof(ModListAnimationSpeedMultiplier));
+            }
+        }
+
         public bool AutoUpdateAssetMetadata
         {
             get => SettingsService.GetAutoUpdateAssetMetadata();
@@ -1226,6 +1236,7 @@ namespace HD2ModManager.ViewModels
         public void Refresh()
         {
             OnPropertyChanged(nameof(Language));
+            OnPropertyChanged(nameof(ModListAnimationSpeedMultiplier));
             OnPropertyChanged(nameof(AutoUpdateAssetMetadata));
             OnPropertyChanged(nameof(AssetMetadataCheckIntervalHours));
             OnPropertyChanged(nameof(AssetMetadataLastCheckText));

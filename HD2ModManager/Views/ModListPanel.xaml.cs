@@ -1,12 +1,10 @@
 using System.Collections;
-using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using HD2ModManager.ViewModels;
 
@@ -16,13 +14,7 @@ namespace HD2ModManager.Views;
 public partial class ModListPanel : UserControl
 {
     private readonly Dictionary<Border, SelectionIndicatorSubscription> _selectionIndicatorSubscriptions = new();
-    private INotifyCollectionChanged? _observedItems;
-    private IListTransitionNotifier? _transitionNotifier;
-    private ListTransitionBatch? _pendingTransitionBatch;
-    private Dictionary<string, ListTransitionSnapshot> _beforeTransition = new(StringComparer.OrdinalIgnoreCase);
-    private readonly DispatcherTimer _transitionTimer = new();
-    private bool _transitionScheduled;
-    private bool _isTransitionAnimationRunning;
+    private readonly ModListTransitionController _transitionController;
     private string? _selectionAnchorKey;
     private readonly DispatcherTimer _dragAutoScrollTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private DragCandidate? _dragCandidate;
@@ -41,24 +33,20 @@ public partial class ModListPanel : UserControl
     public ModListPanel()
     {
         InitializeComponent();
-        _transitionTimer.Interval = TimeSpan.FromMilliseconds(230);
-        _transitionTimer.Tick += OnTransitionTimerTick;
+        _transitionController = new ModListTransitionController(this, ItemsList, TransitionOverlay);
         _dragAutoScrollTimer.Tick += OnDragAutoScrollTick;
         Loaded += (_, _) =>
         {
-            ObserveItemsSource(ItemsSource);
+            _transitionController.Attach(ItemsSource);
             ConfigureInternalSmoothScroll(UseInternalScroll);
         };
         Unloaded += (_, _) =>
         {
-            _transitionTimer.Stop();
+            _transitionController.Detach();
             EndInternalDrag();
             EndExternalProfileDrag(commit: false);
             StopDragAutoScroll();
 			ConfigureInternalSmoothScroll(false);
-            ItemsList.LayoutUpdated -= OnItemsListLayoutUpdated;
-            _transitionScheduled = false;
-            ObserveItemsSource(null);
         };
     }
 
@@ -574,156 +562,7 @@ public partial class ModListPanel : UserControl
     private static void OnItemsSourceChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
     {
         if (target is ModListPanel panel && panel.IsLoaded)
-            panel.ObserveItemsSource(args.NewValue as IEnumerable);
-    }
-
-    private void ObserveItemsSource(IEnumerable? source)
-    {
-        if (_observedItems is not null) _observedItems.CollectionChanged -= OnItemsCollectionChanged;
-        if (_transitionNotifier is not null) _transitionNotifier.TransitionStarting -= OnItemsTransitionStarting;
-        _observedItems = source as INotifyCollectionChanged;
-        _transitionNotifier = source as IListTransitionNotifier;
-        if (_observedItems is not null) _observedItems.CollectionChanged += OnItemsCollectionChanged;
-        if (_transitionNotifier is not null) _transitionNotifier.TransitionStarting += OnItemsTransitionStarting;
-    }
-
-    private void OnItemsTransitionStarting(object? sender, ListTransitionBatch batch)
-    {
-        _pendingTransitionBatch = batch;
-        if (batch.Animate) CaptureTransitionSnapshot();
-    }
-
-    private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args)
-    {
-        if (_beforeTransition.Count == 0) CaptureTransitionSnapshot();
-        if (_beforeTransition.Count != 0) QueueTransitionAfterLayout();
-    }
-
-    private void CaptureTransitionSnapshot()
-    {
-        if (!IsLoaded || ItemsList.ItemContainerGenerator.Status != System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated) return;
-        var snapshots = new Dictionary<string, ListTransitionSnapshot>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in ItemsList.Items)
-        {
-            if (ItemsList.ItemContainerGenerator.ContainerFromItem(item) is not FrameworkElement container || !container.IsVisible) continue;
-            var key = GetItemKey(item);
-            if (key is null) continue;
-            var position = container.TransformToAncestor(ItemsList).Transform(new Point());
-            if (container.ActualWidth <= 0 || container.ActualHeight <= 0) continue;
-            snapshots[key] = new ListTransitionSnapshot(key, position, new Size(container.ActualWidth, container.ActualHeight), CaptureContainerBitmap(container));
-        }
-        _beforeTransition = snapshots;
-    }
-
-    private void QueueTransitionAfterLayout()
-    {
-        if (_transitionScheduled || _isTransitionAnimationRunning) return;
-        _transitionScheduled = true;
-        ItemsList.LayoutUpdated += OnItemsListLayoutUpdated;
-    }
-
-    private void OnItemsListLayoutUpdated(object? sender, EventArgs e)
-    {
-        if (!_transitionScheduled) return;
-        if (_isTransitionAnimationRunning) return;
-        if (ItemsList.ItemContainerGenerator.Status != System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated) return;
-
-        _transitionScheduled = false;
-        ItemsList.LayoutUpdated -= OnItemsListLayoutUpdated;
-        _ = Dispatcher.InvokeAsync(PlayPendingTransition, DispatcherPriority.Render);
-    }
-
-    private void PlayPendingTransition()
-    {
-        if (_beforeTransition.Count == 0 || !IsLoaded) return;
-        var batch = _pendingTransitionBatch;
-        _pendingTransitionBatch = null;
-        if (batch is { Animate: false })
-        {
-            _beforeTransition.Clear();
-            return;
-        }
-        var before = _beforeTransition;
-        _beforeTransition = new Dictionary<string, ListTransitionSnapshot>(StringComparer.OrdinalIgnoreCase);
-        var animated = false;
-        var afterKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in ItemsList.Items)
-        {
-            if (ItemsList.ItemContainerGenerator.ContainerFromItem(item) is not FrameworkElement container || !container.IsVisible) continue;
-            var key = GetItemKey(item);
-            if (key is null) continue;
-            afterKeys.Add(key);
-            var position = container.TransformToAncestor(ItemsList).Transform(new Point());
-            animated |= before.TryGetValue(key, out var old)
-                ? AnimateMovedContainer(container, old.Position.Y - position.Y)
-                : AnimateAddedContainer(container);
-        }
-
-        foreach (var removed in before.Values.Where(snapshot => !afterKeys.Contains(snapshot.Key)).Take(12))
-            animated |= AnimateRemovedSnapshot(removed);
-
-        if (!animated) return;
-        _isTransitionAnimationRunning = true;
-        _transitionTimer.Stop();
-        _transitionTimer.Start();
-    }
-
-    private void OnTransitionTimerTick(object? sender, EventArgs e)
-    {
-        _transitionTimer.Stop();
-        _isTransitionAnimationRunning = false;
-        if (_beforeTransition.Count != 0) QueueTransitionAfterLayout();
-    }
-
-    private static bool AnimateMovedContainer(FrameworkElement container, double deltaY)
-    {
-        if (Math.Abs(deltaY) < 0.5) return false;
-        var transform = new TranslateTransform(0, deltaY);
-        container.RenderTransform = transform;
-        transform.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(200))
-        {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        });
-        return true;
-    }
-
-    private static bool AnimateAddedContainer(FrameworkElement container)
-    {
-        container.Opacity = 0;
-        container.RenderTransform = new TranslateTransform(0, 5);
-        container.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(120)));
-        ((TranslateTransform)container.RenderTransform).BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(140))
-        {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        });
-        return true;
-    }
-
-    private bool AnimateRemovedSnapshot(ListTransitionSnapshot snapshot)
-    {
-        if (snapshot.Bitmap is null) return false;
-        var ghost = new Image { Source = snapshot.Bitmap, Width = snapshot.Size.Width, Height = snapshot.Size.Height, Opacity = 1, IsHitTestVisible = false };
-        Canvas.SetLeft(ghost, snapshot.Position.X);
-        Canvas.SetTop(ghost, snapshot.Position.Y);
-        TransitionOverlay.Children.Add(ghost);
-        var animation = new DoubleAnimation(0, TimeSpan.FromMilliseconds(120)) { BeginTime = TimeSpan.FromMilliseconds(20) };
-        animation.Completed += (_, _) => TransitionOverlay.Children.Remove(ghost);
-        ghost.BeginAnimation(OpacityProperty, animation);
-        return true;
-    }
-
-    private static BitmapSource? CaptureContainerBitmap(FrameworkElement container)
-    {
-        try
-        {
-            var width = Math.Max(1, (int)Math.Ceiling(container.ActualWidth));
-            var height = Math.Max(1, (int)Math.Ceiling(container.ActualHeight));
-            var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
-            bitmap.Render(container);
-            bitmap.Freeze();
-            return bitmap;
-        }
-        catch { return null; }
+            panel._transitionController.Attach(args.NewValue as IEnumerable);
     }
 
     private static string? GetItemKey(object? item)
@@ -860,7 +699,6 @@ public partial class ModListPanel : UserControl
 
     private sealed record RealizedRow(int Index, FrameworkElement Container);
 
-    private sealed record ListTransitionSnapshot(string Key, Point Position, Size Size, BitmapSource? Bitmap);
 }
 
 public sealed class ModListRowEventArgs(object? item, ModifierKeys modifiers) : EventArgs
