@@ -130,7 +130,10 @@ namespace HD2ModManager.ViewModels
         public bool IsLibraryActive => CurrentMode == WorkspaceMode.LibraryOnly;
         public bool IsSplitActive => CurrentMode == WorkspaceMode.ProfileLibrarySplit;
         public bool IsSettingsActive => CurrentMode == WorkspaceMode.Settings;
-        public bool IsSplitView => LeftPageType != RightPageType;
+        // Page type alone is insufficient: two different Mod detail pages both
+        // use ModDetails, but they still need to occupy two visible slots.
+        public bool IsSplitView => RightPage is not null
+            && (LeftPageType != RightPageType || !ReferenceEquals(LeftPage, RightPage));
         public bool ShowRightSlot => IsSplitView;
         public bool IsLeftSlotLibrary => LeftPageType == WorkspacePageType.Library;
         public bool IsRightSlotLibrary => IsSplitView && RightPageType == WorkspacePageType.Library;
