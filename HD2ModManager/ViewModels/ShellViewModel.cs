@@ -1360,13 +1360,13 @@ namespace HD2ModManager.ViewModels
             var ids = _selection.SelectedIds.ToList();
             if (string.Equals(_selection.Scope, "Library", StringComparison.OrdinalIgnoreCase))
             {
-                var confirm = System.Windows.MessageBox.Show($"确定删除选中的 {ids.Count} 个 Mod？\n这会同时删除库中的已存储文件。", "批量删除 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
-                if (confirm != System.Windows.MessageBoxResult.Yes) return;
-                var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "批量删除 Mod", $"{ids.Count} 个 Mod");
+                var targets = ModDeletionConfirmation.ConfirmTargets(_libraryService, ids, $"确定删除选中的 {ids.Count} 个 Mod？\n这会同时删除库中的已存储文件。", "批量删除 Mod");
+                if (targets is null) return;
+                var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "批量删除 Mod", $"{targets.Count} 个 Mod");
                 task.MarkRunning("正在删除");
                 try
                 {
-                    var removed = await _libraryService.RemoveManyAsync(ids, task.CancellationToken);
+                    var removed = await _libraryService.RemoveManyAsync(targets, task.CancellationToken);
                     task.MarkCompleted();
                     _notificationService.Show($"已删除：{removed} 个 Mod");
                 }
@@ -1504,18 +1504,18 @@ namespace HD2ModManager.ViewModels
                 || !string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase)) return;
 
             var ids = _selection.SelectedIds.ToList();
-            var confirm = System.Windows.MessageBox.Show(
+            var targets = ModDeletionConfirmation.ConfirmTargets(
+                _libraryService,
+                ids,
                 $"确定彻底删除选中的 {ids.Count} 个 Mod？\n这会从所有配置移除它们，并删除模组库中的已存储文件。",
-                "批量删除 Mod",
-                System.Windows.MessageBoxButton.YesNo,
-                System.Windows.MessageBoxImage.Warning);
-            if (confirm != System.Windows.MessageBoxResult.Yes) return;
+                "批量删除 Mod");
+            if (targets is null) return;
 
-            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "批量删除 Mod", $"{ids.Count} 个 Mod");
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "批量删除 Mod", $"{targets.Count} 个 Mod");
             task.MarkRunning("正在删除");
             try
             {
-                var removed = await _libraryService.RemoveManyAsync(ids, task.CancellationToken);
+                var removed = await _libraryService.RemoveManyAsync(targets, task.CancellationToken);
                 task.MarkCompleted();
                 _notificationService.Show($"已删除：{removed} 个 Mod");
                 _selection.Clear();

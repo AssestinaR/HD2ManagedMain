@@ -623,16 +623,16 @@ namespace HD2ModManager.ViewModels
             var guid = parameter as string;
             if (string.IsNullOrWhiteSpace(guid)) return;
             var modName = _library.Get(guid)?.Name ?? guid;
-            var confirm = System.Windows.MessageBox.Show(
-                $"确定彻底删除 Mod“{modName}”？\n这会从当前配置移除它，并删除模组库中的已存储文件。",
-                "彻底删除 Mod",
-                System.Windows.MessageBoxButton.YesNo,
-                System.Windows.MessageBoxImage.Warning);
-            if (confirm != System.Windows.MessageBoxResult.Yes) return;
+            var targets = ModDeletionConfirmation.ConfirmTargets(
+                _library,
+                [guid],
+                $"确定彻底删除 Mod“{modName}”？\n这会从所有配置移除它，并删除模组库中的已存储文件。",
+                "彻底删除 Mod");
+            if (targets is null) return;
 
             try
             {
-                if (!await _library.RemoveAsync(guid)) return;
+                if (await _library.RemoveManyAsync(targets) == 0) return;
                 _selection?.Clear();
                 Refresh();
             }

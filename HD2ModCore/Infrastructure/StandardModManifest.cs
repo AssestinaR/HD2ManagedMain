@@ -67,4 +67,5 @@ internal sealed class OptionRelationDocument
     public List<string> HostModGuids { get; init; } = [];
     public string? SourcePackageGuid { get; init; }
     public string? SourcePath { get; init; }
+    public int? OptionOrder { get; init; }
 }

@@ -52,7 +52,7 @@ namespace HD2ModManager.Views
                     shell?.BeginBottomBarNameEdit(card.Mod.Guid, card.Mod.Name);
                     break;
                 case ModListRowAction.Details:
-                    shell?.OpenModDetails(card.Mod.Guid);
+                    shell?.OpenModDetailsFromPage(details, card.Mod.Guid);
                     break;
                 case ModListRowAction.ToggleDecoration:
                     await details.ToggleDecorationForCurrentHostAsync(card);
@@ -64,6 +64,13 @@ namespace HD2ModManager.Views
                     await details.DeleteDecorationAsync(card.Mod.Guid);
                     break;
             }
+        }
+
+        private void OnHostDecorationOpenDetailsOnRightClick(object? sender, ModListRowEventArgs e)
+        {
+            if (DataContext is not ModDetailsPageViewModel details || e.Item is not ModCardViewModel card) return;
+            var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as ShellViewModel;
+            shell?.OpenModDetailsFromPage(details, card.Mod.Guid);
         }
 
         private void OnHostDecorationSelectionRequested(object? sender, ModListSelectionRequestEventArgs e)

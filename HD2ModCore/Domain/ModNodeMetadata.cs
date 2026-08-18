@@ -10,4 +10,5 @@ public sealed record ModNodeMetadata(
 	ModNodeKind Kind = ModNodeKind.Standard,
 	IReadOnlyList<string>? HostModGuids = null,
 	string? SourcePackageGuid = null,
-	string? SourcePackagePath = null);
+	string? SourcePackagePath = null,
+	int? OptionOrder = null);

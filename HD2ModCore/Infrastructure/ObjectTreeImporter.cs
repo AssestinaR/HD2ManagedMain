@@ -55,7 +55,8 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 				Kind: isDecoration ? ModNodeKind.Decoration : option is not null ? ModNodeKind.Option : ModNodeKind.Standard,
 				HostModGuids: option?.HostModGuids,
 				SourcePackageGuid: option?.SourcePackageGuid,
-				SourcePackagePath: option?.SourcePath);
+				SourcePackagePath: option?.SourcePath,
+				OptionOrder: option?.OptionOrder);
 
 			nodes[id] = new ModNode(
 				Id: id,

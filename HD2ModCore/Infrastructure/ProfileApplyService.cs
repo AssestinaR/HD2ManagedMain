@@ -19,7 +19,7 @@ public sealed class ProfileApplyService : IProfileApplyService
 		_planner = planner ?? throw new ArgumentNullException(nameof(planner));
 		_executor = executor ?? throw new ArgumentNullException(nameof(executor));
 		_capabilityService = capabilityService ?? new DeploymentCapabilityService();
-		_optionActivations = new OptionActivationStore(Path.Combine((paths ?? new StoragePaths(AppContext.BaseDirectory)).DataDirectory, "option-activations.json"));
+		_optionActivations = new OptionActivationStore(Path.Combine((paths ?? new StoragePaths(AppContext.BaseDirectory)).ModsDirectory, "option-activations.json"));
 	}
 
 	public async ValueTask<ApplyResult> ApplyAsync(

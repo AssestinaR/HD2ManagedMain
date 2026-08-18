@@ -127,8 +127,74 @@ namespace HD2ModManager.Services
         public IReadOnlyList<ModEntity> GetAttachmentsForHost(string hostId)
             => GetDecorationsForHost(hostId).Concat(GetOptionsForHost(hostId)).ToArray();
 
+        public async Task<int> EnableDefaultOptionsForEmptyHostsAsync(
+            IEnumerable<string> hostIds,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(hostIds);
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var changed = 0;
+                foreach (var hostId in hostIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var host = Get(hostId);
+                    if (host is null || host.IsDecoration || host.IsOption || host.HasPatchContent) continue;
+
+                    var options = GetOptionsForHost(hostId)
+                        .Where(option => option.HasPatchContent)
+                        .ToArray();
+                    if (options.Length == 0 || options.Any(option => IsOptionEnabledForHost(option.Guid, hostId))) continue;
+
+                    var hostNode = _snapshot.Nodes.Values.FirstOrDefault(node => SameModGuid(node.Id.Value.ToString("N"), hostId));
+                    var ordered = options
+                        .Select(option => (Option: option, Node: _snapshot.Nodes.Values.FirstOrDefault(node => SameModGuid(node.Id.Value.ToString("N"), option.Guid))))
+                        .Where(pair => pair.Node is not null);
+                    var selected = hostNode?.Metadata.SourcePackageGuid is not null
+                        ? ordered.OrderBy(pair => pair.Node!.Metadata.OptionOrder ?? int.MaxValue)
+                            .ThenBy(pair => pair.Option.Name, StringComparer.OrdinalIgnoreCase)
+                            .FirstOrDefault().Option
+                        : ordered.OrderByDescending(pair => GetStoredPayloadSize(pair.Option))
+                            .ThenBy(pair => pair.Option.Name, StringComparer.OrdinalIgnoreCase)
+                            .FirstOrDefault().Option;
+                    if (selected is null) continue;
+
+                    var enabledHosts = _optionActivations.GetEnabledHosts(selected.Guid).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    enabledHosts.Add(hostId);
+                    await _optionActivations.SetEnabledHostsAsync(selected.Guid, enabledHosts, cancellationToken).ConfigureAwait(false);
+                    changed++;
+                }
+
+                if (changed > 0)
+                {
+                    SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                    OptionActivationChanged?.Invoke(this, EventArgs.Empty);
+                }
+                return changed;
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
         public bool IsOptionEnabledForHost(string optionId, string hostId)
             => _optionActivations.GetEnabledHosts(optionId).Any(host => SameModGuid(host, hostId));
+
+        private long GetStoredPayloadSize(ModEntity mod)
+        {
+            try
+            {
+                var directory = ResolveAbsolutePath(mod.SourcePath);
+                if (!Directory.Exists(directory)) return 0;
+                return Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+                    .Where(path => !string.Equals(Path.GetFileName(path), "option.json", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(Path.GetFileName(path), "decoration.json", StringComparison.OrdinalIgnoreCase)
+                        && !new[] { ".png", ".jpg", ".jpeg", ".bmp", ".webp" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
+                    .Select(path => new FileInfo(path).Length)
+                    .Sum();
+            }
+            catch (IOException) { return 0; }
+            catch (UnauthorizedAccessException) { return 0; }
+        }
 
         public string GetOptionActivationStatus(string optionId)
         {
@@ -188,8 +254,8 @@ namespace HD2ModManager.Services
             _synchronizer = CoreServices.CreateModLibrarySynchronizer();
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, _informationCenter);
 		_assetSummaryProjector = CoreServices.CreateModAssetSummaryProjector(_paths);
-            _decorationActivations = new DecorationActivationStore(Path.Combine(_paths.DataDirectory, "decoration-activations.json"));
-            _optionActivations = new OptionActivationStore(Path.Combine(_paths.DataDirectory, "option-activations.json"));
+            _decorationActivations = new DecorationActivationStore(Path.Combine(_paths.ModsDirectory, "decoration-activations.json"));
+            _optionActivations = new OptionActivationStore(Path.Combine(_paths.ModsDirectory, "option-activations.json"));
             _decorationAttachments = new DecorationAttachmentService(_paths);
             _snapshot = EmptySnapshot();
             _derivedData = EmptyDerivedData();
@@ -506,6 +572,7 @@ namespace HD2ModManager.Services
             }
             else _decorationActivations.RemoveHostAsync(guid).GetAwaiter().GetResult();
             if (removedIsOption) _optionActivations.RemoveAsync(guid).GetAwaiter().GetResult();
+            else _optionActivations.RemoveHostAsync(guid).GetAwaiter().GetResult();
             Interlocked.Increment(ref _stateVersion);
             _informationCenter.InvalidateNodeAsync(nodeId).AsTask().GetAwaiter().GetResult();
 			ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
@@ -534,6 +601,7 @@ namespace HD2ModManager.Services
                 if (removedIsDecoration) await _decorationActivations.RemoveDecorationAsync(guid, cancellationToken).ConfigureAwait(false);
                 else await _decorationActivations.RemoveHostAsync(guid, cancellationToken).ConfigureAwait(false);
                 if (removedIsOption) await _optionActivations.RemoveAsync(guid, cancellationToken).ConfigureAwait(false);
+                else await _optionActivations.RemoveHostAsync(guid, cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref _stateVersion);
                 await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
                 ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
@@ -679,6 +747,14 @@ namespace HD2ModManager.Services
                     .Where(nodeId => _snapshot.Nodes.TryGetValue(nodeId, out var node) && node.Metadata.Kind == ModNodeKind.Decoration)
                     .Select(nodeId => nodeId.Value.ToString("N"))
                     .ToArray();
+                var deletedOptions = nodeIds
+                    .Where(nodeId => _snapshot.Nodes.TryGetValue(nodeId, out var node) && node.Metadata.Kind == ModNodeKind.Option)
+                    .Select(nodeId => nodeId.Value.ToString("N"))
+                    .ToArray();
+                var deletedHosts = nodeIds
+                    .Where(nodeId => _snapshot.Nodes.TryGetValue(nodeId, out var node) && node.Metadata.Kind == ModNodeKind.Standard)
+                    .Select(nodeId => nodeId.Value.ToString("N"))
+                    .ToArray();
                 if (deletedDecorations.Length > 0)
                 {
                     await ApplyDecorationActivationBatchCoreAsync(
@@ -692,6 +768,13 @@ namespace HD2ModManager.Services
                 _snapshot = await _manager.DeleteNodesAsync(nodeIds, deleteStoredFiles: true, cancellationToken).ConfigureAwait(false);
                 if (deletedDecorations.Length > 0)
                     await _decorationActivations.RemoveDecorationsAsync(deletedDecorations, cancellationToken).ConfigureAwait(false);
+                foreach (var hostId in deletedHosts)
+                {
+                    await _decorationActivations.RemoveHostAsync(hostId, cancellationToken).ConfigureAwait(false);
+                    await _optionActivations.RemoveHostAsync(hostId, cancellationToken).ConfigureAwait(false);
+                }
+                foreach (var optionId in deletedOptions)
+                    await _optionActivations.RemoveAsync(optionId, cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref _stateVersion);
                 foreach (var nodeId in nodeIds)
                     await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);

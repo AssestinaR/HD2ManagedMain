@@ -92,7 +92,10 @@ namespace HD2ModManager.ViewModels
         public bool IsOption => Mod?.IsOption == true;
         public bool IsStandardMod => !IsDecoration && !IsOption;
         public bool HasPatchContent => Mod?.HasPatchContent == true;
-        public bool CanUsePatchTools => IsStandardMod && HasPatchContent;
+        // Option Mods are still real patch-bearing packages. Only decorations
+        // and empty logical hosts are excluded from patch tools.
+        public bool CanUsePatchTools => !IsDecoration && HasPatchContent;
+        public bool CanShowDecorationPlan => !IsDecoration && HasPatchContent;
         public bool CanSplitEmbeddedMaterials => !_disposed && CanUsePatchTools
             && ((_materialState?.HasEmbeddedMaterials == true) || (_cachedMaterialDeliveryFacts?.EmbeddedMaterialCount > 0))
             && TryGetCurrentNode(out _);
@@ -101,7 +104,7 @@ namespace HD2ModManager.ViewModels
         public bool CanRebuildSameKey => !_disposed && CanUsePatchTools && !_sameKeyReconstructionRunning && TryGetCurrentNode(out _);
         public bool CanPlanCrossArmorTransfer => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
         public bool IsDecoration => Mod?.IsDecoration == true;
-        public bool CanPlanDecoration => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
+        public bool CanPlanDecoration => !_disposed && CanShowDecorationPlan && TryGetCurrentNode(out _);
         public BulkObservableCollection<ModCardViewModel> HostDecorations { get; } = new();
         public bool HasHostDecorations => IsStandardMod && HostDecorations.Count > 0;
         private bool HasPatchGroups => Mod?.FileGroups?.Count > 0;
@@ -742,6 +745,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(IsStandardMod));
             OnPropertyChanged(nameof(HasPatchContent));
             OnPropertyChanged(nameof(CanUsePatchTools));
+            OnPropertyChanged(nameof(CanShowDecorationPlan));
             OnPropertyChanged(nameof(HasHostDecorations));
             RaiseMaterialCommandStates();
             RaiseSameKeyReconstructionCommandState();
@@ -1410,7 +1414,7 @@ namespace HD2ModManager.ViewModels
 
         private void OpenDecorationPlan()
         {
-            if (Mod is null || !IsStandardMod) return;
+            if (Mod is null || !CanShowDecorationPlan) return;
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
                 shell.OpenDecorationPlan(Mod.Guid);
         }
@@ -1419,10 +1423,13 @@ namespace HD2ModManager.ViewModels
         {
             if (Mod == null) return;
             var name = Mod.Name;
-            var confirm = System.Windows.MessageBox.Show($"确定删除 Mod“{name}”？\n这会同时删除库中的已存储文件。", "删除 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
-            if (confirm != System.Windows.MessageBoxResult.Yes) return;
+            var targets = ModDeletionConfirmation.ConfirmTargets(
+                _library,
+                [Mod.Guid],
+                $"确定删除 Mod“{name}”？\n这会同时删除库中的已存储文件。");
+            if (targets is null) return;
             ThumbnailService.CancelPendingGeneration();
-            if (!await _library.RemoveAsync(Mod.Guid).ConfigureAwait(true)) return;
+            if (await _library.RemoveManyAsync(targets).ConfigureAwait(true) == 0) return;
             Mod = null;
             _notifications?.Show($"已删除：{name}");
             var shell = System.Windows.Application.Current?.MainWindow as HD2ModManager.MainWindow;

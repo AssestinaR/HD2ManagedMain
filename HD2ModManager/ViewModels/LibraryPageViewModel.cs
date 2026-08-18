@@ -425,12 +425,15 @@ namespace HD2ModManager.ViewModels
         private async void RemoveMod(ModCardViewModel? card)
         {
             if (card == null) return;
-            var confirm = System.Windows.MessageBox.Show($"确定删除 Mod“{card.Mod.Name}”？\n这会同时删除库中的已存储文件。", "删除 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
-            if (confirm != System.Windows.MessageBoxResult.Yes) return;
+            var targets = ModDeletionConfirmation.ConfirmTargets(
+                _library,
+                [card.Mod.Guid],
+                $"确定删除 Mod“{card.Mod.Name}”？\n这会同时删除库中的已存储文件。");
+            if (targets is null) return;
             try
             {
                 ThumbnailService.CancelPendingGeneration();
-                await _library.RemoveAsync(card.Mod.Guid);
+                await _library.RemoveManyAsync(targets);
                 _notifications?.Show($"已删除：{card.Mod.Name}");
             }
             catch (System.Exception ex)
@@ -548,7 +551,9 @@ namespace HD2ModManager.ViewModels
         private string? _thumbnailSourcePath;
         public ModAssetSummary? AssetSummary => _assetSummary;
         public string Name => Mod.Name;
-        public string AssetSummaryText => Mod.IsDecoration || Mod.IsOption
+        public string AssetSummaryText => !Mod.HasPatchContent && !Mod.IsDecoration && !Mod.IsOption
+            ? Mod.Description ?? string.Empty
+            : Mod.IsDecoration || Mod.IsOption
             ? DecorationStatus ?? "尚未启用。"
             : ModAssetSummaryFormatter.Format(AssetSummary);
         public bool ShowsPatchMetadata => Mod.Capabilities.ShowsPatchAssets;

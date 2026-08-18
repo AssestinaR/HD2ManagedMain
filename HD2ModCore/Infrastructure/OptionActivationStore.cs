@@ -41,6 +41,19 @@ public sealed class OptionActivationStore
         await SaveAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task RemoveHostAsync(string hostId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(hostId)) return;
+        lock (_gate)
+        {
+            foreach (var hosts in _enabledByOption.Values) hosts.Remove(hostId);
+            _enabledByOption = _enabledByOption
+                .Where(item => item.Value.Count > 0)
+                .ToDictionary(item => item.Key, item => item.Value, StringComparer.OrdinalIgnoreCase);
+        }
+        await SaveAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public IReadOnlyDictionary<string, IReadOnlySet<string>> Snapshot()
     {
         lock (_gate)

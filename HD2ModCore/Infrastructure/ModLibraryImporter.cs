@@ -427,6 +427,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 					HostModGuids = [hostGuid],
 					SourcePackageGuid = manifest.Guid,
 					SourcePackagePath = path,
+					OptionOrder = entry.OptionOrder,
 				},
 			};
 		}
@@ -531,35 +532,36 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	{
 		var result = new List<ManifestEntry>
 		{
-			new(string.Empty, manifest.Name, manifest.Description, manifest.IconPath, manifest.Guid, ModNodeKind.Standard, null),
+			new(string.Empty, manifest.Name, manifest.Description, manifest.IconPath, manifest.Guid, ModNodeKind.Standard, null, null),
 		};
+		var optionOrder = 0;
 		foreach (var option in manifest.Options)
 		{
 			foreach (var include in option.Include ?? [])
 			{
 				var path = NormalizeRelativePath(include);
 				if (!string.IsNullOrEmpty(path))
-					result.Add(CreateOptionEntry(manifest, path, option.Name, option.Description, option.Image));
+					result.Add(CreateOptionEntry(manifest, path, option.Name, option.Description, option.Image, optionOrder++));
 			}
 			foreach (var sub in option.SubOptions ?? [])
 			foreach (var include in sub.Include ?? [])
 			{
 				var path = NormalizeRelativePath(include);
 				if (!string.IsNullOrEmpty(path))
-					result.Add(CreateOptionEntry(manifest, path, sub.Name, sub.Description, sub.Image));
+					result.Add(CreateOptionEntry(manifest, path, sub.Name, sub.Description, sub.Image, optionOrder++));
 			}
 		}
 		return result;
 	}
 
-	private static ManifestEntry CreateOptionEntry(StandardModManifest manifest, string path, string? name, string? notes, string? image)
+	private static ManifestEntry CreateOptionEntry(StandardModManifest manifest, string path, string? name, string? notes, string? image, int optionOrder)
 	{
 		var explicitGuid = FindNodeGuid(manifest, path);
 		var stableGuid = Guid.TryParse(explicitGuid, out _)
 			? explicitGuid
 			: CreateStableNodeGuid(manifest.Guid, path).ToString("D");
 		var hostGuid = Guid.TryParse(manifest.Guid, out var parsedHost) ? new[] { parsedHost.ToString("N") } : Array.Empty<string>();
-		return new(path, name, notes, image, stableGuid, ModNodeKind.Option, hostGuid);
+		return new(path, name, notes, image, stableGuid, ModNodeKind.Option, hostGuid, optionOrder);
 	}
 
 	private static string? FindNodeGuid(StandardModManifest manifest, string path)
@@ -593,7 +595,8 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		string? Image,
 		string? Guid,
 		ModNodeKind Kind,
-		IReadOnlyList<string>? HostModGuids);
+		IReadOnlyList<string>? HostModGuids,
+	int? OptionOrder);
 
 	private sealed record PackageRoot(string Directory, StandardModManifest? Manifest);
 
@@ -625,6 +628,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			HostModGuids = metadata.HostModGuids.ToList(),
 			SourcePackageGuid = metadata.SourcePackageGuid,
 			SourcePath = metadata.SourcePackagePath,
+			OptionOrder = metadata.OptionOrder,
 		};
 		File.WriteAllText(
 			Path.Combine(destinationDirectory, "option.json"),

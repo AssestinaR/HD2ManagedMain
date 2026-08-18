@@ -14,7 +14,7 @@ public sealed record ModCapabilities(
         => isDecoration
             ? new(false, false, false, false, false, true, false)
             : isOption
-                ? new(false, false, false, false, false, false, false)
+                ? new(false, false, hasPatch, hasPatch, hasPatch, hasPatch, false)
                 : hasPatch
                     ? new(true, true, true, true, true, false, true)
                     // An empty host remains selectable so its attached options

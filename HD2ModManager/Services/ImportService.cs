@@ -77,6 +77,7 @@ namespace HD2ModManager.Services
                     .Where(node => before.TryGetValue(node.Id, out var previous) && !Equals(previous, node))
                     .Select(node => node.Id)
                     .ToArray();
+                await _library.EnableDefaultOptionsForEmptyHostsAsync(importedGuids, ct).ConfigureAwait(false);
                 var affectedNodeIds = importedGuids
                     .Select(guid => Guid.TryParse(guid, out var value) ? new ModNodeId(value) : (ModNodeId?)null)
                     .Concat(changedExistingNodeIds.Select(id => (ModNodeId?)id))
