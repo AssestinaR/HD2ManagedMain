@@ -14,6 +14,7 @@ namespace HD2ModManager.Views;
 public partial class ModListPanel : UserControl
 {
     private readonly Dictionary<Border, SelectionIndicatorSubscription> _selectionIndicatorSubscriptions = new();
+    private readonly BulkObservableCollection<object> _presentedItems = new();
     private readonly ModListTransitionController _transitionController;
     private string? _selectionAnchorKey;
     private readonly DispatcherTimer _dragAutoScrollTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
@@ -33,7 +34,9 @@ public partial class ModListPanel : UserControl
     public ModListPanel()
     {
         InitializeComponent();
-        _transitionController = new ModListTransitionController(this, ItemsList, TransitionOverlay);
+        _transitionController = new ModListTransitionController(this, ItemsList, TransitionOverlay, _presentedItems);
+        _transitionController.PresentedItems.CollectionChanged += OnPresentedItemsChanged;
+        _transitionController.TransitionStateChanged += OnTransitionStateChanged;
         _dragAutoScrollTimer.Tick += OnDragAutoScrollTick;
         Loaded += (_, _) =>
         {
@@ -69,12 +72,15 @@ public partial class ModListPanel : UserControl
 	public static readonly DependencyProperty UseInternalScrollProperty = DependencyProperty.Register(nameof(UseInternalScroll), typeof(bool), typeof(ModListPanel), new PropertyMetadata(true, OnUseInternalScrollChanged));
     public static readonly DependencyProperty RowActionsProperty = DependencyProperty.Register(nameof(RowActions), typeof(ModListRowAction), typeof(ModListPanel), new PropertyMetadata(ModListRowAction.None, OnRowActionsChanged));
     public static readonly DependencyProperty SearchActionsTemplateProperty = DependencyProperty.Register(nameof(SearchActionsTemplate), typeof(DataTemplate), typeof(ModListPanel), new PropertyMetadata(null, OnSearchActionsTemplateChanged));
+    private static readonly DependencyPropertyKey HasPresentedItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasPresentedItems), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
+    public static readonly DependencyProperty HasPresentedItemsProperty = HasPresentedItemsPropertyKey.DependencyProperty;
     private static readonly DependencyPropertyKey HasRowActionsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasRowActions), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty HasRowActionsProperty = HasRowActionsPropertyKey.DependencyProperty;
     private static readonly DependencyPropertyKey HasSearchActionsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasSearchActions), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty HasSearchActionsProperty = HasSearchActionsPropertyKey.DependencyProperty;
 
     public IEnumerable? ItemsSource { get => (IEnumerable?)GetValue(ItemsSourceProperty); set => SetValue(ItemsSourceProperty, value); }
+    public IEnumerable PresentedItems => _presentedItems;
     public string HeaderTitle { get => (string)GetValue(HeaderTitleProperty); set => SetValue(HeaderTitleProperty, value); }
     public string HeaderSummary { get => (string)GetValue(HeaderSummaryProperty); set => SetValue(HeaderSummaryProperty, value); }
     public string EmptyMessage { get => (string)GetValue(EmptyMessageProperty); set => SetValue(EmptyMessageProperty, value); }
@@ -95,6 +101,7 @@ public partial class ModListPanel : UserControl
     public DataTemplate? SearchActionsTemplate { get => (DataTemplate?)GetValue(SearchActionsTemplateProperty); set => SetValue(SearchActionsTemplateProperty, value); }
     public bool HasRowActions => (bool)GetValue(HasRowActionsProperty);
     public bool HasSearchActions => (bool)GetValue(HasSearchActionsProperty);
+    public bool HasPresentedItems => (bool)GetValue(HasPresentedItemsProperty);
 
     public event EventHandler<ModListRowEventArgs>? RowClicked;
     public event EventHandler<ModListRowEventArgs>? RowRightClicked;
@@ -104,6 +111,12 @@ public partial class ModListPanel : UserControl
     public event EventHandler<ModListExternalProfileDropEventArgs>? ExternalProfileDropRequested;
     public event EventHandler<ModListExternalProfileDropEventArgs>? ExternalProfileRemovalRequested;
     public event EventHandler? BackgroundClicked;
+
+    private void OnPresentedItemsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+        => SetValue(HasPresentedItemsPropertyKey, _transitionController.PresentedItems.Count != 0);
+
+    private void OnTransitionStateChanged(bool isPlaying)
+        => ItemsList.IsHitTestVisible = !isPlaying;
 
     private void OnToggleSearchClick(object sender, RoutedEventArgs e)
     {

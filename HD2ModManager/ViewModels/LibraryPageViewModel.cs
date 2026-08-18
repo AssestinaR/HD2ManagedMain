@@ -367,7 +367,9 @@ namespace HD2ModManager.ViewModels
             var didReconcile = reconcile || contentCanAffectFilter;
             if (didReconcile)
             {
-                Refresh(ListTransitionKind.Refresh);
+                // 此处只在成员或筛选结果可能变化时重建集合；让集合按真实
+                // Key 差异解析插入、移除和重排，状态投影分支仍不触碰集合。
+                Refresh();
             }
             else
             {

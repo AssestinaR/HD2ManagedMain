@@ -26,6 +26,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     private bool _showPotentialCulling;
     private string _targetQuery = string.Empty;
     private IReadOnlyList<DecorationSourceUnitItem> _allSourceUnits = Array.Empty<DecorationSourceUnitItem>();
+    private IReadOnlyList<DecorationTargetModItem> _allTargetMods = Array.Empty<DecorationTargetModItem>();
     private IReadOnlyDictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>> _preparedSourceEntries = new Dictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>>(StringComparer.OrdinalIgnoreCase);
     private string _state = "正在读取来源 Unit。";
 
@@ -55,14 +56,14 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     public string SourceModId { get; }
     public string SourceName { get; }
     public ObservableCollection<DecorationSourceUnitItem> SourceUnits { get; } = new();
-    public ObservableCollection<DecorationTargetModItem> TargetMods { get; } = new();
+    public BulkObservableCollection<DecorationTargetModItem> TargetMods { get; } = new(item => item.SelectionKey);
     public IReadOnlyList<string> BodyVariants { get; }
     public IReadOnlyList<string> DualVariantModes { get; }
     public IReadOnlyList<string> TargetParts { get; }
     public RelayCommand GenerateCommand { get; }
     public RelayCommand BrowseOutputCommand { get; }
     public RelayCommand ToggleTargetSearchCommand { get; }
-    public bool CanGenerate => SourceUnits.Any(item => item.IsSelected) && TargetMods.Any(item => item.IsSelected);
+    public bool CanGenerate => SourceUnits.Any(item => item.IsSelected) && _allTargetMods.Any(item => item.IsSelected);
     public string State { get => _state; private set => SetField(ref _state, value); }
     public string TargetBodyVariant { get => _targetBodyVariant; set => SetField(ref _targetBodyVariant, value); }
     public string DualVariantMode { get => _dualVariantMode; set => SetField(ref _dualVariantMode, value); }
@@ -123,8 +124,11 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
                     .ToArray();
                 RefreshSourceUnits();
             }
-            foreach (var mod in _library.All().Where(mod => !mod.IsDecoration && !string.Equals(mod.Guid, SourceModId, StringComparison.OrdinalIgnoreCase)).OrderBy(mod => mod.Name))
-                TargetMods.Add(new DecorationTargetModItem(mod.Guid, mod.Name, mod.Description, mod.Image, OnSelectionChanged));
+            _allTargetMods = _library.All()
+                .Where(mod => !mod.IsDecoration && !string.Equals(mod.Guid, SourceModId, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(mod => mod.Name)
+                .Select(mod => new DecorationTargetModItem(mod.Guid, mod.Name, mod.Description, mod.Image, OnSelectionChanged))
+                .ToArray();
             RefreshTargetVisibility();
             State = SourceUnits.Count == 0 ? "来源中没有可识别的 Unit。" : $"已读取 {SourceUnits.Count} 个 Unit；选择后将写入装饰计划。";
         }
@@ -144,16 +148,17 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     private void RefreshTargetVisibility()
     {
         var query = TargetQuery.Trim();
-        foreach (var item in TargetMods)
-            item.IsVisible = query.Length == 0
-                || item.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
-                || (item.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) == true);
+        var visible = _allTargetMods.Where(item =>
+            query.Length == 0
+            || item.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+            || (item.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) == true));
+        TargetMods.ReplaceWith(visible, ListTransitionKind.Filter);
     }
 
     public void ApplyTargetSelection(IReadOnlyList<string> selectedKeys)
     {
         var selected = selectedKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in TargetMods) item.IsSelected = selected.Contains(item.ModId);
+        foreach (var item in _allTargetMods) item.IsSelected = selected.Contains(item.ModId);
         // ModListPanel may synchronize several rows in one request. The page owns
         // the command state, so do not rely on individual row setters to refresh it.
         OnSelectionChanged();
@@ -182,7 +187,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
             Layer = item.Layer.ToString(),
             IsCulling = item.IsCulling
         }).ToList();
-        var targetModGuids = TargetMods.Where(item => item.IsSelected).Select(item => item.ModId).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var targetModGuids = _allTargetMods.Where(item => item.IsSelected).Select(item => item.ModId).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (sourceUnits.Count == 0 || targetModGuids.Count == 0)
         {
             State = sourceUnits.Count == 0 && targetModGuids.Count == 0

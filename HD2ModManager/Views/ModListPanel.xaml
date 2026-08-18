@@ -61,7 +61,7 @@
         </Border>
         <Border Style="{StaticResource CardContainer}" Padding="0">
             <Grid ClipToBounds="True">
-            <ListBox x:Name="ItemsList" ItemsSource="{Binding ItemsSource, ElementName=Root}"
+            <ListBox x:Name="ItemsList" ItemsSource="{Binding PresentedItems, ElementName=Root}"
                      PreviewMouseLeftButtonDown="OnListBackgroundMouseDown"
                      PreviewMouseLeftButtonUp="OnItemsListPreviewMouseLeftButtonUp"
                      PreviewMouseMove="OnItemsListPreviewMouseMove"
@@ -74,7 +74,6 @@
                         <Grid ClipToBounds="False">
                         <Border x:Name="RowBack"
                                 Style="{StaticResource ModListRowContainer}"
-                                Visibility="{Binding IsVisible, Converter={StaticResource BoolToVis}}"
                                 MouseLeftButtonUp="OnRowClick"
                                 MouseRightButtonUp="OnRowRightClick">
                             <Border.ToolTip>
@@ -240,7 +239,7 @@
                 <ListBox.Style>
                     <Style TargetType="ListBox" BasedOn="{StaticResource ModListBox}">
                         <Style.Triggers>
-                            <DataTrigger Binding="{Binding HasItems}" Value="False">
+                            <DataTrigger Binding="{Binding HasPresentedItems, ElementName=Root}" Value="False">
                                 <Setter Property="Template">
                                     <Setter.Value>
                                         <ControlTemplate TargetType="ListBox">

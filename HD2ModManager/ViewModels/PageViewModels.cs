@@ -830,7 +830,9 @@ namespace HD2ModManager.ViewModels
             var didReconcile = reconcile || contentCanAffectFilter || HasProfileMembershipOrOrderChanged();
             if (didReconcile)
             {
-                Refresh(ListTransitionKind.Refresh);
+                // 这里已经合并了同一轮状态投影，不会再产生第二次 Reset。
+                // 使用 Automatic 让集合根据成员和顺序的真实差异选择插入、移除或重排动画。
+                Refresh();
             }
             else
             {
