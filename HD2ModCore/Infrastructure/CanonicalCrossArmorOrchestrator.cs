@@ -371,7 +371,9 @@ public sealed class CanonicalCrossArmorOrchestrator
 						var hiddenTargetReadStopwatch = System.Diagnostics.Stopwatch.StartNew();
 						var hiddenTarget = await targetReader.ReadAsync(archiveName, targetUnit.Key, allowGlobalDependencySearch: false, cancellationToken: cancellationToken).ConfigureAwait(false);
 						targetReadElapsed += hiddenTargetReadStopwatch.Elapsed;
-						var hidden = new CanonicalHiddenUnitBuilder().Build(hiddenTarget, canonicalAvatarTransforms, minifyCullingMeshes: true);
+						// Sharing a template is a storage optimization only. It must not change
+						// culling behavior relative to the ordinary per-target hide path.
+						var hidden = new CanonicalHiddenUnitBuilder().Build(hiddenTarget, canonicalAvatarTransforms);
 						sharedHiddenTemplate = operationWorkspace.Stage(hidden.Entry);
 						sharedHiddenMeshCount = hidden.HiddenMeshCount;
 						sharedHiddenTemplateUnit = targetUnit.Key;
@@ -385,7 +387,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 							hiddenTargetReadStopwatch.Elapsed, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
 							TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
 							unitStopwatch.Elapsed, allocationBefore, gen0Before, gen1Before, gen2Before));
-						Log($"[UNIT-SHARED-HIDDEN-TEMPLATE] Unit=0x{targetUnit.Key.FileId:x16} HiddenMeshes={hidden.HiddenMeshCount} Culling=Minified");
+						Log($"[UNIT-SHARED-HIDDEN-TEMPLATE] Unit=0x{targetUnit.Key.FileId:x16} HiddenMeshes={hidden.HiddenMeshCount} Culling=Preserved");
 						ReportProgress(request, "BuildSharedHiddenTemplate", $"Canonical：生成统一隐藏 Unit {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16}", targetIndex + 1, Math.Max(targetUnits.Length, 1), totalStopwatch);
 						continue;
 					}

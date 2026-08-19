@@ -411,10 +411,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 CanonicalHiddenUnitOutput hidden;
                 try
                 {
-                    hidden = hiddenUnitBuilder.Build(
-                        targetUnit,
-                        avatarTransforms,
-                        minifyCullingMeshes: useSharedHiddenUnitTemplate && hiddenSource.IsHidden);
+					// Shared templates must preserve culling just like the ordinary hidden path.
+					hidden = hiddenUnitBuilder.Build(targetUnit, avatarTransforms);
                 }
                 catch (Exception exception) when (useSharedHiddenUnitTemplate && hiddenSource.IsHidden && exception is InvalidDataException or InvalidOperationException)
                 {
@@ -427,7 +425,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 {
                     sharedHiddenTemplate = hidden.Entry;
                     sharedHiddenMeshCount = hidden.HiddenMeshCount;
-                    artifacts.Log($"[HIDDEN-TEMPLATE] Unit=0x{sourceEntry.AssetKey.FileId:x16}; HiddenMeshes={hidden.HiddenMeshCount}; Culling=Minified");
+					artifacts.Log($"[HIDDEN-TEMPLATE] Unit=0x{sourceEntry.AssetKey.FileId:x16}; HiddenMeshes={hidden.HiddenMeshCount}; Culling=Preserved");
                 }
             }
             else

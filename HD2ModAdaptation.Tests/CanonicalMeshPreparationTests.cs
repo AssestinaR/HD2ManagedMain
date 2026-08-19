@@ -97,6 +97,27 @@ public sealed class CanonicalMeshPreparationTests
 	}
 
 	[Fact]
+	public void Prepare_ExpandsLegacyScalarPlaceholderWeightForVec4BoneIndices()
+	{
+		var source = Mesh([
+			Component(0, "position", 2, "vec3_float", [0, 0, 0]),
+			new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, [], [7, 0, 0, 0], []),
+			Component(7, "bone_weight", 0, "float", [1])
+		]);
+
+		var result = new CanonicalMeshPreparation().TryPrepare(source, Stream(24, [
+			StreamComponent(0, 2, "vec3_float", 0, 12),
+			StreamComponent(6, 28, "vec4_uint8", 0, 4),
+			StreamComponent(7, 31, "vec4_half", 0, 8)
+		]));
+
+		Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(item => item.Message)));
+		var vertex = Assert.Single(result.Mesh!.Vertices);
+		Assert.Equal(new uint[] { 7, 0, 0, 0 }, vertex.Components.Single(component => component.Type == 6).UIntValues);
+		Assert.Equal(new[] { 1f, 0f, 0f, 0f }, vertex.Components.Single(component => component.Type == 7).FloatValues);
+	}
+
+	[Fact]
 	public void Prepare_ReindexesOutputVerticesSequentially()
 	{
 		var components = new[] { Component(0, "position", 2, "vec3_float", [1, 2, 3]) };

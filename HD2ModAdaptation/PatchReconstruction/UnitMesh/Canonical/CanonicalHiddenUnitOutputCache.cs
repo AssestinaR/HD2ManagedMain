@@ -39,7 +39,7 @@ public interface ICanonicalHiddenUnitOutputCache
 
 public sealed class CanonicalHiddenUnitOutputCache : ICanonicalHiddenUnitOutputCache
 {
-	private const string CacheVersion = "canonical-hidden-unit-v1";
+	private const string CacheVersion = "canonical-hidden-unit-v2";
 	private readonly string rootDirectory;
 	private string? activeDirectory;
 

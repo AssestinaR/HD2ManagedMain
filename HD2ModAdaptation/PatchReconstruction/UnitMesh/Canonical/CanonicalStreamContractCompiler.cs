@@ -103,11 +103,26 @@ public sealed class CanonicalStreamContractCompiler
 	{
 		foreach (var component in finalComponents)
 		{
-			if (!contract.Components.Any(item => item.Type == component.Type && item.Index == component.Index))
+			var target = contract.Components.FirstOrDefault(item => item.Type == component.Type && item.Index == component.Index);
+			if (target is null || !CanEncode(target, component))
 				return false;
 		}
 		return contract.Components.Count != 0
 			&& contract.Components.Sum(component => component.Size) == contract.VertexStride;
+	}
+
+	private static bool CanEncode(UnitStreamComponentInfo target, UnitVertexComponentValue source)
+	{
+		var sourceCount = source.FloatValues.Length != 0 ? source.FloatValues.Length : source.UIntValues.Length;
+		var capacity = target.FormatName switch
+		{
+			"float" => 1,
+			"vec2_float" or "vec2_half" => 2,
+			"vec3_float" or "unk_normal" => 3,
+			"vec4_float" or "vec4_half" or "vec4_uint8" or "vec4_uint32" or "rgba_r8g8b8a8" or "vec4_1010102" => 4,
+			_ => 0
+		};
+		return capacity >= sourceCount;
 	}
 
 	private static UnitStreamComponentInfo Component(uint type, string typeName, uint format, string formatName, uint index, uint size)

@@ -133,12 +133,23 @@ public sealed class CanonicalMeshPreparation
 		List<CanonicalPlanDiagnostic> diagnostics)
 	{
 		var count = weights.FloatValues.Length > 0 ? weights.FloatValues.Length : weights.UIntValues.Length;
+		var legacyScalarWeight = false;
 		if (indices is not null && indices.UIntValues.Length != count)
 		{
+			// Older hidden placeholders were written with a scalar weight stream beside
+			// vec4 indices. They represent one full influence on the first index.
+			if (count == 1 && indices.UIntValues.Length == 4)
+			{
+				legacyScalarWeight = true;
+				count = 4;
+			}
+			else
+			{
 			diagnostics.Add(new("BoneWeightIndexArityMismatch", $"Vertex {vertexIndex} has {indices.UIntValues.Length} bone indices but {count} bone weights."));
 			normalizedWeights = Array.Empty<float>();
 			normalizedIndices = null;
 			return false;
+			}
 		}
 
 		Span<float> selectedWeights = stackalloc float[4];
@@ -146,7 +157,9 @@ public sealed class CanonicalMeshPreparation
 		var selectedCount = 0;
 		for (var index = 0; index < count; index++)
 		{
-			var weight = weights.FloatValues.Length > 0 ? weights.FloatValues[index] : weights.UIntValues[index] / 255f;
+			var weight = legacyScalarWeight && index != 0
+				? 0f
+				: weights.FloatValues.Length > 0 ? weights.FloatValues[index] : weights.UIntValues[index] / 255f;
 			if (!float.IsFinite(weight) || weight <= 0) continue;
 			var insertion = selectedCount;
 			while (insertion > 0 && weight > selectedWeights[insertion - 1]) insertion--;

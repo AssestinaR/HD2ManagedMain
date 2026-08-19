@@ -109,6 +109,39 @@ public sealed class CanonicalStreamContractCompilerTests
 		});
 	}
 
+	[Fact]
+	public void Compile_PromotesLegacyScalarWeightStreamWhenFinalVerticesNeedVec4Weights()
+	{
+		var target = Target() with
+		{
+			Streams = [Target().Streams[0] with
+			{
+				VertexStride = 20,
+				Components = [
+					new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+					new UnitStreamComponentInfo(7, "bone_weight", 0, "float", 0, 0, 4),
+					new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4)]
+			}]
+		};
+		var raw = Raw(0, 3) with
+		{
+			Vertices = Raw(0, 3).Vertices.Select(vertex => vertex with
+			{
+				Components = [
+					new UnitVertexComponentValue(0, "position", 2, "vec3_float", 0, [0, 0, 0], [], []),
+					new UnitVertexComponentValue(7, "bone_weight", 35, "vec4_half", 0, [1, 0, 0, 0], [], []),
+					new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, [], [0, 0, 0, 0], [])]
+			}).ToArray()
+		};
+
+		var result = new CanonicalStreamContractCompiler().TryCompile(target, [raw]);
+
+		Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(diagnostic => diagnostic.Message)));
+		var weight = Assert.Single(result.Streams[0].Components, component => component.Type == 7);
+		Assert.Equal("vec4_half", weight.FormatName);
+		Assert.Equal(8u, weight.Size);
+	}
+
 	private static UnitMeshModel Target(int meshCount = 1)
 	{
 		var stream = new UnitStreamInfo(0, 128, 99, 1, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0,

@@ -1,6 +1,7 @@
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh;
 
-// Purpose: Replaces Unit RawMeshes with tiny placeholder triangles for broad in-game coverage smoke patches.
+[Obsolete("Use CanonicalPlaceholderMinifier through the Canonical rebuild pipeline. This legacy writer does not preserve canonical component metadata.")]
+// Purpose: Legacy smoke-test-only minifier. Production paths use CanonicalPlaceholderMinifier.
 public sealed class PlaceholderUnitMeshMinifier
 {
 	public UnitMeshModel MinifyAll(UnitMeshModel model)
