@@ -185,7 +185,7 @@ public sealed class DecorationPayloadCompiler
             && mesh.SemanticInfo.IsVisualMesh
             && !mesh.SemanticInfo.IsCullingBody
             && !mesh.SemanticInfo.IsStaticMesh
-            && (rawMesh.Vertices.Count > 3 || rawMesh.Triangles.Count > 1);
+            && UnitGeometryFactsBuilder.HasRenderableGeometry(rawMesh);
 
     private static DecorationMeshFragment CreateFragment(PatchUnitMesh unit, UnitMeshInfo mesh, UnitRawMeshData rawMesh)
     {

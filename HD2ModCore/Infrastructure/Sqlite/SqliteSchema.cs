@@ -6,7 +6,7 @@ namespace HD2ModCore.Infrastructure.Sqlite;
 // Purpose: Defines and applies the persisted GameData facts and asset->archive reverse index schema.
 internal static class SqliteSchema
 {
-	public const int SchemaVersion = 4;
+	public const int SchemaVersion = 5;
 
 	public static async Task EnsureCreatedAsync(SqliteConnection connection, CancellationToken cancellationToken)
 	{
@@ -91,6 +91,9 @@ CREATE TABLE IF NOT EXISTS game_data_unit_parts (
 	confidence INTEGER NOT NULL,
 	is_visual INTEGER NOT NULL,
 	is_lod INTEGER NOT NULL,
+	vertex_count INTEGER NOT NULL DEFAULT 0,
+	triangle_count INTEGER NOT NULL DEFAULT 0,
+	geometry_quality INTEGER NOT NULL DEFAULT 0,
 	reason TEXT NOT NULL,
 	PRIMARY KEY(archive_id, unit_type_id, unit_file_id, mesh_info_index),
 	FOREIGN KEY(archive_id) REFERENCES archives(archive_id)
@@ -127,6 +130,9 @@ DROP TABLE IF EXISTS game_data_unit_part_scans;
 		await AddColumnIfMissingAsync(connection, "archives", "status", "TEXT NOT NULL DEFAULT 'Indexed'", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "body_variant", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "piece_type", "TEXT NOT NULL DEFAULT ''", cancellationToken).ConfigureAwait(false);
+		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "vertex_count", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
+		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "triangle_count", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
+		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "geometry_quality", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 
 		await SetMetaAsync(connection, "schema_version", SchemaVersion.ToString(), cancellationToken).ConfigureAwait(false);
 	}

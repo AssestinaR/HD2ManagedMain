@@ -1,4 +1,5 @@
 using HD2ModAdaptation.Analysis;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Application;
 
 namespace HD2ModCore.Domain;
@@ -27,6 +28,10 @@ public sealed record EquipmentUnitPart(
 	// a culling MeshInfo rather than treated as an ordinary display LOD.
 	public bool IsCullingMesh { get; init; }
 	public long StoredBytes { get; init; }
+	public int VertexCount { get; init; }
+	public int TriangleCount { get; init; }
+	public UnitMeshGeometryQuality GeometryQuality { get; init; } = UnitMeshGeometryQuality.Unreadable;
+	public bool HasRenderableGeometry => GeometryQuality is UnitMeshGeometryQuality.Renderable or UnitMeshGeometryQuality.RenderableLod0;
 	public string StoredSizeText => StoredBytes <= 0 ? "大小未知" : StoredBytes switch
 	{
 		>= 1024 * 1024 => $"{StoredBytes / (1024d * 1024d):0.0} MiB",

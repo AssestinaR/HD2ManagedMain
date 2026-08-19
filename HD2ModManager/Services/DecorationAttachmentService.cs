@@ -12,6 +12,7 @@ using HD2ModCore.Infrastructure;
 using HD2ModManager.Models;
 using AdaptationGameDataPackageResolver = HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver;
 using AdaptationPatchTocScanner = HD2ModAdaptation.PatchReconstruction.PatchTocScanner;
+using CoreAssetKey = HD2ModCore.Domain.AssetKey;
 
 namespace HD2ModManager.Services;
 
@@ -85,6 +86,11 @@ public sealed class DecorationAttachmentService
             .GroupBy(candidate => (candidate.ArchiveId, candidate.Part.UnitAssetKey, candidate.Part.MeshInfoIndex))
             .Select(group => group.OrderByDescending(candidate => candidate.Part.StoredBytes).ThenByDescending(candidate => candidate.Part.Confidence).First())
             .ToArray();
+        var geometryByMesh = await ReadCandidateGeometryFactsAsync(entries, candidates, cancellationToken).ConfigureAwait(false);
+        candidates = candidates.Select(candidate => candidate with
+        {
+            Geometry = geometryByMesh.GetValueOrDefault((candidate.Part.UnitAssetKey, candidate.Part.MeshInfoIndex))
+        }).ToArray();
         var targets = ResolveTargets(candidates, attachments);
         var targetsByUnit = targets
             .GroupBy(target => target.Part.UnitAssetKey)
@@ -135,10 +141,35 @@ public sealed class DecorationAttachmentService
         }
         if (edits.Count != 0)
         {
-            LogService.Info($"装饰合并写出 Patch：源={patch}，Unit 编辑数={edits}");
+            LogService.Info($"装饰合并写出 Patch：源={patch}，Unit 编辑数={edits.Count}");
             await new PatchArchiveWriter().WriteAsync(patch, output, edits, overwriteExisting: true, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         return edits.Count;
+    }
+
+    private static async Task<IReadOnlyDictionary<(CoreAssetKey Unit, int Mesh), UnitMeshGeometryFact>> ReadCandidateGeometryFactsAsync(
+        IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> entries,
+        IReadOnlyList<DecorationHostCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
+        var candidateKeys = candidates.Select(candidate => candidate.Part.UnitAssetKey).ToHashSet();
+        var facts = new Dictionary<(CoreAssetKey Unit, int Mesh), UnitMeshGeometryFact>();
+        var reader = new PatchUnitMeshReader();
+        foreach (var entry in entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId && candidateKeys.Contains(new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId))))
+        {
+            try
+            {
+                var unit = await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
+                var unitKey = new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId);
+                foreach (var fact in UnitGeometryFactsBuilder.Analyze(unit.Model).Meshes)
+                    facts[(unitKey, fact.MeshInfoIndex)] = fact;
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException)
+            {
+                LogService.Info($"装饰宿主几何分析跳过不可读 Unit：0x{entry.AssetKey.FileId:x16}，原因={exception.Message}");
+            }
+        }
+        return facts;
     }
 
     private static IReadOnlyList<DecorationResolvedTarget> ResolveTargets(
@@ -167,18 +198,21 @@ public sealed class DecorationAttachmentService
         return resolved;
     }
 
-    // Mirrors the CrossArmor target policy: same-layer candidates first, a complete
-    // Slim+Stocky pair before a partial body, and Any as a single complete host.
+    // Geometry is the first host gate. Layer and body policy only rank candidates
+    // within the real-geometry set; otherwise a hidden placeholder would block an
+    // actual host simply because it happens to share the source layer.
     private static IReadOnlyList<(DecorationHostCandidate Candidate, (ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload) Attachment)> SelectHosts(
         IReadOnlyList<DecorationHostCandidate> candidates,
         IReadOnlyList<(ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload)> attachments,
         DecorationAttachmentPlan plan,
         IReadOnlySet<UnitMeshPartLayer> sourceLayers)
     {
+        var realGeometry = candidates.Where(HasRenderableGeometry).ToArray();
+        var geometryEligible = realGeometry.Length != 0 ? realGeometry : candidates.ToArray();
         var sameLayer = sourceLayers.Count == 0
-            ? candidates.ToArray()
-            : candidates.Where(candidate => sourceLayers.Contains(candidate.Part.Layer)).ToArray();
-        var ranked = sameLayer.Length != 0 ? sameLayer : candidates.ToArray();
+            ? geometryEligible
+            : geometryEligible.Where(candidate => sourceLayers.Contains(candidate.Part.Layer)).ToArray();
+        var ranked = sameLayer.Length != 0 ? sameLayer : geometryEligible;
         var stockyPayload = FindPayload(attachments, "Stocky");
         var slimPayload = FindPayload(attachments, "Slim");
         var stocky = ChooseLargest(ranked, UnitMeshBodyVariant.Stocky);
@@ -208,9 +242,9 @@ public sealed class DecorationAttachmentService
         // completion behavior: look through the remaining layers for its counterpart
         // before accepting a single-body host.
         if (stocky is not null && slimPayload is not null)
-            slim = ChooseLargest(candidates.Where(candidate => candidate.Part.UnitAssetKey != stocky.Part.UnitAssetKey), UnitMeshBodyVariant.Slim);
+            slim = ChooseLargest(geometryEligible.Where(candidate => candidate.Part.UnitAssetKey != stocky.Part.UnitAssetKey), UnitMeshBodyVariant.Slim);
         if (slim is not null && stockyPayload is not null)
-            stocky = ChooseLargest(candidates.Where(candidate => candidate.Part.UnitAssetKey != slim.Part.UnitAssetKey), UnitMeshBodyVariant.Stocky);
+            stocky = ChooseLargest(geometryEligible.Where(candidate => candidate.Part.UnitAssetKey != slim.Part.UnitAssetKey), UnitMeshBodyVariant.Stocky);
         if (stocky is not null && slim is not null)
         {
             selections.Clear();
@@ -219,7 +253,7 @@ public sealed class DecorationAttachmentService
             if (selections.Count != 0) return selections;
         }
 
-        var crossLayerAny = ChooseLargest(candidates, UnitMeshBodyVariant.Any);
+        var crossLayerAny = ChooseLargest(geometryEligible, UnitMeshBodyVariant.Any);
         if (crossLayerAny is not null && universalPayload is not null)
         {
             selections.Clear();
@@ -243,7 +277,10 @@ public sealed class DecorationAttachmentService
 
     private static DecorationHostCandidate? ChooseLargest(IEnumerable<DecorationHostCandidate> candidates, UnitMeshBodyVariant bodyVariant)
         => candidates.Where(candidate => candidate.Part.BodyVariant == bodyVariant)
-            .OrderByDescending(candidate => candidate.Part.StoredBytes)
+            .OrderByDescending(candidate => GeometryRank(candidate))
+            .ThenByDescending(candidate => candidate.Geometry?.TriangleCount ?? candidate.Part.TriangleCount)
+            .ThenByDescending(candidate => candidate.Geometry?.VertexCount ?? candidate.Part.VertexCount)
+            .ThenByDescending(candidate => candidate.Part.StoredBytes)
             .ThenByDescending(candidate => candidate.Part.Confidence)
             .ThenBy(candidate => candidate.Part.UnitAssetKey.FileId)
             .ThenBy(candidate => candidate.Part.MeshInfoIndex)
@@ -275,7 +312,13 @@ public sealed class DecorationAttachmentService
     }
 
     private static string DescribeCandidate(DecorationHostCandidate candidate)
-        => $"0x{candidate.Part.UnitAssetKey.FileId:x16}/M{candidate.Part.MeshInfoIndex}/{candidate.Part.Layer}/{candidate.Part.BodyVariant}/{candidate.Part.StoredBytes}B";
+        => $"0x{candidate.Part.UnitAssetKey.FileId:x16}/M{candidate.Part.MeshInfoIndex}/{candidate.Part.Layer}/{candidate.Part.BodyVariant}/Q{GeometryRank(candidate)}/{candidate.Geometry?.VertexCount ?? candidate.Part.VertexCount}V/{candidate.Geometry?.TriangleCount ?? candidate.Part.TriangleCount}T/{candidate.Part.StoredBytes}B";
+
+    private static int GeometryRank(DecorationHostCandidate candidate)
+        => UnitGeometryRanker.GetRank(candidate.Geometry?.Quality ?? candidate.Part.GeometryQuality);
+
+    private static bool HasRenderableGeometry(DecorationHostCandidate candidate)
+        => candidate.Geometry?.HasRenderableGeometry ?? candidate.Part.HasRenderableGeometry;
 
     private static bool IsRenderableHost(EquipmentUnitPart part)
         => !part.IsCullingMesh
@@ -307,7 +350,10 @@ public sealed class DecorationAttachmentService
         => string.Equals(part.ToString(), requested, StringComparison.OrdinalIgnoreCase)
             || part == UnitMeshPartKind.Pelvis && string.Equals(requested, "Hips", StringComparison.OrdinalIgnoreCase);
 
-    private sealed record DecorationHostCandidate(string ArchiveId, EquipmentUnitPart Part);
+    private sealed record DecorationHostCandidate(string ArchiveId, EquipmentUnitPart Part)
+    {
+        public UnitMeshGeometryFact? Geometry { get; init; }
+    }
 
     private sealed record DecorationResolvedTarget(
         EquipmentUnitPart Part,

@@ -170,11 +170,11 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 			var raw = unit.Model.RawMeshData.FirstOrDefault(candidate => candidate.MeshInfoIndex == mesh.Index);
 			var stream = raw is null ? null : unit.Model.Streams.FirstOrDefault(candidate => candidate.Index == raw.StreamIndex);
 			var semantic = mesh.SemanticInfo;
-			var isPlaceholder = raw is not null && raw.Vertices.Count <= 3 && raw.Triangles.Count <= 1;
+			var isPlaceholder = raw is not null && !UnitGeometryFactsBuilder.HasRenderableGeometry(raw);
 			var slots = mesh.MaterialSlotIds.Distinct().ToArray();
 			var materialIds = slots.Where(materialIdsBySlot.ContainsKey).SelectMany(slot => materialIdsBySlot[slot]).Distinct().OrderBy(id => id).ToArray();
 			return new SourceMeshPreparation(mesh.Index, mesh.MeshId, mesh.LodIndex, semantic.IsVisualMesh,
-				raw is not null && IsSdkDefaultImportable(semantic) && !isPlaceholder && raw.Vertices.Count > 3 && raw.Triangles.Count > 1,
+				raw is not null && IsSdkDefaultImportable(semantic) && !isPlaceholder,
 				semantic.Name, semantic.BodyType, semantic.Slot, semantic.PieceType,
 				raw is null ? 0U : checked((uint)raw.Vertices.Count), raw is null ? 0U : checked((uint)raw.Triangles.Count),
 				checked((uint)mesh.Sections.Count), stream?.VertexStride ?? 0, slots, materialIds);

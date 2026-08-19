@@ -910,21 +910,13 @@ public sealed class CanonicalCrossArmorOrchestrator
 
 	private static IReadOnlyList<TargetShellMeshMapping> BuildSameKeyMappings(AdaptationAssetKey sourceKey, UnitMeshModel source, UnitMeshModel target)
 	{
-		var sourceLod0 = source.RawMeshData
-			.Where(raw => raw.LodIndex == 0 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
-			.OrderByDescending(CountTriangles)
-			.ThenByDescending(raw => raw.Vertices.Count)
-			.FirstOrDefault();
-		var targetLod0 = target.RawMeshData
-			.Where(raw => raw.LodIndex == 0 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
-			.OrderByDescending(CountTriangles)
-			.ThenByDescending(raw => raw.Vertices.Count)
-			.FirstOrDefault();
+		var sourceLod0 = UnitGeometryFactsBuilder.SelectBestRenderableLod0(source);
+		var targetLod0 = UnitGeometryFactsBuilder.SelectBestRenderableLod0(target);
 		if (sourceLod0 is null || targetLod0 is null)
 			return source.RawMeshData
-				.Where(raw => raw.LodIndex == -1 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
+				.Where(raw => raw.LodIndex == -1 && UnitGeometryFactsBuilder.HasRenderableGeometry(raw))
 				.Select(sourceCulling => (Source: sourceCulling, Target: target.RawMeshData.SingleOrDefault(targetCulling =>
-					targetCulling.LodIndex == -1 && targetCulling.MeshId == sourceCulling.MeshId && CountTriangles(targetCulling) > 1 && targetCulling.Vertices.Count > 3)))
+					targetCulling.LodIndex == -1 && targetCulling.MeshId == sourceCulling.MeshId && UnitGeometryFactsBuilder.HasRenderableGeometry(targetCulling))))
 				.Where(pair => pair.Target is not null)
 				.Select(pair => new TargetShellMeshMapping(sourceKey, pair.Source.MeshInfoIndex, pair.Target!.MeshInfoIndex))
 				.ToArray();
@@ -941,9 +933,6 @@ public sealed class CanonicalCrossArmorOrchestrator
 			.Select(mapping => new TargetShellMeshMapping(sourceKey, mapping.Source.MeshInfoIndex, mapping.Target.MeshInfoIndex))
 			.ToArray();
 	}
-
-	private static int CountTriangles(UnitRawMeshData raw)
-		=> raw.Triangles.Count != 0 ? raw.Triangles.Count : raw.Sections.Sum(section => section.Triangles.Count);
 
 	private static int ResolvePlannedMeshInfoIndex(
 		UnitMeshModel model,

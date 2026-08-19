@@ -1,4 +1,5 @@
 using HD2ModAdaptation.Analysis;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 
 namespace HD2ModCore.Domain;
 
@@ -18,4 +19,7 @@ public sealed record GameDataUnitPartFact(
 	string Reason)
 {
 	public string PieceType { get; init; } = string.Empty;
+	public int VertexCount { get; init; }
+	public int TriangleCount { get; init; }
+	public UnitMeshGeometryQuality GeometryQuality { get; init; } = UnitMeshGeometryQuality.Unreadable;
 }

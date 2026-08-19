@@ -23,6 +23,7 @@ public sealed class EquipmentUnitCatalogService : IEquipmentUnitCatalogService
 	public async ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> GetEntriesAsync(IReadOnlySet<AssetKey>? unitAssetKeys = null, CancellationToken cancellationToken = default)
 	{
 		if (!File.Exists(paths.DbPath)) return Array.Empty<EquipmentUnitCatalogEntry>();
+		await EnsureCurrentSchemaAsync(cancellationToken).ConfigureAwait(false);
 		var unitIds = unitAssetKeys?
 			.Where(key => key.TypeId == AdaptationPatchUnitMeshReader.UnitTypeId)
 			.Select(key => unchecked((long)key.FileId))
@@ -34,7 +35,7 @@ public sealed class EquipmentUnitCatalogService : IEquipmentUnitCatalogService
 		await using var command = connection.CreateCommand();
 		command.CommandText = @"
 SELECT a.archive_id,a.category,a.display_name,
-			 p.unit_type_id,p.unit_file_id,p.mesh_info_index,p.mesh_id,p.part_kind,p.part_layer,p.body_variant,p.semantic_name,p.piece_type,p.confidence,
+			 p.unit_type_id,p.unit_file_id,p.mesh_info_index,p.mesh_id,p.part_kind,p.part_layer,p.body_variant,p.semantic_name,p.piece_type,p.confidence,p.vertex_count,p.triangle_count,p.geometry_quality,
 			 COALESCE((SELECT MAX(e.toc_data_size + e.stream_size + e.gpu_resource_size)
 								 FROM archive_entries e
 								 WHERE e.archive_id=a.archive_id
@@ -64,8 +65,13 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 					(UnitMeshPartLayer)reader.GetInt32(8),
 					(UnitMeshBodyVariant)reader.GetInt32(9),
 					reader.GetString(10), reader.GetInt32(12), Array.Empty<string>())
-					{ PieceType = reader.GetString(11) }
-					with { StoredBytes = reader.GetInt64(13) }));
+					{
+						PieceType = reader.GetString(11),
+						VertexCount = reader.GetInt32(13),
+						TriangleCount = reader.GetInt32(14),
+						GeometryQuality = (UnitMeshGeometryQuality)reader.GetInt32(15),
+						StoredBytes = reader.GetInt64(16)
+					}));
 		}
 
 		var unitKeys = rawParts.Select(item => item.part.UnitAssetKey).Distinct().ToArray();
@@ -256,7 +262,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 			.GroupBy(item => item.Part.UnitAssetKey)
 			.Select(group =>
 			{
-				var representative = group.OrderByDescending(item => item.Part.StoredBytes).ThenBy(item => item.Part.MeshInfoIndex).First();
+				var representative = group.ApplyGeometryOrder(item => item.Part).ThenBy(item => item.Part.MeshInfoIndex).First();
 				return new TargetUnitGroup(
 					group.Key,
 					representative,
@@ -304,7 +310,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				if (headProfile is not null)
 				{
 					var target = archiveTargets.Where(target => target.Representative.Part.PartKind == UnitMeshPartKind.Head)
-						.OrderByDescending(target => target.Representative.Part.StoredBytes)
+						.ApplyGeometryOrder(target => target.Representative.Part)
 						.FirstOrDefault();
 					var headSource = SelectSourceForTarget(headProfile, target, usedSourceUnits, bodyVariantPreference, selectedSourceBodyVariant);
 					if (target is not null && headSource is not null)
@@ -384,7 +390,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 						.Where(target => !assignments.ContainsKey(target.UnitAssetKey))
 						.Where(target => target.Representative.Part.PartKind == profile.PartKind)
 						.Where(target => SemanticFamilyKey(target.Representative.Part) == profile.SemanticFamily)
-						.OrderByDescending(target => target.Representative.Part.StoredBytes)
+						.ApplyGeometryOrder(target => target.Representative.Part)
 						.ThenBy(target => target.UnitAssetKey.FileId)
 						.ToArray();
 					var fallbackTargets = unresolved
@@ -481,7 +487,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 			.GroupBy(part => (part.PartKind, SemanticFamily: SemanticFamilyKey(part)))
 		.Select(group =>
 		{
-			var parts = group.OrderByDescending(part => part.StoredBytes).ThenBy(part => part.UnitAssetKey.FileId).ToArray();
+			var parts = group.ApplyGeometryOrder(part => part).ThenBy(part => part.UnitAssetKey.FileId).ToArray();
 			var concreteVariants = parts
 				.Select(part => part.BodyVariant)
 				.Where(variant => variant is UnitMeshBodyVariant.Slim or UnitMeshBodyVariant.Stocky)
@@ -501,6 +507,13 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				parts);
 		})
 		.ToArray();
+	}
+
+	private async ValueTask EnsureCurrentSchemaAsync(CancellationToken cancellationToken)
+	{
+		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		await Sqlite.SqliteSchema.EnsureCreatedAsync(connection, cancellationToken).ConfigureAwait(false);
 	}
 
 	private static SourceBodyProfile? FindSourceProfile(
@@ -551,6 +564,9 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		return candidates
 			.Where(target => target.Representative.Part.BodyVariant == missingVariant)
 			.OrderByDescending(target => sourceLayers.Contains(target.Representative.Part.Layer))
+			.ThenByDescending(target => GeometryRank(target.Representative.Part))
+			.ThenByDescending(target => target.Representative.Part.TriangleCount)
+			.ThenByDescending(target => target.Representative.Part.VertexCount)
 			.ThenByDescending(target => target.Representative.Part.StoredBytes)
 			.ThenBy(target => target.UnitAssetKey.FileId)
 			.FirstOrDefault();
@@ -568,13 +584,13 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		var sameLayer = categoryCandidates.Where(target => sourceLayers.Contains(target.Representative.Part.Layer)).ToArray();
 		var ranked = sameLayer.Length != 0 ? sameLayer : categoryCandidates;
 		var slim = ranked.Where(target => target.Representative.Part.BodyVariant == UnitMeshBodyVariant.Slim)
-			.OrderByDescending(target => target.Representative.Part.StoredBytes).ThenBy(target => target.UnitAssetKey.FileId).FirstOrDefault();
+			.ApplyGeometryOrder(target => target.Representative.Part).ThenBy(target => target.UnitAssetKey.FileId).FirstOrDefault();
 		var stocky = ranked.Where(target => target.Representative.Part.BodyVariant == UnitMeshBodyVariant.Stocky)
-			.OrderByDescending(target => target.Representative.Part.StoredBytes).ThenBy(target => target.UnitAssetKey.FileId).FirstOrDefault();
+			.ApplyGeometryOrder(target => target.Representative.Part).ThenBy(target => target.UnitAssetKey.FileId).FirstOrDefault();
 
 		var any = ranked
 			.Where(target => target.Representative.Part.BodyVariant == UnitMeshBodyVariant.Any)
-			.OrderByDescending(target => target.Representative.Part.StoredBytes)
+			.ApplyGeometryOrder(target => target.Representative.Part)
 			.ThenBy(target => target.UnitAssetKey.FileId)
 			.FirstOrDefault();
 		// A real Any source is a universal mesh, not a spare concrete body shape.
@@ -606,6 +622,9 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				.Where(target => target.Representative.Part.BodyVariant == missingVariant)
 				.Where(target => target.UnitAssetKey != only.UnitAssetKey)
 				.OrderByDescending(target => sourceLayers.Contains(target.Representative.Part.Layer))
+				.ThenByDescending(target => GeometryRank(target.Representative.Part))
+				.ThenByDescending(target => target.Representative.Part.TriangleCount)
+				.ThenByDescending(target => target.Representative.Part.VertexCount)
 				.ThenByDescending(target => target.Representative.Part.StoredBytes)
 				.ThenBy(target => target.UnitAssetKey.FileId)
 				.FirstOrDefault();
@@ -616,6 +635,9 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				.Where(target => target.Representative.Part.BodyVariant == UnitMeshBodyVariant.Any)
 				.Where(target => target.UnitAssetKey != only.UnitAssetKey)
 				.OrderByDescending(target => sourceLayers.Contains(target.Representative.Part.Layer))
+				.ThenByDescending(target => GeometryRank(target.Representative.Part))
+				.ThenByDescending(target => target.Representative.Part.TriangleCount)
+				.ThenByDescending(target => target.Representative.Part.VertexCount)
 				.ThenByDescending(target => target.Representative.Part.StoredBytes)
 				.ThenBy(target => target.UnitAssetKey.FileId)
 				.FirstOrDefault();
@@ -627,6 +649,9 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		// source layer remains authoritative whenever a same-layer target exists.
 		return ranked
 			.OrderByDescending(target => target.Representative.Part.Layer == ToPartLayer(layerPreference))
+			.ThenByDescending(target => GeometryRank(target.Representative.Part))
+			.ThenByDescending(target => target.Representative.Part.TriangleCount)
+			.ThenByDescending(target => target.Representative.Part.VertexCount)
 			.ThenByDescending(target => target.Representative.Part.StoredBytes)
 			.Take(1)
 			.ToArray();
@@ -663,6 +688,9 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				: (targetVariant is UnitMeshBodyVariant.Any or UnitMeshBodyVariant.Unknown) && archiveBodyVariant.HasValue
 				? part.BodyVariant == archiveBodyVariant.Value ? 0 : part.BodyVariant == UnitMeshBodyVariant.Any ? 1 : 2
 				: IsEffectiveAny(profile) ? 0 : part.BodyVariant == targetVariant ? 0 : part.BodyVariant == UnitMeshBodyVariant.Any ? 1 : part.BodyVariant == preferred ? 2 : 3)
+			.ThenByDescending(part => GeometryRank(part))
+			.ThenByDescending(part => part.TriangleCount)
+			.ThenByDescending(part => part.VertexCount)
 			.ThenByDescending(part => part.StoredBytes)
 			.ThenBy(part => part.UnitAssetKey.FileId)
 			.First();
@@ -812,7 +840,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		UnitMeshBodyVariant? selectedSourceBodyVariant,
 		UnitMeshBodyVariant? archiveBodyVariant)
 	{
-		foreach (var part in profile.Parts.OrderByDescending(part => part.StoredBytes).ThenBy(part => part.UnitAssetKey.FileId))
+		foreach (var part in profile.Parts.ApplyGeometryOrder(part => part).ThenBy(part => part.UnitAssetKey.FileId))
 		{
 			var reasons = new List<string>();
 			if (usedSourceUnits.Contains(part.UnitAssetKey)) reasons.Add("SourceAlreadyUsed");
@@ -891,6 +919,9 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		IReadOnlyDictionary<AssetKey, CrossArmorManualMapping> manualMappings)
 		=> targets
 			.OrderByDescending(group => manualMappings.ContainsKey(group.UnitAssetKey))
+			.ThenByDescending(group => GeometryRank(group.Representative.Part))
+			.ThenByDescending(group => group.Representative.Part.TriangleCount)
+			.ThenByDescending(group => group.Representative.Part.VertexCount)
 			.ThenByDescending(group => group.Representative.Part.StoredBytes)
 			.ThenBy(group => group.UnitAssetKey.FileId)
 			;
@@ -908,7 +939,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				part.Layer))
 			.Select(group => new SourceHitPool(
 				group.Key,
-				group.OrderByDescending(part => part.StoredBytes).ThenBy(part => part.UnitAssetKey.FileId).ThenBy(part => part.MeshInfoIndex).First()))
+				group.ApplyGeometryOrder(part => part).ThenBy(part => part.UnitAssetKey.FileId).ThenBy(part => part.MeshInfoIndex).First()))
 			.ToArray();
 	}
 
@@ -1038,7 +1069,10 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		=> preference == CrossArmorBodyVariantPreference.Slim ? UnitMeshBodyVariant.Slim : UnitMeshBodyVariant.Stocky;
 
 	private static bool HasTransferableGeometry(HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData mesh)
-		=> mesh.Vertices.Count > 3 || mesh.Triangles.Count > 1;
+		=> UnitGeometryFactsBuilder.HasRenderableGeometry(mesh);
+
+	private static int GeometryRank(EquipmentUnitPart part)
+		=> UnitGeometryRanker.GetRank(part.GeometryQuality);
 
 	private static bool CullingMatchesPart((uint MeshId, string Slot, string PieceType, string Name) culling, EquipmentUnitPart part)
 		=> string.Equals(culling.Slot, part.PartKind.ToString(), StringComparison.OrdinalIgnoreCase)
@@ -1112,4 +1146,14 @@ ORDER BY p.unit_file_id,p.archive_id;";
 		}
 		return result.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value);
 	}
+}
+
+internal static class EquipmentUnitPartGeometryOrdering
+{
+	public static IOrderedEnumerable<T> ApplyGeometryOrder<T>(this IEnumerable<T> source, Func<T, EquipmentUnitPart> selector)
+		=> source
+			.OrderByDescending(item => UnitGeometryRanker.GetRank(selector(item).GeometryQuality))
+			.ThenByDescending(item => selector(item).TriangleCount)
+			.ThenByDescending(item => selector(item).VertexCount)
+			.ThenByDescending(item => selector(item).StoredBytes);
 }

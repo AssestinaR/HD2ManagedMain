@@ -8,6 +8,7 @@ public static class UnitSourceVisibilityClassifier
 	public static UnitSourceVisibilityClassification Classify(PatchUnitMesh unit)
 	{
 		ArgumentNullException.ThrowIfNull(unit);
+		var geometry = UnitGeometryFactsBuilder.Analyze(unit.Model);
 		var visibleMeshes = unit.Model.Meshes
 			.Where(mesh => mesh.LodIndex >= 0 && mesh.SemanticInfo.IsVisualMesh)
 			.Select(mesh => new
@@ -18,7 +19,7 @@ public static class UnitSourceVisibilityClassifier
 			.ToArray();
 		if (visibleMeshes.Length == 0 || visibleMeshes.Any(item => item.Raw is null))
 			return new(false, "NoReadableVisibleMeshes");
-		if (visibleMeshes.Any(item => item.Raw!.Vertices.Count > 3 || item.Raw.Triangles.Count > 1))
+		if (geometry.HasRenderableVisibleGeometry)
 			return new(false, "VisibleMeshHasRealGeometry");
 		if (visibleMeshes.Any(item => !HasPlaceholderBounds(item.Raw!)))
 			return new(false, "PlaceholderBoundsTooLargeOrUnreadable");

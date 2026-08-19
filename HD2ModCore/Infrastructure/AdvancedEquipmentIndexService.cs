@@ -15,7 +15,7 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Builds optional incremental Armor Unit mesh facts for cross-armor transfer.
 public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexService
 {
-	private const string Version = "equipment-v4-sdk-piece-type-and-slot-parts";
+	private const string Version = "equipment-v5-geometry-facts";
 	private readonly StoragePaths paths;
 	private readonly IGameDataArchiveIndexer archiveIndexer;
 	private readonly UnitMeshPartClassifier classifier = new();
@@ -78,7 +78,7 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 			try
 			{
 				var unit = await reader.ReadAsync(archiveId, entry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
-				parts.AddRange(classifier.Classify(entry.AssetKey, unit.Model, boneNames).Select(part => new GameDataUnitPartFact(archiveId, new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), part.MeshInfoIndex, part.MeshId, part.PartKind, part.Layer, part.BodyVariant, part.SemanticName, part.Confidence, part.IsVisualMesh, part.IsLod, part.Reason) { PieceType = part.PieceType }));
+				parts.AddRange(CreatePartFacts(archiveId, new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), entry.AssetKey, unit.Model, boneNames));
 			}
 			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException) { }
 		}
@@ -123,8 +123,7 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 			{
 				var adaptationKey = new HD2ModAdaptation.PatchReconstruction.AssetKey(unit.AssetKey.TypeId, unit.AssetKey.FileId);
 				var parsed = await reader.ReadAsync(unit.ArchiveId, adaptationKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
-				parts.AddRange(classifier.Classify(adaptationKey, parsed.Model, boneNames)
-					.Select(part => new GameDataUnitPartFact(unit.ArchiveId, new CoreAssetKey(unit.AssetKey.TypeId, unit.AssetKey.FileId), part.MeshInfoIndex, part.MeshId, part.PartKind, part.Layer, part.BodyVariant, part.SemanticName, part.Confidence, part.IsVisualMesh, part.IsLod, part.Reason) { PieceType = part.PieceType }));
+				parts.AddRange(CreatePartFacts(unit.ArchiveId, new CoreAssetKey(unit.AssetKey.TypeId, unit.AssetKey.FileId), adaptationKey, parsed.Model, boneNames));
 				try
 				{
 					if (await hiddenUnitCache.TryReadAsync(unit.ArchiveId, adaptationKey, cancellationToken).ConfigureAwait(false) is null)
@@ -292,16 +291,32 @@ ORDER BY a.archive_id,e.file_id;";
 	private static SqliteCommand CreatePartCommand(SqliteConnection connection, SqliteTransaction transaction)
 	{
 		var command = connection.CreateCommand(); command.Transaction = transaction;
-		command.CommandText = "INSERT INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,reason) VALUES($a,$t,$f,$m,$id,$k,$l,$v,$n,$piece,$c,$visual,$lod,$r)";
+		command.CommandText = "INSERT INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,reason) VALUES($a,$t,$f,$m,$id,$k,$l,$v,$n,$piece,$c,$visual,$lod,$vertices,$triangles,$quality,$r)";
 		foreach (var name in new[] { "$a", "$n", "$piece", "$r" }) command.Parameters.Add(name, SqliteType.Text);
-		foreach (var name in new[] { "$t", "$f", "$m", "$id", "$k", "$l", "$v", "$c", "$visual", "$lod" }) command.Parameters.Add(name, SqliteType.Integer); command.Prepare(); return command;
+		foreach (var name in new[] { "$t", "$f", "$m", "$id", "$k", "$l", "$v", "$c", "$visual", "$lod", "$vertices", "$triangles", "$quality" }) command.Parameters.Add(name, SqliteType.Integer); command.Prepare(); return command;
 	}
 
 	private sealed record EquipmentUnitWorkItem(string ArchiveId, CoreAssetKey AssetKey, bool HasPartFacts);
 
 	private static async ValueTask InsertPartAsync(SqliteCommand command, GameDataUnitPartFact part, CancellationToken cancellationToken)
 	{
-		command.Parameters["$a"].Value = part.ArchiveId; command.Parameters["$t"].Value = unchecked((long)part.UnitAssetKey.TypeId); command.Parameters["$f"].Value = unchecked((long)part.UnitAssetKey.FileId); command.Parameters["$m"].Value = part.MeshInfoIndex; command.Parameters["$id"].Value = part.MeshId; command.Parameters["$k"].Value = (int)part.PartKind; command.Parameters["$l"].Value = (int)part.Layer; command.Parameters["$v"].Value = (int)part.BodyVariant; command.Parameters["$n"].Value = part.SemanticName; command.Parameters["$piece"].Value = part.PieceType; command.Parameters["$c"].Value = part.Confidence; command.Parameters["$visual"].Value = part.IsVisualMesh ? 1 : 0; command.Parameters["$lod"].Value = part.IsLod ? 1 : 0; command.Parameters["$r"].Value = part.Reason; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+		command.Parameters["$a"].Value = part.ArchiveId; command.Parameters["$t"].Value = unchecked((long)part.UnitAssetKey.TypeId); command.Parameters["$f"].Value = unchecked((long)part.UnitAssetKey.FileId); command.Parameters["$m"].Value = part.MeshInfoIndex; command.Parameters["$id"].Value = part.MeshId; command.Parameters["$k"].Value = (int)part.PartKind; command.Parameters["$l"].Value = (int)part.Layer; command.Parameters["$v"].Value = (int)part.BodyVariant; command.Parameters["$n"].Value = part.SemanticName; command.Parameters["$piece"].Value = part.PieceType; command.Parameters["$c"].Value = part.Confidence; command.Parameters["$visual"].Value = part.IsVisualMesh ? 1 : 0; command.Parameters["$lod"].Value = part.IsLod ? 1 : 0; command.Parameters["$vertices"].Value = part.VertexCount; command.Parameters["$triangles"].Value = part.TriangleCount; command.Parameters["$quality"].Value = (int)part.GeometryQuality; command.Parameters["$r"].Value = part.Reason; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	private IReadOnlyList<GameDataUnitPartFact> CreatePartFacts(string archiveId, CoreAssetKey unitKey, HD2ModAdaptation.PatchReconstruction.AssetKey adaptationKey, UnitMeshModel model, IReadOnlyDictionary<uint, string> boneNames)
+	{
+		var geometryByMesh = UnitGeometryFactsBuilder.Analyze(model).Meshes.ToDictionary(fact => fact.MeshInfoIndex);
+		return classifier.Classify(adaptationKey, model, boneNames).Select(part =>
+		{
+			geometryByMesh.TryGetValue(part.MeshInfoIndex, out var geometry);
+			return new GameDataUnitPartFact(archiveId, unitKey, part.MeshInfoIndex, part.MeshId, part.PartKind, part.Layer, part.BodyVariant, part.SemanticName, part.Confidence, part.IsVisualMesh, part.IsLod, part.Reason)
+			{
+				PieceType = part.PieceType,
+				VertexCount = geometry?.VertexCount ?? 0,
+				TriangleCount = geometry?.TriangleCount ?? 0,
+				GeometryQuality = geometry?.Quality ?? UnitMeshGeometryQuality.Unreadable
+			};
+		}).ToArray();
 	}
 
 	private static SqliteCommand CreateLayoutCommand(SqliteConnection connection, SqliteTransaction transaction)

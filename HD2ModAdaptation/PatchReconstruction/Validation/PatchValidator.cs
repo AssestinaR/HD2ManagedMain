@@ -238,7 +238,7 @@ public sealed class PatchValidator : IPatchValidator
 		IReadOnlyList<PatchTocEntry> Entries,
 		IReadOnlyDictionary<AssetKey, PatchTocEntry> EntriesByKey);
 
-	private static bool IsVisibleGeometry(UnitRawMeshData mesh) => mesh.Vertices.Count > 3 && mesh.Triangles.Count > 1;
+	private static bool IsVisibleGeometry(UnitRawMeshData mesh) => UnitGeometryFactsBuilder.HasRenderableGeometry(mesh);
 
 	private static int CountReferencedVertices(UnitRawMeshData mesh)
 		=> mesh.Sections

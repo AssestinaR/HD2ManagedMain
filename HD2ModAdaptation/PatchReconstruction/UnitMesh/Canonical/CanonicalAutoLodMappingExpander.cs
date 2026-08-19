@@ -23,13 +23,13 @@ public static class CanonicalAutoLodMappingExpander
 			if (sourceRepresentative.LodIndex == -1)
 			{
 				var sourceCullings = sourceModel.RawMeshData
-					.Where(raw => raw.LodIndex == -1 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
+					.Where(raw => raw.LodIndex == -1 && UnitGeometryFactsBuilder.HasRenderableGeometry(raw))
 					.Where(raw => SemanticMatches(FindSemantic(sourceModel, raw), sourceRepresentativeSemantic))
 					.ToArray();
 				foreach (var sourceCutoutMesh in sourceCullings)
 				{
 					var targetCulling = targetModel.RawMeshData
-						.Where(raw => raw.LodIndex == -1 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
+						.Where(raw => raw.LodIndex == -1 && UnitGeometryFactsBuilder.HasRenderableGeometry(raw))
 						.SingleOrDefault(raw => raw.MeshId == sourceCutoutMesh.MeshId);
 					if (targetCulling is null)
 					{
@@ -51,14 +51,14 @@ public static class CanonicalAutoLodMappingExpander
 			var sourceLod0 = sourceModel.RawMeshData
 				.Where(IsVisibleLod0)
 				.Where(raw => SemanticMatches(FindSemantic(sourceModel, raw), sourceRepresentativeSemantic))
-				.OrderByDescending(CountTriangles)
+					.OrderByDescending(UnitGeometryFactsBuilder.CountTriangles)
 				.ThenByDescending(raw => raw.Vertices.Count)
 				.FirstOrDefault()
 				?? throw new InvalidDataException($"Source Unit 0x{approved.Source.UnitKey.FileId:x16} has no real LOD0 mesh.");
 			var sourceCulling = sourceModel.RawMeshData
-				.Where(raw => raw.LodIndex == -1 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3)
+				.Where(raw => raw.LodIndex == -1 && UnitGeometryFactsBuilder.HasRenderableGeometry(raw))
 				.Where(raw => SemanticMatches(FindSemantic(sourceModel, raw), sourceRepresentativeSemantic))
-				.OrderByDescending(CountTriangles)
+						.OrderByDescending(UnitGeometryFactsBuilder.CountTriangles)
 				.ThenByDescending(raw => raw.Vertices.Count)
 				.FirstOrDefault();
 
@@ -93,13 +93,10 @@ public static class CanonicalAutoLodMappingExpander
 		=> model.Meshes.FirstOrDefault(mesh => mesh.Index == raw.MeshInfoIndex)?.SemanticInfo;
 
 	private static bool IsVisibleLod0(UnitRawMeshData raw)
-		=> raw.LodIndex == 0 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3;
+		=> raw.LodIndex == 0 && UnitGeometryFactsBuilder.HasRenderableGeometry(raw);
 
 	private static bool IsTargetLodSlot(UnitRawMeshData raw)
-		=> raw.LodIndex >= -1 && CountTriangles(raw) > 1 && raw.Vertices.Count > 3;
-
-	private static int CountTriangles(UnitRawMeshData raw)
-		=> raw.Triangles.Count != 0 ? raw.Triangles.Count : raw.Sections.Sum(section => section.Triangles.Count);
+		=> raw.LodIndex >= -1 && UnitGeometryFactsBuilder.HasRenderableGeometry(raw);
 
 	private static bool SemanticMatches(UnitMeshSemanticInfo? candidate, UnitMeshSemanticInfo? representative)
 		=> candidate is null || representative is null ||
