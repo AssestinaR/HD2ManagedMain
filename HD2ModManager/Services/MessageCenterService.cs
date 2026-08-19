@@ -47,7 +47,9 @@ namespace HD2ModManager.Services
         public bool HasReport => _task?.HasReport == true;
         public bool HasOutputDirectory => _task?.HasOutputDirectory == true;
         public bool IsAcknowledged => _notification?.IsAcknowledged == true || _task?.IsAcknowledged == true;
-        public bool CanAcknowledge => !IsAcknowledged && (_notification?.Level is NotificationLevel.Warning or NotificationLevel.Error || _task?.Status == BackgroundTaskStatus.Failed);
+        public bool CanAcknowledge => _notification?.IsAcknowledged == false
+            || _task is { IsActive: true, IsFocusDismissed: false }
+            || _task is { Status: BackgroundTaskStatus.Failed, IsAcknowledged: false };
         public BackgroundTaskItem? Task => _task;
         internal NotificationItem? Notification => _notification;
         public string CopyText => _task is null
@@ -86,20 +88,17 @@ namespace HD2ModManager.Services
         private readonly ObservableCollection<MessageCenterItem> _activeTasks = new();
         private readonly ObservableCollection<MessageCenterItem> _attentionItems = new();
         private readonly ObservableCollection<MessageCenterItem> _recentNotifications = new();
+        private readonly ObservableCollection<MessageCenterItem> _popupItems = new();
         private readonly Dispatcher? _dispatcher;
         private int _refreshQueued;
 
         public ReadOnlyObservableCollection<MessageCenterItem> ActiveTasks { get; }
         public ReadOnlyObservableCollection<MessageCenterItem> AttentionItems { get; }
         public ReadOnlyObservableCollection<MessageCenterItem> RecentNotifications { get; }
+        public ReadOnlyObservableCollection<MessageCenterItem> PopupItems { get; }
         public int RunningTaskCount => _activeTasks.Count;
         public int AttentionCount => _attentionItems.Count(item => item.IsUnread || item.IsTask);
         public int RecentUnreadCount => _recentNotifications.Count(item => item.IsUnread);
-        // Keep an active operation visible while it runs. Once it reaches a terminal state,
-        // its newest completion record must become the preview instead of falling back to an older alert.
-        public MessageCenterItem? PreviewItem => _activeTasks.FirstOrDefault()
-            ?? _recentNotifications.FirstOrDefault()
-            ?? _attentionItems.FirstOrDefault();
         public event EventHandler? Changed;
 
         public MessageCenterService(NotificationService notifications, BackgroundTaskService tasks)
@@ -110,6 +109,7 @@ namespace HD2ModManager.Services
             ActiveTasks = new ReadOnlyObservableCollection<MessageCenterItem>(_activeTasks);
             AttentionItems = new ReadOnlyObservableCollection<MessageCenterItem>(_attentionItems);
             RecentNotifications = new ReadOnlyObservableCollection<MessageCenterItem>(_recentNotifications);
+            PopupItems = new ReadOnlyObservableCollection<MessageCenterItem>(_popupItems);
             _notifications.Changed += (_, _) => Refresh();
             _tasks.Changed += (_, args) => { if (args.RequiresProjectionRefresh) Refresh(); };
             Refresh();
@@ -152,6 +152,27 @@ namespace HD2ModManager.Services
                 .OrderByDescending(item => item.OccurredAt)
                 .Take(80)
                 );
+
+            // The popup is intentionally independent from the history preview. Important
+            // messages stay visible together until acknowledgement; transient info follows
+            // NotificationService.Items and therefore keeps its own expiry.
+            Replace(_popupItems, _tasks.Tasks
+                .Where(task => task.Status == BackgroundTaskStatus.Failed && !task.IsAcknowledged && !task.IsInformationCenter)
+                .Select(task => new MessageCenterItem(task))
+                .Concat(_notifications.History
+                    .Where(item => item.Level is NotificationLevel.Warning or NotificationLevel.Error && !item.IsAcknowledged)
+                    .Select(item => new MessageCenterItem(item)))
+                .OrderByDescending(item => item.OccurredAt)
+                .Concat(_tasks.Tasks
+                    .Where(task => task.IsActive && !task.IsFocusDismissed && !task.IsInformationCenter)
+                    .OrderByDescending(task => task.StartedAt ?? task.CreatedAt)
+                    .Select(task => new MessageCenterItem(task)))
+                .Concat(_notifications.Items
+                    .Where(item => item.Level == NotificationLevel.Info && !item.IsAcknowledged)
+                    .OrderByDescending(item => item.UpdatedAt)
+                    .Select(item => new MessageCenterItem(item)))
+                .GroupBy(item => item.Task?.Id ?? item.Notification?.Id ?? string.Empty)
+                .Select(group => group.First()));
             Changed?.Invoke(this, EventArgs.Empty);
         }
 
@@ -168,6 +189,7 @@ namespace HD2ModManager.Services
         {
             if (item is null || !item.CanAcknowledge) return;
             if (item.Notification is { } notification) _notifications.Acknowledge(notification);
+            else if (item.Task is { IsActive: true } task) task.DismissFromFocus();
             else item.Task?.Acknowledge();
         }
 

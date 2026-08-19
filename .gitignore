@@ -378,3 +378,6 @@ Desktop.ini
 docs/
 _diagnostics/
 tmp/
+Decryptor/
+Decryptor.Tests/
+HD2GameItemAssets/

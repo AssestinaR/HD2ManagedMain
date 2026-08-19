@@ -441,6 +441,7 @@ namespace HD2ModManager
 
         private void OnMessagePreviewClick(object sender, MouseButtonEventArgs e)
         {
+            if (e.OriginalSource is DependencyObject source && FindVisualParent<Button>(source) is not null) return;
             if (DataContext is ShellViewModel shell) shell.OpenMessagePanel();
             e.Handled = true;
         }

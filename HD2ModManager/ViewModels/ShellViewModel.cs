@@ -46,7 +46,6 @@ namespace HD2ModManager.ViewModels
         private string? _selectedModId;
         private bool _isMessagePanelOpen;
         private bool _isMessagePreviewOpen;
-        private System.Threading.CancellationTokenSource? _messagePreviewCancellation;
         private readonly IModInformationCenter _informationCenter;
         private readonly System.Collections.Generic.Dictionary<string, BackgroundTaskItem> _informationTasks = new(StringComparer.Ordinal);
         private readonly CancellationTokenSource _lifetimeCancellation = new();
@@ -95,7 +94,7 @@ namespace HD2ModManager.ViewModels
         public ReadOnlyObservableCollection<MessageCenterItem> ActiveMessageTasks => _messageCenter.ActiveTasks;
         public ReadOnlyObservableCollection<MessageCenterItem> AttentionMessageItems => _messageCenter.AttentionItems;
         public ReadOnlyObservableCollection<MessageCenterItem> RecentMessageItems => _messageCenter.RecentNotifications;
-        public MessageCenterItem? LatestMessageItem => _messageCenter.PreviewItem;
+        public ReadOnlyObservableCollection<MessageCenterItem> PopupMessageItems => _messageCenter.PopupItems;
         public int ActiveTaskCount => _backgroundTasks.CountQueued + _backgroundTasks.CountRunning;
         public bool HasUnreadTaskHubEvents => false;
         public bool IsMessagePreviewOpen { get => _isMessagePreviewOpen; private set => SetField(ref _isMessagePreviewOpen, value); }
@@ -220,7 +219,7 @@ namespace HD2ModManager.ViewModels
             _notificationService.Changed += (_, _) => RefreshOnUiThread(RefreshTaskHubState);
             _messageCenter.Changed += (_, _) => RefreshOnUiThread(() =>
             {
-                OnPropertyChanged(nameof(LatestMessageItem));
+                OnPropertyChanged(nameof(PopupMessageItems));
                 ShowMessagePreview();
             });
 			_ = Task.Run(() => new ImportTemporaryDirectoryManager(SettingsService.CreateStoragePaths()).CleanupStaleDirectories());
@@ -419,10 +418,8 @@ namespace HD2ModManager.ViewModels
 
         public void OpenMessagePanel()
         {
-            if (!IsMessagePanelOpen) _messageCenter.MarkAttentionViewed();
             IsMessagePanelOpen = true;
             IsMessagePreviewOpen = false;
-            _messagePreviewCancellation?.Cancel();
             _notificationService.MarkAllRead();
             RefreshTaskHubState();
         }
@@ -431,29 +428,13 @@ namespace HD2ModManager.ViewModels
         {
             if (!IsMessagePanelOpen) return;
             IsMessagePanelOpen = false;
-            if (ActiveTaskCount > 0) ShowMessagePreview();
+            ShowMessagePreview();
         }
 
-        private async void ShowMessagePreview()
+        private void ShowMessagePreview()
         {
             if (IsMessagePanelOpen) return;
-            if (LatestMessageItem is null)
-            {
-                IsMessagePreviewOpen = false;
-                return;
-            }
-            IsMessagePreviewOpen = true;
-            _messagePreviewCancellation?.Cancel();
-            _messagePreviewCancellation?.Dispose();
-            _messagePreviewCancellation = new System.Threading.CancellationTokenSource();
-            var token = _messagePreviewCancellation.Token;
-            try
-            {
-                await System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(5), token);
-                if (!token.IsCancellationRequested && ActiveTaskCount == 0) IsMessagePreviewOpen = false;
-                else if (!token.IsCancellationRequested) ShowMessagePreview();
-            }
-            catch (OperationCanceledException) { }
+            IsMessagePreviewOpen = PopupMessageItems.Count > 0;
         }
 
         public void OpenSinglePage(WorkspacePageType pageType)
@@ -738,8 +719,6 @@ namespace HD2ModManager.ViewModels
             _deploymentCoordinator.StatusChanged -= OnDeploymentStatusChanged;
             _informationCenter.ProductionStarted -= OnInformationProductionStarted;
             _informationCenter.DiagnosticRecorded -= OnInformationDiagnosticRecorded;
-            _messagePreviewCancellation?.Cancel();
-            _messagePreviewCancellation?.Dispose();
 			StopDeploymentBufferTimer();
 			_deploymentBufferTimer = null;
             DismissToolBottomBars();
@@ -1212,7 +1191,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ActiveMessageTasks));
             OnPropertyChanged(nameof(AttentionMessageItems));
             OnPropertyChanged(nameof(RecentMessageItems));
-            OnPropertyChanged(nameof(LatestMessageItem));
+            OnPropertyChanged(nameof(PopupMessageItems));
             OnPropertyChanged(nameof(ActiveTaskCount));
             OnPropertyChanged(nameof(HasUnreadTaskHubEvents));
             CancelTaskCommand.RaiseCanExecuteChanged();

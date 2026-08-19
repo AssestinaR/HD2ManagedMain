@@ -164,12 +164,20 @@ namespace HD2ModManager.Services
             try
             {
                 await Task.Delay(item.Duration!.Value);
-                RunOnUi(() => _items.Remove(item));
+                RunOnUi(() =>
+                {
+                    if (_items.Remove(item)) Changed?.Invoke(this, EventArgs.Empty);
+                });
             }
             catch { }
         }
 
-        public void Clear() => RunOnUi(_items.Clear);
+        public void Clear() => RunOnUi(() =>
+        {
+            if (_items.Count == 0) return;
+            _items.Clear();
+            Changed?.Invoke(this, EventArgs.Empty);
+        });
 
         private NotificationItem? FindRecentDuplicate(string message, NotificationLevel level, string? source, DateTime now)
             => _history.LastOrDefault(item => item.Level == level

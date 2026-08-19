@@ -52,6 +52,7 @@ namespace HD2ModManager.Services
         private string? _outputDirectory;
         private string? _reportPath;
         private bool _isAcknowledged;
+        private bool _isFocusDismissed;
         private int _attentionViewCount;
         private readonly CancellationTokenSource _cancellation = new();
         private readonly bool _canCancel;
@@ -89,6 +90,7 @@ namespace HD2ModManager.Services
         public bool HasOutputDirectory => !string.IsNullOrWhiteSpace(OutputDirectory);
         public bool HasReport => !string.IsNullOrWhiteSpace(ReportPath);
         public bool IsAcknowledged { get => _isAcknowledged; private set => SetField(ref _isAcknowledged, value); }
+        public bool IsFocusDismissed { get => _isFocusDismissed; private set => SetField(ref _isFocusDismissed, value); }
         public int AttentionViewCount { get => _attentionViewCount; private set => SetField(ref _attentionViewCount, value); }
         public bool IsActive => Status is BackgroundTaskStatus.Queued or BackgroundTaskStatus.Running;
         public CancellationToken CancellationToken => _cancellation.Token;
@@ -146,6 +148,7 @@ namespace HD2ModManager.Services
         {
             if (!IsActive) return;
             IsAcknowledged = false;
+            IsFocusDismissed = false;
             AttentionViewCount = 0;
             Status = BackgroundTaskStatus.Running;
             StartedAt = DateTime.UtcNow;
@@ -203,6 +206,7 @@ namespace HD2ModManager.Services
         {
             if (!IsActive) return;
             IsAcknowledged = false;
+            IsFocusDismissed = false;
             AttentionViewCount = 0;
             Status = BackgroundTaskStatus.Failed;
             Error = error;
@@ -244,6 +248,12 @@ namespace HD2ModManager.Services
         {
             if (Status != BackgroundTaskStatus.Failed || IsAcknowledged) return;
             IsAcknowledged = true;
+        }
+
+        public void DismissFromFocus()
+        {
+            if (!IsActive || IsFocusDismissed) return;
+            IsFocusDismissed = true;
         }
 
         public void RecordAttentionView()
@@ -350,6 +360,7 @@ namespace HD2ModManager.Services
                 or nameof(BackgroundTaskItem.CanCancel)
                 or nameof(BackgroundTaskItem.CanRetry)
                 or nameof(BackgroundTaskItem.IsAcknowledged)
+                or nameof(BackgroundTaskItem.IsFocusDismissed)
                 or nameof(BackgroundTaskItem.HasReport)
                 or nameof(BackgroundTaskItem.HasOutputDirectory);
 
