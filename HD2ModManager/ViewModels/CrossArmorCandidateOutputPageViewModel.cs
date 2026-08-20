@@ -85,6 +85,7 @@ namespace HD2ModManager.ViewModels
             _plan.CandidateGenerationRunning = true;
             try
             {
+				await _plan.EnsurePreparedSourceEntriesAsync(task.CancellationToken).ConfigureAwait(false);
 				bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Preparing, OperationState.Started, sequence: sequence++));
 				var progress = new InlineProgress<CrossArmorTransferProgress>(update =>
 					bridge.Apply(update.ToOperationProgressEvent(operationId, sequence: Interlocked.Increment(ref sequence))));

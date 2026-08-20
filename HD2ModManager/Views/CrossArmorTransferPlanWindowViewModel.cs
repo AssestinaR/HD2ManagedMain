@@ -8,6 +8,7 @@ using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModManager.Services;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views;
@@ -56,7 +57,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	public string SourcePatchTocPath { get; }
 	public string GameDataDirectory { get; }
 	public StoragePaths Paths { get; }
-	public IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> PreparedSourceEntries { get; }
+	public IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> PreparedSourceEntries { get; private set; }
+	private Task? preparedEntriesTask;
 	public RelayCommand RefreshPlanCommand { get; }
 	public RelayCommand ApplyManualMappingCommand { get; }
 	public RelayCommand SuppressSelectedMappingCommand { get; }
@@ -211,7 +213,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private readonly IEquipmentUnitCatalogService catalogService;
 	private readonly IReadOnlyList<EquipmentUnitCatalogEntry> sourceCandidates;
 	private readonly IReadOnlyList<EquipmentUnitCatalogEntry> targetCandidates;
-	private readonly bool targetReplacementFactsAvailable;
+	private bool targetReplacementFactsAvailable;
+	private readonly Func<CancellationToken, Task<GameDataArchiveBrowserSnapshot?>>? targetReplacementLoader;
 
 	public CrossArmorTransferPlanWindowViewModel(
 		IEquipmentUnitCatalogService catalogService,
@@ -221,11 +224,13 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		string gameDataDirectory,
 		IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> preparedSourceEntries,
 		StoragePaths paths,
-		GameDataArchiveBrowserSnapshot? targetReplacementSnapshot = null)
+		GameDataArchiveBrowserSnapshot? targetReplacementSnapshot = null,
+		Func<CancellationToken, Task<GameDataArchiveBrowserSnapshot?>>? targetReplacementLoader = null)
 	{
 		this.catalogService = catalogService;
 		this.sourceCandidates = sourceCandidates;
 		this.targetCandidates = targetCandidates;
+		this.targetReplacementLoader = targetReplacementLoader;
 		Title = "跨护甲计划";
 		SourcePatchTocPath = sourcePatchTocPath;
 		GameDataDirectory = gameDataDirectory;
@@ -249,6 +254,42 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		SelectAllUnreplacedTargetsCommand = new RelayCommand(_ => SelectAllUnreplacedTargets(), _ => CanSelectAllUnreplacedTargets);
 		SelectedSourceArmor = SourceArmorChoices.FirstOrDefault()?.Entry;
 		SelectedSourceHelmet = SourceHelmetChoices.FirstOrDefault()?.Entry;
+		if (targetReplacementSnapshot is null && targetReplacementLoader is not null)
+			_ = LoadTargetReplacementFactsAsync();
+	}
+
+	private async Task LoadTargetReplacementFactsAsync()
+	{
+		try
+		{
+			var snapshot = await targetReplacementLoader!(CancellationToken.None).ConfigureAwait(true);
+			if (snapshot is null || snapshot.Issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return;
+			var overlays = snapshot.Archives.ToDictionary(item => item.Archive.PackageName, item => item.Overlay, StringComparer.OrdinalIgnoreCase);
+			foreach (var target in TargetChoices)
+				target.IsConfirmedUnreplaced = IsConfirmedUnreplaced(target.Entry, overlays);
+			targetReplacementFactsAvailable = TargetChoices.All(target => overlays.ContainsKey(target.Entry.ArchiveId));
+			OnPropertyChanged(nameof(CanSelectAllUnreplacedTargets));
+			SelectAllUnreplacedTargetsCommand.RaiseCanExecuteChanged();
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
+		{
+			LogService.Info($"替换护甲计划：延迟读取目标替换状态失败，辅助按钮保持不可用。原因={exception.Message}");
+		}
+	}
+
+	public async Task EnsurePreparedSourceEntriesAsync(CancellationToken cancellationToken = default)
+	{
+		if (PreparedSourceEntries.Count != 0) return;
+		preparedEntriesTask ??= LoadPreparedSourceEntriesAsync(cancellationToken);
+		await preparedEntriesTask.ConfigureAwait(false);
+	}
+
+	private async Task LoadPreparedSourceEntriesAsync(CancellationToken cancellationToken)
+	{
+		var entries = await new HD2ModAdaptation.PatchReconstruction.PatchWorkspace.PatchWorkspaceReader()
+			.ReadIndexAsync(SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
+		PreparedSourceEntries = entries.Entries;
+		OnPropertyChanged(nameof(PreparedSourceEntries));
 	}
 
 	private void OnTargetChoicePropertyChanged(object? sender, PropertyChangedEventArgs eventArgs)
@@ -601,7 +642,7 @@ public sealed class CrossArmorTransferEquipmentRow : INotifyPropertyChanged
 	public event PropertyChangedEventHandler? PropertyChanged;
 	public EquipmentUnitCatalogEntry Entry { get; }
 	public string Display => $"{Entry.DisplayName}（{Entry.Category}，{Entry.Parts.Count} 个可见部件）";
-	public bool IsConfirmedUnreplaced { get; }
+	public bool IsConfirmedUnreplaced { get; internal set; }
 	public bool IsSelected
 	{
 		get => isSelected;
