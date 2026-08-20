@@ -29,6 +29,19 @@ public static class DecorationPlanningDefaults
         return sourceParts.Contains(UnitMeshPartKind.Head) ? "Head" : "Torso";
     }
 
+    public static string ResolveTargetBodyVariant(IEnumerable<EquipmentUnitPart> parts)
+    {
+        var variants = parts.Select(part => part.BodyVariant)
+            .Where(variant => variant is UnitMeshBodyVariant.Stocky or UnitMeshBodyVariant.Slim or UnitMeshBodyVariant.Any)
+            .ToHashSet();
+        if (variants.Contains(UnitMeshBodyVariant.Any)
+            || variants.Contains(UnitMeshBodyVariant.Stocky) && variants.Contains(UnitMeshBodyVariant.Slim))
+            return "双身形";
+        if (variants.Contains(UnitMeshBodyVariant.Stocky)) return "仅健壮";
+        if (variants.Contains(UnitMeshBodyVariant.Slim)) return "仅纤细";
+        return "双身形";
+    }
+
     public static string ToPartLayerKey(UnitMeshPartKind part, UnitMeshPartLayer layer)
         => $"{part}/{layer}";
 

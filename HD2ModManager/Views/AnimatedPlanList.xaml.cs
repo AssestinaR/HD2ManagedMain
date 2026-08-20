@@ -27,6 +27,9 @@ public partial class AnimatedPlanList : UserControl
     public DataTemplate? ItemTemplate { get => (DataTemplate?)GetValue(ItemTemplateProperty); set => SetValue(ItemTemplateProperty, value); }
     public IEnumerable PresentedItems => _presentedItems;
 
+    public void ScrollByMouseWheelDelta(int delta)
+        => PlanScrollViewer.ScrollToVerticalOffset(Math.Max(0, PlanScrollViewer.VerticalOffset - delta));
+
     private static void OnItemsSourceChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
     {
         if (dependencyObject is AnimatedPlanList list && list.IsLoaded)

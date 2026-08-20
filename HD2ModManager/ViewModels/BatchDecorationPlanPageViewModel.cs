@@ -126,7 +126,10 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
                 IsSelected = string.Equals(group.Key.ArchiveId, preferredArchive, StringComparison.OrdinalIgnoreCase)
             })
             .OrderBy(item => item.PartKind).ThenBy(item => item.BodyVariant).ThenBy(item => item.Layer).ThenBy(item => item.FileId).ToArray();
-        return new DecorationBatchSourcePlanItem(source, node, entries, units, DecorationPlanningDefaults.ResolveTargetPart(units.Where(unit => unit.IsSelected).Select(unit => unit.Part)), OnPlanChanged);
+        var selectedParts = units.Where(unit => unit.IsSelected).Select(unit => unit.Part).ToArray();
+        return new DecorationBatchSourcePlanItem(source, node, entries, units,
+            DecorationPlanningDefaults.ResolveTargetPart(selectedParts),
+            DecorationPlanningDefaults.ResolveTargetBodyVariant(selectedParts), OnPlanChanged);
     }
 
     private void OnPlanChanged()
@@ -255,9 +258,9 @@ public sealed class DecorationBatchSourcePlanItem : BaseViewModel
     private bool _replaceWhenSourcePartLayerMatches = true;
     public DecorationBatchSourcePlanItem(DecorationBatchSourceModItem source, ModNode sourceNode,
         IReadOnlyDictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>> preparedEntries,
-        IEnumerable<DecorationSourceUnitItem> units, string targetPart, Action changed)
+        IEnumerable<DecorationSourceUnitItem> units, string targetPart, string targetBodyVariant, Action changed)
     {
-        Source = source; SourceNode = sourceNode; PreparedEntries = preparedEntries; _targetPart = targetPart; _changed = changed;
+        Source = source; SourceNode = sourceNode; PreparedEntries = preparedEntries; _targetPart = targetPart; _targetBodyVariant = targetBodyVariant; _changed = changed;
         SourceUnits = new ObservableCollection<DecorationSourceUnitItem>(units);
         foreach (var unit in SourceUnits) unit.PropertyChanged += (_, args) => { if (args.PropertyName == nameof(DecorationSourceUnitItem.IsSelected)) _changed(); };
     }

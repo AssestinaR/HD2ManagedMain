@@ -106,6 +106,9 @@
 
                     <TextBlock Text="我有一个特别好看的 Mod，但是它替换的是个重甲！重甲狗都不穿" Style="{StaticResource HelpSubsectionTitle}"/>
                     <TextBlock Text="• 找到你喜欢的 Mod，进入它的 Mod 详情，在详情按钮卡片中点击“生成替换其他护甲的模组”，然后略微等待。随后在新的“替换护甲”页面左上角选择来源 Mod 中指定护甲的身体和头盔，并指定喜欢的身形（纤细 slim、健壮 stocky）；在中间护甲列表中选择喜欢使用的护甲，最后点击左上角“生成”按钮，再略微等待。成功后点击消息栏，成功消息后会出现“打开文件夹”按钮。点击它，新 Mod 就在那里等你：将它压缩一下，或找到它的上级文件夹并拖进 Mod 管理器即可。" Style="{StaticResource HelpParagraph}" Margin="0,3,0,8"/>
+
+                    <TextBlock Text="我的来源 Mod 是一个带有好多好多配件的 Mod，我想要将它替换到其他护甲，按上面的方法做好麻烦" Style="{StaticResource HelpSubsectionTitle}"/>
+                    <TextBlock Text="• 你要替换的 Mod 中，一般来说包含主体和装饰。你只需要先替换主体就好；将“新主体”导入 Mod 管理器后，右键主体，在详情页面中点击“批量生成装饰（以主体 Mod）”。随后在新页面中选择你需要同步替换的那些装饰配件，稍等片刻等待管理器识别到它们的模型；随后可手动调整右侧来源配件的参数。一般不调整也问题不大，但如果进入游戏后发现有问题，就找到对应问题的配件调整一下。最后点击“生成”即可；生成完毕后，你就可以在“新主体”的详情页面找到做好的装饰啦！" Style="{StaticResource HelpParagraph}" Margin="0,3,0,8"/>
                 </StackPanel>
             </ScrollViewer>
         </Border>

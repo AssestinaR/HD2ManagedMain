@@ -8,7 +8,18 @@
         </DataTemplate>
         <DataTemplate x:Key="BatchPlanCardTemplate">
             <StackPanel Margin="0,0,0,10">
-                <local:ModListPanel ItemsSource="{Binding SourceItems}" ShowHeader="False" ShowSelectionCheckbox="False" SelectionPolicy="None" UseInternalScroll="False" VerticalScrollBarVisibility="Disabled"/>
+                <Border Style="{StaticResource ModListRowContainer}">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <Border Width="36" Height="36" CornerRadius="{StaticResource RadiusControl}" Background="{StaticResource SurfaceMuted}" Margin="0,0,9,0">
+                            <Image Source="{Binding ImagePath}" Stretch="UniformToFill"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding Description}" Style="{StaticResource AppSupportingText}" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
                 <Border Style="{StaticResource CardContainer}" Margin="0,6,0,0">
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
@@ -22,7 +33,8 @@
                             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="74"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="目标部位" VerticalAlignment="Center"/><ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}" ItemsSource="{Binding TargetParts}" SelectedItem="{Binding TargetPart}"/></Grid>
                             <CheckBox Grid.Column="2" Style="{StaticResource AppCheckBox}" Content="来源部位与目标部位完全一致时替换而不注入" IsChecked="{Binding ReplaceWhenSourcePartLayerMatches}" VerticalAlignment="Center"/>
                         </Grid>
-                        <DataGrid Grid.Row="2" Margin="0,10,0,0" Style="{StaticResource DataTableGrid}" ItemsSource="{Binding SourceUnits}" CanUserAddRows="False" CanUserDeleteRows="False">
+                        <DataGrid Grid.Row="2" Margin="0,10,0,0" Style="{StaticResource DataTableGrid}" ItemsSource="{Binding SourceUnits}" CanUserAddRows="False" CanUserDeleteRows="False"
+                                  ScrollViewer.VerticalScrollBarVisibility="Disabled" ScrollViewer.HorizontalScrollBarVisibility="Disabled" PreviewMouseWheel="OnSourceUnitsPreviewMouseWheel">
                             <DataGrid.Columns>
                                 <DataGridTemplateColumn Header="选择" Width="54"><DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox Style="{StaticResource AppCheckBox}" IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center"/></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
                                 <DataGridTextColumn Header="Archive" Binding="{Binding ArchiveId}" Width="1.2*"/>
@@ -68,8 +80,6 @@
                                 SearchActionsTemplate="{StaticResource BatchSourceSearchActions}"
                                 SelectionPolicy="Multiple" SelectionRequested="OnSelectionRequested"/>
         </Grid>
-        <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-            <local:AnimatedPlanList ItemsSource="{Binding Plans}" ItemTemplate="{StaticResource BatchPlanCardTemplate}"/>
-        </ScrollViewer>
+        <local:AnimatedPlanList Grid.Column="2" ItemsSource="{Binding Plans}" ItemTemplate="{StaticResource BatchPlanCardTemplate}"/>
     </Grid>
 </UserControl>

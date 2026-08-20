@@ -140,8 +140,9 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
                     .ThenBy(item => item.Layer)
                     .ThenBy(item => item.FileId)
                     .ToArray();
-                RefreshSourceUnits();
+				RefreshSourceUnits();
 				TargetPart = DecorationPlanningDefaults.ResolveTargetPart(_allSourceUnits.Where(item => item.IsSelected).Select(item => item.Part));
+				TargetBodyVariant = DecorationPlanningDefaults.ResolveTargetBodyVariant(_allSourceUnits.Where(item => item.IsSelected).Select(item => item.Part));
             }
             _allTargetMods = _library.All()
                 .Where(mod => !mod.IsDecoration && !string.Equals(mod.Guid, SourceModId, StringComparison.OrdinalIgnoreCase))
