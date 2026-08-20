@@ -44,6 +44,7 @@ namespace HD2ModManager.ViewModels
         private WorkspacePageType _leftPageType;
         private WorkspacePageType _rightPageType;
         private string? _selectedModId;
+        private string? _editingDecorationId;
         private bool _isMessagePanelOpen;
         private bool _isMessagePreviewOpen;
         private readonly IModInformationCenter _informationCenter;
@@ -178,6 +179,7 @@ namespace HD2ModManager.ViewModels
             _derivedState = new DerivedStateCoordinator(_libraryService, _profileService, informationCenter);
             _importQueue = new ImportQueueService();
             _backgroundTasks = new BackgroundTaskService();
+            _libraryService.AttachBackgroundTasks(_backgroundTasks);
             _applyStatus = new ApplyStatusService();
             _notificationService = new NotificationService();
             _messageCenter = new MessageCenterService(_notificationService, _backgroundTasks);
@@ -536,6 +538,7 @@ namespace HD2ModManager.ViewModels
             try
             {
                 LogService.Info("启动部署：活动配置已加载，立即部署并跳过变更缓冲等待。");
+                await _libraryService.FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
                 var status = await _deploymentCoordinator.FlushAsync(cancellationToken).ConfigureAwait(false);
                 if (status.Stage != ProfileDeploymentStage.Completed)
                     LogService.Error($"启动部署未完成：{status.Message ?? status.Stage.ToString()}。");
@@ -550,8 +553,18 @@ namespace HD2ModManager.ViewModels
         public void OpenDecorationPlan(string sourceModId)
         {
             if (string.IsNullOrWhiteSpace(sourceModId)) return;
+            _editingDecorationId = null;
             ClearTransientSelection();
             SelectedModId = sourceModId;
+            OpenSinglePage(WorkspacePageType.DecorationPlan);
+        }
+
+        public void OpenDecorationEditor(string decorationId)
+        {
+            if (string.IsNullOrWhiteSpace(decorationId)) return;
+            _editingDecorationId = decorationId;
+            ClearTransientSelection();
+            SelectedModId = decorationId;
             OpenSinglePage(WorkspacePageType.DecorationPlan);
         }
 
@@ -707,6 +720,7 @@ namespace HD2ModManager.ViewModels
                             if (added > 0)
                             {
                                 LogService.Info($"导入后自动加入活动配置：新增={added}，选项/装饰未加入配置。即将统一部署一次。");
+                                await _libraryService.FlushPendingDecorationRebuildsAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
                                 await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
                             }
                         }
@@ -723,6 +737,13 @@ namespace HD2ModManager.ViewModels
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            try
+            {
+                // Window close is a consistency boundary too: do not leave a successful UI
+                // toggle waiting only in the in-memory debounce overlay.
+                await _libraryService.FlushPendingDecorationRebuildsAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception) { LogService.Error($"退出前装饰合并失败：{exception}"); }
             _lifetimeCancellation.Cancel();
             _deploymentCoordinator.StatusChanged -= OnDeploymentStatusChanged;
             _informationCenter.ProductionStarted -= OnInformationProductionStarted;
@@ -863,6 +884,7 @@ namespace HD2ModManager.ViewModels
         {
             try
             {
+                await _libraryService.FlushPendingDecorationRebuildsAsync(_lifetimeCancellation.Token);
                 var status = await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token);
                 if (status.Stage == ProfileDeploymentStage.Completed) return;
                 _notificationService.Show(status.Message ?? "活动配置部署失败。", NotificationLevel.Error, TimeSpan.FromSeconds(8));
@@ -1067,9 +1089,10 @@ namespace HD2ModManager.ViewModels
 			if (_profileService.ActiveProfile is not null)
 			{
 				ProfileDeploymentStatus status;
-				try
-				{
-					status = await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token);
+                    try
+                    {
+                        await _libraryService.FlushPendingDecorationRebuildsAsync(_lifetimeCancellation.Token);
+                        status = await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token);
 				}
 				catch (Exception exception)
 				{
@@ -1557,8 +1580,8 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.GameDataArchiveDetails => new GameDataArchiveDetailsHostPageViewModel(null),
                 WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),
                 WorkspacePageType.MaterialPackaging => throw new InvalidOperationException("材质打包必须通过 Mod 详情创建。"),
-                WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty),
-                WorkspacePageType.BatchDecorationPlan => new BatchDecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty),
+                WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks, _editingDecorationId),
+                WorkspacePageType.BatchDecorationPlan => new BatchDecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
             };
             return page;

@@ -40,7 +40,7 @@
                             <TextBlock Text="来源：{Binding SourceName}" Style="{StaticResource AppSupportingText}" Margin="0,4,0,0"/>
                             <TextBlock Text="{Binding State}" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
                         </StackPanel>
-                        <Button Grid.Column="1" Style="{StaticResource AppPrimaryButton}" Content="生成" Command="{Binding GenerateCommand}" MinWidth="78" Margin="12,0,0,0" VerticalAlignment="Top"/>
+                        <Button Grid.Column="1" Style="{StaticResource AppPrimaryButton}" Content="{Binding SubmitText}" Command="{Binding GenerateCommand}" MinWidth="78" Margin="12,0,0,0" VerticalAlignment="Top"/>
                     </Grid>
                     <Grid Grid.Row="1" Margin="0,12,0,0">
                         <Grid.RowDefinitions>
@@ -67,7 +67,7 @@
                             <TextBlock Text="目标部位" VerticalAlignment="Center"/>
                             <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}" ItemsSource="{Binding TargetParts}" SelectedItem="{Binding TargetPart}"/>
                         </Grid>
-                        <Grid Grid.Row="3" Margin="0,7,0,0">
+                        <Grid Grid.Row="3" Margin="0,7,0,0" Visibility="{Binding ShowOutputSettings, Converter={StaticResource BoolToVis}}">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="92"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                             <TextBlock Text="输出目录" VerticalAlignment="Center"/>
                             <Grid Grid.Column="1">
@@ -76,7 +76,7 @@
                                 <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="浏览..." Command="{Binding BrowseOutputCommand}" Margin="8,0,0,0"/>
                             </Grid>
                         </Grid>
-                        <CheckBox Grid.Row="4" Style="{StaticResource AppCheckBox}" Content="自动导入到 Mod 库" IsChecked="{Binding AutoImport}" Margin="92,9,0,0"/>
+                        <CheckBox Grid.Row="4" Style="{StaticResource AppCheckBox}" Content="自动导入到 Mod 库" IsChecked="{Binding AutoImport}" Margin="92,9,0,0" Visibility="{Binding ShowOutputSettings, Converter={StaticResource BoolToVis}}"/>
                         <CheckBox Grid.Row="5" Style="{StaticResource AppCheckBox}" Content="来源部位与目标部位完全一致时替换而不注入" IsChecked="{Binding ReplaceWhenSourcePartLayerMatches}" Margin="92,7,0,0"/>
                         <CheckBox Grid.Row="6" Style="{StaticResource AppCheckBox}" Content="包含裁切候选" IsChecked="{Binding ShowPotentialCulling}" Margin="92,7,0,0"/>
                     </Grid>

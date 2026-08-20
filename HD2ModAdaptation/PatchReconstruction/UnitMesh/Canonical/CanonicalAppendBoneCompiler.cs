@@ -58,10 +58,12 @@ public sealed class CanonicalAppendBoneCompiler
         if (errors.Count != 0) return new(null, null, errors);
 
         var realIndices = template.RealIndices.Select(index => checked((int)index)).ToList();
+        var targetTransformByHash = targetModel.TransformNameHashes
+            .Select((hash, index) => (hash, index))
+            .ToDictionary(item => item.hash, item => item.index);
         foreach (var hash in groupHashes)
         {
-            var transformIndex = IndexOf(targetModel.TransformNameHashes, hash);
-            if (transformIndex < 0)
+            if (!targetTransformByHash.TryGetValue(hash, out var transformIndex))
             {
                 errors.Add(new("AppendTargetBoneMissing", "A decoration bone is absent from the target TransformInfo."));
                 continue;
@@ -69,16 +71,25 @@ public sealed class CanonicalAppendBoneCompiler
             if (!realIndices.Contains(transformIndex)) realIndices.Add(transformIndex);
         }
         if (errors.Count != 0) return new(null, null, errors);
-        var remaps = BuildRemaps(layout, groupHashes, targetModel.TransformNameHashes, realIndices, errors);
+        var remaps = BuildRemaps(layout, groupHashes, targetTransformByHash, realIndices, errors);
         if (errors.Count != 0) return new(null, null, errors);
 
         var vertices = new List<UnitRawVertexRecord>();
         var sections = new List<UnitRawMeshSectionData>();
+        var rewriteContexts = new Dictionary<(int SourceIndex, uint SourceMaterial, uint TargetMaterial), BoneIndexRewriteContext>();
         for (var finalIndex = 0; finalIndex < appended.Sections.Count; finalIndex++)
         {
             var source = Resolve(origins[finalIndex]);
             var finalSection = appended.Sections[finalIndex];
             var remap = remaps.Single(item => item.MaterialIndex == finalSection.MaterialIndex);
+            var origin = origins[finalIndex];
+            var rewriteKey = (origin.SourceIndex, source.Section.MaterialIndex, finalSection.MaterialIndex);
+            if (!rewriteContexts.TryGetValue(rewriteKey, out var rewriteContext))
+            {
+                rewriteContext = new BoneIndexRewriteContext(source.Model, source.RawMesh, source.Section.MaterialIndex,
+                    targetTransformByHash, realIndices, remap, errors);
+                rewriteContexts.Add(rewriteKey, rewriteContext);
+            }
             var map = new Dictionary<uint, uint>();
             uint Encode(uint mergedIndex)
             {
@@ -88,8 +99,7 @@ public sealed class CanonicalAppendBoneCompiler
                 var rewritten = vertex with
                 {
                     Index = checked((uint)vertices.Count), Data = Array.Empty<byte>(),
-                    Components = RewriteIndices(vertex.Components, source.Model, source.RawMesh, source.Section.MaterialIndex,
-                        targetModel.TransformNameHashes, realIndices, remap, errors)
+                    Components = RewriteIndices(vertex.Components, rewriteContext)
                 };
                 map.Add(mergedIndex, rewritten.Index); vertices.Add(rewritten); return rewritten.Index;
             }
@@ -110,7 +120,7 @@ public sealed class CanonicalAppendBoneCompiler
     private static IReadOnlyList<UnitBoneRemap> BuildRemaps(
         CanonicalFinalMaterialLayoutResult layout,
         IReadOnlyList<uint> groupHashes,
-        IReadOnlyList<uint> targetHashes,
+        IReadOnlyDictionary<uint, int> targetTransformByHash,
         IReadOnlyList<int> realIndices,
         List<CanonicalPlanDiagnostic> errors)
     {
@@ -119,9 +129,15 @@ public sealed class CanonicalAppendBoneCompiler
         var fake = new List<uint>(groupHashes.Count);
         foreach (var hash in groupHashes)
         {
-            var transformIndex = IndexOf(targetHashes, hash);
-            var paletteIndex = IndexOf(realIndices, transformIndex);
-            if (transformIndex < 0 || paletteIndex < 0)
+            if (!targetTransformByHash.TryGetValue(hash, out var transformIndex))
+            {
+                errors.Add(new("AppendTargetBoneRemapMissing", "A Blender vertex group is absent from the final target palette."));
+                continue;
+            }
+            var paletteIndex = -1;
+            for (var index = 0; index < realIndices.Count; index++)
+                if (realIndices[index] == transformIndex) { paletteIndex = index; break; }
+            if (paletteIndex < 0)
             {
                 errors.Add(new("AppendTargetBoneRemapMissing", "A Blender vertex group is absent from the final target palette."));
                 continue;
@@ -177,20 +193,59 @@ public sealed class CanonicalAppendBoneCompiler
         return result;
     }
 
-    private static IReadOnlyList<UnitVertexComponentValue> RewriteIndices(IReadOnlyList<UnitVertexComponentValue> components, UnitMeshModel model, UnitRawMeshData raw, uint sourceMaterial, IReadOnlyList<uint> targetHashes, IReadOnlyList<int> finalReal, UnitBoneRemap finalRemap, List<CanonicalPlanDiagnostic> errors)
+    private static IReadOnlyList<UnitVertexComponentValue> RewriteIndices(IReadOnlyList<UnitVertexComponentValue> components, BoneIndexRewriteContext context)
     {
-        var info = model.BoneInfos[raw.LodIndex];
-        var sourceRemap = info.Remaps.FirstOrDefault(item => item.MaterialIndex == sourceMaterial) ?? info.Remaps.FirstOrDefault();
-        return components.Select(component => component.Type != 6 ? component : component with { RawData = Array.Empty<byte>(), UIntValues = component.UIntValues.Select(Resolve).ToArray() }).ToArray();
-        uint Resolve(uint fake)
+        return components.Select(component => component.Type != 6 ? component : component with
         {
-            if (sourceRemap is null || fake >= sourceRemap.FakeIndices.Count || sourceRemap.FakeIndices[(int)fake] >= info.RealIndices.Count) { errors.Add(new("AppendSourceBoneIndexInvalid", "A source vertex has an invalid Type=6 index.")); return 0; }
-            var transform = info.RealIndices[(int)sourceRemap.FakeIndices[(int)fake]];
-            if (transform >= model.TransformNameHashes.Count) { errors.Add(new("AppendSourceBoneMissing", "A source vertex references an unavailable transform.")); return 0; }
-            var real = Array.IndexOf(finalReal.ToArray(), IndexOf(targetHashes, model.TransformNameHashes[(int)transform]));
-            var result = Array.IndexOf(finalRemap.FakeIndices.ToArray(), checked((uint)real));
-            if (real < 0 || result < 0) { errors.Add(new("AppendTargetBoneRemapMissing", "A final target palette does not contain a required source bone.")); return 0; }
-            return checked((uint)result);
+            RawData = Array.Empty<byte>(),
+            UIntValues = component.UIntValues.Select(context.Resolve).ToArray()
+        }).ToArray();
+    }
+
+    private sealed class BoneIndexRewriteContext
+    {
+        private readonly UnitMeshModel _model;
+        private readonly UnitBoneInfo _sourceBoneInfo;
+        private readonly UnitBoneRemap? _sourceRemap;
+        private readonly IReadOnlyDictionary<uint, int> _targetTransformByHash;
+        private readonly Dictionary<int, int> _finalRealPosition;
+        private readonly Dictionary<uint, uint> _targetFakePosition;
+        private readonly Dictionary<uint, uint> _resolved = new();
+        private readonly List<CanonicalPlanDiagnostic> _errors;
+
+        public BoneIndexRewriteContext(UnitMeshModel model, UnitRawMeshData raw, uint sourceMaterial,
+            IReadOnlyDictionary<uint, int> targetTransformByHash, IReadOnlyList<int> finalReal,
+            UnitBoneRemap finalRemap, List<CanonicalPlanDiagnostic> errors)
+        {
+            _model = model;
+            _sourceBoneInfo = model.BoneInfos[raw.LodIndex];
+            _sourceRemap = _sourceBoneInfo.Remaps.FirstOrDefault(item => item.MaterialIndex == sourceMaterial)
+                ?? _sourceBoneInfo.Remaps.FirstOrDefault();
+            _targetTransformByHash = targetTransformByHash;
+            _finalRealPosition = finalReal.Select((value, index) => (value, index)).ToDictionary(item => item.value, item => item.index);
+            _targetFakePosition = finalRemap.FakeIndices.Select((value, index) => (value, index)).ToDictionary(item => item.value, item => (uint)item.index);
+            _errors = errors;
+        }
+
+        public uint Resolve(uint fake)
+        {
+            if (_resolved.TryGetValue(fake, out var cached)) return cached;
+            if (_sourceRemap is null || fake >= _sourceRemap.FakeIndices.Count || _sourceRemap.FakeIndices[(int)fake] >= _sourceBoneInfo.RealIndices.Count)
+                return Fail("AppendSourceBoneIndexInvalid", "A source vertex has an invalid Type=6 index.");
+            var transform = _sourceBoneInfo.RealIndices[(int)_sourceRemap.FakeIndices[(int)fake]];
+            if (transform >= _model.TransformNameHashes.Count) return Fail("AppendSourceBoneMissing", "A source vertex references an unavailable transform.");
+            if (!_targetTransformByHash.TryGetValue(_model.TransformNameHashes[(int)transform], out var targetTransform)
+                || !_finalRealPosition.TryGetValue(targetTransform, out var real)
+                || !_targetFakePosition.TryGetValue((uint)real, out var result))
+                return Fail("AppendTargetBoneRemapMissing", "A final target palette does not contain a required source bone.");
+            _resolved[fake] = result;
+            return result;
+        }
+
+        private uint Fail(string code, string message)
+        {
+            _errors.Add(new(code, message));
+            return 0;
         }
     }
 

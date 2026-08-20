@@ -302,6 +302,9 @@ namespace HD2ModManager.ViewModels
                     // 修复过程直接替换了 Mod 目录中的 Patch；必须同步并持久化新的 ContentFingerprint，
                     // 否则下次启动会把本次已知修改误判为外部修改并删除所有信息中心缓存。
                     await _library.SynchronizeAsync(task.CancellationToken);
+                    task.UpdateStage("正在使用修复后的来源重建已启用装饰");
+                    var rebuiltHosts = await _library.RebuildAllActiveDecorationOverwritesAsync(task.CancellationToken);
+                    LogService.Info($"一键修复后已重建装饰 Overwrite：主体数={rebuiltHosts}。");
                     if (_profiles.ActiveProfile is not null) _profiles.NotifyActiveModContentChanged();
                     ClearOutdatedDetectionResult();
                 }

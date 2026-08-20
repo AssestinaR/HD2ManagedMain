@@ -51,6 +51,11 @@ namespace HD2ModManager.Services
         private readonly DecorationActivationStore _decorationActivations;
         private readonly OptionActivationStore _optionActivations;
         private readonly DecorationAttachmentService _decorationAttachments;
+        private BackgroundTaskService? _backgroundTasks;
+        private readonly object _decorationScheduleSync = new();
+        private readonly Dictionary<string, HashSet<string>> _pendingDecorationActivations = new(StringComparer.OrdinalIgnoreCase);
+        private CancellationTokenSource? _decorationDebounceCancellation;
+        private Task? _decorationDebounceTask;
         private long _stateVersion;
 
         public ReadOnlyDictionary<string, ModEntity> ByGuid => new(_byGuid);
@@ -62,35 +67,25 @@ namespace HD2ModManager.Services
         public event EventHandler? SnapshotChanged;
         public event EventHandler? OptionActivationChanged;
 
+        public void AttachBackgroundTasks(BackgroundTaskService backgroundTasks) => _backgroundTasks = backgroundTasks;
+
         public async Task<DecorationActivationSummary> ToggleDecorationForAllAvailableHostsAsync(string decorationId, CancellationToken cancellationToken = default)
         {
-            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                var available = GetAvailableDecorationHostIds(decorationId);
-                var enabled = _decorationActivations.GetEnabledHosts(decorationId).Intersect(available, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                if (available.Count == 0) return new DecorationActivationSummary(0, 0, false, "无可用主体。");
-                var enable = !available.All(enabled.Contains);
-                await ApplyDecorationActivationBatchCoreAsync([new DecorationActivationMutation(decorationId, enable)], cancellationToken).ConfigureAwait(false);
-                return new DecorationActivationSummary(enable ? available.Count : 0, available.Count, enable, enable ? $"为 {available.Count} 个 Mod 启用了。" : "已对全部主体禁用。");
-            }
-            finally { _libraryMutationGate.Release(); }
+            var available = GetAvailableDecorationHostIds(decorationId);
+            var enabled = GetEffectiveDecorationHosts(decorationId).Intersect(available, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (available.Count == 0) return new DecorationActivationSummary(0, 0, false, "无可用主体。");
+            var enable = !available.All(enabled.Contains);
+            await ScheduleDecorationActivationBatchAsync([new DecorationActivationMutation(decorationId, enable)], cancellationToken).ConfigureAwait(false);
+            return new DecorationActivationSummary(enable ? available.Count : 0, available.Count, enable, enable ? "已更新，等待合并。" : "已更新，等待合并。");
         }
 
         public async Task<DecorationActivationSummary> SetDecorationEnabledForHostAsync(string decorationId, string hostId, bool enabled, CancellationToken cancellationToken = default)
         {
-            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                var available = GetAvailableDecorationHostIds(decorationId);
-                if (!available.Contains(hostId, StringComparer.OrdinalIgnoreCase)) return new DecorationActivationSummary(0, available.Count, false, "当前主体不支持该装饰。");
-                var hosts = _decorationActivations.GetEnabledHosts(decorationId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                await ApplyDecorationActivationBatchCoreAsync([new DecorationActivationMutation(decorationId, enabled, hostId)], cancellationToken).ConfigureAwait(false);
-                var enabledCount = hosts.Count(id => available.Contains(id, StringComparer.OrdinalIgnoreCase));
-                enabledCount = _decorationActivations.GetEnabledHosts(decorationId).Count(id => available.Contains(id, StringComparer.OrdinalIgnoreCase));
-                return new DecorationActivationSummary(enabledCount, available.Count, enabled, enabled ? "已为当前主体启用。" : "已对当前主体禁用。");
-            }
-            finally { _libraryMutationGate.Release(); }
+            var available = GetAvailableDecorationHostIds(decorationId);
+            if (!available.Contains(hostId, StringComparer.OrdinalIgnoreCase)) return new DecorationActivationSummary(0, available.Count, false, "当前主体不支持该装饰。");
+            await ScheduleDecorationActivationBatchAsync([new DecorationActivationMutation(decorationId, enabled, hostId)], cancellationToken).ConfigureAwait(false);
+            var enabledCount = GetEffectiveDecorationHosts(decorationId).Count(id => available.Contains(id, StringComparer.OrdinalIgnoreCase));
+            return new DecorationActivationSummary(enabledCount, available.Count, enabled, "已更新，等待合并。");
         }
 
         // The shared mutation boundary for all decoration enable/disable operations.
@@ -101,22 +96,20 @@ namespace HD2ModManager.Services
             CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(mutations);
-            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try { return await ApplyDecorationActivationBatchCoreAsync(mutations, cancellationToken).ConfigureAwait(false); }
-            finally { _libraryMutationGate.Release(); }
+            return await ScheduleDecorationActivationBatchAsync(mutations, cancellationToken).ConfigureAwait(false);
         }
 
         public DecorationActivationSummary GetDecorationActivationSummary(string decorationId)
         {
             var available = GetAvailableDecorationHostIds(decorationId);
-            var enabled = _decorationActivations.GetEnabledHosts(decorationId).Count(id => available.Contains(id, StringComparer.OrdinalIgnoreCase));
+            var enabled = GetEffectiveDecorationHosts(decorationId).Count(id => available.Contains(id, StringComparer.OrdinalIgnoreCase));
             return new DecorationActivationSummary(enabled, available.Count, available.Count != 0 && enabled == available.Count,
                 available.Count == 0 ? "无可用主体。" : enabled == 0 ? "尚未启用。" : enabled == available.Count ? $"为 {enabled} 个 Mod 启用了。" : $"为 {enabled}/{available.Count} 个 Mod 启用了。");
         }
 
         public bool IsDecorationEnabledForHost(string decorationId, string hostId)
             => GetAvailableDecorationHostIds(decorationId).Contains(hostId, StringComparer.OrdinalIgnoreCase)
-               && _decorationActivations.GetEnabledHosts(decorationId).Contains(hostId, StringComparer.OrdinalIgnoreCase);
+               && GetEffectiveDecorationHosts(decorationId).Contains(hostId);
 
         public IReadOnlyList<ModEntity> GetDecorationsForHost(string hostId)
             => All().Where(mod => mod.IsDecoration && GetAvailableDecorationHostIds(mod.Guid).Contains(hostId, StringComparer.OrdinalIgnoreCase)).ToArray();
@@ -557,6 +550,7 @@ namespace HD2ModManager.Services
 
         public bool Remove(string guid)
         {
+            FlushPendingDecorationRebuildsAsync().GetAwaiter().GetResult();
             _libraryMutationGate.Wait();
             try
             {
@@ -589,6 +583,7 @@ namespace HD2ModManager.Services
 
         public async Task<bool> RemoveAsync(string guid, CancellationToken cancellationToken = default)
         {
+            await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -731,6 +726,9 @@ namespace HD2ModManager.Services
         public async Task<int> RemoveManyAsync(IReadOnlyList<string> guids, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(guids);
+            // Deletion must observe the latest requested decoration state before it starts
+            // removing plans or hosts referenced by a pending debounce batch.
+            await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -796,7 +794,7 @@ namespace HD2ModManager.Services
             finally { _libraryMutationGate.Release(); }
         }
 
-        public async Task<ModEntity> CreateDecorationAsync(string sourceModId, IReadOnlyList<DecorationSourceUnit> sourceUnits, DecorationPlanDocument plan, string displayName, IReadOnlyDictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>>? preparedEntries = null, CancellationToken cancellationToken = default)
+        public async Task<ModEntity> CreateDecorationAsync(string sourceModId, IReadOnlyList<DecorationSourceUnit> sourceUnits, DecorationPlanDocument plan, string displayName, IReadOnlyDictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>>? preparedEntries = null, CancellationToken cancellationToken = default, IProgress<DecorationOperationProgress>? progress = null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(sourceModId);
             ArgumentNullException.ThrowIfNull(sourceUnits);
@@ -817,8 +815,13 @@ namespace HD2ModManager.Services
                 Directory.CreateDirectory(directory);
                 plan.Name = displayName;
                 plan.Plan.CreatedUtc = DateTime.UtcNow;
-                plan.Payloads = (await new DecorationPayloadCompiler(CoreServices.CreateModFileResolver())
-                    .CompileAsync(source, _paths.ModsDirectory, sourceUnits, plan.Plan, directory, preparedEntries, cancellationToken).ConfigureAwait(false)).ToList();
+                plan.Version = 3;
+                plan.SourceStorageMode = "PatchSnapshot";
+                plan.SourceUnits = sourceUnits.Select(CloneDecorationSourceUnit).ToList();
+                plan.Payloads.Clear();
+                await new DecorationPatchSnapshotService(CoreServices.CreateModFileResolver())
+                    .CaptureAsync(source, _paths.ModsDirectory, sourceUnits, directory, preparedEntries, cancellationToken, progress).ConfigureAwait(false);
+                progress?.Report(new DecorationOperationProgress("正在导入装饰 Mod", 1, 1));
                 var planPath = Path.Combine(directory, "decoration.json");
                 await File.WriteAllTextAsync(planPath, JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }), cancellationToken).ConfigureAwait(false);
 
@@ -833,6 +836,55 @@ namespace HD2ModManager.Services
             finally { _libraryMutationGate.Release(); }
         }
 
+        public async Task UpdateDecorationPlanAsync(string decorationId, DecorationPlanDocument plan, CancellationToken cancellationToken = default)
+        {
+            await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var decoration = Get(decorationId);
+                if (decoration?.IsDecoration != true) throw new InvalidOperationException("装饰 Mod 不存在。");
+                var path = Path.Combine(_paths.ModsDirectory, decoration.SourcePath ?? string.Empty, "decoration.json");
+                var previous = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+                await File.WriteAllTextAsync(path, JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }), cancellationToken).ConfigureAwait(false);
+                var hosts = _decorationActivations.GetEnabledHosts(decorationId).ToArray();
+                try
+                {
+                    if (hosts.Length > 0) await RebuildDecorationOverwritesAsync(hosts, null, cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    await File.WriteAllTextAsync(path, previous, CancellationToken.None).ConfigureAwait(false);
+                    if (hosts.Length > 0) await RebuildDecorationOverwritesAsync(hosts, null, CancellationToken.None).ConfigureAwait(false);
+                    throw;
+                }
+                await _informationCenter.InvalidateNodeAsync(ParseNodeId(decorationId)!.Value, cancellationToken).ConfigureAwait(false);
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
+        // Generated decoration Overwrite files are derived artifacts. After a source Patch
+        // repair they must be recreated from the repaired host and repaired snapshots.
+        public async Task<int> RebuildAllActiveDecorationOverwritesAsync(CancellationToken cancellationToken = default)
+        {
+            await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var hosts = All().Where(mod => mod.IsDecoration)
+                    .SelectMany(decoration => _decorationActivations.GetEnabledHosts(decoration.Guid))
+                    .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                if (hosts.Length == 0) return 0;
+                var rebuilt = await RebuildDecorationOverwritesAsync(hosts, null, cancellationToken).ConfigureAwait(false);
+                if (rebuilt.Count != 0)
+                    ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(rebuilt, ModContentChangeKind.Changed));
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                return rebuilt.Count;
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
         public ModEntity? Get(string guid)
         {
             var index = Volatile.Read(ref _byGuid);
@@ -841,6 +893,12 @@ namespace HD2ModManager.Services
         }
 
         public IEnumerable<ModEntity> All() => Volatile.Read(ref _byGuid).Values;
+
+        private static DecorationSourceUnit CloneDecorationSourceUnit(DecorationSourceUnit unit) => new()
+        {
+            TypeId = unit.TypeId, FileId = unit.FileId, MeshInfoIndex = unit.MeshInfoIndex,
+            BodyVariant = unit.BodyVariant, Layer = unit.Layer, IsCulling = unit.IsCulling
+        };
 
         private IReadOnlySet<string> GetAvailableDecorationHostIds(string decorationId)
         {
@@ -862,9 +920,116 @@ namespace HD2ModManager.Services
             catch (JsonException) { return new HashSet<string>(StringComparer.OrdinalIgnoreCase); }
         }
 
-        private async Task<DecorationActivationBatchResult> ApplyDecorationActivationBatchCoreAsync(
+        // UI mutations are optimistic in memory, but the activation file is still written only
+        // after the corresponding generated Overwrite has been rebuilt successfully.
+        private Task<DecorationActivationBatchResult> ScheduleDecorationActivationBatchAsync(
             IReadOnlyCollection<DecorationActivationMutation> mutations,
             CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var changedDecorations = 0;
+            var affectedHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            lock (_decorationScheduleSync)
+            {
+                foreach (var mutation in mutations.Where(item => !string.IsNullOrWhiteSpace(item.DecorationId)))
+                {
+                    var available = GetAvailableDecorationHostIds(mutation.DecorationId);
+                    if (available.Count == 0) continue;
+                    if (!_pendingDecorationActivations.TryGetValue(mutation.DecorationId, out var hosts))
+                    {
+                        hosts = _decorationActivations.GetEnabledHosts(mutation.DecorationId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        _pendingDecorationActivations[mutation.DecorationId] = hosts;
+                    }
+                    changedDecorations++;
+                    if (string.IsNullOrWhiteSpace(mutation.HostId))
+                    {
+                        if (mutation.Enabled) hosts.UnionWith(available); else hosts.Clear();
+                        foreach (var host in available) affectedHosts.Add(host);
+                    }
+                    else if (available.Contains(mutation.HostId))
+                    {
+                        if (mutation.Enabled) hosts.Add(mutation.HostId); else hosts.Remove(mutation.HostId);
+                        affectedHosts.Add(mutation.HostId);
+                    }
+                }
+                _decorationDebounceCancellation?.Cancel();
+                _decorationDebounceCancellation?.Dispose();
+                _decorationDebounceCancellation = new CancellationTokenSource();
+                _decorationDebounceTask = DebounceDecorationRebuildAsync(_decorationDebounceCancellation.Token);
+            }
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            return Task.FromResult(new DecorationActivationBatchResult(changedDecorations, affectedHosts.Count, affectedHosts.ToArray()));
+        }
+
+        private async Task DebounceDecorationRebuildAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+            catch (Exception exception) { LogService.Error($"装饰延迟合并失败：{exception}"); }
+        }
+
+        public async Task FlushPendingDecorationRebuildsAsync(CancellationToken cancellationToken = default)
+        {
+            Dictionary<string, HashSet<string>> planned;
+            lock (_decorationScheduleSync)
+            {
+                if (_pendingDecorationActivations.Count == 0) return;
+                planned = _pendingDecorationActivations.ToDictionary(item => item.Key, item => new HashSet<string>(item.Value, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
+                _pendingDecorationActivations.Clear();
+                // Do not cancel the token passed by the debounce task itself here. Doing so
+                // would cancel this flush before it can acquire the mutation boundary.
+            }
+            var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.Other, "合并装饰", $"{planned.Count} 个装饰计划", "装饰合并");
+            task?.MarkRunning("正在汇总主体装饰");
+            var progress = task is null ? null : new Progress<DecorationOperationProgress>(item =>
+            {
+                task.UpdateStage(item.Total > 0 ? $"{item.Stage}（{item.Completed}/{item.Total}）" : item.Stage);
+                task.UpdateProgress(item.Fraction);
+            });
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var mutations = planned.SelectMany(item =>
+                {
+                    var available = GetAvailableDecorationHostIds(item.Key);
+                    return available.Select(host => new DecorationActivationMutation(item.Key, item.Value.Contains(host), host));
+                }).ToArray();
+                await ApplyDecorationActivationBatchCoreAsync(mutations, cancellationToken, progress).ConfigureAwait(false);
+                task?.MarkCompleted();
+            }
+            catch
+            {
+                // Keep a failed desired state visible and retryable; do not lose it merely
+                // because the transient rebuild task failed.
+                lock (_decorationScheduleSync)
+                {
+                    foreach (var item in planned)
+                        if (!_pendingDecorationActivations.ContainsKey(item.Key))
+                            _pendingDecorationActivations[item.Key] = item.Value;
+                }
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                task?.MarkFailed("装饰合并失败");
+                throw;
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
+        private IReadOnlySet<string> GetEffectiveDecorationHosts(string decorationId)
+        {
+            lock (_decorationScheduleSync)
+                return _pendingDecorationActivations.TryGetValue(decorationId, out var pending)
+                    ? new HashSet<string>(pending, StringComparer.OrdinalIgnoreCase)
+                    : _decorationActivations.GetEnabledHosts(decorationId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private async Task<DecorationActivationBatchResult> ApplyDecorationActivationBatchCoreAsync(
+            IReadOnlyCollection<DecorationActivationMutation> mutations,
+            CancellationToken cancellationToken,
+            IProgress<DecorationOperationProgress>? progress = null)
         {
             var requested = mutations
                 .Where(mutation => !string.IsNullOrWhiteSpace(mutation.DecorationId))
@@ -910,7 +1075,7 @@ namespace HD2ModManager.Services
                 .ToArray();
             try
             {
-                await RebuildDecorationOverwritesAsync(affectedHosts, planned, cancellationToken).ConfigureAwait(false);
+                await RebuildDecorationOverwritesAsync(affectedHosts, planned, cancellationToken, progress).ConfigureAwait(false);
                 await _decorationActivations.SetEnabledHostsBatchAsync(
                     changed.ToDictionary(item => item.Key, item => (IReadOnlyCollection<string>)item.Value.ToArray(), StringComparer.OrdinalIgnoreCase),
                     cancellationToken).ConfigureAwait(false);
@@ -919,7 +1084,7 @@ namespace HD2ModManager.Services
             {
                 // A rebuild may have completed for earlier hosts before a later host failed.
                 // Rebuild from the durable pre-operation state before surfacing the failure.
-                try { await RebuildDecorationOverwritesAsync(affectedHosts, originals, CancellationToken.None).ConfigureAwait(false); }
+                try { await RebuildDecorationOverwritesAsync(affectedHosts, originals, CancellationToken.None, progress).ConfigureAwait(false); }
                 catch (Exception rollbackException) { LogService.Error($"装饰批处理回滚 Overwrite 失败：{rollbackException}"); }
                 throw;
             }
@@ -939,11 +1104,14 @@ namespace HD2ModManager.Services
         private async Task<IReadOnlyList<ModNodeId>> RebuildDecorationOverwritesAsync(
             IEnumerable<string> hostIds,
             IReadOnlyDictionary<string, HashSet<string>>? activationOverrides,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            IProgress<DecorationOperationProgress>? progress = null)
         {
             var changedHosts = new List<ModNodeId>();
-            foreach (var hostId in hostIds.Distinct(StringComparer.OrdinalIgnoreCase))
+            var hosts = hostIds.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            for (var hostIndex = 0; hostIndex < hosts.Length; hostIndex++)
             {
+                var hostId = hosts[hostIndex];
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!TryParseNodeId(hostId, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var host)) continue;
                 var enabled = new List<(ModEntity Mod, DecorationPlanDocument Plan)>();
@@ -954,7 +1122,12 @@ namespace HD2ModManager.Services
                     var plan = JsonSerializer.Deserialize<DecorationPlanDocument>(await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false), new JsonSerializerOptions(JsonSerializerDefaults.Web));
                     if (plan is not null) enabled.Add((decoration, plan));
                 }
-                await _decorationAttachments.RebuildHostAsync(host, enabled, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), cancellationToken).ConfigureAwait(false);
+                var hostProgress = new Progress<DecorationOperationProgress>(item =>
+                {
+                    LogService.Info($"装饰合并进度：主体={host.Id.Value:N}，阶段={item.Stage}，进度={item.Completed}/{item.Total}");
+                    progress?.Report(item);
+                });
+                await _decorationAttachments.RebuildHostAsync(host, enabled, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), cancellationToken, hostProgress).ConfigureAwait(false);
                 await _informationCenter.InvalidateNodeAsync(host.Id, cancellationToken).ConfigureAwait(false);
                 changedHosts.Add(host.Id);
             }

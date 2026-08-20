@@ -12,6 +12,7 @@ using HD2ModManager.Models;
 namespace HD2ModManager.Services;
 
 // Extracts selected readable mesh fragments into portable, non-patch payload files.
+[Obsolete("装饰生成已改用 PatchSnapshot；此编译器仅为旧版 .bin Payload 维护保留。")]
 public sealed class DecorationPayloadCompiler
 {
     private readonly IModFileResolver fileResolver;
@@ -22,7 +23,8 @@ public sealed class DecorationPayloadCompiler
         ModNode source, string modsRootDirectory, IReadOnlyList<DecorationSourceUnit> selected,
         DecorationAttachmentPlan plan, string outputDirectory,
         IReadOnlyDictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>>? preparedEntries = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<DecorationOperationProgress>? progress = null)
     {
         Directory.CreateDirectory(outputDirectory);
         foreach (var staleFile in new[] { "stocky.bin", "slim.bin" })
@@ -39,6 +41,11 @@ public sealed class DecorationPayloadCompiler
         var compiledVisibleSources = new HashSet<DecorationSourcePayloadKey>();
         var compiledCullingSources = new HashSet<DecorationSourcePayloadKey>();
         var patchPaths = await fileResolver.ResolvePatchFilesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+        // The selection table is already prepared by the planner. Do not pre-scan every
+        // Patch merely to compute an exact progress total: that doubles archive work.
+        var selectedEntryCount = Math.Max(1, requested.Count);
+        var completedEntries = 0;
+        progress?.Report(new DecorationOperationProgress("正在读取来源 Unit", 0, selectedEntryCount));
 
         foreach (var patchPath in patchPaths.Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -48,6 +55,7 @@ public sealed class DecorationPayloadCompiler
                 : await new PatchTocScanner().ScanEntriesAsync(fullPatchPath, cancellationToken).ConfigureAwait(false);
             foreach (var entry in entries.Where(entry => requested.ContainsKey((entry.AssetKey.TypeId, entry.AssetKey.FileId))))
             {
+                progress?.Report(new DecorationOperationProgress("正在读取来源 Unit", completedEntries, selectedEntryCount));
                 var selections = requested[(entry.AssetKey.TypeId, entry.AssetKey.FileId)];
                 var visibleSelections = selections.Where(selection => !selection.IsCulling).ToArray();
                 var unit = await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
@@ -114,18 +122,22 @@ public sealed class DecorationPayloadCompiler
                     fragments.Add((ToVariant(selection.BodyVariant), ToLayer(selection.Layer), CreateFragment(unit, mesh, rawMesh)));
                     resolvedSelections.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, true));
                 }
+                completedEntries++;
+                progress?.Report(new DecorationOperationProgress("正在读取来源 Unit", completedEntries, selectedEntryCount));
             }
         }
         var requestedSelections = selected.Select(selection => (selection.TypeId, selection.FileId, selection.MeshInfoIndex, selection.IsCulling)).ToHashSet();
         if (!requestedSelections.SetEquals(resolvedSelections)) throw new InvalidDataException("Some selected decoration Units could not be read.");
 
         var documents = BuildPayloads(fragments, plan);
+        progress?.Report(new DecorationOperationProgress("正在写出装饰模型", 0, documents.Count));
         var output = new List<DecorationPayloadFile>();
         foreach (var document in documents)
         {
             var fileName = document.BodyVariant == "Stocky" ? "stocky.bin" : "slim.bin";
             await WriteAsync(Path.Combine(outputDirectory, fileName), document, cancellationToken).ConfigureAwait(false);
             output.Add(new DecorationPayloadFile { BodyVariant = document.BodyVariant, File = fileName });
+            progress?.Report(new DecorationOperationProgress("正在写出装饰模型", output.Count, documents.Count));
         }
         return output;
     }

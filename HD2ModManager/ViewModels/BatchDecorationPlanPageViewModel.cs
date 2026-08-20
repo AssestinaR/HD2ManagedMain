@@ -17,6 +17,7 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
     private readonly NotificationService _notifications;
     private readonly IEquipmentUnitCatalogService _catalog;
     private readonly IModFileResolver _fileResolver;
+    private readonly BackgroundTaskService? _backgroundTasks;
     private readonly Dictionary<string, DecorationBatchSourcePlanItem> _plansBySource = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<DecorationBatchSourceModItem> _allSources = Array.Empty<DecorationBatchSourceModItem>();
     private string _outputDirectory;
@@ -27,12 +28,13 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
     private int _planSyncGeneration;
     private string _state = "正在加载可作为装饰来源的 Mod。";
 
-    public BatchDecorationPlanPageViewModel(ModLibraryService library, NotificationService notifications, string hostModId)
+    public BatchDecorationPlanPageViewModel(ModLibraryService library, NotificationService notifications, string hostModId, BackgroundTaskService? backgroundTasks = null)
     {
         _library = library;
         _notifications = notifications;
         _catalog = CoreServices.CreateEquipmentUnitCatalogService(SettingsService.CreateStoragePaths());
         _fileResolver = CoreServices.CreateModFileResolver();
+        _backgroundTasks = backgroundTasks;
         HostModId = hostModId;
         HostName = library.Get(hostModId)?.Name ?? hostModId;
         _outputDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Output");
@@ -90,10 +92,11 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
 		var generation = ++_planSyncGeneration;
         var selected = _allSources.Where(source => source.IsSelected).ToArray();
         var selectedIds = selected.Select(source => source.ModId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var stale in _plansBySource.Keys.Where(id => !selectedIds.Contains(id)).ToArray()) _plansBySource.Remove(stale);
-
-        foreach (var source in selected.Where(source => !_plansBySource.ContainsKey(source.ModId)))
+        var pending = selected.Where(source => !_plansBySource.ContainsKey(source.ModId)).ToArray();
+        if (pending.Length != 0) State = $"正在分析 {pending.Length} 个新增来源 Mod。";
+        foreach (var source in pending)
         {
+			if (generation != _planSyncGeneration) return;
             var plan = await AnalyzeSourceAsync(source).ConfigureAwait(true);
 			if (generation != _planSyncGeneration) return;
             _plansBySource[source.ModId] = plan;
@@ -109,13 +112,23 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
     {
         var node = _library.Snapshot.Nodes.Values.FirstOrDefault(candidate => candidate.Id.Value.ToString("N") == source.ModId)
             ?? throw new InvalidOperationException($"来源 Mod 已不存在：{source.Name}");
-        var patchPaths = await _fileResolver.ResolvePatchFilesAsync(node, _library.ModsRootDirectory).ConfigureAwait(true);
+        // AssetInventory is the library's light, coalesced cache for Patch unit keys.
+        // Keep full Unit reads below only for semantic eligibility that this cache cannot prove.
+        var inventory = await _library.InformationCenter.RequestAssetInventoryAsync(
+            node, _library.ModsRootDirectory, new ModInformationRequest(ModInformationKind.AssetInventory, "BatchDecorationPlan"))
+            .ConfigureAwait(false);
+        var unitKeys = inventory.Data?.PatchGroups.SelectMany(group => group.AssetKeys)
+            .Where(key => key.TypeId == PatchUnitMeshReader.UnitTypeId)
+            .Select(key => new AssetKey(key.TypeId, key.FileId)).ToHashSet()
+            ?? new HashSet<AssetKey>();
+        var patchPaths = await _fileResolver.ResolvePatchFilesAsync(node, _library.ModsRootDirectory).ConfigureAwait(false);
         var workspaceReader = new HD2ModAdaptation.PatchReconstruction.PatchWorkspace.PatchWorkspaceReader();
         var workspaces = await Task.WhenAll(patchPaths.Select(path => workspaceReader.ReadIndexAsync(path).AsTask())).ConfigureAwait(true);
         var entries = workspaces.ToDictionary(workspace => workspace.SourcePatchTocPath, workspace => workspace.Entries, StringComparer.OrdinalIgnoreCase);
-        var unitKeys = workspaces.SelectMany(workspace => workspace.Entries)
-            .Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId)
-            .Select(entry => new AssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId)).ToHashSet();
+        if (unitKeys.Count == 0)
+            unitKeys = workspaces.SelectMany(workspace => workspace.Entries)
+                .Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId)
+                .Select(entry => new AssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId)).ToHashSet();
         var catalogEntries = await _catalog.GetEntriesAsync(unitKeys).ConfigureAwait(true);
         var transferable = await _catalog.FilterTransferableSourcePartsAsync(catalogEntries, patchPaths, default, entries).ConfigureAwait(true);
         var preferredArchive = DecorationPlanningDefaults.SelectPreferredArchiveId(transferable);
@@ -157,11 +170,15 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
         if (plans.Length == 0) return;
         _isGenerating = true;
         OnPlanChanged();
+        var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.Other, "批量生成装饰", $"{plans.Length} 个来源 Mod", "装饰生成");
+        task?.MarkRunning("正在准备生成计划");
         try
         {
             var generated = 0;
             foreach (var item in plans)
             {
+                task?.UpdateStage($"正在生成 {generated + 1}/{plans.Length}：{item.Name}");
+                task?.UpdateProgress((double)generated / plans.Length);
                 var sourceUnits = item.SourceUnits.Where(unit => unit.IsSelected).Select(unit => new DecorationSourceUnit
                 {
                     TypeId = unit.TypeId, FileId = unit.FileId, MeshInfoIndex = unit.MeshInfoIndex,
@@ -181,7 +198,8 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
                 var displayName = $"{item.Name} - 装饰";
                 if (AutoImport)
                 {
-                    var created = await _library.CreateDecorationAsync(item.SourceModId, sourceUnits, plan, displayName, item.PreparedEntries).ConfigureAwait(true);
+                    var progress = task is null ? null : new Progress<DecorationOperationProgress>(value => task.UpdateStage($"{generated + 1}/{plans.Length}：{value.Stage} {value.Completed}/{value.Total}"));
+                    var created = await _library.CreateDecorationAsync(item.SourceModId, sourceUnits, plan, displayName, item.PreparedEntries, default, progress).ConfigureAwait(true);
                     var sourceDirectory = _library.ResolveAbsolutePath(created.SourcePath);
                     if (!string.IsNullOrWhiteSpace(sourceDirectory)) CopyOutput(sourceDirectory, Path.Combine(OutputDirectory, SanitizeFileName(displayName)));
                 }
@@ -190,7 +208,11 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
                     var output = Path.Combine(OutputDirectory, SanitizeFileName(displayName));
                     Directory.CreateDirectory(output);
                     plan.Name = displayName;
-                    plan.Payloads = (await new DecorationPayloadCompiler(_fileResolver).CompileAsync(item.SourceNode, _library.ModsRootDirectory, sourceUnits, plan.Plan, output, item.PreparedEntries)).ToList();
+                    var progress = task is null ? null : new Progress<DecorationOperationProgress>(value => task.UpdateStage($"{generated + 1}/{plans.Length}：{value.Stage} {value.Completed}/{value.Total}"));
+                    plan.Version = 3;
+                    plan.SourceStorageMode = "PatchSnapshot";
+                    plan.SourceUnits = sourceUnits.Select(unit => new DecorationSourceUnit { TypeId = unit.TypeId, FileId = unit.FileId, MeshInfoIndex = unit.MeshInfoIndex, BodyVariant = unit.BodyVariant, Layer = unit.Layer, IsCulling = unit.IsCulling }).ToList();
+                    await new DecorationPatchSnapshotService(_fileResolver).CaptureAsync(item.SourceNode, _library.ModsRootDirectory, sourceUnits, output, item.PreparedEntries, default, progress);
                     await File.WriteAllTextAsync(Path.Combine(output, "decoration.json"), JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true })).ConfigureAwait(true);
                 }
                 generated++;
@@ -198,12 +220,14 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
             }
             State = $"已完成：为“{HostName}”生成 {generated} 个装饰 Mod。";
             _notifications.Show(State);
+            task?.MarkCompleted();
         }
         catch (Exception exception)
         {
             State = $"批量生成失败：{exception.Message}";
             LogService.Error($"批量生成装饰失败：主体={HostModId}，异常={exception}");
             _notifications.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(10));
+            task?.MarkFailed(exception.Message);
         }
         finally
         {

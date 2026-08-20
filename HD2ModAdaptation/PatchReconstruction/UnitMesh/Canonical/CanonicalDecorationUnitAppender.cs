@@ -91,6 +91,8 @@ public sealed class CanonicalDecorationUnitAppender
 				merged = placeholder.Mesh!;
 			}
 			var origins = merged.Sections.Select((_, index) => new CanonicalAppendSectionOrigin(index, -1, index)).ToList();
+			var appendSources = new List<(UnitRawMeshData Source, System.Numerics.Matrix4x4 SourceToTargetLocal)>();
+			var nextSectionStart = merged.Sections.Count;
 			for (var sourceIndex = 0; sourceIndex < group.Inputs.Count; sourceIndex++)
 			{
 				var input = group.Inputs[sourceIndex];
@@ -98,16 +100,18 @@ public sealed class CanonicalDecorationUnitAppender
 				var transform = new CanonicalTransformResolver().TryResolve(source, input.Fragment.RawMesh.MeshInfoIndex, expanded, group.TargetMesh.Index);
 				diagnostics.AddRange(transform.Diagnostics);
 				if (!transform.IsValid) return new(null, diagnostics);
-				var appended = new CanonicalAppendMeshAssembler().TryAppend(merged, input.Fragment.RawMesh, transform.SourceToTargetLocal!.Value);
-				diagnostics.AddRange(appended.Diagnostics);
-				if (!appended.IsValid) return new(null, diagnostics);
-				var start = merged.Sections.Count;
+				var start = nextSectionStart;
 				var sourceBindings = BuildMaterialProvenance(source, input.Fragment.RawMesh, group.TargetRaw, start, group.TargetMesh.Index, input.MaterialNamespace, diagnostics);
 				if (diagnostics.Count != 0) return new(null, diagnostics);
 				materialProvenance.AddRange(sourceBindings);
 				origins.AddRange(input.Fragment.RawMesh.Sections.Select((_, section) => new CanonicalAppendSectionOrigin(start + section, sourceIndex, section)));
-				merged = appended.Mesh!;
+				appendSources.Add((input.Fragment.RawMesh, transform.SourceToTargetLocal!.Value));
+				nextSectionStart += input.Fragment.RawMesh.Sections.Count;
 			}
+			var appended = new CanonicalAppendMeshAssembler().TryAppendMany(merged, appendSources);
+			diagnostics.AddRange(appended.Diagnostics);
+			if (!appended.IsValid) return new(null, diagnostics);
+			merged = appended.Mesh!;
 			mergedByMesh.Add(group.TargetMesh.Index, merged);
 			originsByMesh.Add(group.TargetMesh.Index, origins);
 			sourceOffset += group.Inputs.Count;

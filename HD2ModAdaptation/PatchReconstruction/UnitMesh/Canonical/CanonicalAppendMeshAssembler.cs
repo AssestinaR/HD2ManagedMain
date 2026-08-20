@@ -23,52 +23,67 @@ public sealed class CanonicalAppendMeshAssembler
         UnitRawMeshData target,
         UnitRawMeshData source,
         Matrix4x4 sourceToTargetLocal)
+        => TryAppendMany(target, [(source, sourceToTargetLocal)]);
+
+    // Build the final LOD geometry in one pass. Repeated TryAppend calls copy the
+    // already-merged mesh for every source and become expensive for large attachments.
+    public CanonicalAppendMeshResult TryAppendMany(
+        UnitRawMeshData target,
+        IReadOnlyList<(UnitRawMeshData Source, Matrix4x4 SourceToTargetLocal)> sources)
     {
         ArgumentNullException.ThrowIfNull(target);
-        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(sources);
         var diagnostics = new List<CanonicalPlanDiagnostic>();
         Validate(target, "Target", diagnostics);
-        Validate(source, "Source", diagnostics);
-        if (target.LodIndex != source.LodIndex)
-            diagnostics.Add(new("AppendLodMismatch", "Decoration geometry can only be appended to a target mesh of the same LOD."));
-        if (!IsFinite(sourceToTargetLocal))
-            diagnostics.Add(new("InvalidAppendTransform", "The decoration source-to-target transform is not finite."));
+        foreach (var (source, transform) in sources)
+        {
+            Validate(source, "Source", diagnostics);
+            if (target.LodIndex != source.LodIndex)
+                diagnostics.Add(new("AppendLodMismatch", "Decoration geometry can only be appended to a target mesh of the same LOD."));
+            if (!IsFinite(transform))
+                diagnostics.Add(new("InvalidAppendTransform", "The decoration source-to-target transform is not finite."));
+        }
         if (diagnostics.Count != 0) return new(null, [], diagnostics);
 
-        var identity = sourceToTargetLocal == Matrix4x4.Identity;
-        var normalTransform = Matrix4x4.Identity;
-        if (!identity)
-        {
-            if (!Matrix4x4.Invert(sourceToTargetLocal, out var inverse))
-                return new(null, [], [new("NonInvertibleAppendTransform", "The decoration source-to-target transform is not invertible.")]);
-            normalTransform = Matrix4x4.Transpose(inverse);
-        }
-
-        var targetVertices = target.Vertices.Select((vertex, index) => vertex with { Index = checked((uint)index) }).ToArray();
-        var sourceVertices = source.Vertices
-            .Select(vertex => TransformVertex(vertex, sourceToTargetLocal, normalTransform, identity))
-            .Select((vertex, index) => vertex with { Index = checked((uint)(targetVertices.Length + index)) })
-            .ToArray();
-        var offset = checked((uint)targetVertices.Length);
-        var sections = new List<UnitRawMeshSectionData>(target.Sections.Count + source.Sections.Count);
-        var provenance = new List<CanonicalAppendSectionProvenance>(target.Sections.Count + source.Sections.Count);
+        var vertexCapacity = checked(target.Vertices.Count + sources.Sum(item => item.Source.Vertices.Count));
+        var sectionCapacity = checked(target.Sections.Count + sources.Sum(item => item.Source.Sections.Count));
+        var vertices = new List<UnitRawVertexRecord>(vertexCapacity);
+        var sections = new List<UnitRawMeshSectionData>(sectionCapacity);
+        var provenance = new List<CanonicalAppendSectionProvenance>(sectionCapacity);
         foreach (var (section, index) in target.Sections.Select((value, index) => (value, index)))
         {
             sections.Add(section);
             provenance.Add(new(sections.Count - 1, true, index));
         }
-        foreach (var (section, index) in source.Sections.Select((value, index) => (value, index)))
+        foreach (var (vertex, index) in target.Vertices.Select((value, index) => (value, index)))
+            vertices.Add(vertex with { Index = checked((uint)index) });
+
+        foreach (var (source, sourceToTargetLocal) in sources)
         {
-            var triangles = section.Triangles.Select(triangle => new UnitTriangleIndices(
-                checked(triangle.A + offset), checked(triangle.B + offset), checked(triangle.C + offset))).ToArray();
-            sections.Add(section with { Triangles = triangles });
-            provenance.Add(new(sections.Count - 1, false, index));
+            var identity = sourceToTargetLocal == Matrix4x4.Identity;
+            var normalTransform = Matrix4x4.Identity;
+            if (!identity)
+            {
+                if (!Matrix4x4.Invert(sourceToTargetLocal, out var inverse))
+                    return new(null, [], [new("NonInvertibleAppendTransform", "The decoration source-to-target transform is not invertible.")]);
+                normalTransform = Matrix4x4.Transpose(inverse);
+            }
+            var offset = checked((uint)vertices.Count);
+            foreach (var vertex in source.Vertices)
+                vertices.Add(TransformVertex(vertex, sourceToTargetLocal, normalTransform, identity) with { Index = checked((uint)vertices.Count) });
+            foreach (var (section, index) in source.Sections.Select((value, index) => (value, index)))
+            {
+                var triangles = section.Triangles.Select(triangle => new UnitTriangleIndices(
+                    checked(triangle.A + offset), checked(triangle.B + offset), checked(triangle.C + offset))).ToArray();
+                sections.Add(section with { Triangles = triangles });
+                provenance.Add(new(sections.Count - 1, false, index));
+            }
         }
         var merged = target with
         {
             Sections = sections,
             Triangles = sections.SelectMany(section => section.Triangles).ToArray(),
-            Vertices = targetVertices.Concat(sourceVertices).ToArray()
+            Vertices = vertices
         };
         return new(merged, provenance, []);
     }

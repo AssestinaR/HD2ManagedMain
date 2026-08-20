@@ -95,16 +95,19 @@ namespace HD2ModManager.ViewModels
         // Option Mods are still real patch-bearing packages. Only decorations
         // and empty logical hosts are excluded from patch tools.
         public bool CanUsePatchTools => !IsDecoration && HasPatchContent;
+        public bool CanRepairPatch => HasPatchContent;
         public bool CanShowDecorationPlan => !IsDecoration && HasPatchContent;
         public bool CanSplitEmbeddedMaterials => !_disposed && CanUsePatchTools
             && ((_materialState?.HasEmbeddedMaterials == true) || (_cachedMaterialDeliveryFacts?.EmbeddedMaterialCount > 0))
             && TryGetCurrentNode(out _);
         public bool CanReplaceEmbeddedMaterials => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
         public bool CanEmbedExternalMaterials => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
-        public bool CanRebuildSameKey => !_disposed && CanUsePatchTools && !_sameKeyReconstructionRunning && TryGetCurrentNode(out _);
+        public bool CanRebuildSameKey => !_disposed && CanRepairPatch && !_sameKeyReconstructionRunning && TryGetCurrentNode(out _);
         public bool CanPlanCrossArmorTransfer => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
         public bool IsDecoration => Mod?.IsDecoration == true;
         public bool CanPlanDecoration => !_disposed && CanShowDecorationPlan && TryGetCurrentNode(out _);
+        public bool CanEditDecoration => !_disposed && IsDecoration && TryGetCurrentNode(out _);
+        public string DecorationSummary { get; private set; } = "正在读取装饰计划。";
         public BulkObservableCollection<ModCardViewModel> HostDecorations { get; } = new();
         // Empty standard hosts still own their option list; an option becomes a
         // decoration host only when it owns patch content that can be rebuilt.
@@ -132,6 +135,7 @@ namespace HD2ModManager.ViewModels
 		public RelayCommand PlanCrossArmorTransferCommand { get; }
         public RelayCommand PlanDecorationCommand { get; }
         public RelayCommand PlanBatchDecorationCommand { get; }
+        public RelayCommand EditDecorationCommand { get; }
         public RelayCommand RunAdvancedAnalysisCommand { get; }
 		public RelayCommand RunDependencyGraphTestCommand { get; }
         public RelayCommand CompareDependencyGraphCommand { get; }
@@ -167,6 +171,7 @@ namespace HD2ModManager.ViewModels
             PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
             PlanDecorationCommand = new RelayCommand(_ => OpenDecorationPlan(), _ => CanPlanDecoration);
             PlanBatchDecorationCommand = new RelayCommand(_ => OpenBatchDecorationPlan(), _ => CanPlanDecoration);
+            EditDecorationCommand = new RelayCommand(_ => OpenDecorationEditor(), _ => CanEditDecoration);
             RunAdvancedAnalysisCommand = new RelayCommand(async _ => await RunAdvancedAnalysisAsync(), _ => CanRunAdvancedAnalysis);
 			RunDependencyGraphTestCommand = new RelayCommand(async _ => await RunDependencyGraphTestAsync(), _ => CanRunDependencyGraphTest);
 			CompareDependencyGraphCommand = new RelayCommand(async _ => await CompareDependencyGraphAsync(), _ => CanCompareDependencyGraph);
@@ -180,6 +185,7 @@ namespace HD2ModManager.ViewModels
             _derivedState.SnapshotChanged += _snapshotChangedHandler;
             if (_selection is not null) _selection.SelectionChanged += OnSelectionChanged;
             Refresh();
+            if (IsDecoration) RefreshDecorationSummary();
             if (CanUsePatchTools) _ = RefreshInformationProductsAsync();
         }
 
@@ -1451,6 +1457,25 @@ namespace HD2ModManager.ViewModels
             if (Mod is null || !CanShowDecorationPlan) return;
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
                 shell.OpenBatchDecorationPlan(Mod.Guid);
+        }
+
+        private void OpenDecorationEditor()
+        {
+            if (Mod is null || !CanEditDecoration) return;
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenDecorationEditor(Mod.Guid);
+        }
+
+        private void RefreshDecorationSummary()
+        {
+            try
+            {
+                var path = Path.Combine(_library.ResolveAbsolutePath(Mod?.SourcePath), "decoration.json");
+                var plan = JsonSerializer.Deserialize<DecorationPlanDocument>(File.ReadAllText(path), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                if (plan is null) return;
+                DecorationSummary = $"来源快照：{plan.SourceUnits.Count} 个 Unit，{FileGroupCount} 个 Patch 组。\n目标部位：{plan.Plan.TargetPart}；目标身形：{plan.Plan.TargetBodyVariant}；双身形：{plan.Plan.DualVariantMode}。\n来源层级：{(plan.Plan.SourcePartLayers.Count == 0 ? "未记录" : string.Join("、", plan.Plan.SourcePartLayers))}；来源目标一致时{(plan.Plan.ReplaceWhenSourcePartLayerMatches ? "替换主体几何" : "直接注入")}。\n目标主体：{plan.Plan.TargetModGuids.Count} 个。";
+                OnPropertyChanged(nameof(DecorationSummary));
+            }
+            catch { DecorationSummary = "装饰计划无法读取。"; OnPropertyChanged(nameof(DecorationSummary)); }
         }
 
         private async Task DeleteAsync()

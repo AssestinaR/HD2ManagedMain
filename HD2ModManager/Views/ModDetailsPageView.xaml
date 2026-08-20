@@ -61,11 +61,22 @@
                         <Button Style="{StaticResource AppSecondaryButton}" Content="拆分内嵌材质" Command="{Binding SplitEmbeddedMaterialsCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="集成外部材质" Command="{Binding EmbedExternalMaterialsCommand}"/>
                     </WrapPanel>
+                    <WrapPanel Grid.Row="1" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding IsDecoration, Converter={StaticResource BoolToVis}}">
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="重构 patch" Command="{Binding RebuildSameKeyCommand}" Margin="0,0,8,0"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="编辑装饰 Mod" Command="{Binding EditDecorationCommand}"/>
+                    </WrapPanel>
                     <WrapPanel Grid.Row="2" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding CanShowDecorationPlan, Converter={StaticResource BoolToVis}}">
                         <Button Style="{StaticResource AppSecondaryButton}" Content="批量生成装饰（以主体 Mod）" Command="{Binding PlanBatchDecorationCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="生成装饰 Mod（以来源 Mod）" Command="{Binding PlanDecorationCommand}"/>
                     </WrapPanel>
                 </Grid>
+            </Border>
+
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding IsDecoration, Converter={StaticResource BoolToVis}}">
+                <StackPanel>
+                    <TextBlock Text="装饰详情" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="{Binding DecorationSummary}" Foreground="#555" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                </StackPanel>
             </Border>
 
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding ShowUserStatusCard, Converter={StaticResource BoolToVis}}">

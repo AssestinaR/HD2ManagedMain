@@ -18,6 +18,8 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     private readonly NotificationService _notifications;
     private readonly IEquipmentUnitCatalogService _equipmentCatalog;
     private readonly IModFileResolver _modFileResolver;
+    private readonly BackgroundTaskService? _backgroundTasks;
+    private readonly string? _editingDecorationId;
     private string _targetBodyVariant = "双身形";
     private string _dualVariantMode = "自动从来源分配";
     private string _targetPart = "Torso";
@@ -32,12 +34,14 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     private IReadOnlyDictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>> _preparedSourceEntries = new Dictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>>(StringComparer.OrdinalIgnoreCase);
     private string _state = "正在读取来源 Unit。";
 
-    public DecorationPlanPageViewModel(ModLibraryService library, NotificationService notifications, string sourceModId)
+    public DecorationPlanPageViewModel(ModLibraryService library, NotificationService notifications, string sourceModId, BackgroundTaskService? backgroundTasks = null, string? editingDecorationId = null)
     {
         _library = library;
         _notifications = notifications;
         _equipmentCatalog = CoreServices.CreateEquipmentUnitCatalogService(SettingsService.CreateStoragePaths());
         _modFileResolver = CoreServices.CreateModFileResolver();
+        _backgroundTasks = backgroundTasks;
+        _editingDecorationId = editingDecorationId;
         SourceModId = sourceModId;
         SourceName = library.Get(sourceModId)?.Name ?? sourceModId;
         _outputDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Output");
@@ -51,12 +55,15 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
             ShowTargetSearch = !ShowTargetSearch;
             OnPropertyChanged(nameof(ShowTargetSearch));
         });
-        Title = "生成装饰 Mod";
+        Title = IsEditing ? "编辑装饰 Mod" : "生成装饰 Mod";
         _ = LoadAsync();
     }
 
     public string SourceModId { get; }
     public string SourceName { get; }
+    public bool IsEditing => !string.IsNullOrWhiteSpace(_editingDecorationId);
+    public string SubmitText => IsEditing ? "保存" : "生成";
+    public bool ShowOutputSettings => !IsEditing;
     public ObservableCollection<DecorationSourceUnitItem> SourceUnits { get; } = new();
     public BulkObservableCollection<DecorationTargetModItem> TargetMods { get; } = new(item => item.SelectionKey);
     public IReadOnlyList<string> BodyVariants { get; }
@@ -149,6 +156,22 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
                 .OrderBy(mod => mod.Name)
                 .Select(mod => new DecorationTargetModItem(mod.Guid, mod.Name, mod.Description, mod.Image, mod.IsOption, OnSelectionChanged))
                 .ToArray();
+            if (IsEditing)
+            {
+                var planPath = Path.Combine(_library.ResolveAbsolutePath(_library.Get(_editingDecorationId!)?.SourcePath), "decoration.json");
+                var saved = JsonSerializer.Deserialize<DecorationPlanDocument>(await File.ReadAllTextAsync(planPath), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                if (saved is not null)
+                {
+                    var selectedSources = saved.SourceUnits.Select(unit => (unit.TypeId, unit.FileId, unit.MeshInfoIndex, unit.IsCulling)).ToHashSet();
+                    foreach (var item in _allSourceUnits) item.IsSelected = selectedSources.Contains((item.TypeId, item.FileId, item.MeshInfoIndex, item.IsCulling));
+                    TargetPart = saved.Plan.TargetPart;
+                    TargetBodyVariant = saved.Plan.TargetBodyVariant == "Stocky" ? "仅健壮" : saved.Plan.TargetBodyVariant == "Slim" ? "仅纤细" : "双身形";
+                    DualVariantMode = saved.Plan.DualVariantMode == "ApplyAllToBoth" ? "来源全部附加到每一个身形" : "自动从来源分配";
+                    ReplaceWhenSourcePartLayerMatches = saved.Plan.ReplaceWhenSourcePartLayerMatches;
+                    var targets = saved.Plan.TargetModGuids.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    foreach (var target in _allTargetMods) target.IsSelected = targets.Contains(target.ModId);
+                }
+            }
             RefreshTargetVisibility();
             State = SourceUnits.Count == 0 ? "来源中没有可识别的 Unit。" : $"已读取 {SourceUnits.Count} 个 Unit；选择后将写入装饰计划。";
         }
@@ -231,17 +254,36 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
                 TargetModGuids = targetModGuids
             }
         };
-        var displayName = $"{SourceName} - 装饰";
+        var displayName = IsEditing ? SourceName : $"{SourceName} - 装饰";
+        var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.Other, "生成装饰 Mod", displayName, "装饰生成");
+        task?.MarkRunning("正在准备来源模型");
+        var progress = task is null ? null : new Progress<DecorationOperationProgress>(item =>
+        {
+            task.UpdateStage(item.Stage);
+            task.UpdateProgress(item.Fraction);
+        });
         try
         {
+            if (IsEditing)
+            {
+                plan.Version = 3;
+                plan.SourceStorageMode = "PatchSnapshot";
+                plan.SourceUnits = sourceUnits;
+                await _library.UpdateDecorationPlanAsync(_editingDecorationId!, plan);
+                State = "装饰 Mod 已保存；已重建启用它的主体。";
+                _notifications.Show("装饰 Mod 已保存。");
+                task?.MarkCompleted();
+                return;
+            }
             if (AutoImport)
             {
-                var created = await _library.CreateDecorationAsync(SourceModId, sourceUnits, plan, displayName, _preparedSourceEntries);
+                var created = await _library.CreateDecorationAsync(SourceModId, sourceUnits, plan, displayName, _preparedSourceEntries, default, progress);
                 var libraryDirectory = _library.ResolveAbsolutePath(created.SourcePath);
                 var outputDirectory = Path.Combine(OutputDirectory, SanitizeFileName(displayName));
                 if (!string.IsNullOrWhiteSpace(libraryDirectory)) CopyDecorationFiles(libraryDirectory, outputDirectory);
                 State = "装饰计划已导入模组库。";
                 _notifications.Show($"已生成装饰 Mod：{created.Name}");
+                task?.MarkCompleted();
                 if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenModDetails(created.Guid);
                 return;
             }
@@ -250,17 +292,22 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
             var path = Path.Combine(OutputDirectory, SanitizeFileName(displayName));
             var source = _library.Snapshot.Nodes.Values.Single(node => node.Id.Value.ToString("N") == SourceModId);
             plan.Name = displayName;
-            plan.Payloads = (await new DecorationPayloadCompiler(_modFileResolver)
-                .CompileAsync(source, _library.ModsRootDirectory, sourceUnits, plan.Plan, path, _preparedSourceEntries)).ToList();
+            plan.Version = 3;
+            plan.SourceStorageMode = "PatchSnapshot";
+            plan.SourceUnits = sourceUnits.Select(unit => new DecorationSourceUnit { TypeId = unit.TypeId, FileId = unit.FileId, MeshInfoIndex = unit.MeshInfoIndex, BodyVariant = unit.BodyVariant, Layer = unit.Layer, IsCulling = unit.IsCulling }).ToList();
+            await new DecorationPatchSnapshotService(_modFileResolver)
+                .CaptureAsync(source, _library.ModsRootDirectory, sourceUnits, path, _preparedSourceEntries, default, progress);
             await File.WriteAllTextAsync(Path.Combine(path, "decoration.json"), JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
             State = $"计划已写出：{path}";
             _notifications.Show("装饰计划已写入输出目录。");
+            task?.MarkCompleted();
         }
         catch (Exception exception)
         {
             State = $"生成失败：{exception.Message}";
             LogService.Error($"装饰 Mod 生成失败：来源={SourceModId}，错误={exception}");
             _notifications.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(10));
+            task?.MarkFailed(exception.Message);
         }
     }
 
@@ -272,12 +319,10 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     private static void CopyDecorationFiles(string sourceDirectory, string destinationDirectory)
     {
         Directory.CreateDirectory(destinationDirectory);
-        foreach (var fileName in new[] { "decoration.json", "stocky.bin", "slim.bin" })
+        foreach (var source in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.TopDirectoryOnly))
         {
-            var source = Path.Combine(sourceDirectory, fileName);
-            var destination = Path.Combine(destinationDirectory, fileName);
-            if (File.Exists(source)) File.Copy(source, destination, overwrite: true);
-            else if (File.Exists(destination)) File.Delete(destination);
+            var destination = Path.Combine(destinationDirectory, Path.GetFileName(source));
+            File.Copy(source, destination, overwrite: true);
         }
     }
 

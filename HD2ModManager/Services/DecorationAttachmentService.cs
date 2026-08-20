@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.Diagnostics;
 using System.Text.Json;
 using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction;
@@ -28,28 +29,52 @@ public sealed class DecorationAttachmentService
         _catalog = CoreServices.CreateEquipmentUnitCatalogService(paths);
     }
 
-    public async Task RebuildHostAsync(ModNode host, IEnumerable<(ModEntity Mod, DecorationPlanDocument Plan)> enabled, string modsRoot, string gameDataDirectory, CancellationToken cancellationToken = default)
+    public async Task RebuildHostAsync(ModNode host, IEnumerable<(ModEntity Mod, DecorationPlanDocument Plan)> enabled, string modsRoot, string gameDataDirectory, CancellationToken cancellationToken = default, IProgress<DecorationOperationProgress>? progress = null)
     {
+        var totalStopwatch = Stopwatch.StartNew();
         var attachments = enabled.ToArray();
         var output = Path.Combine(modsRoot, host.RelativePath, "Overwrite");
         LogService.Info($"装饰合并开始：主体={host.Id.Value:N}，装饰数={attachments.Length}，输出={output}");
         if (attachments.Length == 0)
         {
+            progress?.Report(new DecorationOperationProgress("正在清理已生成装饰", 0, 1));
             RemoveGeneratedOverwrite(output);
+            progress?.Report(new DecorationOperationProgress("正在清理已生成装饰", 1, 1));
             LogService.Info($"装饰合并清理完成：主体={host.Id.Value:N}");
             return;
         }
         if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory))
             throw new InvalidOperationException("请在设置页重建资产索引。");
+        var avatarStopwatch = Stopwatch.StartNew();
         var avatar = await new CanonicalAvatarRigReader(new AdaptationGameDataPackageResolver(gameDataDirectory)).ReadTransformInfoAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        LogService.Info($"装饰性能：主体={host.Id.Value:N}，阶段=读取 Avatar 骨架，耗时={avatarStopwatch.ElapsedMilliseconds}ms");
         var payloads = new List<(ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload)>();
+        var payloadCount = attachments.Sum(attachment => IsPatchSnapshot(attachment.Plan) ? 1 : attachment.Plan.Payloads.Count);
+        var readPayloads = 0;
+        progress?.Report(new DecorationOperationProgress("正在读取装饰模型", 0, payloadCount));
         foreach (var attachment in attachments)
         {
+            if (IsPatchSnapshot(attachment.Plan))
+            {
+                var snapshotStopwatch = Stopwatch.StartNew();
+                var documents = await ReadSnapshotPayloadsAsync(attachment.Mod, attachment.Plan, modsRoot, cancellationToken).ConfigureAwait(false);
+                payloads.AddRange(documents.Select(document => (attachment.Mod, attachment.Plan.Plan, document)));
+                LogService.Info($"装饰性能：主体={host.Id.Value:N}，阶段=读取来源 Patch 快照，装饰={attachment.Mod.Guid}，Unit数={attachment.Plan.SourceUnits.Count}，Payload数={documents.Count}，耗时={snapshotStopwatch.ElapsedMilliseconds}ms");
+                progress?.Report(new DecorationOperationProgress("正在读取装饰来源 Patch", ++readPayloads, payloadCount));
+                continue;
+            }
             foreach (var file in attachment.Plan.Payloads)
             {
+                if (!Path.GetExtension(file.File).Equals(".bin", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("仅兼容旧版 .bin 装饰，请重新生成该装饰。");
                 LogService.Info($"装饰合并读取 payload：装饰={attachment.Mod.Guid}，文件={file.File}，身形={file.BodyVariant}");
-                var payload = await ReadPayloadAsync(Path.Combine(modsRoot, attachment.Mod.SourcePath ?? string.Empty, file.File), cancellationToken).ConfigureAwait(false);
+                var payloadPath = Path.Combine(modsRoot, attachment.Mod.SourcePath ?? string.Empty, file.File);
+                var payloadStopwatch = Stopwatch.StartNew();
+                var payload = await ReadPayloadAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+                var payloadBytes = new FileInfo(payloadPath).Length;
+                LogService.Info($"装饰性能：主体={host.Id.Value:N}，阶段=读取来源 Payload，装饰={attachment.Mod.Guid}，文件={file.File}，压缩大小={payloadBytes}B，片段={payload.Fragments.Count}，耗时={payloadStopwatch.ElapsedMilliseconds}ms");
                 payloads.Add((attachment.Mod, attachment.Plan.Plan, payload));
+                progress?.Report(new DecorationOperationProgress("正在读取装饰模型", ++readPayloads, payloadCount));
             }
         }
         var backup = PrepareGeneratedOverwrite(output);
@@ -58,12 +83,19 @@ public sealed class DecorationAttachmentService
             var patchPaths = ResolveOriginalPatchFiles(host, modsRoot);
             LogService.Info($"装饰合并主体 Patch：主体={host.Id.Value:N}，数量={patchPaths.Count}");
             var edits = 0;
-            foreach (var patch in patchPaths)
-                edits += await RebuildPatchAsync(patch, output, payloads, avatar, cancellationToken).ConfigureAwait(false);
+            for (var index = 0; index < patchPaths.Count; index++)
+            {
+                progress?.Report(new DecorationOperationProgress("正在重建主体 Patch", index, patchPaths.Count));
+                var patchStopwatch = Stopwatch.StartNew();
+                edits += await RebuildPatchAsync(patchPaths[index], output, payloads, avatar, cancellationToken, progress).ConfigureAwait(false);
+                LogService.Info($"装饰性能：主体={host.Id.Value:N}，阶段=重建主体 Patch，文件={Path.GetFileName(patchPaths[index])}，耗时={patchStopwatch.ElapsedMilliseconds}ms");
+            }
+            progress?.Report(new DecorationOperationProgress("正在重建主体 Patch", patchPaths.Count, patchPaths.Count));
             if (edits == 0) throw new InvalidDataException("没有找到与装饰计划匹配的主体 Unit。");
             await File.WriteAllTextAsync(Path.Combine(output, MarkerName), "generated", cancellationToken).ConfigureAwait(false);
             if (backup is not null) Directory.Delete(backup, recursive: true);
             LogService.Info($"装饰合并完成：主体={host.Id.Value:N}，Unit 编辑数={edits}，输出={output}");
+            LogService.Info($"装饰性能：主体={host.Id.Value:N}，阶段=合并总计，Payload数={payloads.Count}，Patch数={patchPaths.Count}，Unit编辑数={edits}，耗时={totalStopwatch.ElapsedMilliseconds}ms");
         }
         catch (Exception exception)
         {
@@ -74,19 +106,27 @@ public sealed class DecorationAttachmentService
         }
     }
 
-    private async Task<int> RebuildPatchAsync(string patch, string output, IReadOnlyList<(ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload)> attachments, UnitTransformInfo avatar, CancellationToken cancellationToken)
+    private async Task<int> RebuildPatchAsync(string patch, string output, IReadOnlyList<(ModEntity Mod, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload)> attachments, UnitTransformInfo avatar, CancellationToken cancellationToken, IProgress<DecorationOperationProgress>? progress)
     {
         LogService.Info($"装饰合并读取 Patch：{patch}");
+        var scanStopwatch = Stopwatch.StartNew();
         var entries = await new AdaptationPatchTocScanner().ScanEntriesAsync(patch, cancellationToken).ConfigureAwait(false);
+        LogService.Info($"装饰性能：Patch={Path.GetFileName(patch)}，阶段=扫描 TOC，条目={entries.Count}，耗时={scanStopwatch.ElapsedMilliseconds}ms");
         var keys = entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId)
             .Select(entry => new HD2ModCore.Domain.AssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId)).ToHashSet();
+        var catalogStopwatch = Stopwatch.StartNew();
         var catalog = await _catalog.GetEntriesAsync(keys, cancellationToken).ConfigureAwait(false);
+        LogService.Info($"装饰性能：Patch={Path.GetFileName(patch)}，阶段=读取 Unit 目录，Unit数={keys.Count}，目录项={catalog.Count}，耗时={catalogStopwatch.ElapsedMilliseconds}ms");
         var candidates = catalog
             .SelectMany(entry => entry.Parts.Select(part => new DecorationHostCandidate(entry.ArchiveId, part)))
             .GroupBy(candidate => (candidate.ArchiveId, candidate.Part.UnitAssetKey, candidate.Part.MeshInfoIndex))
             .Select(group => group.OrderByDescending(candidate => candidate.Part.StoredBytes).ThenByDescending(candidate => candidate.Part.Confidence).First())
             .ToArray();
-        var geometryByMesh = await ReadCandidateGeometryFactsAsync(entries, candidates, cancellationToken).ConfigureAwait(false);
+        progress?.Report(new DecorationOperationProgress("正在分析主体模型", 0, candidates.Length));
+        var unitsByKey = new Dictionary<CoreAssetKey, PatchUnitMesh>();
+        var geometryStopwatch = Stopwatch.StartNew();
+        var geometryByMesh = await ReadCandidateGeometryFactsAsync(entries, candidates, unitsByKey, cancellationToken, progress).ConfigureAwait(false);
+        LogService.Info($"装饰性能：Patch={Path.GetFileName(patch)}，阶段=宿主几何分析，候选={candidates.Length}，已缓存Unit={unitsByKey.Count}，耗时={geometryStopwatch.ElapsedMilliseconds}ms");
         candidates = candidates.Select(candidate => candidate with
         {
             Geometry = geometryByMesh.GetValueOrDefault((candidate.Part.UnitAssetKey, candidate.Part.MeshInfoIndex))
@@ -97,15 +137,20 @@ public sealed class DecorationAttachmentService
             .ToDictionary(group => group.Key, group => group.ToArray());
         var edits = new List<PatchUnitMeshEditResult>();
         var reader = new PatchUnitMeshReader();
-        foreach (var entry in entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
+        var targetEntries = entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId && targetsByUnit.ContainsKey(new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId))).ToArray();
+        for (var targetIndex = 0; targetIndex < targetEntries.Length; targetIndex++)
         {
+            var entry = targetEntries[targetIndex];
             var unitKey = new HD2ModCore.Domain.AssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId);
             if (!targetsByUnit.TryGetValue(unitKey, out var matching)) continue;
             var targetMeshes = matching.Select(target => target.Part.MeshInfoIndex).Distinct().ToArray();
             if (targetMeshes.Length != 1)
                 throw new InvalidDataException($"Unit 0x{entry.AssetKey.FileId:x16} resolved to {targetMeshes.Length} decoration host meshes; choose separate target parts.");
             var targetPart = matching[0].Part;
-            var unit = await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
+            var unit = unitsByKey.TryGetValue(unitKey, out var cachedUnit)
+                ? cachedUnit
+                : await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
+            progress?.Report(new DecorationOperationProgress("正在合并目标 Unit", targetIndex, targetEntries.Length));
             var targetRaw = unit.Model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == targetPart.MeshInfoIndex)
                 ?? throw new InvalidDataException($"Target MeshInfo {targetPart.MeshInfoIndex} has no readable RawMesh.");
             var targetMesh = unit.Model.Meshes.Single(mesh => mesh.Index == targetPart.MeshInfoIndex);
@@ -131,7 +176,8 @@ public sealed class DecorationAttachmentService
                 throw new InvalidDataException($"装饰没有与目标 LOD {targetRaw.LodIndex} 对应的来源 Mesh（可用 LOD：{available}）。");
             }
             var allInputs = inputsByTargetMesh.Values.SelectMany(inputs => inputs).ToArray();
-            LogService.Info($"装饰合并 Unit：Patch={Path.GetFileName(patch)}，目标=0x{entry.AssetKey.FileId:x16}，Mesh={targetPart.MeshInfoIndex}，目标LOD=[{string.Join(",", inputsByTargetMesh.Keys.Select(index => unit.Model.RawMeshData.Single(raw => raw.MeshInfoIndex == index).LodIndex).OrderBy(lod => lod))}]，部位={targetPart.PartKind}，层级={targetPart.Layer}，身形={targetPart.BodyVariant}，替换={replaceTargetGeometry}，来源数={allInputs.Length}，来源顶点={allInputs.Sum(input => input.Fragment.RawMesh.Vertices.Count)}，来源三角={allInputs.Sum(input => input.Fragment.RawMesh.Triangles.Count)}");
+            LogService.Info($"装饰合并 Unit：Patch={Path.GetFileName(patch)}，目标=0x{entry.AssetKey.FileId:x16}，Mesh={targetPart.MeshInfoIndex}，目标LOD=[{string.Join(",", inputsByTargetMesh.Keys.Select(index => unit.Model.RawMeshData.Single(raw => raw.MeshInfoIndex == index).LodIndex).OrderBy(lod => lod))}]，部位={targetPart.PartKind}，层级={targetPart.Layer}，身形={targetPart.BodyVariant}，替换={replaceTargetGeometry}，来源数={allInputs.Length}，来源顶点={allInputs.Sum(input => input.Fragment.RawMesh.Vertices.Count)}，来源三角={allInputs.Sum(input => input.Fragment.RawMesh.Sections.Sum(section => section.Triangles.Count))}");
+            var appendStopwatch = Stopwatch.StartNew();
             var result = new CanonicalDecorationUnitAppender().TryAppendLodFamily(unit, inputsByTargetMesh, avatar, replaceTargetGeometry);
             if (!result.IsValid)
             {
@@ -140,11 +186,15 @@ public sealed class DecorationAttachmentService
                 throw new InvalidDataException(detail);
             }
             edits.Add(result.Edit!);
+            LogService.Info($"装饰性能：Patch={Path.GetFileName(patch)}，阶段=Canonical Unit 合并，目标=0x{entry.AssetKey.FileId:x16}，Mesh={targetPart.MeshInfoIndex}，LOD数={inputsByTargetMesh.Count}，来源数={allInputs.Length}，耗时={appendStopwatch.ElapsedMilliseconds}ms");
+            progress?.Report(new DecorationOperationProgress("正在合并目标 Unit", targetIndex + 1, targetEntries.Length));
         }
         if (edits.Count != 0)
         {
             LogService.Info($"装饰合并写出 Patch：源={patch}，Unit 编辑数={edits.Count}");
+            var writeStopwatch = Stopwatch.StartNew();
             await new PatchArchiveWriter().WriteAsync(patch, output, edits, overwriteExisting: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+            LogService.Info($"装饰性能：Patch={Path.GetFileName(patch)}，阶段=写出 Patch，Unit编辑数={edits.Count}，耗时={writeStopwatch.ElapsedMilliseconds}ms");
         }
         return edits.Count;
     }
@@ -152,17 +202,22 @@ public sealed class DecorationAttachmentService
     private static async Task<IReadOnlyDictionary<(CoreAssetKey Unit, int Mesh), UnitMeshGeometryFact>> ReadCandidateGeometryFactsAsync(
         IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> entries,
         IReadOnlyList<DecorationHostCandidate> candidates,
-        CancellationToken cancellationToken)
+        IDictionary<CoreAssetKey, PatchUnitMesh> unitsByKey,
+        CancellationToken cancellationToken,
+        IProgress<DecorationOperationProgress>? progress)
     {
         var candidateKeys = candidates.Select(candidate => candidate.Part.UnitAssetKey).ToHashSet();
         var facts = new Dictionary<(CoreAssetKey Unit, int Mesh), UnitMeshGeometryFact>();
         var reader = new PatchUnitMeshReader();
-        foreach (var entry in entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId && candidateKeys.Contains(new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId))))
+        var candidateEntries = entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId && candidateKeys.Contains(new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId))).ToArray();
+        for (var index = 0; index < candidateEntries.Length; index++)
         {
+            var entry = candidateEntries[index];
             try
             {
                 var unit = await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
                 var unitKey = new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId);
+                unitsByKey[unitKey] = unit;
                 foreach (var fact in UnitGeometryFactsBuilder.Analyze(unit.Model).Meshes)
                     facts[(unitKey, fact.MeshInfoIndex)] = fact;
             }
@@ -170,6 +225,7 @@ public sealed class DecorationAttachmentService
             {
                 LogService.Info($"装饰宿主几何分析跳过不可读 Unit：0x{entry.AssetKey.FileId:x16}，原因={exception.Message}");
             }
+            finally { progress?.Report(new DecorationOperationProgress("正在分析主体模型", index + 1, candidateEntries.Length)); }
         }
         return facts;
     }
@@ -384,6 +440,88 @@ public sealed class DecorationAttachmentService
         await using var gzip = new GZipStream(file, CompressionMode.Decompress);
         return await JsonSerializer.DeserializeAsync<DecorationPayloadDocument>(gzip, new JsonSerializerOptions(JsonSerializerDefaults.Web), cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("Decoration payload is empty.");
+    }
+
+    private static bool IsPatchSnapshot(DecorationPlanDocument document)
+        => string.Equals(document.SourceStorageMode, "PatchSnapshot", StringComparison.OrdinalIgnoreCase)
+            && document.SourceUnits.Count != 0;
+
+    private static async Task<IReadOnlyList<DecorationPayloadDocument>> ReadSnapshotPayloadsAsync(
+        ModEntity decoration, DecorationPlanDocument document, string modsRoot, CancellationToken cancellationToken)
+    {
+        var root = Path.Combine(modsRoot, decoration.SourcePath ?? string.Empty);
+        var parser = CoreServices.CreatePatchFileNameParser();
+        var patches = Directory.EnumerateFiles(root)
+            .Where(path => parser.TryParse(Path.GetFileName(path), out var info) && info?.SidecarKind == PatchSidecarKind.Base)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray();
+        var requested = document.SourceUnits.GroupBy(unit => (unit.TypeId, unit.FileId)).ToDictionary(group => group.Key, group => group.ToArray());
+        var resolved = new HashSet<(ulong TypeId, ulong FileId, int Mesh, bool Culling)>();
+        var fragments = new List<(string Variant, string Layer, DecorationMeshFragment Fragment)>();
+        var reader = new PatchUnitMeshReader();
+        foreach (var patch in patches)
+        {
+            var entries = await new AdaptationPatchTocScanner().ScanEntriesAsync(patch, cancellationToken).ConfigureAwait(false);
+            foreach (var entry in entries.Where(entry => requested.ContainsKey((entry.AssetKey.TypeId, entry.AssetKey.FileId))))
+            {
+                var selections = requested[(entry.AssetKey.TypeId, entry.AssetKey.FileId)];
+                var unit = await reader.ReadCanonicalSourceAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
+                foreach (var selection in selections)
+                {
+                    if (selection.IsCulling)
+                    {
+                        var mesh = unit.Model.Meshes.SingleOrDefault(item => item.Index == selection.MeshInfoIndex)
+                            ?? throw new InvalidDataException("快照装饰 culling Mesh 缺失。");
+                        var raw = unit.Model.RawMeshData.SingleOrDefault(item => item.MeshInfoIndex == selection.MeshInfoIndex)
+                            ?? throw new InvalidDataException("快照装饰 culling 几何缺失。");
+                        fragments.Add((NormalizeVariant(selection.BodyVariant), NormalizeLayer(selection.Layer), CreateFragment(unit, mesh, raw)));
+                        resolved.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, true));
+                        continue;
+                    }
+                    var lods = unit.Model.RawMeshData
+                        .Select(raw => (Raw: raw, Mesh: unit.Model.Meshes.SingleOrDefault(mesh => mesh.Index == raw.MeshInfoIndex)))
+                        .Where(item => item.Mesh is not null && IsVisibleSnapshotLod(item.Raw, item.Mesh))
+                        .OrderBy(item => item.Raw.LodIndex).ToArray();
+                    if (lods.Length == 0) throw new InvalidDataException("快照装饰 Unit 没有可见 LOD 几何。");
+                    foreach (var lod in lods) fragments.Add((NormalizeVariant(selection.BodyVariant), NormalizeLayer(selection.Layer), CreateFragment(unit, lod.Mesh!, lod.Raw)));
+                    resolved.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, false));
+                }
+            }
+        }
+        var expected = document.SourceUnits.Select(unit => (unit.TypeId, unit.FileId, unit.MeshInfoIndex, unit.IsCulling)).ToHashSet();
+        if (!expected.SetEquals(resolved)) throw new InvalidDataException("装饰来源 Patch 快照不完整或所选 Unit 不存在。");
+        return BuildSnapshotPayloads(fragments, document.Plan);
+    }
+
+    private static IReadOnlyList<DecorationPayloadDocument> BuildSnapshotPayloads(
+        IReadOnlyList<(string Variant, string Layer, DecorationMeshFragment Fragment)> fragments, DecorationAttachmentPlan plan)
+    {
+        DecorationPayloadDocument Create(string variant, IEnumerable<(string Variant, string Layer, DecorationMeshFragment Fragment)> source)
+        {
+            var items = source.ToArray();
+            return new DecorationPayloadDocument { BodyVariant = variant, SourceLayers = items.Select(item => item.Layer).Where(layer => layer.Length != 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList(), Fragments = items.Select(item => item.Fragment).ToList() };
+        }
+        if (plan.TargetBodyVariant is "Stocky" or "Slim") return [Create(plan.TargetBodyVariant, fragments)];
+        if (plan.DualVariantMode == "ApplyAllToBoth") return [Create("Stocky", fragments), Create("Slim", fragments)];
+        var stocky = fragments.Where(item => item.Variant is "Stocky" or "Any").ToArray();
+        var slim = fragments.Where(item => item.Variant is "Slim" or "Any").ToArray();
+        if (stocky.Length == 0 || slim.Length == 0) throw new InvalidDataException("双身形自动分配需要 Slim 和 Stocky 来源；请重新生成或改为来源全部附加。");
+        return [Create("Stocky", stocky), Create("Slim", slim)];
+    }
+
+    private static string NormalizeVariant(string variant) => variant.Equals("Slim", StringComparison.OrdinalIgnoreCase) ? "Slim" : variant.Equals("Stocky", StringComparison.OrdinalIgnoreCase) ? "Stocky" : "Any";
+    private static string NormalizeLayer(string layer) => layer is "Armor" or "Undergarment" or "Accessory" ? layer : string.Empty;
+    private static bool IsVisibleSnapshotLod(UnitRawMeshData raw, UnitMeshInfo mesh)
+        => raw.LodIndex >= 0 && mesh.SemanticInfo.IsVisualMesh && !mesh.SemanticInfo.IsCullingBody && !mesh.SemanticInfo.IsStaticMesh && UnitGeometryFactsBuilder.HasRenderableGeometry(raw);
+    private static DecorationMeshFragment CreateFragment(PatchUnitMesh unit, UnitMeshInfo mesh, UnitRawMeshData raw)
+    {
+        var stream = unit.Model.Streams.SingleOrDefault(item => item.Index == mesh.StreamIndex)
+            ?? throw new InvalidDataException("快照装饰 Mesh 没有可用 Stream。");
+        return new DecorationMeshFragment
+        {
+            Mesh = mesh, RawMesh = raw, Stream = stream, Materials = unit.Model.Materials.ToList(),
+            BoneInfos = unit.Model.BoneInfos.ToList(), TransformInfo = unit.Model.TransformInfo,
+            TransformNameHashes = unit.Model.TransformNameHashes.ToList()
+        };
     }
 
     private static string? PrepareGeneratedOverwrite(string directory)

@@ -76,10 +76,8 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 		return ValueTask.FromResult(tree);
 	}
 
-	private static bool IsDecorationPackageDirectory(DirectoryInfo dir)
-		=> File.Exists(Path.Combine(dir.FullName, "decoration.json"))
-			&& (File.Exists(Path.Combine(dir.FullName, "stocky.bin"))
-				|| File.Exists(Path.Combine(dir.FullName, "slim.bin")));
+    private static bool IsDecorationPackageDirectory(DirectoryInfo dir)
+        => File.Exists(Path.Combine(dir.FullName, "decoration.json"));
 
 	private static OptionRelationDocument? TryReadOptionRelation(DirectoryInfo dir)
 	{
