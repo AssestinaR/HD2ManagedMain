@@ -38,7 +38,8 @@ public sealed class CanonicalDecorationUnitAppender
 	public CanonicalDecorationAppendResult TryAppendLodFamily(
 		PatchUnitMesh targetUnit,
 		IReadOnlyDictionary<int, IReadOnlyList<CanonicalDecorationAppendInput>> inputsByTargetMesh,
-		UnitTransformInfo avatarTransformInfo)
+		UnitTransformInfo avatarTransformInfo,
+		bool replaceTargetGeometry = false)
     {
         ArgumentNullException.ThrowIfNull(targetUnit);
 		ArgumentNullException.ThrowIfNull(inputsByTargetMesh);
@@ -80,7 +81,16 @@ public sealed class CanonicalDecorationUnitAppender
 		foreach (var group in groups)
         {
 			var merged = group.TargetRaw;
-			var origins = group.TargetRaw.Sections.Select((_, index) => new CanonicalAppendSectionOrigin(index, -1, index)).ToList();
+			if (replaceTargetGeometry)
+			{
+				var targetStream = targetUnit.Model.Streams.SingleOrDefault(stream => stream.Index == group.TargetRaw.StreamIndex);
+				if (targetStream is null) return new(null, [new("DecorationTargetStreamMissing", "The selected replacement host mesh has no stream.")]);
+				var placeholder = new CanonicalPlaceholderMinifier().TryMinify(group.TargetRaw, targetStream);
+				diagnostics.AddRange(placeholder.Diagnostics);
+				if (!placeholder.IsValid) return new(null, diagnostics);
+				merged = placeholder.Mesh!;
+			}
+			var origins = merged.Sections.Select((_, index) => new CanonicalAppendSectionOrigin(index, -1, index)).ToList();
 			for (var sourceIndex = 0; sourceIndex < group.Inputs.Count; sourceIndex++)
 			{
 				var input = group.Inputs[sourceIndex];

@@ -50,6 +50,7 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
                         <Grid Grid.Row="0">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="92"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -76,7 +77,8 @@
                             </Grid>
                         </Grid>
                         <CheckBox Grid.Row="4" Style="{StaticResource AppCheckBox}" Content="自动导入到 Mod 库" IsChecked="{Binding AutoImport}" Margin="92,9,0,0"/>
-                        <CheckBox Grid.Row="5" Style="{StaticResource AppCheckBox}" Content="包含裁切候选" IsChecked="{Binding ShowPotentialCulling}" Margin="92,7,0,0"/>
+                        <CheckBox Grid.Row="5" Style="{StaticResource AppCheckBox}" Content="来源部位与目标部位完全一致时替换而不注入" IsChecked="{Binding ReplaceWhenSourcePartLayerMatches}" Margin="92,7,0,0"/>
+                        <CheckBox Grid.Row="6" Style="{StaticResource AppCheckBox}" Content="包含裁切候选" IsChecked="{Binding ShowPotentialCulling}" Margin="92,7,0,0"/>
                     </Grid>
                 </Grid>
             </Border>

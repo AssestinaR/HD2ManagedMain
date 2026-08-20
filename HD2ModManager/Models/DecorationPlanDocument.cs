@@ -7,7 +7,7 @@ namespace HD2ModManager.Models;
 public sealed class DecorationPlanDocument
 {
     public string Format { get; set; } = "HD2ModManager.Decoration";
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
     public string Name { get; set; } = string.Empty;
     public List<DecorationPayloadFile> Payloads { get; set; } = new();
     public DecorationAttachmentPlan Plan { get; set; } = new();
@@ -19,6 +19,10 @@ public sealed class DecorationAttachmentPlan
     public string TargetPart { get; set; } = "LeftArm";
     public string TargetBodyVariant { get; set; } = "Dual";
     public string DualVariantMode { get; set; } = "AutoAssign";
+    // Replacement stays deliberately strict: a mapped host is cleared only when its
+    // original semantic part/layer appears in this portable source summary.
+    public bool ReplaceWhenSourcePartLayerMatches { get; set; } = true;
+    public List<string> SourcePartLayers { get; set; } = new();
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
 }
 

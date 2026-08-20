@@ -113,6 +113,8 @@ public sealed class DecorationAttachmentService
                 .GroupBy(target => (target.Attachment.Mod.Guid, target.Attachment.Payload.BodyVariant), StringTupleComparer.OrdinalIgnoreCase)
                 .Select(group => group.First().Attachment)
                 .ToArray();
+			var replaceTargetGeometry = matching.Any(target => target.Attachment.Plan.ReplaceWhenSourcePartLayerMatches
+				&& DecorationPlanningDefaults.MatchesPartLayer(target.Attachment.Plan.SourcePartLayers, targetPart.PartKind, targetPart.Layer));
             var inputsByTargetMesh = new Dictionary<int, IReadOnlyList<CanonicalDecorationAppendInput>>();
             foreach (var lodTarget in ResolveVisibleLodFamily(unit.Model, targetRaw, targetMesh))
             {
@@ -129,8 +131,8 @@ public sealed class DecorationAttachmentService
                 throw new InvalidDataException($"装饰没有与目标 LOD {targetRaw.LodIndex} 对应的来源 Mesh（可用 LOD：{available}）。");
             }
             var allInputs = inputsByTargetMesh.Values.SelectMany(inputs => inputs).ToArray();
-            LogService.Info($"装饰合并 Unit：Patch={Path.GetFileName(patch)}，目标=0x{entry.AssetKey.FileId:x16}，Mesh={targetPart.MeshInfoIndex}，目标LOD=[{string.Join(",", inputsByTargetMesh.Keys.Select(index => unit.Model.RawMeshData.Single(raw => raw.MeshInfoIndex == index).LodIndex).OrderBy(lod => lod))}]，部位={targetPart.PartKind}，身形={targetPart.BodyVariant}，来源数={allInputs.Length}，来源顶点={allInputs.Sum(input => input.Fragment.RawMesh.Vertices.Count)}，来源三角={allInputs.Sum(input => input.Fragment.RawMesh.Triangles.Count)}");
-            var result = new CanonicalDecorationUnitAppender().TryAppendLodFamily(unit, inputsByTargetMesh, avatar);
+            LogService.Info($"装饰合并 Unit：Patch={Path.GetFileName(patch)}，目标=0x{entry.AssetKey.FileId:x16}，Mesh={targetPart.MeshInfoIndex}，目标LOD=[{string.Join(",", inputsByTargetMesh.Keys.Select(index => unit.Model.RawMeshData.Single(raw => raw.MeshInfoIndex == index).LodIndex).OrderBy(lod => lod))}]，部位={targetPart.PartKind}，层级={targetPart.Layer}，身形={targetPart.BodyVariant}，替换={replaceTargetGeometry}，来源数={allInputs.Length}，来源顶点={allInputs.Sum(input => input.Fragment.RawMesh.Vertices.Count)}，来源三角={allInputs.Sum(input => input.Fragment.RawMesh.Triangles.Count)}");
+            var result = new CanonicalDecorationUnitAppender().TryAppendLodFamily(unit, inputsByTargetMesh, avatar, replaceTargetGeometry);
             if (!result.IsValid)
             {
                 var detail = string.Join("; ", result.Diagnostics.Select(item => $"{item.Code}: {item.Message}"));

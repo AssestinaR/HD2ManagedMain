@@ -62,7 +62,8 @@
                         <Button Style="{StaticResource AppSecondaryButton}" Content="集成外部材质" Command="{Binding EmbedExternalMaterialsCommand}"/>
                     </WrapPanel>
                     <WrapPanel Grid.Row="2" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding CanShowDecorationPlan, Converter={StaticResource BoolToVis}}">
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="生成装饰 Mod" Command="{Binding PlanDecorationCommand}"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="批量生成装饰（以主体 Mod）" Command="{Binding PlanBatchDecorationCommand}" Margin="0,0,8,0"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="生成装饰 Mod（以来源 Mod）" Command="{Binding PlanDecorationCommand}"/>
                     </WrapPanel>
                 </Grid>
             </Border>

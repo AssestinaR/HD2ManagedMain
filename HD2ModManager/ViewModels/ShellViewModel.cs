@@ -555,6 +555,14 @@ namespace HD2ModManager.ViewModels
             OpenSinglePage(WorkspacePageType.DecorationPlan);
         }
 
+        public void OpenBatchDecorationPlan(string hostModId)
+        {
+            if (string.IsNullOrWhiteSpace(hostModId)) return;
+            ClearTransientSelection();
+            SelectedModId = hostModId;
+            OpenSinglePage(WorkspacePageType.BatchDecorationPlan);
+        }
+
         public void DismissMaterialPackagingBottomBar() => ClearMaterialPackagingBottomBar();
 
         public void OpenSameKeyRebuild(SameKeyRebuildBottomBarViewModel operation)
@@ -1550,6 +1558,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),
                 WorkspacePageType.MaterialPackaging => throw new InvalidOperationException("材质打包必须通过 Mod 详情创建。"),
                 WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty),
+                WorkspacePageType.BatchDecorationPlan => new BatchDecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
             };
             return page;
@@ -1622,6 +1631,7 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.CrossArmorPlan => "跨护甲计划",
             WorkspacePageType.MaterialPackaging => "材质候选与输出",
             WorkspacePageType.DecorationPlan => "生成装饰 Mod",
+            WorkspacePageType.BatchDecorationPlan => "批量生成装饰",
             _ => "页面",
         };
 

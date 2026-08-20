@@ -20,11 +20,12 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     private readonly IModFileResolver _modFileResolver;
     private string _targetBodyVariant = "双身形";
     private string _dualVariantMode = "自动从来源分配";
-    private string _targetPart = "LeftArm";
+    private string _targetPart = "Torso";
     private string _outputDirectory;
     private bool _autoImport = true;
     private bool _showPotentialCulling;
     private bool _showOptions = true;
+	private bool _replaceWhenSourcePartLayerMatches = true;
     private string _targetQuery = string.Empty;
     private IReadOnlyList<DecorationSourceUnitItem> _allSourceUnits = Array.Empty<DecorationSourceUnitItem>();
     private IReadOnlyList<DecorationTargetModItem> _allTargetMods = Array.Empty<DecorationTargetModItem>();
@@ -71,6 +72,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     public string TargetPart { get => _targetPart; set => SetField(ref _targetPart, value); }
     public string OutputDirectory { get => _outputDirectory; set => SetField(ref _outputDirectory, value); }
     public bool AutoImport { get => _autoImport; set => SetField(ref _autoImport, value); }
+	public bool ReplaceWhenSourcePartLayerMatches { get => _replaceWhenSourcePartLayerMatches; set => SetField(ref _replaceWhenSourcePartLayerMatches, value); }
     public bool ShowPotentialCulling
     {
         get => _showPotentialCulling;
@@ -125,16 +127,21 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
                     workspace => workspace.Entries,
                     StringComparer.OrdinalIgnoreCase);
                 var transferable = await _equipmentCatalog.FilterTransferableSourcePartsAsync(catalogEntries, patchPaths, cancellationToken: default, preparedEntries: _preparedSourceEntries);
+                var preferredArchive = DecorationPlanningDefaults.SelectPreferredArchiveId(transferable);
                 _allSourceUnits = transferable
-                    .SelectMany(entry => entry.Parts)
-                    .GroupBy(part => new { part.UnitAssetKey, part.MeshInfoIndex, part.PartKind, part.BodyVariant, part.Layer })
-                    .Select(group => new DecorationSourceUnitItem(group.First(), OnSelectionChanged))
+                    .SelectMany(entry => entry.Parts.Select(part => new { entry.ArchiveId, Part = part }))
+                    .GroupBy(item => new { item.ArchiveId, item.Part.UnitAssetKey, item.Part.MeshInfoIndex, item.Part.PartKind, item.Part.BodyVariant, item.Part.Layer })
+                    .Select(group => new DecorationSourceUnitItem(group.Key.ArchiveId, group.First().Part, OnSelectionChanged)
+                    {
+                        IsSelected = string.Equals(group.Key.ArchiveId, preferredArchive, StringComparison.OrdinalIgnoreCase)
+                    })
                     .OrderBy(item => item.PartKind)
                     .ThenBy(item => item.BodyVariant)
                     .ThenBy(item => item.Layer)
                     .ThenBy(item => item.FileId)
                     .ToArray();
                 RefreshSourceUnits();
+				TargetPart = DecorationPlanningDefaults.ResolveTargetPart(_allSourceUnits.Where(item => item.IsSelected).Select(item => item.Part));
             }
             _allTargetMods = _library.All()
                 .Where(mod => !mod.IsDecoration && !string.Equals(mod.Guid, SourceModId, StringComparison.OrdinalIgnoreCase))
@@ -216,6 +223,10 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
                 TargetPart = TargetPart,
                 TargetBodyVariant = NormalizeBodyVariant(TargetBodyVariant),
                 DualVariantMode = NormalizeDualVariantMode(DualVariantMode),
+				ReplaceWhenSourcePartLayerMatches = ReplaceWhenSourcePartLayerMatches,
+				SourcePartLayers = sourceUnits.Select(unit => DecorationPlanningDefaults.ToPartLayerKey(
+					_allSourceUnits.First(item => item.TypeId == unit.TypeId && item.FileId == unit.FileId && item.MeshInfoIndex == unit.MeshInfoIndex).PartKind,
+					_allSourceUnits.First(item => item.TypeId == unit.TypeId && item.FileId == unit.FileId && item.MeshInfoIndex == unit.MeshInfoIndex).Layer)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
                 TargetModGuids = targetModGuids
             }
         };
@@ -277,14 +288,16 @@ public sealed class DecorationSourceUnitItem : BaseViewModel
 {
     private readonly Action _changed;
     private bool _isSelected;
-    public DecorationSourceUnitItem(EquipmentUnitPart part, Action changed)
+    public DecorationSourceUnitItem(string archiveId, EquipmentUnitPart part, Action changed)
     {
+		ArchiveId = archiveId;
         Part = part;
         TypeId = part.UnitAssetKey.TypeId;
         FileId = part.UnitAssetKey.FileId;
         _changed = changed;
     }
     public EquipmentUnitPart Part { get; }
+	public string ArchiveId { get; }
     public ulong TypeId { get; }
     public ulong FileId { get; }
     public int MeshInfoIndex => Part.MeshInfoIndex;

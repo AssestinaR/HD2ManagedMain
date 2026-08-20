@@ -131,6 +131,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand RebuildSameKeyCommand { get; }
 		public RelayCommand PlanCrossArmorTransferCommand { get; }
         public RelayCommand PlanDecorationCommand { get; }
+        public RelayCommand PlanBatchDecorationCommand { get; }
         public RelayCommand RunAdvancedAnalysisCommand { get; }
 		public RelayCommand RunDependencyGraphTestCommand { get; }
         public RelayCommand CompareDependencyGraphCommand { get; }
@@ -165,6 +166,7 @@ namespace HD2ModManager.ViewModels
             RebuildSameKeyCommand = new RelayCommand(_ => OpenSameKeyRebuild(), _ => CanRebuildSameKey);
             PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
             PlanDecorationCommand = new RelayCommand(_ => OpenDecorationPlan(), _ => CanPlanDecoration);
+            PlanBatchDecorationCommand = new RelayCommand(_ => OpenBatchDecorationPlan(), _ => CanPlanDecoration);
             RunAdvancedAnalysisCommand = new RelayCommand(async _ => await RunAdvancedAnalysisAsync(), _ => CanRunAdvancedAnalysis);
 			RunDependencyGraphTestCommand = new RelayCommand(async _ => await RunDependencyGraphTestAsync(), _ => CanRunDependencyGraphTest);
 			CompareDependencyGraphCommand = new RelayCommand(async _ => await CompareDependencyGraphAsync(), _ => CanCompareDependencyGraph);
@@ -1398,6 +1400,7 @@ namespace HD2ModManager.ViewModels
             RebuildSameKeyCommand.RaiseCanExecuteChanged();
 			PlanCrossArmorTransferCommand.RaiseCanExecuteChanged();
 			PlanDecorationCommand.RaiseCanExecuteChanged();
+			PlanBatchDecorationCommand.RaiseCanExecuteChanged();
         }
 
         private static string SanitizeFileName(string name) => string.Concat(name.Select(character => System.IO.Path.GetInvalidFileNameChars().Contains(character) ? '_' : character)).Trim();
@@ -1421,6 +1424,13 @@ namespace HD2ModManager.ViewModels
             if (Mod is null || !CanShowDecorationPlan) return;
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
                 shell.OpenDecorationPlan(Mod.Guid);
+        }
+
+        private void OpenBatchDecorationPlan()
+        {
+            if (Mod is null || !CanShowDecorationPlan) return;
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
+                shell.OpenBatchDecorationPlan(Mod.Guid);
         }
 
         private async Task DeleteAsync()

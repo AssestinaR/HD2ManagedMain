@@ -1,0 +1,8 @@
+<UserControl x:Class="HD2ModManager.Views.AnimatedPlanList" x:Name="Root"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid ClipToBounds="False">
+        <ItemsControl x:Name="ItemsList" ItemsSource="{Binding PresentedItems, ElementName=Root}" ItemTemplate="{Binding ItemTemplate, ElementName=Root}"/>
+        <Canvas x:Name="TransitionOverlay" IsHitTestVisible="False" Panel.ZIndex="10"/>
+    </Grid>
+</UserControl>
