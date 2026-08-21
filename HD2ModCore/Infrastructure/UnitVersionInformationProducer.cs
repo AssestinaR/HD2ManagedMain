@@ -19,6 +19,15 @@ public sealed class UnitVersionInformationProducer : IUnitVersionInformationProd
 		_probe = probe ?? new UnitVersionProbe();
 	}
 
+	// 作用：版本探测只需要统一读取器提供的 Patch 目录；保留旧 provider 重载给测试和兼容调用。
+	// Purpose: Unit-version probing only needs the reader-backed Patch catalog; preserve the provider overload for compatibility.
+	public UnitVersionInformationProducer(IModInformationReader informationReader, IUnitVersionProbe? probe = null)
+		: this(new ModInformationPatchGroupAnalysisProvider(
+			informationReader,
+			depth: PatchAnalysisDepth.Inventory), probe)
+	{
+	}
+
 	public async ValueTask<ModUnitVersionFacts> ProduceAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(node);

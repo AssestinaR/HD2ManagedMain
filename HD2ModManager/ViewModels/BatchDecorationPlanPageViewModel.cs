@@ -1,7 +1,6 @@
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Text.Json;
-using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
@@ -15,9 +14,10 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
 {
     private readonly ModLibraryService _library;
     private readonly NotificationService _notifications;
-    private readonly IEquipmentUnitCatalogService _catalog;
+    private readonly IModEquipmentSourceFactsReader _equipmentSourceFacts;
     private readonly IModFileResolver _fileResolver;
     private readonly BackgroundTaskService? _backgroundTasks;
+    private readonly Guid _sourceFactsSessionId = Guid.NewGuid();
     private readonly Dictionary<string, DecorationBatchSourcePlanItem> _plansBySource = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<DecorationBatchSourceModItem> _allSources = Array.Empty<DecorationBatchSourceModItem>();
     private string _outputDirectory;
@@ -32,7 +32,7 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
     {
         _library = library;
         _notifications = notifications;
-        _catalog = CoreServices.CreateEquipmentUnitCatalogService(SettingsService.CreateStoragePaths());
+        _equipmentSourceFacts = _library.EquipmentSourceFactsReader;
         _fileResolver = CoreServices.CreateModFileResolver();
         _backgroundTasks = backgroundTasks;
         HostModId = hostModId;
@@ -71,6 +71,14 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
         var selected = selectedKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var item in _allSources) item.IsSelected = selected.Contains(item.ModId);
         _ = SynchronizePlansAsync();
+    }
+
+    public override void Dispose()
+    {
+        // The batch planner shares lightweight source facts only for this page's
+        // lifetime; release them once its animated list is no longer active.
+        _library.InformationReader.ClearSession(_sourceFactsSessionId);
+        base.Dispose();
     }
 
     private async Task LoadAsync()
@@ -112,27 +120,22 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
     {
         var node = _library.Snapshot.Nodes.Values.FirstOrDefault(candidate => candidate.Id.Value.ToString("N") == source.ModId)
             ?? throw new InvalidOperationException($"来源 Mod 已不存在：{source.Name}");
-        // AssetInventory is the library's light, coalesced cache for Patch unit keys.
-        // Keep full Unit reads below only for semantic eligibility that this cache cannot prove.
-        var inventory = await _library.InformationCenter.RequestAssetInventoryAsync(
-            node, _library.ModsRootDirectory, new ModInformationRequest(ModInformationKind.AssetInventory, "BatchDecorationPlan"))
-            .ConfigureAwait(false);
-        var unitKeys = inventory.Data?.PatchGroups.SelectMany(group => group.AssetKeys)
-            .Where(key => key.TypeId == PatchUnitMeshReader.UnitTypeId)
-            .Select(key => new AssetKey(key.TypeId, key.FileId)).ToHashSet()
-            ?? new HashSet<AssetKey>();
-        var patchPaths = await _fileResolver.ResolvePatchFilesAsync(node, _library.ModsRootDirectory).ConfigureAwait(false);
-        var workspaceReader = new HD2ModAdaptation.PatchReconstruction.PatchWorkspace.PatchWorkspaceReader();
-        var workspaces = await Task.WhenAll(patchPaths.Select(path => workspaceReader.ReadIndexAsync(path).AsTask())).ConfigureAwait(true);
-        var entries = workspaces.ToDictionary(workspace => workspace.SourcePatchTocPath, workspace => workspace.Entries, StringComparer.OrdinalIgnoreCase);
-        if (unitKeys.Count == 0)
-            unitKeys = workspaces.SelectMany(workspace => workspace.Entries)
-                .Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId)
-                .Select(entry => new AssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId)).ToHashSet();
-        var catalogEntries = await _catalog.GetEntriesAsync(unitKeys).ConfigureAwait(true);
-        var transferable = await _catalog.FilterTransferableSourcePartsAsync(catalogEntries, patchPaths, default, entries).ConfigureAwait(true);
-        var preferredArchive = DecorationPlanningDefaults.SelectPreferredArchiveId(transferable);
-        var units = transferable.SelectMany(entry => entry.Parts.Select(part => new { entry.ArchiveId, Part = part }))
+        var sourceFacts = await _equipmentSourceFacts.ReadAsync(
+            node,
+            _library.ModsRootDirectory,
+            new ModInformationRequest(
+                ModInformationKind.AssetInventory,
+                "BatchDecorationPlan",
+                Context: ModInformationRequestContext.Create(
+                    ModInformationCacheScope.Session,
+                    sessionId: _sourceFactsSessionId,
+                    operationName: "BatchDecorationPlan"))
+            {
+                Property = ModInformationPropertyKind.UnitGeometrySummary
+            })
+            .ConfigureAwait(true);
+        var preferredArchive = DecorationPlanningDefaults.SelectPreferredArchiveId(sourceFacts.SourceCandidates);
+        var units = sourceFacts.SourceCandidates.SelectMany(entry => entry.Parts.Select(part => new { entry.ArchiveId, Part = part }))
             .GroupBy(item => new { item.ArchiveId, item.Part.UnitAssetKey, item.Part.MeshInfoIndex, item.Part.PartKind, item.Part.BodyVariant, item.Part.Layer })
             .Select(group => new DecorationSourceUnitItem(group.Key.ArchiveId, group.First().Part, () => { })
             {
@@ -140,7 +143,7 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
             })
             .OrderBy(item => item.PartKind).ThenBy(item => item.BodyVariant).ThenBy(item => item.Layer).ThenBy(item => item.FileId).ToArray();
         var selectedParts = units.Where(unit => unit.IsSelected).Select(unit => unit.Part).ToArray();
-        return new DecorationBatchSourcePlanItem(source, node, entries, units,
+        return new DecorationBatchSourcePlanItem(source, node, sourceFacts.PreparedEntries, units,
             DecorationPlanningDefaults.ResolveTargetPart(selectedParts),
             DecorationPlanningDefaults.ResolveTargetBodyVariant(selectedParts), OnPlanChanged);
     }
@@ -212,7 +215,7 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
                     plan.Version = 3;
                     plan.SourceStorageMode = "PatchSnapshot";
                     plan.SourceUnits = sourceUnits.Select(unit => new DecorationSourceUnit { TypeId = unit.TypeId, FileId = unit.FileId, MeshInfoIndex = unit.MeshInfoIndex, BodyVariant = unit.BodyVariant, Layer = unit.Layer, IsCulling = unit.IsCulling }).ToList();
-                    await new DecorationPatchSnapshotService(_fileResolver).CaptureAsync(item.SourceNode, _library.ModsRootDirectory, sourceUnits, output, item.PreparedEntries, default, progress);
+                    await new DecorationPatchSnapshotService(_fileResolver, _library.InformationReader).CaptureAsync(item.SourceNode, _library.ModsRootDirectory, sourceUnits, output, item.PreparedEntries, default, progress);
                     await File.WriteAllTextAsync(Path.Combine(output, "decoration.json"), JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true })).ConfigureAwait(true);
                 }
                 generated++;

@@ -57,6 +57,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	public string SourcePatchTocPath { get; }
 	public string GameDataDirectory { get; }
 	public StoragePaths Paths { get; }
+	public IModInformationReader InformationReader => informationReader;
 	public IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> PreparedSourceEntries { get; private set; }
 	private Task? preparedEntriesTask;
 	public RelayCommand RefreshPlanCommand { get; }
@@ -213,6 +214,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private readonly IEquipmentUnitCatalogService catalogService;
 	private readonly IReadOnlyList<EquipmentUnitCatalogEntry> sourceCandidates;
 	private readonly IReadOnlyList<EquipmentUnitCatalogEntry> targetCandidates;
+	private readonly IModInformationReader informationReader;
 	private bool targetReplacementFactsAvailable;
 	private readonly Func<CancellationToken, Task<GameDataArchiveBrowserSnapshot?>>? targetReplacementLoader;
 
@@ -225,12 +227,16 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> preparedSourceEntries,
 		StoragePaths paths,
 		GameDataArchiveBrowserSnapshot? targetReplacementSnapshot = null,
-		Func<CancellationToken, Task<GameDataArchiveBrowserSnapshot?>>? targetReplacementLoader = null)
+		Func<CancellationToken, Task<GameDataArchiveBrowserSnapshot?>>? targetReplacementLoader = null,
+		IModInformationReader? informationReader = null)
 	{
 		this.catalogService = catalogService;
 		this.sourceCandidates = sourceCandidates;
 		this.targetCandidates = targetCandidates;
 		this.targetReplacementLoader = targetReplacementLoader;
+		// The plan may lazily request the source TOC. Keep that read behind the
+		// library's shared invalidation and diagnostics boundary.
+		this.informationReader = informationReader ?? throw new ArgumentNullException(nameof(informationReader));
 		Title = "跨护甲计划";
 		SourcePatchTocPath = sourcePatchTocPath;
 		GameDataDirectory = gameDataDirectory;
@@ -286,9 +292,20 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 
 	private async Task LoadPreparedSourceEntriesAsync(CancellationToken cancellationToken)
 	{
-		var entries = await new HD2ModAdaptation.PatchReconstruction.PatchWorkspace.PatchWorkspaceReader()
-			.ReadIndexAsync(SourcePatchTocPath, cancellationToken).ConfigureAwait(false);
-		PreparedSourceEntries = entries.Entries;
+		var result = await informationReader.ReadPatchIndexAsync(
+			new ModInformationReadRequest(
+				SourcePatchTocPath,
+				ModInformationRequestContext.Create(ModInformationCacheScope.None, operationName: "CrossArmorPlanPreparedEntries"),
+				ContentView: ModInformationContentView.Source),
+			cancellationToken).ConfigureAwait(false);
+		if (result.Data is null)
+		{
+			var message = result.State.Diagnostics.Count == 0
+				? "无法读取来源 Patch TOC。"
+				: string.Join("；", result.State.Diagnostics.Select(issue => issue.Message));
+			throw new InvalidDataException(message);
+		}
+		PreparedSourceEntries = result.Data.Entries;
 		OnPropertyChanged(nameof(PreparedSourceEntries));
 	}
 

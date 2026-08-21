@@ -19,6 +19,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	private readonly IArchiveObjectTreeImporter _archiveImporter;
 	private readonly IModLibraryStore _store;
 	private readonly IModInformationCenter? _informationCenter;
+	private readonly IModInformationReader? _informationReader;
 	private readonly IModDerivedDataCleanup? _legacyCleanup;
 	private readonly PatchFileNormalizer _normalizer;
 	private readonly SevenZipArchiveExtractor _archiveExtractor;
@@ -31,13 +32,15 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		IModLibraryStore store,
 		IPatchGroupAnalysisProvider? patchFactsProvider = null,
 		IModDerivedDataCleanup? derivedDataCleanup = null,
-		IModInformationCenter? informationCenter = null)
+		IModInformationCenter? informationCenter = null,
+		IModInformationReader? informationReader = null)
 	{
 		_paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		_folderImporter = folderImporter ?? throw new ArgumentNullException(nameof(folderImporter));
 		_archiveImporter = archiveImporter ?? throw new ArgumentNullException(nameof(archiveImporter));
 		_store = store ?? throw new ArgumentNullException(nameof(store));
 		_informationCenter = informationCenter;
+		_informationReader = informationReader;
 		_legacyCleanup = derivedDataCleanup;
 		_normalizer = new PatchFileNormalizer(new PatchFileNameParser());
 		_archiveExtractor = new SevenZipArchiveExtractor();
@@ -201,6 +204,17 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			storedTree = PersistFlattenedTree(tree, sourceRoot, sourceName, preferHardLinks, cancellationToken, manifest);
 			var snapshot = await MergeIntoSnapshotAsync(storedTree, cancellationToken).ConfigureAwait(false);
 			await _store.SaveAsync(snapshot, cancellationToken).ConfigureAwait(false);
+			try
+			{
+				await InvalidateImportedNodesAsync(storedTree.Nodes.Keys).ConfigureAwait(false);
+			}
+			catch (Exception exception)
+			{
+				// The library snapshot and files are already committed.  A cache backend
+				// outage must not turn that successful import into a half-rolled-back
+				// library entry; synchronization will retry the invalidation boundary.
+				System.Diagnostics.Debug.WriteLine($"[ModLibraryImporter] cache invalidation failed after import: {exception}");
+			}
 			return (storedTree, snapshot);
 		}
 		catch
@@ -216,8 +230,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		{
 			try
 			{
+				_informationReader?.InvalidateNode(node.Id);
 				if (_informationCenter is not null)
-					await _informationCenter.InvalidateNodeAsync(node.Id).ConfigureAwait(false);
+					await _informationCenter.InvalidateNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(false);
 				else if (_legacyCleanup is not null)
 					await _legacyCleanup.DeleteAsync(node.Id).ConfigureAwait(false);
 				var directory = Path.Combine(_paths.ModsDirectory, node.RelativePath);
@@ -347,6 +362,30 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			nodes.Add(nodeId, node with { Id = nodeId, Children = children });
 		}
 		return tree with { RootId = replacements.GetValueOrDefault(tree.RootId, tree.RootId), Nodes = nodes };
+	}
+
+	private async ValueTask InvalidateImportedNodesAsync(IEnumerable<ModNodeId> nodeIds)
+	{
+		foreach (var nodeId in nodeIds.Distinct())
+		{
+			try
+			{
+				// Import may restore a manager-owned node ID.  Its old directory can have
+				// entirely different Patch/sidecar content, so revision-keyed caches alone
+				// are not the ownership boundary here.
+				_informationReader?.InvalidateNode(nodeId);
+				if (_informationCenter is not null)
+					await _informationCenter.InvalidateNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(false);
+				else if (_legacyCleanup is not null)
+					await _legacyCleanup.DeleteAsync(nodeId).ConfigureAwait(false);
+			}
+			catch (Exception exception)
+			{
+				// Continue through the remaining Nodes. One broken durable-cache entry
+				// must not keep unrelated imported content from crossing this boundary.
+				System.Diagnostics.Debug.WriteLine($"[ModLibraryImporter] cache invalidation failed for {nodeId}: {exception}");
+			}
+		}
 	}
 
 	private static ImportedObjectTree PlanManifestImport(ImportedObjectTree tree, StandardModManifest manifest)

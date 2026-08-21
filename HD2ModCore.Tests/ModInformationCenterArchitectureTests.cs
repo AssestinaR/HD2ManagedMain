@@ -74,6 +74,34 @@ public sealed class ModInformationCenterArchitectureTests
 		Assert.DoesNotContain("targetReader.ReadAsync", planning);
 	}
 
+	[Fact]
+	public void SameKeyReconstructionUsesUnifiedReaderForSourcePatchAndUnitReads()
+	{
+		var root = FindRepositoryRoot();
+		var source = File.ReadAllText(Path.Combine(root, "HD2ModCore", "Infrastructure", "CanonicalSameKeyReconstructionService.cs"));
+
+		Assert.Contains("IModInformationReader", source);
+		Assert.Contains("ReadSourcePatchIndexAsync", source);
+		Assert.Contains("ReadCanonicalSourceUnitAsync", source);
+		Assert.DoesNotContain("workspaceReader.ReadIndexAsync", source);
+		Assert.DoesNotContain("new PatchUnitMeshReader()", source);
+	}
+
+	[Fact]
+	public void CrossArmorReconstructionUsesUnifiedReaderForSourceSideReads()
+	{
+		var root = FindRepositoryRoot();
+		var source = File.ReadAllText(Path.Combine(root, "HD2ModCore", "Infrastructure", "CanonicalCrossArmorOrchestrator.cs"));
+
+		Assert.Contains("IModInformationReader", source);
+		Assert.Contains("ReadSourcePatchIndexAsync", source);
+		Assert.Contains("ReadSourcePayloadAsync", source);
+		Assert.Contains("ReadSourceUnitAsync", source);
+		Assert.DoesNotContain("patchWorkspaceReader.ReadIndexAsync", source);
+		Assert.DoesNotContain("sourcePayloadReader.ReadPayloadAsync", source);
+		Assert.DoesNotContain("sourceReader.ReadAsync", source);
+	}
+
 	private static string FindRepositoryRoot()
 	{
 		var directory = new DirectoryInfo(AppContext.BaseDirectory);

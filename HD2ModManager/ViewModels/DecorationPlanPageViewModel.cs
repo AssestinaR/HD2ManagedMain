@@ -16,10 +16,11 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
 {
     private readonly ModLibraryService _library;
     private readonly NotificationService _notifications;
-    private readonly IEquipmentUnitCatalogService _equipmentCatalog;
+    private readonly IModEquipmentSourceFactsReader _equipmentSourceFacts;
     private readonly IModFileResolver _modFileResolver;
     private readonly BackgroundTaskService? _backgroundTasks;
     private readonly string? _editingDecorationId;
+    private readonly Guid _sourceFactsSessionId = Guid.NewGuid();
     private string _targetBodyVariant = "双身形";
     private string _dualVariantMode = "自动从来源分配";
     private string _targetPart = "Torso";
@@ -38,7 +39,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     {
         _library = library;
         _notifications = notifications;
-        _equipmentCatalog = CoreServices.CreateEquipmentUnitCatalogService(SettingsService.CreateStoragePaths());
+        _equipmentSourceFacts = _library.EquipmentSourceFactsReader;
         _modFileResolver = CoreServices.CreateModFileResolver();
         _backgroundTasks = backgroundTasks;
         _editingDecorationId = editingDecorationId;
@@ -111,46 +112,50 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
         }
     }
 
+    public override void Dispose()
+    {
+        // Source facts are intentionally retained while this editor is open so
+        // toggling selections does not re-read the same Patch Units.
+        _library.InformationReader.ClearSession(_sourceFactsSessionId);
+        base.Dispose();
+    }
+
     private async Task LoadAsync()
     {
         try
         {
             var source = _library.Snapshot.Nodes.Values.FirstOrDefault(node => node.Id.Value.ToString("N") == SourceModId);
             if (source is null) { State = "来源 Mod 已不存在。"; return; }
-            var result = await _library.InformationCenter.RequestAssetInventoryAsync(source, _library.ModsRootDirectory,
-                new ModInformationRequest(ModInformationKind.AssetInventory, "DecorationPlan"));
-            if (result.Data is not null)
-            {
-                var unitKeys = result.Data.PatchGroups.SelectMany(group => group.AssetKeys)
-                    .Where(key => key.TypeId == PatchUnitMeshReader.UnitTypeId)
-                    .Distinct()
-                    .ToHashSet();
-                var catalogEntries = await _equipmentCatalog.GetEntriesAsync(unitKeys);
-                var patchPaths = await _modFileResolver.ResolvePatchFilesAsync(source, _library.ModsRootDirectory);
-                var workspaceReader = new HD2ModAdaptation.PatchReconstruction.PatchWorkspace.PatchWorkspaceReader();
-                var workspaces = await Task.WhenAll(patchPaths.Select(path => workspaceReader.ReadIndexAsync(path).AsTask()));
-                _preparedSourceEntries = workspaces.ToDictionary(
-                    workspace => workspace.SourcePatchTocPath,
-                    workspace => workspace.Entries,
-                    StringComparer.OrdinalIgnoreCase);
-                var transferable = await _equipmentCatalog.FilterTransferableSourcePartsAsync(catalogEntries, patchPaths, cancellationToken: default, preparedEntries: _preparedSourceEntries);
-                var preferredArchive = DecorationPlanningDefaults.SelectPreferredArchiveId(transferable);
-                _allSourceUnits = transferable
-                    .SelectMany(entry => entry.Parts.Select(part => new { entry.ArchiveId, Part = part }))
-                    .GroupBy(item => new { item.ArchiveId, item.Part.UnitAssetKey, item.Part.MeshInfoIndex, item.Part.PartKind, item.Part.BodyVariant, item.Part.Layer })
-                    .Select(group => new DecorationSourceUnitItem(group.Key.ArchiveId, group.First().Part, OnSelectionChanged)
-                    {
-                        IsSelected = string.Equals(group.Key.ArchiveId, preferredArchive, StringComparison.OrdinalIgnoreCase)
-                    })
-                    .OrderBy(item => item.PartKind)
-                    .ThenBy(item => item.BodyVariant)
-                    .ThenBy(item => item.Layer)
-                    .ThenBy(item => item.FileId)
-                    .ToArray();
-				RefreshSourceUnits();
-				TargetPart = DecorationPlanningDefaults.ResolveTargetPart(_allSourceUnits.Where(item => item.IsSelected).Select(item => item.Part));
-				TargetBodyVariant = DecorationPlanningDefaults.ResolveTargetBodyVariant(_allSourceUnits.Where(item => item.IsSelected).Select(item => item.Part));
-            }
+            var sourceFacts = await _equipmentSourceFacts.ReadAsync(
+                source,
+                _library.ModsRootDirectory,
+                new ModInformationRequest(
+                    ModInformationKind.AssetInventory,
+                    "DecorationPlan",
+                    Context: ModInformationRequestContext.Create(
+                        ModInformationCacheScope.Session,
+                        sessionId: _sourceFactsSessionId,
+                        operationName: "DecorationPlan"))
+                {
+                    Property = ModInformationPropertyKind.UnitGeometrySummary
+                });
+            _preparedSourceEntries = sourceFacts.PreparedEntries;
+            var preferredArchive = DecorationPlanningDefaults.SelectPreferredArchiveId(sourceFacts.SourceCandidates);
+            _allSourceUnits = sourceFacts.SourceCandidates
+                .SelectMany(entry => entry.Parts.Select(part => new { entry.ArchiveId, Part = part }))
+                .GroupBy(item => new { item.ArchiveId, item.Part.UnitAssetKey, item.Part.MeshInfoIndex, item.Part.PartKind, item.Part.BodyVariant, item.Part.Layer })
+                .Select(group => new DecorationSourceUnitItem(group.Key.ArchiveId, group.First().Part, OnSelectionChanged)
+                {
+                    IsSelected = string.Equals(group.Key.ArchiveId, preferredArchive, StringComparison.OrdinalIgnoreCase)
+                })
+                .OrderBy(item => item.PartKind)
+                .ThenBy(item => item.BodyVariant)
+                .ThenBy(item => item.Layer)
+                .ThenBy(item => item.FileId)
+                .ToArray();
+			RefreshSourceUnits();
+			TargetPart = DecorationPlanningDefaults.ResolveTargetPart(_allSourceUnits.Where(item => item.IsSelected).Select(item => item.Part));
+			TargetBodyVariant = DecorationPlanningDefaults.ResolveTargetBodyVariant(_allSourceUnits.Where(item => item.IsSelected).Select(item => item.Part));
             _allTargetMods = _library.All()
                 .Where(mod => !mod.IsDecoration && !string.Equals(mod.Guid, SourceModId, StringComparison.OrdinalIgnoreCase))
                 .OrderBy(mod => mod.Name)
@@ -295,7 +300,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
             plan.Version = 3;
             plan.SourceStorageMode = "PatchSnapshot";
             plan.SourceUnits = sourceUnits.Select(unit => new DecorationSourceUnit { TypeId = unit.TypeId, FileId = unit.FileId, MeshInfoIndex = unit.MeshInfoIndex, BodyVariant = unit.BodyVariant, Layer = unit.Layer, IsCulling = unit.IsCulling }).ToList();
-            await new DecorationPatchSnapshotService(_modFileResolver)
+            await new DecorationPatchSnapshotService(_modFileResolver, _library.InformationReader)
                 .CaptureAsync(source, _library.ModsRootDirectory, sourceUnits, path, _preparedSourceEntries, default, progress);
             await File.WriteAllTextAsync(Path.Combine(path, "decoration.json"), JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
             State = $"计划已写出：{path}";

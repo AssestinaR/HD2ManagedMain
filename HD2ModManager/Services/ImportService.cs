@@ -47,7 +47,7 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var importer = CoreServices.CreateModLibraryImporter(_paths, _informationCenter);
+				var importer = CoreServices.CreateModLibraryImporter(_paths, _informationCenter, _library.InformationReader);
                 var before = _library.Snapshot.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
                 ImportResult result;
                 if (Directory.Exists(path))
@@ -87,7 +87,7 @@ namespace HD2ModManager.Services
                     .ToArray();
                 foreach (var nodeId in affectedNodeIds)
                 {
-                    await _informationCenter.InvalidateNodeAsync(nodeId, ct).ConfigureAwait(false);
+                    await _library.InvalidateContentNodeAsync(nodeId, ct).ConfigureAwait(false);
                 }
                 await _library.RefreshCommittedContentAsync(
                     affectedNodeIds,

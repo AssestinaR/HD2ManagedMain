@@ -86,12 +86,14 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 			.ToArray();
 	}
 
+	[Obsolete("Use IModEquipmentSourceFactsReader so source geometry is read through the unified Mod information reader.")]
 	public ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(
 		IReadOnlyList<EquipmentUnitCatalogEntry> candidates,
 		IReadOnlyList<string> patchTocPaths,
 		CancellationToken cancellationToken = default)
 		=> FilterTransferableSourcePartsAsync(candidates, patchTocPaths, cancellationToken, null);
 
+	[Obsolete("Use IModEquipmentSourceFactsReader so source geometry is read through the unified Mod information reader.")]
 	public async ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(
 		IReadOnlyList<EquipmentUnitCatalogEntry> candidates,
 		IReadOnlyList<string> patchTocPaths,

@@ -98,7 +98,7 @@ namespace HD2ModManager.ViewModels
             _applyStatus = applyStatus;
             _backgroundTasks = backgroundTasks;
             _paths = SettingsService.CreateStoragePaths();
-            _repairBatch = CoreServices.CreateModRepairBatchService(_paths, _library.InformationCenter);
+			_repairBatch = CoreServices.CreateModRepairBatchService(_paths, _library.InformationCenter, _library.InformationReader);
             RefreshDeploymentCapability();
             MoveLibraryToRecommendedCommand = new RelayCommand(MoveLibraryToRecommended);
             OpenDeveloperSettingsCommand = new RelayCommand(() => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:developers") { UseShellExecute = true }));

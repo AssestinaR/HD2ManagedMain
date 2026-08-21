@@ -40,8 +40,10 @@ namespace HD2ModManager.Services
         private readonly StoragePaths _paths;
         private readonly HD2ModCore.Application.IModLibraryManager _manager;
         private readonly HD2ModCore.Application.ILibraryDerivedDataService _derivedDataService;
-		private readonly ModAssetSummaryProjector _assetSummaryProjector;
+        private readonly ModAssetSummaryProjector _assetSummaryProjector;
         private readonly HD2ModCore.Application.IModInformationCenter _informationCenter;
+		private readonly HD2ModCore.Application.IModInformationReader _informationReader;
+		private readonly HD2ModCore.Application.IModEquipmentSourceFactsReader _equipmentSourceFactsReader;
         private readonly HD2ModCore.Application.IModLibrarySynchronizer _synchronizer;
         private LibrarySnapshot _snapshot;
         private DerivedLibraryData _derivedData;
@@ -63,11 +65,22 @@ namespace HD2ModManager.Services
         public DerivedLibraryData DerivedData => _derivedData;
         public string ModsRootDirectory => _paths.ModsDirectory;
         public HD2ModCore.Application.IModInformationCenter InformationCenter => _informationCenter;
+		public HD2ModCore.Application.IModInformationReader InformationReader => _informationReader;
+		public HD2ModCore.Application.IModEquipmentSourceFactsReader EquipmentSourceFactsReader => _equipmentSourceFactsReader;
         public event EventHandler<ModContentFactsChangedEventArgs>? ModContentFactsChanged;
         public event EventHandler? SnapshotChanged;
         public event EventHandler? OptionActivationChanged;
 
         public void AttachBackgroundTasks(BackgroundTaskService backgroundTasks) => _backgroundTasks = backgroundTasks;
+
+		// Single invalidation boundary for every library content mutation.  The
+		// information center clears durable derived facts; the reader clears any
+		// session/operation payloads that may still retain the previous Patch.
+		public async ValueTask InvalidateContentNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)
+		{
+			_informationReader.InvalidateNode(nodeId);
+			await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+		}
 
         public async Task<DecorationActivationSummary> ToggleDecorationForAllAvailableHostsAsync(string decorationId, CancellationToken cancellationToken = default)
         {
@@ -239,17 +252,23 @@ namespace HD2ModManager.Services
             return enabled ? $"为 {available.Count} 个 Mod 启用了。" : "已对全部主体禁用。";
         }
 
-        public ModLibraryService(string libraryPath, HD2ModCore.Application.IModInformationCenter informationCenter, OptionActivationStore? optionActivations = null)
+        public ModLibraryService(
+            string libraryPath,
+            HD2ModCore.Application.IModInformationCenter informationCenter,
+            OptionActivationStore? optionActivations = null,
+            HD2ModCore.Application.IModInformationReader? informationReader = null)
         {
             _paths = SettingsService.CreateStoragePaths();
             _manager = CoreServices.CreateModLibraryManager(_paths);
             _informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
+			_informationReader = informationReader ?? CoreServices.CreateModInformationReader();
+			_equipmentSourceFactsReader = CoreServices.CreateModEquipmentSourceFactsReader(_paths, _informationCenter, _informationReader);
             _synchronizer = CoreServices.CreateModLibrarySynchronizer();
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, _informationCenter);
 		_assetSummaryProjector = CoreServices.CreateModAssetSummaryProjector(_paths);
             _decorationActivations = new DecorationActivationStore(Path.Combine(_paths.ModsDirectory, "decoration-activations.json"));
             _optionActivations = optionActivations ?? new OptionActivationStore(Path.Combine(_paths.ModsDirectory, "option-activations.json"));
-            _decorationAttachments = new DecorationAttachmentService(_paths);
+            _decorationAttachments = new DecorationAttachmentService(_paths, _informationReader);
             _snapshot = EmptySnapshot();
             _derivedData = EmptyDerivedData();
         }
@@ -306,7 +325,7 @@ namespace HD2ModManager.Services
             if (!alreadyInvalidated)
             {
                 foreach (var nodeId in affectedNodeIds)
-                    await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+				await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
             }
 
             await RefreshDerivedDataAsync(
@@ -334,8 +353,8 @@ namespace HD2ModManager.Services
 
             _snapshot = result.Snapshot;
             await CoreServices.CreateModLibraryStore(_paths).SaveAsync(_snapshot, cancellationToken).ConfigureAwait(false);
-            foreach (var nodeId in result.ChangedNodeIds.Concat(result.MissingNodeIds))
-                await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+			foreach (var nodeId in result.ChangedNodeIds.Concat(result.MissingNodeIds))
+				await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
             RebuildIndex(buildDerivedData: false);
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             await RefreshCommittedContentAsync(
@@ -568,7 +587,7 @@ namespace HD2ModManager.Services
             if (removedIsOption) _optionActivations.RemoveAsync(guid).GetAwaiter().GetResult();
             else _optionActivations.RemoveHostAsync(guid).GetAwaiter().GetResult();
             Interlocked.Increment(ref _stateVersion);
-            _informationCenter.InvalidateNodeAsync(nodeId).AsTask().GetAwaiter().GetResult();
+			InvalidateContentNodeAsync(nodeId, CancellationToken.None).AsTask().GetAwaiter().GetResult();
 			ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
             var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
             nodes.Remove(nodeId);
@@ -598,7 +617,7 @@ namespace HD2ModManager.Services
                 if (removedIsOption) await _optionActivations.RemoveAsync(guid, cancellationToken).ConfigureAwait(false);
                 else await _optionActivations.RemoveHostAsync(guid, cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref _stateVersion);
-                await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+				await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
                 ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
                 var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
                 nodes.Remove(nodeId);
@@ -695,7 +714,7 @@ namespace HD2ModManager.Services
                 replacementCommitted = true;
                 try
                 {
-                    await _informationCenter.InvalidateNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(false);
+					await InvalidateContentNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(false);
                     ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(nodeId.Value.ToString("N"))?.IconPath);
                     await RefreshCommittedContentAsync(
                         new[] { nodeId },
@@ -779,7 +798,7 @@ namespace HD2ModManager.Services
                     await _optionActivations.RemoveAsync(optionId, cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref _stateVersion);
                 foreach (var nodeId in nodeIds)
-                    await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+					await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
                 foreach (var thumbnailPath in thumbnailPaths)
                     ThumbnailService.DeleteCachedThumbnailsForSource(thumbnailPath);
 
@@ -819,7 +838,7 @@ namespace HD2ModManager.Services
                 plan.SourceStorageMode = "PatchSnapshot";
                 plan.SourceUnits = sourceUnits.Select(CloneDecorationSourceUnit).ToList();
                 plan.Payloads.Clear();
-                await new DecorationPatchSnapshotService(CoreServices.CreateModFileResolver())
+                await new DecorationPatchSnapshotService(CoreServices.CreateModFileResolver(), _informationReader)
                     .CaptureAsync(source, _paths.ModsDirectory, sourceUnits, directory, preparedEntries, cancellationToken, progress).ConfigureAwait(false);
                 progress?.Report(new DecorationOperationProgress("正在导入装饰 Mod", 1, 1));
                 var planPath = Path.Combine(directory, "decoration.json");
@@ -858,7 +877,7 @@ namespace HD2ModManager.Services
                     if (hosts.Length > 0) await RebuildDecorationOverwritesAsync(hosts, null, CancellationToken.None).ConfigureAwait(false);
                     throw;
                 }
-                await _informationCenter.InvalidateNodeAsync(ParseNodeId(decorationId)!.Value, cancellationToken).ConfigureAwait(false);
+				await InvalidateContentNodeAsync(ParseNodeId(decorationId)!.Value, cancellationToken).ConfigureAwait(false);
                 SnapshotChanged?.Invoke(this, EventArgs.Empty);
             }
             finally { _libraryMutationGate.Release(); }
@@ -1128,7 +1147,7 @@ namespace HD2ModManager.Services
                     progress?.Report(item);
                 });
                 await _decorationAttachments.RebuildHostAsync(host, enabled, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), cancellationToken, hostProgress).ConfigureAwait(false);
-                await _informationCenter.InvalidateNodeAsync(host.Id, cancellationToken).ConfigureAwait(false);
+				await InvalidateContentNodeAsync(host.Id, cancellationToken).ConfigureAwait(false);
                 changedHosts.Add(host.Id);
             }
             return changedHosts;
@@ -1252,8 +1271,17 @@ namespace HD2ModManager.Services
             if (derived?.PatchFiles is { Count: > 0 } files) return files;
             try
             {
-                var index = CoreServices.CreatePatchFileIndexBuilder().BuildAsync(_snapshot, _paths.ModsDirectory).AsTask().GetAwaiter().GetResult();
-                return index.FilesByNode.TryGetValue(node.Id, out var nodeFiles) ? nodeFiles : Array.Empty<IndexedPatchFile>();
+                // This fallback runs while the entity index is being materialized. Route it
+                // through the information center so a missing derived snapshot does not
+                // trigger a second independent Patch-file scan.
+                var facts = _informationCenter.RequestFileFactsAsync(
+                    _snapshot,
+                    _paths.ModsDirectory,
+                    new ModInformationRequest(ModInformationKind.FileFacts, "ModLibraryService:EntityIndex"))
+                    .AsTask().GetAwaiter().GetResult();
+                return facts.Data is not null && facts.Data.FilesByNode.TryGetValue(node.Id, out var nodeFiles)
+                    ? nodeFiles
+                    : Array.Empty<IndexedPatchFile>();
             }
             catch { return Array.Empty<IndexedPatchFile>(); }
         }

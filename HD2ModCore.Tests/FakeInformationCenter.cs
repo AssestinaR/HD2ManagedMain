@@ -9,6 +9,7 @@ internal sealed class FakeInformationCenter : IModInformationCenter
 	private readonly IReadOnlyDictionary<ModNodeId, ModContentFacts> _facts;
 	private readonly IReadOnlyDictionary<ModNodeId, AdvancedUnitAnalysisFacts> _advancedFacts = new Dictionary<ModNodeId, AdvancedUnitAnalysisFacts>();
 	private readonly IReadOnlyDictionary<ModNodeId, ReferenceGraphFacts> _referenceFacts = new Dictionary<ModNodeId, ReferenceGraphFacts>();
+	public List<ModNodeId> InvalidatedNodeIds { get; } = [];
 	public FakeInformationCenter(IReadOnlyDictionary<ModNodeId, ModContentFacts> facts) => _facts = facts;
 	public FakeInformationCenter(ModContentFacts facts) : this(new Dictionary<ModNodeId, ModContentFacts> { [facts.NodeId] = facts }) { }
 	public FakeInformationCenter(AdvancedUnitAnalysisFacts facts)
@@ -56,6 +57,10 @@ internal sealed class FakeInformationCenter : IModInformationCenter
 	public ValueTask<ModInformationResult<ModThumbnailFacts>> RequestThumbnailAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 	       public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default)
 		       => ValueTask.FromResult(new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0));
-	public ValueTask InvalidateNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+	public ValueTask InvalidateNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)
+	{
+		InvalidatedNodeIds.Add(nodeId);
+		return ValueTask.CompletedTask;
+	}
 	public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

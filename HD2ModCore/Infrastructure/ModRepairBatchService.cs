@@ -10,23 +10,27 @@ public sealed class ModRepairBatchService : IModRepairBatchService
     private readonly IModSameKeyReconstructionService reconstruction;
     private readonly IPatchFileNameParser fileNameParser;
     private readonly StoragePaths paths;
-    private readonly Action? initializationSeam;
-    private readonly Action<string>? commitSeam;
-    private readonly Func<string, string, Task> manifestWriter;
+	private readonly Action? initializationSeam;
+	private readonly Action<string>? commitSeam;
+	private readonly Func<string, string, Task> manifestWriter;
+	private readonly IModInformationCenter? informationCenter;
+	private readonly IModInformationReader? informationReader;
 
-    public ModRepairBatchService(StoragePaths paths, IModSameKeyReconstructionService reconstruction, IPatchFileNameParser fileNameParser, Action? initializationSeam = null, Action<string>? commitSeam = null, Func<string, string, Task>? manifestWriter = null)
-    {
-        this.paths = paths ?? throw new ArgumentNullException(nameof(paths));
-        this.reconstruction = reconstruction ?? throw new ArgumentNullException(nameof(reconstruction));
-        this.fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
-        this.initializationSeam = initializationSeam;
-        this.commitSeam = commitSeam;
-        this.manifestWriter = manifestWriter ?? WriteManifestAtomicallyAsync;
-    }
+	public ModRepairBatchService(StoragePaths paths, IModSameKeyReconstructionService reconstruction, IPatchFileNameParser fileNameParser, Action? initializationSeam = null, Action<string>? commitSeam = null, Func<string, string, Task>? manifestWriter = null, IModInformationCenter? informationCenter = null, IModInformationReader? informationReader = null)
+	{
+		this.paths = paths ?? throw new ArgumentNullException(nameof(paths));
+		this.reconstruction = reconstruction ?? throw new ArgumentNullException(nameof(reconstruction));
+		this.fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
+		this.initializationSeam = initializationSeam;
+		this.commitSeam = commitSeam;
+		this.manifestWriter = manifestWriter ?? WriteManifestAtomicallyAsync;
+		this.informationCenter = informationCenter;
+		this.informationReader = informationReader;
+	}
 
     [Obsolete("Batch repair no longer requires advanced Unit analysis. Use the overload without IAdvancedModAnalysisService.")]
-    public ModRepairBatchService(StoragePaths paths, IModSameKeyReconstructionService reconstruction, IAdvancedModAnalysisService _, IPatchFileNameParser fileNameParser, Action? initializationSeam = null, Action<string>? commitSeam = null, Func<string, string, Task>? manifestWriter = null)
-        : this(paths, reconstruction, fileNameParser, initializationSeam, commitSeam, manifestWriter)
+	public ModRepairBatchService(StoragePaths paths, IModSameKeyReconstructionService reconstruction, IAdvancedModAnalysisService _, IPatchFileNameParser fileNameParser, Action? initializationSeam = null, Action<string>? commitSeam = null, Func<string, string, Task>? manifestWriter = null, IModInformationCenter? informationCenter = null, IModInformationReader? informationReader = null)
+		: this(paths, reconstruction, fileNameParser, initializationSeam, commitSeam, manifestWriter, informationCenter, informationReader)
     {
     }
 
@@ -122,18 +126,26 @@ public sealed class ModRepairBatchService : IModRepairBatchService
                 try
                 {
                     Report(childOperationId, batchOperationId, OperationKind.RepairBatchItem, OperationStage.Processing, OperationState.Progress, 0, 1, "开始提交", "CommitStarted");
-                    ReplacePatchFiles(sourceDirectory, candidate.OutputDirectory);
-                    Report(childOperationId, batchOperationId, OperationKind.RepairBatchItem, OperationStage.Processing, OperationState.Progress, 1, 1, "提交完成", "Committed");
+					ReplacePatchFiles(sourceDirectory, candidate.OutputDirectory);
+					// The filesystem commit is authoritative.  Invalidate derived Mod facts
+					// immediately afterwards so a subsequent reader cannot reuse the old
+					// Patch/Unit/graph snapshot.  Use a non-cancelable token: cancellation
+					// must never leave a successfully committed Mod paired with stale facts.
+					await InvalidateCommittedNodeAsync(source.Id).ConfigureAwait(false);
+					Report(childOperationId, batchOperationId, OperationKind.RepairBatchItem, OperationStage.Processing, OperationState.Progress, 1, 1, "提交完成", "Committed");
                     FinishMod(childOperationId, new(source.Id, source.Metadata.Name, ModRepairBatchModStatus.Repaired, "候选已通过内部检查并完成提交。", candidate.OutputDirectory, backupDirectory, candidate.ReportJsonPath, "Finalize", true, true), OperationStage.Completed, OperationState.Completed, "已完成修复", "Repaired");
                 }
-                catch (Exception exception)
-                {
+				catch (Exception exception)
+				{
                     var restoreAttempted = true;
                     var restoreCompleted = false;
-                    try
-                    {
-                        RestorePatchFiles(sourceDirectory, backupDirectory);
-                        restoreCompleted = true;
+					try
+					{
+						RestorePatchFiles(sourceDirectory, backupDirectory);
+						// A reader may have observed the partially replaced directory before
+						// the commit failed.  Drop that result after restoring the backup too.
+						await InvalidateCommittedNodeAsync(source.Id).ConfigureAwait(false);
+						restoreCompleted = true;
                     }
                     catch (Exception restoreException)
                     {
@@ -198,18 +210,38 @@ public sealed class ModRepairBatchService : IModRepairBatchService
         }
     }
 
-    private static async Task WriteManifestAtomicallyAsync(string manifestPath, string json)
+	private static async Task WriteManifestAtomicallyAsync(string manifestPath, string json)
     {
         var temporaryPath = manifestPath + ".tmp";
         await using (var stream = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough | FileOptions.Asynchronous))
         await using (var writer = new StreamWriter(stream))
-        {
-            await writer.WriteAsync(json).ConfigureAwait(false);
-            await writer.FlushAsync().ConfigureAwait(false);
-            await stream.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-        File.Move(temporaryPath, manifestPath, overwrite: true);
-    }
+		{
+			await writer.WriteAsync(json).ConfigureAwait(false);
+			await writer.FlushAsync().ConfigureAwait(false);
+			await stream.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+		}
+		File.Move(temporaryPath, manifestPath, overwrite: true);
+	}
+
+	private async ValueTask InvalidateCommittedNodeAsync(ModNodeId nodeId)
+	{
+		try
+		{
+			// The source Patch directory has already crossed its commit boundary.  Clear
+			// both transient decoded payloads and persistent derived facts before any
+			// subsequent operation can observe the replacement.
+			informationReader?.InvalidateNode(nodeId);
+			if (informationCenter is not null)
+				await informationCenter.InvalidateNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(false);
+		}
+		catch (Exception exception)
+		{
+			// Cache invalidation is best effort after the physical commit.  Do not
+			// roll back a valid repair because a derived-data index is unavailable;
+			// log loudly so the next synchronization can recover it.
+			System.Diagnostics.Debug.WriteLine($"[ModRepairBatch] cache invalidation failed for {nodeId}: {exception}");
+		}
+	}
 
     private sealed class SynchronousProgress<T>(Action<T> callback) : IProgress<T>
     {

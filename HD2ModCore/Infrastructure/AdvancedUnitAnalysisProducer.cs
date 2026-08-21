@@ -17,6 +17,15 @@ public sealed class AdvancedUnitAnalysisProducer : IAdvancedUnitAnalysisProducer
 		_analysisProvider = analysisProvider ?? throw new ArgumentNullException(nameof(analysisProvider));
 	}
 
+	// 作用：高级分析通过统一读取器取得 Patch、Payload 与 Unit，避免自行创建底层 reader。
+	// Purpose: Routes full Patch/Unit analysis through the unified reader instead of creating low-level readers.
+	public AdvancedUnitAnalysisProducer(IModInformationReader informationReader)
+		: this(new ModInformationPatchGroupAnalysisProvider(
+			informationReader,
+			depth: PatchAnalysisDepth.Full))
+	{
+	}
+
 	public async ValueTask<AdvancedUnitAnalysisFacts> ProduceAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(node);

@@ -19,7 +19,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
     private readonly IPatchFileNameParser fileNameParser;
     private readonly IAssetArchiveIndexService assetIndex;
     private readonly IArchiveHashesProvider archiveHashes;
-    private readonly IPatchWorkspaceReader workspaceReader;
+    private readonly IModInformationReader informationReader;
     private readonly IPatchWorkspaceWriter workspaceWriter;
     private readonly IPatchOperationWorkspaceFactory operationWorkspaceFactory;
     private readonly ICanonicalHiddenUnitOutputCache hiddenUnitCache;
@@ -33,12 +33,13 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         IPatchWorkspaceWriter? workspaceWriter = null,
         IPatchOperationWorkspaceFactory? operationWorkspaceFactory = null,
         ICanonicalHiddenUnitOutputCache? hiddenUnitCache = null,
-        CanonicalHiddenUnitBuilder? hiddenUnitBuilder = null)
+        CanonicalHiddenUnitBuilder? hiddenUnitBuilder = null,
+        IModInformationReader? informationReader = null)
     {
         this.fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
         this.assetIndex = assetIndex ?? throw new ArgumentNullException(nameof(assetIndex));
         this.archiveHashes = archiveHashes ?? throw new ArgumentNullException(nameof(archiveHashes));
-        this.workspaceReader = workspaceReader ?? new PatchWorkspaceReader();
+        this.informationReader = informationReader ?? new ModInformationReader(workspaceReader);
         this.workspaceWriter = workspaceWriter ?? new PatchWorkspaceWriter();
         this.operationWorkspaceFactory = operationWorkspaceFactory ?? new PatchOperationWorkspaceFactory();
         this.hiddenUnitCache = hiddenUnitCache ?? new CanonicalHiddenUnitOutputCache();
@@ -61,7 +62,12 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             current = status.IsCurrent;
             if (!current) issues.Add(Error("GameDataIndexNotCurrent", "Game Data 资产索引不可用或已过期。", source.Id));
         }
-        var plan = issues.Count == 0 ? await PlanAsync(source, modsRootDirectory, patch!, gameDataDirectory, cancellationToken, progress, operationId).ConfigureAwait(false) : null;
+        SameKeyReconstructionPlan? plan = null;
+        if (issues.Count == 0)
+        {
+            using var sourceReadScope = BeginSourceReadScope(source, patch!, operationId);
+            plan = await PlanAsync(source, modsRootDirectory, patch!, gameDataDirectory, cancellationToken, progress, operationId, sourceReadScope.Request).ConfigureAwait(false);
+        }
         if (plan is not null) issues.AddRange(plan.Issues);
         return new ModSameKeyReconstructionState(source.Id, patch, plan, current,
             plan?.Units.Count(unit => unit.IsGeometryEligible) ?? 0,
@@ -85,10 +91,12 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         await hiddenUnitCache.InitializeAsync(status.CurrentSourceFingerprint, status.IsCurrent, cancellationToken).ConfigureAwait(false);
         if (!status.IsCurrent) return Failure([Error("GameDataIndexNotCurrent", "Game Data 资产索引不可用或已过期。", source.Id)]);
 
+        using var sourceReadScope = BeginSourceReadScope(source, patch, operationId);
+        var sourceReadRequest = sourceReadScope.Request;
         Report(progress, operationId, "Plan", "正在生成同 ID Canonical 重建计划", 0, 1);
         var planStopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var index = await workspaceReader.ReadIndexAsync(patch, cancellationToken).ConfigureAwait(false);
-        var plan = await PlanAsync(source, modsRootDirectory, patch, gameDataDirectory, cancellationToken, progress, operationId, index).ConfigureAwait(false);
+        var index = await ReadSourcePatchIndexAsync(sourceReadRequest, cancellationToken).ConfigureAwait(false);
+        var plan = await PlanAsync(source, modsRootDirectory, patch, gameDataDirectory, cancellationToken, progress, operationId, sourceReadRequest, index).ConfigureAwait(false);
         Report(progress, operationId, "Plan", $"Canonical 重建计划完成，用时={planStopwatch.ElapsedMilliseconds}ms", 1, 1);
         var issues = plan.Issues.ToList();
 		if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
@@ -110,7 +118,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 			{
 				return await GenerateGroupedCandidateAsync(
 					source, patch, index, plan, resolver, targetReader, avatarTransforms, output, artifacts,
-					cancellationToken, progress, operationId, useSharedHiddenUnitTemplate).ConfigureAwait(false);
+					cancellationToken, progress, operationId, sourceReadRequest, useSharedHiddenUnitTemplate).ConfigureAwait(false);
 			}
 			catch (Exception exception) when (exception is not OperationCanceledException)
 			{
@@ -186,7 +194,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 }
                 var sourceFingerprint = await sourcePayloadFingerprints.CreateAsync(sourceEntry, sourceEntries, token).ConfigureAwait(false);
                 var sourceTemplate = await parsedSources.GetOrAdd(sourceFingerprint, _ => new Lazy<Task<PatchUnitMesh>>(
-                    () => new PatchUnitMeshReader().ReadCanonicalSourceAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, token).AsTask(),
+                    () => ReadCanonicalSourceUnitAsync(sourceEntry, sourceEntries, sourceReadRequest, token).AsTask(),
                     LazyThreadSafetyMode.ExecutionAndPublication)).Value.ConfigureAwait(false);
                 sourcePayloadGroups.TryAdd(sourceFingerprint, 0);
                 var sourceUnit = RebindSourceUnit(sourceTemplate, sourceEntry);
@@ -326,6 +334,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         CancellationToken cancellationToken,
         IProgress<OperationProgressEvent>? progress,
         Guid? operationId,
+        ModInformationReadRequest sourceReadRequest,
         bool useSharedHiddenUnitTemplate)
     {
         var issues = plan.Issues.ToList();
@@ -380,7 +389,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             var sourceEntry = sourceEntries.Single(entry => entry.AssetKey == new AdaptationAssetKey(representative.UnitAssetKey.TypeId, representative.UnitAssetKey.FileId));
             var archiveId = representative.TargetArchive!.ArchiveId;
             var sourceTemplate = await parsedSources.GetOrAdd(recipe.Key, _ => new Lazy<Task<PatchUnitMesh>>(
-                () => new PatchUnitMeshReader().ReadCanonicalSourceAsync(sourceEntry, sourceEntries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).AsTask(),
+                () => ReadCanonicalSourceUnitAsync(sourceEntry, sourceEntries, sourceReadRequest, cancellationToken).AsTask(),
                 LazyThreadSafetyMode.ExecutionAndPublication)).Value.ConfigureAwait(false);
             var sourceUnit = RebindSourceUnit(sourceTemplate, sourceEntry);
             var hiddenSource = UnitSourceVisibilityClassifier.Classify(sourceUnit);
@@ -487,6 +496,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         CancellationToken cancellationToken,
         IProgress<OperationProgressEvent>? progress,
         Guid? operationId,
+        ModInformationReadRequest sourceReadRequest,
         PatchWorkspaceIndex? knownIndex = null)
     {
         var nodeId = source.Id;
@@ -496,7 +506,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         {
             // Cache entries may be unavailable for old cache versions; TOC metadata is
             // still cheap to read and does not decode Unit payloads.
-            index = await workspaceReader.ReadIndexAsync(patch, cancellationToken).ConfigureAwait(false);
+            index = await ReadSourcePatchIndexAsync(sourceReadRequest, cancellationToken).ConfigureAwait(false);
             entries = index.Entries;
         }
         var units = entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).ToArray();
@@ -738,6 +748,63 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         => Directory.Exists(Path.Combine(root, node.RelativePath))
             ? Directory.EnumerateFiles(Path.Combine(root, node.RelativePath), "*", SearchOption.TopDirectoryOnly).Where(path => fileNameParser.TryParse(Path.GetFileName(path), out var info) && info?.SidecarKind == PatchSidecarKind.Base).OrderBy(path => path).ToArray()
             : Array.Empty<string>();
+
+    private SourceReadScope BeginSourceReadScope(ModNode source, string patch, Guid? operationId)
+    {
+        var readerOperationId = operationId.GetValueOrDefault(Guid.NewGuid());
+        var context = ModInformationRequestContext.Create(
+            ModInformationCacheScope.Operation,
+            operationId: readerOperationId,
+            sessionId: readerOperationId,
+            operationName: "SameKeyReconstruction");
+        return new SourceReadScope(
+            informationReader,
+            readerOperationId,
+            new ModInformationReadRequest(
+                patch,
+                context,
+                ContentView: ModInformationContentView.Source,
+                NodeId: source.Id));
+    }
+
+    private async ValueTask<PatchWorkspaceIndex> ReadSourcePatchIndexAsync(
+        ModInformationReadRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await informationReader.ReadPatchIndexAsync(request, cancellationToken).ConfigureAwait(false);
+        if (result.Data is not null) return result.Data;
+        var message = result.State.Diagnostics.Count == 0
+            ? "无法读取来源 Patch TOC。"
+            : string.Join("; ", result.State.Diagnostics.Select(issue => issue.Message));
+        throw new InvalidDataException(message);
+    }
+
+    private async ValueTask<PatchUnitMesh> ReadCanonicalSourceUnitAsync(
+        HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry,
+        IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> entries,
+        ModInformationReadRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await informationReader.ReadUnitAsync(
+            entry,
+            entries,
+            PatchUnitDependencyPolicy.RequirePatchLocalComposite,
+            request,
+            canonicalSource: true,
+            cancellationToken).ConfigureAwait(false);
+        if (result.Data is not null) return result.Data;
+        var message = result.State.Diagnostics.Count == 0
+            ? $"无法读取来源 Unit 0x{entry.AssetKey.FileId:x16}。"
+            : string.Join("; ", result.State.Diagnostics.Select(issue => issue.Message));
+        throw new InvalidDataException(message);
+    }
+
+    private sealed class SourceReadScope(IModInformationReader reader, Guid operationId, ModInformationReadRequest request) : IDisposable
+    {
+        public ModInformationReadRequest Request { get; } = request;
+
+        public void Dispose() => reader.ClearOperation(operationId);
+    }
 
     private static HD2ModCore.Domain.PatchTocEntry ToCoreEntry(HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry) => new(new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), entry.SourceFilePath, entry.SourceFileName, entry.TocDataOffset, entry.StreamOffset, entry.GpuResourceOffset, entry.Unknown1, entry.Unknown2, entry.TocDataSize, entry.StreamSize, entry.GpuResourceSize, entry.Unknown3, entry.Unknown4, entry.EntryIndex);
     private static CoreIssue Error(string code, string message, ModNodeId nodeId) => new(CoreIssueSeverity.Error, code, message, NodeId: nodeId);

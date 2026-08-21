@@ -101,7 +101,7 @@ namespace HD2ModManager.ViewModels
 					DirectSourceUnitReuse: directReuse);
                 // Canonical 是当前唯一的跨护甲写出路线；计划只提供逻辑部件映射，
                 // Unit 内部的 LOD family 由替换器在读取真实 Unit 后解析。
-                var result = await Task.Run(() => CoreServices.CreateCanonicalCrossArmorOrchestrator()
+				var result = await Task.Run(() => CoreServices.CreateCanonicalCrossArmorOrchestrator(_plan.InformationReader)
                     .ExecuteAsync(request, task.CancellationToken).AsTask(), task.CancellationToken);
                 var presentation = CrossArmorCandidateResultPresenter.Map(result);
                 if (presentation.IsFailure)

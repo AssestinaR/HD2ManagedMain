@@ -20,6 +20,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	private readonly IModInformationCache? _informationCache;
 	private readonly IModDataIndex? _modDataIndex;
 	private readonly IReferenceGraphIndexWriter? _referenceGraphIndexWriter;
+	private readonly IAsyncDisposable? _ownedInformationReader;
 	private readonly ConcurrentDictionary<string, Lazy<Task<ModInformationResult<PatchFileIndex>>>> _fileTasks = new(StringComparer.Ordinal);
 	private readonly ConcurrentDictionary<string, Lazy<Task<ModInformationResult<ModContentFacts>>>> _assetTasks = new(StringComparer.Ordinal);
 	private readonly ConcurrentDictionary<string, Lazy<Task<ModInformationResult<ReferenceGraphFacts>>>> _referenceTasks = new(StringComparer.Ordinal);
@@ -34,7 +35,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	public event EventHandler<ModInformationDiagnostic>? DiagnosticRecorded;
 	public event EventHandler<ModInformationProductionStarted>? ProductionStarted;
 
-	public ModInformationCenter(IModFileFactsProducer fileFactsProducer, IAssetInventoryProducer assetInventoryProducer, IModFileFactsCache? fileFactsCache = null, IReferenceGraphProducer? referenceGraphProducer = null, IMaintenanceAnalysisProducer? maintenanceProducer = null, IUnitVersionInformationProducer? unitVersionProducer = null, IModInformationCache? informationCache = null, IAdvancedUnitAnalysisProducer? advancedUnitAnalysisProducer = null, IModThumbnailProducer? thumbnailProducer = null, IModDataIndex? modDataIndex = null, IReferenceGraphIndexWriter? referenceGraphIndexWriter = null)
+	public ModInformationCenter(IModFileFactsProducer fileFactsProducer, IAssetInventoryProducer assetInventoryProducer, IModFileFactsCache? fileFactsCache = null, IReferenceGraphProducer? referenceGraphProducer = null, IMaintenanceAnalysisProducer? maintenanceProducer = null, IUnitVersionInformationProducer? unitVersionProducer = null, IModInformationCache? informationCache = null, IAdvancedUnitAnalysisProducer? advancedUnitAnalysisProducer = null, IModThumbnailProducer? thumbnailProducer = null, IModDataIndex? modDataIndex = null, IReferenceGraphIndexWriter? referenceGraphIndexWriter = null, IAsyncDisposable? ownedInformationReader = null)
 	{
 		_fileFactsProducer = fileFactsProducer ?? throw new ArgumentNullException(nameof(fileFactsProducer));
 		_assetInventoryProducer = assetInventoryProducer ?? throw new ArgumentNullException(nameof(assetInventoryProducer));
@@ -47,6 +48,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		_thumbnailProducer = thumbnailProducer;
 		_modDataIndex = modDataIndex;
 		_referenceGraphIndexWriter = referenceGraphIndexWriter;
+		_ownedInformationReader = ownedInformationReader;
 	}
 
 	public ValueTask<ModInformationResult<PatchFileIndex>> RequestFileFactsAsync(
@@ -59,7 +61,9 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		ArgumentNullException.ThrowIfNull(request);
 		if (request.Kind != ModInformationKind.FileFacts) throw new ArgumentException("Request kind must be FileFacts.", nameof(request));
 		var nodeStates = snapshot.Nodes.Keys.ToDictionary(nodeId => nodeId, GetNodeCancellation);
-		var key = $"{request.Kind}|{request.Generation ?? "auto"}|{string.Join(',', snapshot.Nodes.Keys.OrderBy(id => id.Value))}";
+		// Keep node IDs in a stable compact form so InvalidateNodeAsync can remove
+		// snapshot-wide in-flight requests that include a changed node.
+		var key = $"{request.Kind}|{request.Generation ?? "auto"}|{string.Join(',', snapshot.Nodes.Keys.OrderBy(id => id.Value).Select(id => id.Value.ToString("N")))}";
 		var entry = new Lazy<Task<ModInformationResult<PatchFileIndex>>>(
 			() => ProduceFileFactsAndRemoveAsync(key, snapshot, modsRootDirectory, request, nodeStates),
 			LazyThreadSafetyMode.ExecutionAndPublication);
@@ -150,6 +154,12 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		}
 		foreach (var pair in _assetTasks.Where(pair => pair.Key.StartsWith($"{nodeId}|", StringComparison.Ordinal)))
 			_assetTasks.TryRemove(pair.Key, out _);
+		// FileFacts is keyed by the complete snapshot rather than one node.  Drop
+		// any in-flight snapshot containing the changed node so a subsequent read
+		// cannot coalesce onto a task that started before the commit.
+		var nodeToken = nodeId.Value.ToString("N");
+		foreach (var pair in _fileTasks.Where(pair => pair.Key.Contains(nodeToken, StringComparison.OrdinalIgnoreCase)))
+			_fileTasks.TryRemove(pair.Key, out _);
 		foreach (var pair in _referenceTasks.Where(pair => pair.Key.StartsWith($"{nodeId}|", StringComparison.Ordinal)))
 			_referenceTasks.TryRemove(pair.Key, out _);
 		foreach (var pair in _maintenanceTasks.Where(pair => pair.Key.StartsWith($"{nodeId}|", StringComparison.Ordinal)))
@@ -160,6 +170,12 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			_advancedUnitAnalysisTasks.TryRemove(pair.Key, out _);
 		foreach (var pair in _thumbnailTasks.Where(pair => pair.Key.StartsWith($"{nodeId}|", StringComparison.Ordinal)))
 			_thumbnailTasks.TryRemove(pair.Key, out _);
+		// FileFacts is cached as a snapshot-wide product, so a node mutation must
+		// remove every persisted snapshot that contains this node as well.  Without
+		// this call a repair can replace Patch files while RequestFileFactsAsync
+		// continues returning the old snapshot under the same generation.
+		if (_fileFactsCache is not null)
+			await _fileFactsCache.DeleteNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
 		if (_informationCache is not null)
 			await _informationCache.DeleteNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
 		if (_modDataIndex is not null)
@@ -320,7 +336,8 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			try
 			{
 				var cached = await _fileFactsCache.TryLoadAsync(generation, cancellationToken).ConfigureAwait(false);
-				if (cached is not null) return new ModInformationResult<PatchFileIndex>(cached, ModInformationStatus.Cached, ModInformationKind.FileFacts, generation, cached.Issues, false, false, true);
+				if (cached is not null && snapshot.Nodes.Keys.All(nodeId => IsNodeRequestCurrent(nodeId, nodeStates[nodeId])))
+					return new ModInformationResult<PatchFileIndex>(cached, ModInformationStatus.Cached, ModInformationKind.FileFacts, generation, cached.Issues, false, false, true);
 			}
 			catch (Exception exception)
 			{
@@ -332,7 +349,21 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		try
 		{
 			var data = await _fileFactsProducer.ProduceAsync(snapshot, root, cancellationToken).ConfigureAwait(false);
-			if (_fileFactsCache is not null && snapshot.Nodes.Keys.All(nodeId => IsNodeRequestCurrent(nodeId, nodeStates[nodeId])))
+			var requestStillCurrent = snapshot.Nodes.Keys.All(nodeId => IsNodeRequestCurrent(nodeId, nodeStates[nodeId]));
+			if (!requestStillCurrent)
+			{
+				// A snapshot-wide read may finish after one of its nodes was committed.
+				// Never return that pre-commit result to a caller or persist it again.
+				return new ModInformationResult<PatchFileIndex>(
+					null,
+					ModInformationStatus.Failed,
+					ModInformationKind.FileFacts,
+					generation,
+					[new CoreIssue(CoreIssueSeverity.Warning, "FileFactsInvalidated", "FileFacts production completed after a Mod content commit and was discarded.", root)],
+					false,
+					true);
+			}
+			if (_fileFactsCache is not null && requestStillCurrent)
 			{
 				try { await _fileFactsCache.SaveAsync(generation, data, cancellationToken).ConfigureAwait(false); }
 				catch (Exception exception)
@@ -553,7 +584,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		return owner ? result : result with { WasCoalesced = true };
 	}
 
-	public ValueTask DisposeAsync()
+	public async ValueTask DisposeAsync()
 	{
 		_shutdown.Cancel();
 		_shutdown.Dispose();
@@ -571,7 +602,8 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			cancellation.Dispose();
 		}
 		_nodeCancellations.Clear();
-		return ValueTask.CompletedTask;
+		if (_ownedInformationReader is not null)
+			await _ownedInformationReader.DisposeAsync().ConfigureAwait(false);
 	}
 
 	private async Task<ModInformationResult<ModThumbnailFacts>> ProduceThumbnailAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)

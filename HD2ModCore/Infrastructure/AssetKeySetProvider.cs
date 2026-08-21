@@ -11,6 +11,8 @@ public sealed class AssetKeySetProvider : IAssetKeySetProvider
 	private readonly IPatchFileNameParser _parser;
 	private readonly IPatchTocScanner _scanner;
 	private readonly IPatchGroupAnalysisProvider? _analysisProvider;
+	private readonly IModInformationReader? _informationReader;
+	private readonly ModInformationRequestContext? _readerContext;
 	private readonly Dictionary<string, HashSet<AssetKey>> _cache = new(StringComparer.OrdinalIgnoreCase);
 
 	public AssetKeySetProvider(IPatchFileNameParser parser, IPatchTocScanner scanner)
@@ -23,6 +25,19 @@ public sealed class AssetKeySetProvider : IAssetKeySetProvider
 	{
 		_analysisProvider = analysisProvider ?? throw new ArgumentNullException(nameof(analysisProvider));
 		_parser = null!;
+		_scanner = null!;
+	}
+
+	// 作用：冲突检测通过统一读取器取得 TOC 资产目录；旧扫描器/provider 重载仍保留给兼容和测试。
+	// Purpose: Routes conflict-key discovery through the unified reader while retaining legacy overloads.
+	public AssetKeySetProvider(IModInformationReader informationReader)
+	{
+		_informationReader = informationReader ?? throw new ArgumentNullException(nameof(informationReader));
+		_readerContext = ModInformationRequestContext.Create(
+			ModInformationCacheScope.Session,
+			operationName: "AssetKeySet",
+			memoryBudgetBytes: 32L * 1024L * 1024L);
+		_parser = new PatchFileNameParser();
 		_scanner = null!;
 	}
 
@@ -49,6 +64,32 @@ public sealed class AssetKeySetProvider : IAssetKeySetProvider
 		}
 
 		var result = new HashSet<AssetKey>();
+		if (!Directory.Exists(nodeDir))
+		{
+			Cache(key, result);
+			return result;
+		}
+
+		if (_informationReader is not null)
+		{
+			foreach (var filePath in Directory.EnumerateFiles(nodeDir, "*", SearchOption.TopDirectoryOnly)
+				.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				if (!TryIsBasePatch(filePath)) continue;
+				var index = await _informationReader.ReadPatchIndexAsync(
+					new ModInformationReadRequest(filePath, _readerContext, NodeId: node.Id),
+					cancellationToken).ConfigureAwait(false);
+				if (index.Data is null) continue;
+				foreach (var entry in index.Data.Entries)
+				{
+					result.Add(new AssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId));
+				}
+			}
+			Cache(key, result);
+			return result;
+		}
+
 		if (_analysisProvider is not null)
 		{
 			var analyses = await _analysisProvider.AnalyzeNodeAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);
@@ -56,12 +97,6 @@ public sealed class AssetKeySetProvider : IAssetKeySetProvider
 			{
 				result.Add(new AssetKey(asset.AssetKey.TypeId, asset.AssetKey.FileId));
 			}
-			Cache(key, result);
-			return result;
-		}
-
-		if (!Directory.Exists(nodeDir))
-		{
 			Cache(key, result);
 			return result;
 		}
@@ -86,6 +121,12 @@ public sealed class AssetKeySetProvider : IAssetKeySetProvider
 		Cache(key, result);
 		return result;
 	}
+
+	private bool TryIsBasePatch(string filePath)
+		=> _parser is not null
+			&& _parser.TryParse(Path.GetFileName(filePath), out var info)
+			&& info is not null
+			&& info.SidecarKind == PatchSidecarKind.Base;
 
 	private void Cache(string key, HashSet<AssetKey> value)
 	{

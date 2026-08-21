@@ -16,8 +16,13 @@ namespace HD2ModManager.Services;
 public sealed class DecorationPayloadCompiler
 {
     private readonly IModFileResolver fileResolver;
+    private readonly IModInformationReader informationReader;
 
-    public DecorationPayloadCompiler(IModFileResolver fileResolver) => this.fileResolver = fileResolver;
+    public DecorationPayloadCompiler(IModFileResolver fileResolver, IModInformationReader informationReader)
+    {
+        this.fileResolver = fileResolver ?? throw new ArgumentNullException(nameof(fileResolver));
+        this.informationReader = informationReader ?? throw new ArgumentNullException(nameof(informationReader));
+    }
 
     public async Task<IReadOnlyList<DecorationPayloadFile>> CompileAsync(
         ModNode source, string modsRootDirectory, IReadOnlyList<DecorationSourceUnit> selected,
@@ -26,120 +31,152 @@ public sealed class DecorationPayloadCompiler
         CancellationToken cancellationToken = default,
         IProgress<DecorationOperationProgress>? progress = null)
     {
-        Directory.CreateDirectory(outputDirectory);
-        foreach (var staleFile in new[] { "stocky.bin", "slim.bin" })
+        var context = ModInformationRequestContext.Create(
+            ModInformationCacheScope.Operation,
+            operationName: "LegacyDecorationPayloadCompiler");
+        try
         {
-            var stalePath = Path.Combine(outputDirectory, staleFile);
-            if (File.Exists(stalePath)) File.Delete(stalePath);
-        }
-        var requested = selected
-            .GroupBy(item => (item.TypeId, item.FileId))
-            .ToDictionary(group => group.Key, group => group.ToArray());
-        var resolvedSelections = new HashSet<(ulong TypeId, ulong FileId, int MeshInfoIndex, bool IsCulling)>();
-        var fragments = new List<(string Variant, string Layer, DecorationMeshFragment Fragment)>();
-        var reader = new PatchUnitMeshReader();
-        var compiledVisibleSources = new HashSet<DecorationSourcePayloadKey>();
-        var compiledCullingSources = new HashSet<DecorationSourcePayloadKey>();
-        var patchPaths = await fileResolver.ResolvePatchFilesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false);
-        // The selection table is already prepared by the planner. Do not pre-scan every
-        // Patch merely to compute an exact progress total: that doubles archive work.
-        var selectedEntryCount = Math.Max(1, requested.Count);
-        var completedEntries = 0;
-        progress?.Report(new DecorationOperationProgress("正在读取来源 Unit", 0, selectedEntryCount));
-
-        foreach (var patchPath in patchPaths.Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            var fullPatchPath = Path.GetFullPath(patchPath);
-            var entries = preparedEntries is not null && preparedEntries.TryGetValue(fullPatchPath, out var cachedEntries)
-                ? cachedEntries
-                : await new PatchTocScanner().ScanEntriesAsync(fullPatchPath, cancellationToken).ConfigureAwait(false);
-            foreach (var entry in entries.Where(entry => requested.ContainsKey((entry.AssetKey.TypeId, entry.AssetKey.FileId))))
+            Directory.CreateDirectory(outputDirectory);
+            foreach (var staleFile in new[] { "stocky.bin", "slim.bin" })
             {
-                progress?.Report(new DecorationOperationProgress("正在读取来源 Unit", completedEntries, selectedEntryCount));
-                var selections = requested[(entry.AssetKey.TypeId, entry.AssetKey.FileId)];
-                var visibleSelections = selections.Where(selection => !selection.IsCulling).ToArray();
-                var unit = await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken).ConfigureAwait(false);
-                var payloadIdentity = CreatePayloadIdentity(unit.Payload, unit.CompositePayload);
-                var shouldCompileVisible = false;
-                if (visibleSelections.Length != 0)
-                {
-                    var representative = visibleSelections[0];
-                    shouldCompileVisible = compiledVisibleSources.Add(new DecorationSourcePayloadKey(
-                        payloadIdentity,
-                        ToVariant(representative.BodyVariant),
-                        ToLayer(representative.Layer),
-                        MeshInfoIndex: -1));
-                }
-                var cullingSelections = selections
-                    .Where(selection => selection.IsCulling)
-                    .Where(selection => compiledCullingSources.Add(new DecorationSourcePayloadKey(
-                        payloadIdentity,
-                        ToVariant(selection.BodyVariant),
-                        ToLayer(selection.Layer),
-                        selection.MeshInfoIndex)))
-                    .ToArray();
-
-                // Different AssetKeys in a fast-reuse patch may be aliases of one complete
-                // Unit payload. Compile that exact source once per body/layer role; otherwise
-                // selecting aliases would append the same decoration geometry repeatedly.
-                if (!shouldCompileVisible && cullingSelections.Length == 0)
-                {
-                    foreach (var selection in selections)
-                        resolvedSelections.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, selection.IsCulling));
-                    continue;
-                }
-
-                if (shouldCompileVisible)
-                {
-                    // The planning table exposes one representative mesh per user-facing Unit.
-                    // Preserve every renderable LOD rather than treating that representative as the only mesh.
-                    var representative = visibleSelections[0];
-                    var lods = unit.Model.RawMeshData
-                        .Select(raw => (Raw: raw, Mesh: unit.Model.Meshes.SingleOrDefault(mesh => mesh.Index == raw.MeshInfoIndex)))
-                        .Where(item => item.Mesh is not null && IsVisibleLod(item.Raw, item.Mesh))
-                        .OrderBy(item => item.Raw.LodIndex)
-                        .ToArray();
-                    if (lods.Length == 0) throw new InvalidDataException("Selected decoration Unit has no visible LOD geometry.");
-                    foreach (var lod in lods)
-                    {
-                        fragments.Add((ToVariant(representative.BodyVariant), ToLayer(representative.Layer), CreateFragment(unit, lod.Mesh!, lod.Raw)));
-                    }
-                }
-
-                foreach (var selection in visibleSelections)
-                    resolvedSelections.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, false));
-
-                foreach (var selection in cullingSelections)
-                {
-                    var mesh = unit.Model.Meshes.SingleOrDefault(item => item.Index == selection.MeshInfoIndex)
-                        ?? throw new InvalidDataException("Selected decoration culling mesh is missing.");
-                    var rawMesh = unit.Model.RawMeshData.SingleOrDefault(item => item.MeshInfoIndex == selection.MeshInfoIndex)
-                        ?? throw new InvalidDataException("Selected decoration culling mesh has no geometry.");
-                    // Catalog classification can identify a culling body through a global bone name
-                    // unavailable in this local re-read. Its native LOD marker is an equivalent fallback.
-                    if (!mesh.SemanticInfo.IsCullingBody && rawMesh.LodIndex >= 0)
-                        throw new InvalidDataException("Selected decoration mesh is not a culling mesh.");
-                    fragments.Add((ToVariant(selection.BodyVariant), ToLayer(selection.Layer), CreateFragment(unit, mesh, rawMesh)));
-                    resolvedSelections.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, true));
-                }
-                completedEntries++;
-                progress?.Report(new DecorationOperationProgress("正在读取来源 Unit", completedEntries, selectedEntryCount));
+                var stalePath = Path.Combine(outputDirectory, staleFile);
+                if (File.Exists(stalePath)) File.Delete(stalePath);
             }
-        }
-        var requestedSelections = selected.Select(selection => (selection.TypeId, selection.FileId, selection.MeshInfoIndex, selection.IsCulling)).ToHashSet();
-        if (!requestedSelections.SetEquals(resolvedSelections)) throw new InvalidDataException("Some selected decoration Units could not be read.");
+            var requested = selected
+                .GroupBy(item => (item.TypeId, item.FileId))
+                .ToDictionary(group => group.Key, group => group.ToArray());
+            var resolvedSelections = new HashSet<(ulong TypeId, ulong FileId, int MeshInfoIndex, bool IsCulling)>();
+            var fragments = new List<(string Variant, string Layer, DecorationMeshFragment Fragment)>();
+            var compiledVisibleSources = new HashSet<DecorationSourcePayloadKey>();
+            var compiledCullingSources = new HashSet<DecorationSourcePayloadKey>();
+            var patchPaths = await fileResolver.ResolvePatchFilesAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+            // The selection table is already prepared by the planner. Do not pre-scan every
+            // Patch merely to compute an exact progress total: that doubles archive work.
+            var selectedEntryCount = Math.Max(1, requested.Count);
+            var completedEntries = 0;
+            progress?.Report(new DecorationOperationProgress("正在读取来源 Unit", 0, selectedEntryCount));
 
-        var documents = BuildPayloads(fragments, plan);
-        progress?.Report(new DecorationOperationProgress("正在写出装饰模型", 0, documents.Count));
-        var output = new List<DecorationPayloadFile>();
-        foreach (var document in documents)
-        {
-            var fileName = document.BodyVariant == "Stocky" ? "stocky.bin" : "slim.bin";
-            await WriteAsync(Path.Combine(outputDirectory, fileName), document, cancellationToken).ConfigureAwait(false);
-            output.Add(new DecorationPayloadFile { BodyVariant = document.BodyVariant, File = fileName });
-            progress?.Report(new DecorationOperationProgress("正在写出装饰模型", output.Count, documents.Count));
+            foreach (var patchPath in patchPaths.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                var fullPatchPath = Path.GetFullPath(patchPath);
+                var request = new ModInformationReadRequest(
+                    fullPatchPath,
+                    context,
+                    ContentView: ModInformationContentView.Effective,
+                    NodeId: source.Id);
+                var entries = preparedEntries is not null && preparedEntries.TryGetValue(fullPatchPath, out var cachedEntries)
+                    ? cachedEntries
+                    : await ReadEntriesAsync(request, cancellationToken).ConfigureAwait(false);
+                foreach (var entry in entries.Where(entry => requested.ContainsKey((entry.AssetKey.TypeId, entry.AssetKey.FileId))))
+                {
+                    progress?.Report(new DecorationOperationProgress("正在读取来源 Unit", completedEntries, selectedEntryCount));
+                    var selections = requested[(entry.AssetKey.TypeId, entry.AssetKey.FileId)];
+                    var visibleSelections = selections.Where(selection => !selection.IsCulling).ToArray();
+                    var unitResult = await informationReader.ReadUnitAsync(
+                        entry,
+                        entries,
+                        PatchUnitDependencyPolicy.RequirePatchLocalComposite,
+                        request,
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                    var unit = unitResult.Data ?? throw new InvalidDataException(
+                        unitResult.State.Diagnostics.FirstOrDefault()?.Message
+                        ?? "无法读取选中的装饰来源 Unit。");
+                    var payloadIdentity = CreatePayloadIdentity(unit.Payload, unit.CompositePayload);
+                    var shouldCompileVisible = false;
+                    if (visibleSelections.Length != 0)
+                    {
+                        var representative = visibleSelections[0];
+                        shouldCompileVisible = compiledVisibleSources.Add(new DecorationSourcePayloadKey(
+                            payloadIdentity,
+                            ToVariant(representative.BodyVariant),
+                            ToLayer(representative.Layer),
+                            MeshInfoIndex: -1));
+                    }
+                    var cullingSelections = selections
+                        .Where(selection => selection.IsCulling)
+                        .Where(selection => compiledCullingSources.Add(new DecorationSourcePayloadKey(
+                            payloadIdentity,
+                            ToVariant(selection.BodyVariant),
+                            ToLayer(selection.Layer),
+                            selection.MeshInfoIndex)))
+                        .ToArray();
+
+                    // Different AssetKeys in a fast-reuse patch may be aliases of one complete
+                    // Unit payload. Compile that exact source once per body/layer role; otherwise
+                    // selecting aliases would append the same decoration geometry repeatedly.
+                    if (!shouldCompileVisible && cullingSelections.Length == 0)
+                    {
+                        foreach (var selection in selections)
+                            resolvedSelections.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, selection.IsCulling));
+                        continue;
+                    }
+
+                    if (shouldCompileVisible)
+                    {
+                        // The planning table exposes one representative mesh per user-facing Unit.
+                        // Preserve every renderable LOD rather than treating that representative as the only mesh.
+                        var representative = visibleSelections[0];
+                        var lods = unit.Model.RawMeshData
+                            .Select(raw => (Raw: raw, Mesh: unit.Model.Meshes.SingleOrDefault(mesh => mesh.Index == raw.MeshInfoIndex)))
+                            .Where(item => item.Mesh is not null && IsVisibleLod(item.Raw, item.Mesh))
+                            .OrderBy(item => item.Raw.LodIndex)
+                            .ToArray();
+                        if (lods.Length == 0) throw new InvalidDataException("Selected decoration Unit has no visible LOD geometry.");
+                        foreach (var lod in lods)
+                        {
+                            fragments.Add((ToVariant(representative.BodyVariant), ToLayer(representative.Layer), CreateFragment(unit, lod.Mesh!, lod.Raw)));
+                        }
+                    }
+
+                    foreach (var selection in visibleSelections)
+                        resolvedSelections.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, false));
+
+                    foreach (var selection in cullingSelections)
+                    {
+                        var mesh = unit.Model.Meshes.SingleOrDefault(item => item.Index == selection.MeshInfoIndex)
+                            ?? throw new InvalidDataException("Selected decoration culling mesh is missing.");
+                        var rawMesh = unit.Model.RawMeshData.SingleOrDefault(item => item.MeshInfoIndex == selection.MeshInfoIndex)
+                            ?? throw new InvalidDataException("Selected decoration culling mesh has no geometry.");
+                        // Catalog classification can identify a culling body through a global bone name
+                        // unavailable in this local re-read. Its native LOD marker is an equivalent fallback.
+                        if (!mesh.SemanticInfo.IsCullingBody && rawMesh.LodIndex >= 0)
+                            throw new InvalidDataException("Selected decoration mesh is not a culling mesh.");
+                        fragments.Add((ToVariant(selection.BodyVariant), ToLayer(selection.Layer), CreateFragment(unit, mesh, rawMesh)));
+                        resolvedSelections.Add((selection.TypeId, selection.FileId, selection.MeshInfoIndex, true));
+                    }
+                    completedEntries++;
+                    progress?.Report(new DecorationOperationProgress("正在读取来源 Unit", completedEntries, selectedEntryCount));
+                }
+            }
+            var requestedSelections = selected.Select(selection => (selection.TypeId, selection.FileId, selection.MeshInfoIndex, selection.IsCulling)).ToHashSet();
+            if (!requestedSelections.SetEquals(resolvedSelections)) throw new InvalidDataException("Some selected decoration Units could not be read.");
+
+            var documents = BuildPayloads(fragments, plan);
+            progress?.Report(new DecorationOperationProgress("正在写出装饰模型", 0, documents.Count));
+            var output = new List<DecorationPayloadFile>();
+            foreach (var document in documents)
+            {
+                var fileName = document.BodyVariant == "Stocky" ? "stocky.bin" : "slim.bin";
+                await WriteAsync(Path.Combine(outputDirectory, fileName), document, cancellationToken).ConfigureAwait(false);
+                output.Add(new DecorationPayloadFile { BodyVariant = document.BodyVariant, File = fileName });
+                progress?.Report(new DecorationOperationProgress("正在写出装饰模型", output.Count, documents.Count));
+            }
+            return output;
         }
-        return output;
+        finally
+        {
+            informationReader.ClearOperation(context.OperationId);
+        }
+    }
+
+    private async ValueTask<IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>> ReadEntriesAsync(
+        ModInformationReadRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await informationReader.ReadPatchIndexAsync(request, cancellationToken).ConfigureAwait(false);
+        if (result.Data is not null) return result.Data.Entries;
+        var detail = result.State.Diagnostics.FirstOrDefault()?.Message ?? "未知错误";
+        throw new InvalidDataException($"无法读取装饰来源 Patch 目录：{detail}");
     }
 
     private static string CreatePayloadIdentity(

@@ -30,6 +30,7 @@ namespace HD2ModManager.ViewModels
         private readonly IMaterialPackagingApplicationService _materialPackaging;
         private readonly IMaterialDeliveryFactsService _materialDeliveryFacts;
         private readonly IEquipmentUnitCatalogService _equipmentUnitCatalog;
+		private readonly IModEquipmentSourceFactsReader _equipmentSourceFactsReader;
         private readonly IAdvancedModAnalysisService _advancedAnalysis;
         private readonly ISourceUnitEligibilityService _sourceUnitEligibility;
         private readonly IPatchGraphDiagnosticsService _patchGraphDiagnostics;
@@ -153,9 +154,10 @@ namespace HD2ModManager.ViewModels
 			_materialPackaging = CoreServices.CreateMaterialPackagingApplicationService(_derivedState.InformationCenter);
             _materialDeliveryFacts = CoreServices.CreateMaterialDeliveryFactsService(_paths, _derivedState.InformationCenter);
             _equipmentUnitCatalog = CoreServices.CreateEquipmentUnitCatalogService(_paths);
+			_equipmentSourceFactsReader = _library.EquipmentSourceFactsReader;
             _advancedAnalysis = CoreServices.CreateAdvancedModAnalysisService(_paths, _derivedState.InformationCenter);
             _sourceUnitEligibility = CoreServices.CreateSourceUnitEligibilityService();
-            _patchGraphDiagnostics = CoreServices.CreatePatchGraphDiagnosticsService();
+			_patchGraphDiagnostics = CoreServices.CreatePatchGraphDiagnosticsService(_library.InformationReader);
             _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(_paths, _derivedState.InformationCenter);
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
@@ -1182,7 +1184,7 @@ namespace HD2ModManager.ViewModels
                         ? new System.Windows.Threading.DispatcherSynchronizationContext(dispatcher)
                         : new SynchronizationContext());
                 var bridge = task is null ? null : new OperationProgressBridge(new BackgroundTaskOperationTarget(task), operationId, uiContext);
-                var sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(_paths, _derivedState.InformationCenter);
+				var sameKeyReconstruction = CoreServices.CreateModSameKeyReconstructionService(_paths, _derivedState.InformationCenter, _library.InformationReader);
                 var result = await Task.Run(() => sameKeyReconstruction.GenerateCandidateAsync(
                     source,
                     _library.ModsRootDirectory,
@@ -1239,79 +1241,58 @@ namespace HD2ModManager.ViewModels
                 LogService.Info($"替换护甲计划开始：Mod={source.Metadata.Name}，节点={source.Id.Value:N}。");
                 _notifications?.Show("替换护甲：正在读取 GameData 装备部件目录…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
                 _notifications?.Show("替换护甲：正在读取来源 Patch 并匹配 GameData 部位目录…", NotificationLevel.Info, TimeSpan.FromSeconds(30));
-                var sourcePatchPaths = FindBasePatchPaths(source);
-                if (sourcePatchPaths.Length == 0)
-                {
-                    var message = "尚未进行当前 Mod 的高级分析，请先点击“模型解析”建立高级 Unit 分析缓存。";
-                    message = "Current Mod has no usable base Patch file.";
-                    _notifications?.Show(message, NotificationLevel.Info, TimeSpan.FromSeconds(10));
-                    AdvancedAnalysisSummary = message;
-                    OnPropertyChanged(nameof(AdvancedAnalysisSummary));
-                    return;
-                }
-                if (!await HasCurrentGameDataIndexAsync().ConfigureAwait(false))
-                {
-                    const string message = "请在设置页重建资产索引";
+				if (!await HasCurrentGameDataIndexAsync().ConfigureAwait(false))
+				{
+					const string message = "请在设置页重建资产索引";
                     LogService.Info($"替换护甲计划结束：Mod={source.Metadata.Name}，基础 GameData 资产索引不可用或已过期。");
                     _notifications?.Show(message, NotificationLevel.Error, TimeSpan.FromSeconds(10));
                     return;
                 }
 
-                // Load the full logical equipment catalog first. Source eligibility
-                // comes from the source Patch analysis; Game Data only labels the
-                // eligible Unit and must not pre-filter by its mesh layout.
-                var sourceCatalogCandidates = await _equipmentUnitCatalog.GetEntriesAsync();
-				LogService.Info($"替换护甲计划阶段：GameData 部件目录完成，耗时={preparationTimer.ElapsedMilliseconds}ms，Archive={sourceCatalogCandidates.Count}。");
-                if (sourceCatalogCandidates.Count == 0)
-                {
-                    const string message = "请在设置页重建 Unit 部位";
-                    LogService.Info($"替换护甲计划结束：Mod={source.Metadata.Name}，GameData 护甲 Unit 部位目录为空。");
-                    _notifications?.Show(message, NotificationLevel.Error, TimeSpan.FromSeconds(10));
-                    return;
-                }
-                IReadOnlyList<PatchGroupAnalysis> analyses = Array.Empty<PatchGroupAnalysis>();
-                try
-                {
-                    analyses = await _advancedAnalysis.GetRequiredAnalysesAsync(source, _library.ModsRootDirectory).ConfigureAwait(false);
-                }
-                catch (InvalidOperationException)
-                {
-                    LogService.Info($"替换护甲计划：来源高级分析缓存不可用，将回退实时 Unit 解析。Mod={source.Metadata.Name}");
-                }
-                // Source eligibility is a Unit-level fact from the source Patch. The
-                // source may have been reserialized by Blender/SDK, so its MeshInfoIndex
-                // layout is not required to match the current Game Data template.
-                // Game Data contributes the logical Armor/Helmet label and body/layer
-                // facts only. Keep all indexed parts for an eligible Unit; the
-                // Canonical executor resolves the source Unit's own LOD0 later.
-                    // Source eligibility is determined from the current source Patch, while
-                    // part labels come from Game Data. Re-read every candidate Unit through
-                    // the SDK-compatible Patch reader so MeshInfoIndex and MeshId come from
-                    // the same current Unit payload before the plan is shown or persisted.
-                var sourceCandidates = analyses.Count == 0
-                        ? await _equipmentUnitCatalog.FilterTransferableSourcePartsAsync(sourceCatalogCandidates, sourcePatchPaths, CancellationToken.None).ConfigureAwait(false)
-                        : RebindTransferableSourcePartsFromAnalysis(sourceCatalogCandidates, analyses);
-				LogService.Info($"替换护甲计划阶段：来源候选完成，模式={(analyses.Count == 0 ? "实时回退" : "高级分析缓存")}，耗时={preparationTimer.ElapsedMilliseconds}ms。");
-                    var transferableSourceUnitKeys = sourceCandidates
-                        .SelectMany(entry => entry.Parts)
-                        .Select(part => part.UnitAssetKey)
-                        .ToHashSet();
-                var catalogPartCount = sourceCatalogCandidates.Sum(entry => entry.Parts.Count);
-                var matchedPartCount = sourceCandidates.Sum(entry => entry.Parts.Count);
-                LogService.Info($"替换护甲来源诊断：Mod={source.Metadata.Name}，高级分析={analyses.Count}，源Patch={sourcePatchPaths.Length}，可转移Unit={transferableSourceUnitKeys.Count}，GameData部件={catalogPartCount}，保留部件={matchedPartCount}，Unit目录={sourceCatalogCandidates.Count}。");
-                if (transferableSourceUnitKeys.Count != 0 && matchedPartCount == 0)
-                {
-                    var catalogKeys = sourceCatalogCandidates
-                        .SelectMany(entry => entry.Parts)
-                        .Select(part => part.UnitAssetKey)
-                        .ToHashSet();
-                    var unmatched = transferableSourceUnitKeys
-                        .Where(key => !catalogKeys.Contains(key))
-                        .Take(8)
-                        .Select(key => $"0x{key.FileId:x16}");
-                    LogService.Info($"替换护甲来源诊断：可转移Unit无GameData部件标签，示例={string.Join(",", unmatched)}。");
-                }
-                var allCandidates = sourceCatalogCandidates;
+				var operationId = Guid.NewGuid();
+				var sourceFacts = await _equipmentSourceFactsReader.ReadAsync(
+					source,
+					_library.ModsRootDirectory,
+					new ModInformationRequest(
+						ModInformationKind.AssetInventory,
+						"CrossArmorPlan",
+						Context: ModInformationRequestContext.Create(
+							ModInformationCacheScope.None,
+							operationId,
+							operationName: "CrossArmorPlan"))
+					{
+						Property = ModInformationPropertyKind.UnitPartMapping
+					},
+					CancellationToken.None).ConfigureAwait(false);
+				var sourcePatchPaths = sourceFacts.SourcePatchTocPaths.ToArray();
+				var sourceCandidates = sourceFacts.SourceCandidates;
+				var allCandidates = sourceFacts.TargetCandidates;
+				var transferableSourceUnitKeys = sourceCandidates
+					.SelectMany(entry => entry.Parts)
+					.Select(part => part.UnitAssetKey)
+					.ToHashSet();
+				var catalogPartCount = allCandidates.Sum(entry => entry.Parts.Count);
+				var matchedPartCount = sourceCandidates.Sum(entry => entry.Parts.Count);
+				var readableUnitCount = sourceFacts.Units.Count(unit => unit.IsReadable);
+				var hiddenUnitCount = sourceFacts.Units.Count(unit => unit.IsHidden);
+				var failedUnitCount = sourceFacts.Units.Count(unit => !unit.IsReadable);
+				LogService.Info($"替换护甲计划阶段：统一来源读取完成，耗时={preparationTimer.ElapsedMilliseconds}ms，源Patch={sourcePatchPaths.Length}，扫描Unit={sourceFacts.Units.Count}，可读={readableUnitCount}，隐藏={hiddenUnitCount}，失败={failedUnitCount}。");
+				LogService.Info($"替换护甲来源诊断：Mod={source.Metadata.Name}，模式=统一读取器，源Patch={sourcePatchPaths.Length}，可转移Unit={transferableSourceUnitKeys.Count}，GameData部件={catalogPartCount}，保留部件={matchedPartCount}，Unit目录={allCandidates.Count}。");
+				if (sourceFacts.Issues.Count != 0)
+					LogService.Info($"替换护甲来源读取诊断：{string.Join(" | ", sourceFacts.Issues.Take(6).Select(issue => $"{issue.Code}: {issue.Message}"))}");
+				if (sourcePatchPaths.Length == 0)
+				{
+					const string message = "当前 Mod 没有可读取的 Patch 主文件。";
+					_notifications?.Show(message, NotificationLevel.Info, TimeSpan.FromSeconds(10));
+					return;
+				}
+				if (allCandidates.Count == 0)
+				{
+					const string message = "请在设置页重建 Unit 部位";
+					LogService.Info($"替换护甲计划结束：Mod={source.Metadata.Name}，GameData 护甲 Unit 部位目录为空。");
+					_notifications?.Show(message, NotificationLevel.Error, TimeSpan.FromSeconds(10));
+					return;
+				}
                 if (sourceCandidates.Count == 0)
                 {
                     LogService.Info($"替换护甲计划结束：Mod={source.Metadata.Name}，没有可转移的真实 Unit 几何。");
@@ -1327,8 +1308,9 @@ namespace HD2ModManager.ViewModels
                 var browser = CoreServices.CreateGameDataArchiveBrowserService(_paths, _derivedState.InformationCenter);
                 var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(
                     _equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(),
-                    Array.Empty<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>(), _paths, null,
-                    cancellationToken => browser.BuildAsync(_library.Snapshot, _library.ModsRootDirectory, SettingsService.GetGameDataFolder(), cancellationToken).AsTask());
+					sourceFacts.GetPreparedEntries(sourcePatchPaths[0]), _paths, null,
+					cancellationToken => browser.BuildAsync(_library.Snapshot, _library.ModsRootDirectory, SettingsService.GetGameDataFolder(), cancellationToken).AsTask(),
+					_library.InformationReader);
                 await OpenCrossArmorPlanOnUiThreadAsync(viewModel).ConfigureAwait(false);
 				preparationTimer.Stop();
                 LogService.Info($"替换护甲计划完成：Mod={source.Metadata.Name}，源候选={sourceCandidates.Count}，目标候选={allCandidates.Count}，源Patch={sourcePatchPaths[0]}。");
@@ -1353,25 +1335,6 @@ namespace HD2ModManager.ViewModels
             {
                 if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenCrossArmorPlan(viewModel);
             }).Task.ConfigureAwait(false);
-        }
-
-        private static IReadOnlyList<EquipmentUnitCatalogEntry> RebindTransferableSourcePartsFromAnalysis(
-            IReadOnlyList<EquipmentUnitCatalogEntry> catalog,
-            IReadOnlyList<PatchGroupAnalysis> analyses)
-        {
-            var transferable = analyses.SelectMany(analysis => analysis.PreparedSourceUnits)
-                .Where(unit => unit.IsReadable)
-                .SelectMany(unit => unit.Meshes.Where(mesh => mesh.IsTransferable)
-                    .Select(mesh => (Unit: new AssetKey(unit.Entry.AssetKey.TypeId, unit.Entry.AssetKey.FileId), mesh.MeshInfoIndex, mesh.MeshId)))
-                .GroupBy(item => (item.Unit, item.MeshInfoIndex))
-                .ToDictionary(group => group.Key, group => group.Last().MeshId);
-            return catalog.Select(entry => entry with
-            {
-                Parts = entry.Parts
-                    .Where(part => transferable.ContainsKey((part.UnitAssetKey, part.MeshInfoIndex)))
-                    .Select(part => part with { MeshId = transferable[(part.UnitAssetKey, part.MeshInfoIndex)] })
-                    .ToArray()
-            }).Where(entry => entry.Parts.Count != 0).ToArray();
         }
 
         private string[] FindBasePatchPaths(ModNode source)

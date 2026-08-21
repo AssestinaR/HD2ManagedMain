@@ -48,6 +48,7 @@ namespace HD2ModManager.ViewModels
         private bool _isMessagePanelOpen;
         private bool _isMessagePreviewOpen;
         private readonly IModInformationCenter _informationCenter;
+		private readonly IModInformationReader _informationReader;
         private readonly System.Collections.Generic.Dictionary<string, BackgroundTaskItem> _informationTasks = new(StringComparer.Ordinal);
         private readonly CancellationTokenSource _lifetimeCancellation = new();
         private int _libraryProjectionRequested;
@@ -172,10 +173,16 @@ namespace HD2ModManager.ViewModels
             _profileService = new ProfileService(configDir);
 
             var storagePaths = SettingsService.CreateStoragePaths();
-            var informationCenter = CoreServices.CreateModInformationCenter(storagePaths);
+            var informationReader = CoreServices.CreateModInformationReader();
+			_informationReader = informationReader;
+            var informationCenter = CoreServices.CreateModInformationCenter(storagePaths, informationReader);
             _informationCenter = informationCenter;
             var optionActivations = CoreServices.CreateOptionActivationStore(storagePaths);
-            _libraryService = new ModLibraryService(System.IO.Path.Combine(configDir, "library.json"), informationCenter, optionActivations);
+            _libraryService = new ModLibraryService(
+                System.IO.Path.Combine(configDir, "library.json"),
+                informationCenter,
+                optionActivations,
+                informationReader);
             _derivedState = new DerivedStateCoordinator(_libraryService, _profileService, informationCenter);
             _importQueue = new ImportQueueService();
             _backgroundTasks = new BackgroundTaskService();
@@ -756,6 +763,7 @@ namespace HD2ModManager.ViewModels
             _lifetimeCancellation.Dispose();
             await _derivedState.DisposeAsync().ConfigureAwait(false);
             await _informationCenter.DisposeAsync().ConfigureAwait(false);
+			await _informationReader.DisposeAsync().ConfigureAwait(false);
         }
 
         private void DisposeCurrentPages()

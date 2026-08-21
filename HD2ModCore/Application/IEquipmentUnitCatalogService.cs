@@ -10,11 +10,13 @@ public interface IEquipmentUnitCatalogService
 		IReadOnlySet<AssetKey>? unitAssetKeys = null,
 		CancellationToken cancellationToken = default);
 
+	[Obsolete("Use IModEquipmentSourceFactsReader so source geometry is read through the unified Mod information reader.")]
 	ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(
 		IReadOnlyList<EquipmentUnitCatalogEntry> candidates,
 		IReadOnlyList<string> patchTocPaths,
 		CancellationToken cancellationToken = default);
 
+	[Obsolete("Use IModEquipmentSourceFactsReader so source geometry is read through the unified Mod information reader.")]
 	ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(
 		IReadOnlyList<EquipmentUnitCatalogEntry> candidates,
 		IReadOnlyList<string> patchTocPaths,

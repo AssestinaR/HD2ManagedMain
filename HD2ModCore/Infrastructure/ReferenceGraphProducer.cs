@@ -15,6 +15,15 @@ public sealed class ReferenceGraphProducer : IReferenceGraphProducer
 	public ReferenceGraphProducer(IPatchGroupAnalysisProvider provider)
 		=> _provider = provider ?? throw new ArgumentNullException(nameof(provider));
 
+	// 作用：独立组合场景也可直接接入统一读取器；既有 provider 构造函数保持兼容。
+	// Purpose: Lets isolated composition roots use the unified reader directly while preserving the provider constructor.
+	public ReferenceGraphProducer(IModInformationReader informationReader)
+		: this(new ModInformationPatchGroupAnalysisProvider(
+			informationReader,
+			depth: PatchAnalysisDepth.DependencyGraph))
+	{
+	}
+
 	public async ValueTask<ReferenceGraphFacts> ProduceAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
 	{
 		var analyses = await _provider.AnalyzeNodeAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);

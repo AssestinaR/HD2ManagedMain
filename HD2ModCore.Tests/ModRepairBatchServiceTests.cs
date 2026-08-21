@@ -35,6 +35,25 @@ public sealed class ModRepairBatchServiceTests
     }
 
     [Fact]
+    public async Task RepairsNormalMod_InvalidatesInformationCenterAfterCommit()
+    {
+        using var fixture = new Fixture();
+        var source = fixture.AddMod("invalidate-after-commit");
+        fixture.Reconstruction.InspectResult = ReadyState(source);
+        fixture.Reconstruction.CandidateFactory = (_, _, _, output, _, _, _) =>
+        {
+            Directory.CreateDirectory(output);
+            File.WriteAllText(Path.Combine(output, "unit.patch"), "new");
+            return new ValueTask<SameKeyReconstructionOperationResult>(new SameKeyReconstructionOperationResult(true, output, null, null, 1, 1, 0, 0, 0, Array.Empty<CoreIssue>()));
+        };
+
+        var result = await fixture.Service.RepairAsync(new[] { source }, fixture.ModsRoot, fixture.GameData);
+
+        Assert.Equal(ModRepairBatchModStatus.Repaired, Assert.Single(result.Mods).Status);
+        Assert.Contains(source.Id, fixture.InformationCenter.InvalidatedNodeIds);
+    }
+
+    [Fact]
     public async Task CountsAreConserved_AndEveryChildHasOneTerminalEvent()
     {
         using var fixture = new Fixture();
@@ -303,10 +322,11 @@ public sealed class ModRepairBatchServiceTests
         public readonly FakeReconstruction Reconstruction = new();
         public readonly FakeAnalysis Analysis = new();
         public readonly FakeParser Parser = new();
+        public readonly FakeInformationCenter InformationCenter = new(new Dictionary<ModNodeId, ModContentFacts>());
         public Action? InitializationSeam { get; set; }
         public Action<string>? CommitSeam { get; set; }
         public Func<string, string, Task>? ManifestWriter { get; set; }
-        public IModRepairBatchService Service => new ModRepairBatchService(new StoragePaths(root), Reconstruction, Analysis, Parser, InitializationSeam, CommitSeam, ManifestWriter);
+        public IModRepairBatchService Service => new ModRepairBatchService(new StoragePaths(root), Reconstruction, Analysis, Parser, InitializationSeam, CommitSeam, ManifestWriter, InformationCenter);
         public Fixture()
         {
             ModsRoot = Path.Combine(root, "mods"); GameData = Path.Combine(root, "game"); Directory.CreateDirectory(ModsRoot); Directory.CreateDirectory(GameData);

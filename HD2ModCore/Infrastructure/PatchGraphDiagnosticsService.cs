@@ -17,6 +17,16 @@ public sealed class PatchGraphDiagnosticsService : IPatchGraphDiagnosticsService
 		_fullPatchProvider = fullPatchProvider ?? throw new ArgumentNullException(nameof(fullPatchProvider));
 	}
 
+	// 作用：详情诊断也复用统一读取器及其 Patch index/payload 生命周期。
+	// Purpose: Detail diagnostics also reuse the unified reader and its Patch index/payload lifetimes.
+	public PatchGraphDiagnosticsService(IModInformationReader informationReader)
+	{
+		ArgumentNullException.ThrowIfNull(informationReader);
+		var provider = new ModInformationPatchGroupAnalysisProvider(informationReader);
+		_dependencyGraphProvider = provider.ForDepth(PatchAnalysisDepth.DependencyGraph);
+		_fullPatchProvider = provider.ForDepth(PatchAnalysisDepth.Full);
+	}
+
 	public ValueTask<IReadOnlyList<PatchGroupAnalysis>> AnalyzeDependencyGraphAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
 		=> _dependencyGraphProvider.AnalyzeNodeAsync(node, modsRootDirectory, cancellationToken);
 
